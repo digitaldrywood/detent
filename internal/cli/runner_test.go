@@ -708,41 +708,76 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 	t.Parallel()
 
-	var captured projectpkg.Dependencies
-	token := "first-token"
-	factory := withRunnerFactory(projectpkg.Dependencies{}, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
-		captured = d
-		return nil, errProjectFactoryStub
-	}, serviceapi.Connection{}, nil, func() string {
-		return token
-	})
+	for _, tt := range []struct {
+		name       string
+		tracker    string
+		worker     string
+		wantWorker string
+		appID      string
+	}{
+		{name: "plain GitHub definition", tracker: "github", wantWorker: "runtime"},
+		{name: "explicit worker credential", tracker: "github", worker: "worker-token", wantWorker: "worker-token"},
+		{name: "GitHub App tracker", tracker: "github", wantWorker: "runtime", appID: "123"},
+		{name: "native project excludes inherited credential", tracker: "hub_native"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var captured projectpkg.Dependencies
+			token := "first-token"
+			factory := withRunnerFactory(projectpkg.Dependencies{}, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
+				captured = d
+				return nil, errProjectFactoryStub
+			}, serviceapi.Connection{}, nil, func() string { return token })
 
-	workflowPath := writeWorkflowFile(t)
-	_, err := factory(globalconfig.Project{
-		ID:       "alpha",
-		Workflow: workflowPath,
-		Workdir:  filepath.Dir(workflowPath),
-		Weight:   1,
-	})
-	if !errors.Is(err, errProjectFactoryStub) {
-		t.Fatalf("ProjectFactory() error = %v, want %v", err, errProjectFactoryStub)
-	}
-	if captured.GitHubToken != "first-token" {
-		t.Fatalf("GitHubToken = %q, want first-token", captured.GitHubToken)
-	}
-
-	token = "second-token"
-	_, err = factory(globalconfig.Project{
-		ID:       "bravo",
-		Workflow: workflowPath,
-		Workdir:  filepath.Dir(workflowPath),
-		Weight:   1,
-	})
-	if !errors.Is(err, errProjectFactoryStub) {
-		t.Fatalf("ProjectFactory() error = %v, want %v", err, errProjectFactoryStub)
-	}
-	if captured.GitHubToken != "second-token" {
-		t.Fatalf("GitHubToken = %q, want second-token", captured.GitHubToken)
+			workflowPath := writeWorkflowFile(t)
+			raw, err := os.ReadFile(workflowPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tracker := "tracker:\n  kind: " + tt.tracker + "\n"
+			if tt.tracker == "github" {
+				tracker += "  repository: example/repo\n"
+			}
+			if tt.appID != "" {
+				tracker += "  github_app_id: '" + tt.appID + "'\n  github_app_installation_id: '456'\n  github_app_private_key_path: /example/app.pem\n"
+			}
+			raw = []byte(strings.Replace(string(raw), "tracker:\n  kind: memory\n", tracker, 1))
+			if tt.worker != "" {
+				raw = []byte(strings.Replace(string(raw), "codex:\n", "worker:\n  github_token: "+tt.worker+"\ncodex:\n", 1))
+			}
+			if err := os.WriteFile(workflowPath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := globalconfig.Project{ID: "alpha", Workflow: workflowPath, Workdir: filepath.Dir(workflowPath), Weight: 1}
+			for _, nextToken := range []string{"first-token", "second-token"} {
+				token = nextToken
+				_, err := factory(cfg)
+				if !errors.Is(err, errProjectFactoryStub) {
+					t.Fatalf("ProjectFactory() error = %v, want stub", err)
+				}
+				if captured.GitHubToken != nextToken {
+					t.Fatal("project dependencies did not use the current runtime credential")
+				}
+				run, ok := captured.Runner.(*sshRunner)
+				if !ok {
+					t.Fatalf("injected Runner = %T, want *sshRunner", captured.Runner)
+				}
+				workflow, _, _, err := run.Runner.SSHWorkflow(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantWorker := tt.wantWorker
+				if wantWorker == "runtime" {
+					wantWorker = nextToken
+				}
+				if workflow.Config.Worker.GitHubToken != wantWorker {
+					t.Fatal("runner did not receive the selected worker credential before construction")
+				}
+				if tt.appID != "" && (workflow.Config.Tracker.GitHubAppID != tt.appID || workflow.Config.Tracker.GitHubAppInstallationID != "456" || workflow.Config.Tracker.GitHubAppPrivateKeyPath != "/example/app.pem") {
+					t.Fatal("runtime credential propagation changed the configured GitHub App identity")
+				}
+			}
+		})
 	}
 }
 
