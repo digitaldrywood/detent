@@ -149,7 +149,7 @@ type WorkflowOverlay struct {
 
 type Config struct {
 	Policy            policy.Descriptor    `yaml:"-" json:"-"`
-	Review            Review               `yaml:"review,omitempty"`
+	Review            Review               `yaml:"review,omitempty" json:",omitzero"`
 	Runners           Runners              `yaml:"runners,omitempty"`
 	Identity          Identity             `yaml:"identity,omitempty"`
 	ActiveHours       activehours.Config   `yaml:"active_hours,omitempty"`

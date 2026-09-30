@@ -74,12 +74,12 @@ func (r *activityRecorder) observe(update AgentUpdate, at time.Time, head string
 			if len(text) > 1024 {
 				text = text[len(text)-1024:]
 			}
-			phase := activity.ValidationPhase(text)
-			if phase == "waiting_validation" {
+			switch activity.ValidationPhase(text) {
+			case "waiting_validation":
 				delta = "validation_lock"
-			} else if phase == "validating" {
+			case "validating":
 				delta = "validation_acquired"
-			} else {
+			default:
 				return
 			}
 		}
@@ -114,7 +114,7 @@ func (r *activityRecorder) close() {
 	}
 }
 
-func (r *Runner) startActivityProfile(request RunRequest, sessionID int64, workspace string, workflow config.Workflow, stage string) *activityRecorder {
+func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, sessionID int64, workspace string, workflow config.Workflow, stage string) *activityRecorder {
 	backend, ok := r.store.(activityProfileStore)
 	if !ok || sessionID <= 0 {
 		return nil
@@ -139,7 +139,8 @@ func (r *Runner) startActivityProfile(request RunRequest, sessionID int64, works
 			profile.AsOf = r.now()
 			event.Status = profile.Status
 			event.FinishedAt = profile.FinishedAt
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			// Retain run attribution while allowing the final checkpoint after cancellation.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 			defer cancel()
 			next, err := backend.SaveWorkflowActivityProfile(ctx, id, event, profile)
 			if err != nil {
@@ -209,7 +210,7 @@ func loadActivityInstructions(workspace string, workflow config.Workflow, at tim
 			continue
 		}
 		data, err := io.ReadAll(io.LimitReader(file, 256*1024+1))
-		_ = file.Close()
+		_ = file.Close() //nolint:errcheck // Best effort cleanup of a read-only instruction file.
 		if err != nil || len(data) > 256*1024 {
 			continue
 		}
@@ -285,7 +286,6 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 		profile.Unpaired++
 		return
 	}
-	span := &profile.Spans[index]
 	if u.Type == AgentUpdateToolOutput && u.Tool != "tool_result" {
 		// A validation lock is a child interval, not the entire command.
 		if u.Delta == "validation_lock" && len(profile.Spans) < activitySpanLimit {
@@ -306,7 +306,7 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 		profile.Unpaired++
 		delete(open, key+"/wait")
 	}
-	span = &profile.Spans[index]
+	span := &profile.Spans[index]
 	span.FinishedAt = observation.at
 	span.Outcome = activityOutcome(u.Status, u.ExitCode)
 	span.ExitCode = u.ExitCode

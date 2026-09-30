@@ -155,8 +155,14 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		return nil, schedulingError(err)
 	}
 	recovery, err := source.client.Recovery(ctx, lease.WorkItemID)
+	if err == nil && recovery.Issue.LinkedSource != nil && recovery.Issue.LinkedSource.Status != "complete" {
+		err = s.intakeNativeSource(ctx, source, lease, recovery.Issue)
+		if err == nil {
+			recovery, err = source.client.Recovery(ctx, lease.WorkItemID)
+		}
+	}
 	if err != nil {
-		return nil, errors.Join(err, source.client.Release(context.WithoutCancel(ctx), lease, "work_item_hydration_failed"))
+		return nil, schedulingError(errors.Join(err, source.client.Release(context.WithoutCancel(ctx), lease, "work_item_hydration_failed")))
 	}
 	issue := issueFromNative(recovery.Issue)
 	issue.AssignedToWorker = true

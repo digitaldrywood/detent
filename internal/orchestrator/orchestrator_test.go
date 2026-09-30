@@ -2231,7 +2231,7 @@ func TestRunDispatchesOperatorMovedBlockedIssueDuringDegradedTransitionRefresh(t
 
 	issue := testIssue("issue-operator-move", "digitaldrywood/detent#1482", "Blocked")
 	unrelated := testIssue("issue-unrelated-blocked", "digitaldrywood/detent#1483", "Blocked")
-	tracker := &operatorMoveConnector{fakeConnector: newFakeConnector(issue, unrelated)}
+	tracker := &operatorMoveConnector{fakeConnector: newFakeConnector(issue)}
 	tracker.setStateIssues(issue, unrelated)
 	runner := newBlockingRunner()
 	orch, err := orchestrator.New(orchestrator.Config{
@@ -2278,6 +2278,9 @@ func TestRunDispatchesOperatorMovedBlockedIssueDuringDegradedTransitionRefresh(t
 	if _, ok := state.Blocked[unrelated.ID]; !ok {
 		t.Fatalf("Blocked[%q] missing after item-scoped reconcile", unrelated.ID)
 	}
+	// Omit the unrelated block from this refresh's feeds so transition snapshot
+	// reuse cannot skip its failing state lookup and leave the error for dispatch.
+	tracker.setStateIssues()
 	if _, err := orch.RequestRefresh(t.Context()); err != nil {
 		t.Fatalf("RequestRefresh() error = %v", err)
 	}
@@ -2296,6 +2299,9 @@ func TestRunDispatchesOperatorMovedBlockedIssueDuringDegradedTransitionRefresh(t
 	})
 	if _, ok := state.Blocked[issue.ID]; ok {
 		t.Fatalf("Blocked[%q] restored by degraded refresh", issue.ID)
+	}
+	if remaining := tracker.issueStateRefreshFailures.Load(); remaining != 0 {
+		t.Fatalf("issue-state refresh failures remaining = %d, want 0", remaining)
 	}
 	snapshot := state.Snapshot(time.Now())
 	if snapshot.Counts.Blocked != 1 || len(snapshot.Blocked) != 1 || snapshot.Blocked[0].ID != unrelated.ID {

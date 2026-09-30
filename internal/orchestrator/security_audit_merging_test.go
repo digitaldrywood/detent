@@ -362,3 +362,85 @@ func TestSecurityAuditAdvisoryPublication(t *testing.T) {
 		})
 	}
 }
+
+// This catches the recorded promotion sequence repeating current-head hydration
+// and review-thread reads for Merging, although only its audit verdict is used.
+func TestMergingPromotionUsesFetchedAuditIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		change         func(*connector.Issue)
+		fail           bool
+		running        bool
+		wantReason     AutoPromoteReason
+		wantTransition bool
+		liveChanged    bool
+		liveDegraded   bool
+	}{
+		{name: "passing audit"},
+		{name: "pending producer", change: func(i *connector.Issue) { i.PullRequest.CIStatus = "pending" }},
+		{name: "red producer", change: func(i *connector.Issue) { i.PullRequest.CIStatus = "failure" }},
+		{name: "draft", change: func(i *connector.Issue) { i.PullRequest.Draft = true }},
+		{name: "review threads", change: func(i *connector.Issue) {
+			i.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{Path: "main.go"}}
+		}},
+		{name: "new head", change: func(i *connector.Issue) { i.PullRequest.HeadSHA = "new-head" }, running: true, wantReason: AutoPromoteReasonSecurityAuditWait},
+		{name: "new base", change: func(i *connector.Issue) { i.PullRequest.BaseSHA = "new-base" }, running: true, wantReason: AutoPromoteReasonSecurityAuditWait},
+		{name: "findings", fail: true, wantTransition: true},
+		{name: "findings superseded by live head", fail: true, liveChanged: true},
+		{name: "live finding snapshot degraded", fail: true, liveDegraded: true},
+		{name: "degraded findings", fail: true, change: func(i *connector.Issue) {
+			i.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+		}},
+		{name: "unavailable findings", fail: true, change: func(i *connector.Issue) { i.PullRequest.HydrationUnavailableReason = "rate_limited" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, tracker, issue := mergingSecurityAuditFixture()
+			run := securityAuditPassingRun(issue)
+			if tc.fail {
+				run.Verdict = securityaudit.VerdictFail
+				run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Body: "authorization bypass"}}
+			}
+			if _, err := o.securityAuditStore.RecordSecurityAuditRun(t.Context(), run); err != nil {
+				t.Fatal(err)
+			}
+			if tc.change != nil {
+				tc.change(&issue)
+			}
+			if tc.liveChanged {
+				current := cloneIssue(issue)
+				current.PullRequest.HeadSHA = "live-head"
+				tracker.hydratedIssues = []connector.Issue{current}
+				if _, err := o.securityAuditStore.RecordSecurityAuditRun(t.Context(), securityAuditPassingRun(current)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.liveDegraded {
+				current := cloneIssue(issue)
+				current.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+				tracker.hydratedIssues = []connector.Issue{current}
+			}
+			if tc.running {
+				o.securityAuditRuns[o.securityAuditIdentity(issue).cacheKey] = struct{}{}
+			}
+			state := newState(o.cfg)
+			result := o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+			o.securityAuditWG.Wait()
+			wantHydrations := 0
+			if tc.wantTransition || tc.liveChanged || tc.liveDegraded {
+				wantHydrations = 1 // A lane change still verifies the live PR identity.
+			}
+			if len(tracker.hydrations) != wantHydrations || len(tracker.reviewThreadHydrations) != 0 {
+				t.Fatalf("Merging repeated reads: PR=%d threads=%d", len(tracker.hydrations), len(tracker.reviewThreadHydrations))
+			}
+			if (len(result.transitioned) > 0) != tc.wantTransition {
+				t.Fatalf("transitions = %+v", result.transitioned)
+			}
+			if tc.wantReason != "" && state.AutoPromoteDecisions[issue.ID].Reason != tc.wantReason {
+				t.Fatalf("decision = %+v", state.AutoPromoteDecisions[issue.ID])
+			}
+			if len(tracker.merges) != 0 {
+				t.Fatal("promotion performed a merge")
+			}
+		})
+	}
+}
