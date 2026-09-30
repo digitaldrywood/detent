@@ -1896,3 +1896,68 @@ func TestTelemetryIssuePreservesRoutingFields(t *testing.T) {
 		})
 	}
 }
+
+// Replays the reported nine active attempts with an older empty board snapshot
+// while promotion waits on GitHub. The runtime overlay must stay live.
+func TestPromotionReadKeepsRecoveredWorkersObservable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		o, tracker, issue := mergingSecurityAuditFixture()
+		issue.State = "Human Review"
+		slow := &slowPromotionHydrator{mergingSecurityAuditConnector: tracker, started: make(chan struct{}), release: make(chan struct{})}
+		o.connector = slow
+		o.done = make(chan struct{})
+		state := newState(o.cfg)
+		o.publishState(&state)
+		for i := range 9 {
+			id := fmt.Sprintf("recovered-%d", i)
+			running := Running{Issue: connector.Issue{ID: id, State: "In Progress"}, WorkAttemptID: int64(i + 1)}
+			running.progress = newWorkerProgress(running, store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID}, nil, 4096)
+			state.Running[id] = running
+			state.WorkAttempts = append(state.WorkAttempts, telemetry.WorkAttempt{AttemptID: running.WorkAttemptID})
+		}
+		o.startTick(&state, time.Now())
+		done := make(chan struct{})
+		go func() {
+			o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+			close(done)
+		}()
+		<-slow.started
+		defer func() { close(slow.release); <-done; o.securityAuditWG.Wait() }()
+		for _, message := range []string{"working", "still working"} {
+			progress := state.Running["recovered-0"].progress
+			if err := progress.observe(t.Context(), runpkg.UsageUpdate{LastMessage: message}); err != nil {
+				t.Fatal(err)
+			}
+			heartbeat := progress.heartbeat(store.WorkAttemptHeartbeat{AttemptID: 1}, time.Now())
+			progress.persisted.Store(&heartbeat)
+			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+			snapshot, err := o.State(ctx)
+			cancel()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.Running) != 9 || len(snapshot.WorkAttempts) != 9 {
+				t.Fatalf("runtime during promotion: workers=%d attempts=%d, want 9 each", len(snapshot.Running), len(snapshot.WorkAttempts))
+			}
+			if snapshot.Running["recovered-0"].LastMessage != message || snapshot.WorkAttempts[0].StatusMessage != message {
+				t.Fatalf("stale worker progress during promotion: %+v", snapshot.WorkAttempts[0])
+			}
+		}
+	})
+}
+
+type slowPromotionHydrator struct {
+	*mergingSecurityAuditConnector
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *slowPromotionHydrator) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	close(c.started)
+	select {
+	case <-c.release:
+		return issue, fmt.Errorf("profile read finished")
+	case <-ctx.Done():
+		return issue, ctx.Err()
+	}
+}
