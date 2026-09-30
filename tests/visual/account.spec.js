@@ -9,8 +9,8 @@
 //
 // The React routes these tests exercise are served by the hub for every
 // non-API path (decisions.md §12, "Serving"), and they read the JSON endpoints
-// of §12. The hub still renders `/login` and `/organization` itself, so those
-// two are asserted against the hub's own pages.
+// of §12. The public login uses the client shell; `/organization` remains
+// a server-rendered page.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
@@ -103,29 +103,28 @@ async function tabTo(page, name, limit = 40) {
   return false;
 }
 
-test("the sign-in page renders without a session and offers both ways in", async ({ page }) => {
+test("the sign-in page renders without a session and offers sign-in and account creation", async ({ page }) => {
   const errors = watchConsole(page);
   await page.goto(new URL("/login", hub.fixture.url).toString(), {
     waitUntil: "domcontentloaded",
   });
 
   await expectOneHeadingOne(page, "Sign in");
-  await expect(page.getByRole("link", { name: "Continue with WorkOS" })).toHaveAttribute(
+  await expect(page.getByRole("link", { name: "Sign in" })).toHaveAttribute(
     "href",
     "/auth/oidc/start",
   );
-  await expect(page.getByRole("link", { name: "Join with invitation" })).toHaveAttribute(
+  await expect(page.getByRole("link", { name: "Create account" })).toHaveAttribute(
     "href",
-    "/auth/oidc/start?unscoped=1",
+    "/auth/oidc/start?screen_hint=sign-up",
   );
 
-  expect(await tabTo(page, "Continue with WorkOS")).toBe(true);
+  expect(await tabTo(page, "Sign in")).toBe(true);
   await expectNoSeriousAxeViolations(page, "/login");
   expect(errors, "console errors on /login").toEqual([]);
 });
 
 test("the login card says what went wrong when the callback failed", async ({ page }) => {
-  test.skip(true, "The hub renders /login itself and ignores ?error=; the client login card (routes.account.tsx) is not served on main.");
   await page.goto(new URL("/login?error=no_membership", hub.fixture.url).toString(), {
     waitUntil: "domcontentloaded",
   });
