@@ -620,21 +620,32 @@ func TestRepairDurationBound(t *testing.T) {
 			limit := &controlledMergeDurationLimit{}
 			orch := Orchestrator{cfg: cfg, supervisor: newTestSupervisor(t, runner, cfg), mergeWorkerLimit: limit.Context, runResults: make(chan runpkg.Completion, 1)}
 			state := newState(cfg)
-			if !orch.dispatchIssue(t.Context(), &state, issue, 1, time.Now(), "") {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if !orch.dispatchIssue(ctx, &state, issue, 1, time.Now(), "") {
 				t.Fatal("dispatch failed")
 			}
-			receiveWorkerHostRunRequest(t, runner.started)
-			if limit.duration != cfg.MergeWorkerMaxDuration {
-				t.Fatalf("duration = %s, want %s", limit.duration, cfg.MergeWorkerMaxDuration)
+			request := receiveWorkerHostRunRequest(t, runner.started)
+			wantErr := runpkg.ErrMergeWorkerDurationExceeded
+			if lane == "Rework" {
+				if request.Mode != runpkg.RunModeImplement || limit.cancel != nil {
+					t.Fatalf("Rework mode = %s, merge duration limit installed = %t", request.Mode, limit.cancel != nil)
+				}
+				wantErr = context.Canceled
+				cancel()
+			} else {
+				if request.Mode != runpkg.RunModeMerge || limit.duration != cfg.MergeWorkerMaxDuration {
+					t.Fatalf("mode = %s, duration = %s, want merge with %s", request.Mode, limit.duration, cfg.MergeWorkerMaxDuration)
+				}
+				limit.Expire()
 			}
-			limit.Expire()
 			select {
 			case result := <-orch.runResults:
-				if !errors.Is(result.Err, runpkg.ErrMergeWorkerDurationExceeded) {
-					t.Fatalf("completion error = %v", result.Err)
+				if !errors.Is(result.Err, wantErr) {
+					t.Fatalf("completion error = %v, want %v", result.Err, wantErr)
 				}
 			case <-time.After(5 * time.Second):
-				t.Fatal("duration expiry did not cancel repair")
+				t.Fatal("cancellation did not complete repair")
 			}
 		})
 	}
