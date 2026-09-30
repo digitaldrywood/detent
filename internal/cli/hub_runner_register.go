@@ -95,7 +95,7 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 			}
 			configuration := globalconfig.Config{}
 			if _, err := os.Lstat(paths.config); err == nil {
-				configuration, err = globalconfig.Read(paths.config)
+				configuration, err = readRunnerSetupConfig(paths.config)
 				if err != nil {
 					return err
 				}
@@ -122,7 +122,7 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 				if err := existingRunnerConfigMatches(paths.config, config, true); err != nil {
 					return err
 				}
-				configuration, err = globalconfig.Read(paths.config)
+				configuration, err = readRunnerSetupConfig(paths.config)
 				if err != nil {
 					return err
 				}

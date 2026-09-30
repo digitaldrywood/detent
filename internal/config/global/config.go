@@ -286,6 +286,7 @@ type options struct {
 	relativeTo                string
 	projectPathLiterals       bool
 	allowMissingWorkflowFiles bool
+	allowMissingProjectPaths  bool
 }
 
 type pathOptions struct {
@@ -316,6 +317,14 @@ func WithProjectPathLiterals() Option {
 func WithMissingWorkflowFiles() Option {
 	return func(opts *options) {
 		opts.allowMissingWorkflowFiles = true
+	}
+}
+
+// WithMissingProjectPaths permits not-yet-cloned project paths during runner
+// setup while preserving path expansion and all other configuration validation.
+func WithMissingProjectPaths() Option {
+	return func(opts *options) {
+		opts.allowMissingProjectPaths = true
 	}
 }
 
@@ -1701,6 +1710,9 @@ func projectPathErrors(path string, field string, opts options, expected pathExp
 	}
 
 	info, err := os.Stat(expanded) // #nosec G703 -- validation intentionally inspects the operator-configured project path after expansion.
+	if opts.allowMissingProjectPaths && errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return []string{field + ": path does not exist"}
 	}

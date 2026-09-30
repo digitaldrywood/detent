@@ -274,13 +274,19 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name          string
-		ready         bool
-		workspaceRoot bool
+		name            string
+		ready           bool
+		workspaceRoot   bool
+		absentPaths     bool
+		relativeWorkdir bool
+		missingWorkflow bool
 	}{
 		{name: "kept checkout with default root", ready: true},
 		{name: "kept checkout overrides supplied root", ready: true, workspaceRoot: true},
 		{name: "missing kept checkout ignores supplied checkout", workspaceRoot: true},
+		{name: "absent kept workdir and workflow", absentPaths: true},
+		{name: "absent kept paths with relative workdir", absentPaths: true, relativeWorkdir: true},
+		{name: "kept workdir without workflow", missingWorkflow: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -290,6 +296,16 @@ func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
 			workdir := filepath.Join(root, "actual-checkout")
 			paths := runnerPaths{config: configPath, identity: filepath.Join(root, "config", "identity.json"), workspaces: filepath.Join(root, "unused-root")}
 			kept := runnerConfig(hub.server.URL+"/organizations/org_example", "org_example", "Build host", 2, paths, []runnerRegisteredCheck{{Name: "local-project", ID: "prj_site", Workdir: workdir}})
+			if test.relativeWorkdir {
+				cwd, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				kept.Projects[0].Workdir, err = filepath.Rel(cwd, workdir)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			if _, err := writeRunnerConfig(configPath, kept); err != nil {
 				t.Fatal(err)
 			}
@@ -301,9 +317,16 @@ func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
 			if err := os.WriteFile(configPath, body, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			checkout(t, workdir)
-			if !test.ready {
+			if !test.absentPaths {
+				checkout(t, workdir)
+			}
+			if !test.ready && !test.absentPaths {
 				if err := os.Remove(filepath.Join(workdir, ".git")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.missingWorkflow {
+				if err := os.Remove(filepath.Join(workdir, "WORKFLOW.md")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -324,8 +347,11 @@ func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
 			if started != test.ready || result.ServiceRun != test.ready || len(result.Projects) != 1 || result.Projects[0].Workdir != workdir || result.Projects[0].Checkout != test.ready {
 				t.Fatalf("started %v, registration %+v", started, result)
 			}
-			if !test.ready && !strings.Contains(strings.Join(result.NextSteps, "\n"), "detent start --config "+shellQuote(configPath)+" --yes") {
-				t.Fatalf("next steps = %v", result.NextSteps)
+			if !test.ready {
+				steps := strings.Join(result.NextSteps, "\n")
+				if !strings.Contains(steps, "Clone the local-project repository into "+workdir) || !strings.Contains(steps, "detent start --config "+shellQuote(configPath)+" --yes") {
+					t.Fatalf("next steps = %v", result.NextSteps)
+				}
 			}
 			if mustRead(t, configPath) != string(body) {
 				t.Fatal("kept config was rewritten")

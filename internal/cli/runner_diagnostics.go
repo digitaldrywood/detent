@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"gopkg.in/yaml.v3"
 )
 
 // collectRunnerLocalChecks reuses doctor and the configured provider's local
@@ -131,22 +130,10 @@ func reportRunnerSetup(ctx context.Context, cfg globalconfig.Config, version str
 }
 
 // Registration must report missing checkout paths before the normal config
-// loader can accept them. Generated paths are absolute; existing valid configs
-// still use the normal loader's expansion and defaults.
+// loader can accept them. Keep the normal loader's expansion, defaults, and
+// validation of everything except absent project paths.
 func readRunnerSetupConfig(path string) (globalconfig.Config, error) {
-	cfg, err := globalconfig.Read(path, globalconfig.WithMissingWorkflowFiles())
-	if err == nil {
-		return cfg, nil
-	}
-	body, readErr := os.ReadFile(path)
-	if readErr != nil {
-		return cfg, readErr
-	}
-	if err := yaml.Unmarshal(body, &cfg); err != nil {
-		return cfg, err
-	}
-	cfg.Path = path
-	return cfg, nil
+	return globalconfig.Read(path, globalconfig.WithMissingProjectPaths())
 }
 
 func resolveRunnerSetupPolicy(ctx context.Context, path, name string) (globalconfig.Config, workflowconfig.Workflow, policy.Descriptor, error) {
