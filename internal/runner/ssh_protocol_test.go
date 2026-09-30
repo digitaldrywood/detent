@@ -10,9 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/compute"
-
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
 )
