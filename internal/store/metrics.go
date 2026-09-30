@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func (s *sqliteStore) RecordWorkflowPhaseEvent(ctx context.Context, attrs WorkflowPhaseEvent) (int64, error) {
@@ -287,6 +288,9 @@ func workflowMetricsReport(rows []workflowMetricRow, flowRows []workflowMetricRo
 	buckets := map[string]*workflowMetricBucket{}
 	for _, row := range rows {
 		event := row.event
+		if event.PhaseType == workflowmetrics.PhaseTypeAgentActivity {
+			continue
+		}
 		if event.DurationSeconds < 0 {
 			continue
 		}
