@@ -646,6 +646,11 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		return dispatchIssueOutcome{reason: reason}
 	}
 	runMode := o.dispatchMode(ctx, state, issue)
+	if runMode == runpkg.RunModePlan && o.nativeWorkflow() {
+		if _, err := o.nativePlanLanes(ctx, issue); err != nil {
+			return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: err.Error()}
+		}
+	}
 	var allowance attemptAllowance
 	var triageContext string
 	if (runMode == runpkg.RunModeImplement || (runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue))) && o.cfg.DeliverableKind != "artifact" {
@@ -1061,6 +1066,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 		request.Execution = source.RunExecution(issue.ID)
+		_, request.DeferExecutionFinish = request.Execution.(runpkg.CompletionExecution)
 	}
 	if !modelPermitRequired {
 		request.AcquireModelPermit = o.modelPermitAcquirer(issue.ID)

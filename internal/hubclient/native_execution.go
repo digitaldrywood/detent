@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -41,10 +42,11 @@ type nativeExecution struct {
 	// role and conversation decide whether a finished run is work the runner
 	// opens a Change Request for: a code or rework run that no conversation
 	// owns the continuation of.
-	role         string
-	conversation bool
-	settled      bool
-	change       *runner.NativeChange
+	role            string
+	conversation    bool
+	settled         bool
+	change          *runner.NativeChange
+	preparedOutcome string
 	// repository is the https URL of the checkout's origin, which a published
 	// version names; empty when the remote cannot be named that way.
 	repository string
@@ -88,10 +90,16 @@ func (s *Scheduler) RunExecution(issueID string) runner.Execution {
 		}
 		return nil
 	}
-	return &nativeExecution{scheduler: s, claim: claim, data: tracker.NativeRunData{
+	if claim.execution != nil {
+		return claim.execution
+	}
+	execution := &nativeExecution{scheduler: s, claim: claim, data: tracker.NativeRunData{
 		RunID: executionID("run", string(claim.lease.WorkItemID)), AttemptID: executionID("attempt", string(claim.lease.ID)),
 		PolicyID: claim.lease.PolicyID, LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken,
 	}}
+	claim.execution = execution
+	s.nativeClaims[issueID] = claim
+	return execution
 }
 
 func (e *nativeExecution) Recovery() tracker.NativeRecovery {
@@ -255,9 +263,17 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	return e.append(ctx, "run.checkpointed", "", &checkpoint)
 }
 
-func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
+func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.prepareFinish(ctx, outcome); err != nil {
+		return err
+	}
+	e.preparedOutcome = outcome
+	return nil
+}
+
+func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) error {
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
@@ -275,10 +291,37 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	// again is safe, because it reuses the item's change.
 	finish := e.data.Sequence + 1
 	if outcome == "succeeded" {
-		e.postDiff(ctx, finish)
+		if e.storedSeq != finish {
+			e.postDiff(ctx, finish)
+		}
 		e.settle(ctx, outcome, finish)
 	}
+	return nil
+}
+
+func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.prepareFinish(ctx, outcome); err != nil {
+		return err
+	}
+	if e.data.Identity == nil || e.data.Outcome != "" {
+		return nil
+	}
 	return e.append(ctx, "run.finished", outcome, nil)
+}
+
+func (e *nativeExecution) finishPrepared(ctx context.Context) error {
+	e.mu.Lock()
+	outcome := e.preparedOutcome
+	e.mu.Unlock()
+	if outcome == "" {
+		return nil
+	}
+	if e.remaining() <= 0 {
+		return orchestrator.ErrSchedulingClaimLost
+	}
+	return e.Finish(ctx, outcome)
 }
 
 // NativeChange reports what the finished run left for review.

@@ -573,6 +573,11 @@ func workAttemptCompletedAfter(left telemetry.WorkAttempt, right telemetry.WorkA
 }
 
 func terminalAttemptRetryableFailure(attempt telemetry.WorkAttempt) bool {
+	// A plan is a work product without a PR. Abandoning its local completion
+	// cannot revoke an operator's subsequent implementation handoff.
+	if workAttemptRunMode(attempt) == RunModePlan && strings.EqualFold(strings.TrimSpace(attempt.TerminalState), string(store.WorkAttemptTerminalAbandoned)) {
+		return false
+	}
 	errorClass := strings.TrimSpace(attempt.ErrorClass)
 	if errorClass == backendcapacity.ErrorClass || errorClass == forgeUnavailableErrorClass || errorClass == workspaceBranchHoldErrorClass || errorClass == "worker_github_budget_monitor_unavailable" || errorClass == workerGitHubTokenResolutionErrorClass {
 		return false

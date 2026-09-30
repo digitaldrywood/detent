@@ -27,6 +27,13 @@ type Execution interface {
 	Recovery() tracker.NativeRecovery
 }
 
+// CompletionExecution prepares the worker's result while retaining authority
+// for the orchestrator's publication and lane decision. Claim release records
+// the terminal event only after those effects have completed.
+type CompletionExecution interface {
+	PrepareFinish(context.Context, string) error
+}
+
 type AvailabilityExecution interface {
 	AvailabilityDeadline() time.Time
 }
@@ -159,7 +166,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if err := req.Execution.Finish(finishCtx, outcome); err != nil {
+	finish := req.Execution.Finish
+	if prepared, ok := req.Execution.(CompletionExecution); ok && req.DeferExecutionFinish {
+		finish = prepared.PrepareFinish
+	}
+	if err := finish(finishCtx, outcome); err != nil {
 		runErr = errors.Join(runErr, err)
 	}
 	if changes, ok := req.Execution.(ChangeExecution); ok && runErr == nil {

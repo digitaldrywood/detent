@@ -99,7 +99,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = prependWorkspaceIsolationBlock(rendered, workflow.Config, opts.WorkspacePath, opts.Branch)
 	rendered = appendWorkspaceRecoveryBlock(rendered, opts.RecoveryState)
 	if opts.PlanOnly {
-		rendered = appendPlanOnlyBlock(rendered, workflow.Config.Plan)
+		rendered = appendPlanOnlyBlock(rendered, workflow.Config.Plan, workflow.Config.Tracker.Kind == config.TrackerHubNative)
 	}
 
 	rendered, err = appendLessonsBlock(rendered, workflow.Config.Agent.Lessons, opts.WorkspacePath)
@@ -628,14 +628,18 @@ func promptDeliverableKind(cfg config.Deliverable) string {
 	}
 }
 
-func appendPlanOnlyBlock(prompt string, cfg gate.PlanConfig) string {
+func appendPlanOnlyBlock(prompt string, cfg gate.PlanConfig, native bool) string {
 	cfg = gate.EffectivePlan(cfg)
+	approval := "Human plan approval uses label `" + cfg.ApprovalLabel + "`; automated plan review should be posted as a `## Detent Plan Review` issue comment."
+	if native {
+		approval = "Return the plan in your final result. For configured automated review, include a `## Detent Plan Review` section with `- state: approved` only after checking the plan against acceptance criteria, or `- state: P1` and the unresolved findings. The orchestrator publishes the result, evaluates the configured review policy, and owns the implementation handoff. Do not post tracker comments or request human approval when automated review approves the plan."
+	}
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Plan approval stop\n\n" +
 		"This dispatch is plan-only. Produce a structured implementation plan as a Markdown artifact for issue review. " +
 		"Do not modify files. Do not run mutating commands. Do not commit. Do not push. Do not open or update a pull request. Do not move tracker state. " +
 		"Include acceptance criteria, the intended code and test changes, validation commands, risks, and open questions. " +
 		"If the issue is not ready for implementation, include the unresolved concerns clearly. " +
-		"Human plan approval uses label `" + cfg.ApprovalLabel + "`; automated plan review should be posted as a `## Detent Plan Review` issue comment."
+		approval
 }
 
 func AvailableSkillsBlock(skillList []skills.Skill) string {

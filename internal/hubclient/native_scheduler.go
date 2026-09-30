@@ -15,6 +15,7 @@ import (
 )
 
 type nativeClaim struct {
+	execution            *nativeExecution
 	availabilityDeadline time.Time
 	source               *NativeConnector
 	lease                tracker.NativeLease
@@ -194,6 +195,7 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 		s.mu.Unlock()
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 	}
+	claim.execution = s.nativeClaims[issueID].execution
 	s.nativeClaims[issueID] = claim
 	s.claims[issueID] = nativeTrackerLease(lease)
 	s.mu.Unlock()
