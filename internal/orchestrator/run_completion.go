@@ -337,7 +337,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			"worker_host", strings.TrimSpace(running.WorkerHost),
 			"final_state", strings.TrimSpace(running.Issue.State),
 		)
-		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
 		return
 	}
 	if o.handlePreTurnFailure(ctx, state, event, running) {
@@ -1486,7 +1486,7 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		}
 		running.Issue = issue
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-		o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+		o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
 		if event.Result.RateLimits != nil {
 			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 		}
@@ -1710,19 +1710,14 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	}
 
 	targetState := doneStateName(o.cfg.TerminalStates)
-	mergedIssue := cloneIssue(issue)
-	if mergedIssue.PullRequest != nil {
-		mergedIssue.PullRequest.State = "MERGED"
-		activityAt := event.CompletedAt.UTC()
-		mergedIssue.PullRequest.ActivityAt = &activityAt
-	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, event.CompletedAt, "merge_worker_programmatic_merge"); err != nil {
+	mergedIssue, deliveredAt := o.programmaticMergeDelivery(issue)
+	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, deliveredAt, "merge_worker_programmatic_merge"); err != nil {
 		running.Issue = mergedIssue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
 		return true
 	}
 
-	updatedAt := event.CompletedAt.UTC()
+	updatedAt := deliveredAt
 	mergedIssue.State = targetState
 	mergedIssue.UpdatedAt = &updatedAt
 	mergedIssue.StageUpdatedAt = &updatedAt
@@ -1739,13 +1734,13 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.logger.Info("merge_worker_programmatic_merge", mergeWorkerLogAttrs(mergedIssue, "target_state", targetState)...)
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      event.CompletedAt,
+		At:      deliveredAt,
 		Event:   "merge_worker_programmatic_merge",
 		Message: "programmatically merged " + issueLabel(mergedIssue) + " and moved it to " + targetState,
 	})
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(mergedIssue, o.cfg.TerminalStates, event.CompletedAt), tokens)
-	mergeTiming := o.recordMergeCompleted(state, mergeTimingIssue, event.CompletedAt, targetState)
+	o.completeTerminalRunning(ctx, state, issueID, running, deliveredAt, tokens, event.CompletedAt)
+	mergeTiming := o.recordMergeCompleted(state, mergeTimingIssue, deliveredAt, targetState)
 	if completed, ok := state.Completed[issueID]; ok {
 		completed.MergeTiming = mergeTiming
 		state.Completed[issueID] = completed
@@ -2881,10 +2876,11 @@ func (o *Orchestrator) completeTerminalRunning(
 	running Running,
 	completedAt time.Time,
 	tokens TokenTotals,
+	workerCompletedAt time.Time,
 ) {
 	o.heartbeats.remove(issueID)
 	o.clearMergeRequiredCheckStreaks(ctx, running.Issue)
-	o.completeDurableWorkAttempt(ctx, state, running, completedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker reached terminal state")
+	o.completeDurableWorkAttempt(ctx, state, running, workerCompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker reached terminal state")
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	if running.cancel != nil {
 		running.cancel()
@@ -3006,6 +3002,9 @@ func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context
 }
 
 func terminalCompletedAt(issue connector.Issue, terminalStates []string, fallback time.Time) time.Time {
+	if mergedAt := mergedDeliveryAt(issue, time.Time{}); !mergedAt.IsZero() {
+		return mergedAt
+	}
 	if stateIn(issue.State, terminalStates) && issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
 		return *issue.StageUpdatedAt
 	}

@@ -48,6 +48,16 @@ failures even when the validator turn also fails, and cannot yield a verdict.
 and `TestLocalGitVerifyReviewTreeAfterSeeding`
 cover these boundaries (#3031).
 
+Verified PR delivery uses immutable forge `MergedAt` when hydrated, otherwise a
+successful programmatic merge's post-API observation time (#3482). The existing
+lane ledger and phase metadata record delivery time and its source; worker attempt
+completion retains the worker's timestamp. Receipts and merge durations use the
+delivery clock. Historical ledger rows without integration evidence retain their
+recorded attribution. `TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalState`
+replays the #3445/#3465 audit and Chicago midnight; the operator, observed-merge,
+and merge-duration fixtures cover the other existing completion paths. Lane
+ownership, failure routing and verified outcome deduplication are unchanged.
+
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; current unfinished work cannot promote on completion or
 the Rework tick. Completion and promotion use the same forge-over-assertion

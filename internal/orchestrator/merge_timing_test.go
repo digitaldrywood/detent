@@ -78,7 +78,13 @@ func TestMergeCompletedLogAttributesDurations(t *testing.T) {
 			if tt.syncBase && tt.waitForCI {
 				completedAt = completedAt.Add(3 * time.Minute)
 			}
-			orch.recordMergeCompleted(&state, issue, completedAt, "Done")
+			// An already observed immutable integration time wins over a late poll.
+			issue.PullRequest.State = "MERGED"
+			issue.PullRequest.MergedAt = &completedAt
+			timing := orch.recordMergeCompleted(&state, issue, completedAt.Add(5*time.Minute), "Done")
+			if !timing.MergedAt.Equal(completedAt) {
+				t.Fatalf("merge time=%s, want forge %s", timing.MergedAt, completedAt)
+			}
 
 			var completion map[string]any
 			for scanner := bufio.NewScanner(&logs); scanner.Scan(); {
