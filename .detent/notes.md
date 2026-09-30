@@ -1,24 +1,46 @@
 # Issue #3257 current merge fallback
 
 - PR: https://github.com/digitaldrywood/detent/pull/3362 is open against `develop` on the expected isolated branch; its body includes `Fixes #3257`.
-- Starting source-clean local head: `c8c63287456d730f8ea0c21178d8269f6d876ed2`, an unpublished merge of published PR head `a694184e469b0d4af4ce4c9430ce237dd013e5f9` and prior target `8a94591757c917387c3530454e30d25962ed0448`. The fetched PR ref still matches that published head.
-- Current fetched target: `origin/develop` at `9826088a821ba72ecfd033bc60b9ed3138762507`. Merged into the existing local resolution without rebasing; the published head remains an ancestor.
-- Prior notes verified against recorded merge parents and key files: `internal/hubclient/native_landing_test.go` retains both landing-policy cases and the linked-source journey; migration `internal/hubserver/migrations/00048_linked_issue_sources.sql` and supported schema version 48 remain present. The existing generated JavaScript resolution is retained.
-- Only conflict: `.detent/notes.md`. Preserved historical handoffs from both sides, with one current Workpad/status fence. Source files and `docs/invariants.md` merged automatically; no manual source changes or asset regeneration were required.
+- Starting source-clean local head: `0aa6169a6f5fe69faf05a961ea47fb6127ca06cc`, an unpublished merge of prior resolution `c8c63287456d730f8ea0c21178d8269f6d876ed2` and prior target `9826088a821ba72ecfd033bc60b9ed3138762507`. Verified the recorded parents and fetched PR head `a694184e469b0d4af4ce4c9430ce237dd013e5f9`, which remains an ancestor.
+- Fetched target: `origin/develop` at `e687a22a5324187fb5a24de3aa5668e8e61f28f5`; merged into the existing local resolution without rebasing published commits.
+- Prior key files verified: `internal/hubclient/native_landing_test.go` retains the plain-git and approved-GitHub-policy cases plus the linked-source journey; `internal/hubserver/migrations/00048_linked_issue_sources.sql` and supported schema version 48 remain present. Prior generated JavaScript resolution is retained.
+- Only conflict: `.detent/notes.md`. Preserved historical handoffs from both sides, including incoming #3001, and retained one current Workpad/status fence. Source files and `docs/invariants.md` merged automatically; no manual source changes or asset generation required.
 - Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No out-of-scope finding identified; no push, PR merge or issue/lane mutation performed.
 
 ## Codex Workpad
 
 Plan: retain the unpublished committed resolution, merge freshly fetched develop into it, resolve the handoff-notes conflict, and commit the merge for Detent verification.
 
-Validation: no tests, builds, asset generation, typecheck, local gate (including `true`), CI checks or waits run in this retry. All validation and generation claims below are historical and do not validate this head. Quiet-window, gate/CI, slow-check and post-merge timings are unmeasured. Detent owns validation and publishing after return.
+Validation: no tests, builds, asset generation, typecheck, local gate (including `true`), CI checks or waits run in this session. Historical validation and generation claims below do not validate this head. Quiet-window, gate/CI, slow-check and post-merge timings are unmeasured. Detent owns validation and publishing after return.
 
 ```detent-status
 schema: 1
 status: complete
+fields:
+  completion_work_attempt_id: "7147"
+  completion_generation: "18"
 blockers: []
 human_action: null
 ```
+
+# Historical handoffs retained from the previous resolution
+
+# Issue #3257 previous notes-only merge fallback
+
+- PR: https://github.com/digitaldrywood/detent/pull/3362 is open against `develop` on the expected isolated branch; its body includes `Fixes #3257`.
+- Starting source-clean local head: `c8c63287456d730f8ea0c21178d8269f6d876ed2`, an unpublished merge of published PR head `a694184e469b0d4af4ce4c9430ce237dd013e5f9` and prior target `8a94591757c917387c3530454e30d25962ed0448`. The fetched PR ref still matches that published head.
+- Current fetched target: `origin/develop` at `9826088a821ba72ecfd033bc60b9ed3138762507`. Merged into the existing local resolution without rebasing; the published head remains an ancestor.
+- Prior notes verified against recorded merge parents and key files: `internal/hubclient/native_landing_test.go` retains both landing-policy cases and the linked-source journey; migration `internal/hubserver/migrations/00048_linked_issue_sources.sql` and supported schema version 48 remain present. The existing generated JavaScript resolution is retained.
+- Only conflict: `.detent/notes.md`. Preserved historical handoffs from both sides, with one current Workpad/status fence. Source files and `docs/invariants.md` merged automatically; no manual source changes or asset regeneration were required.
+- Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No out-of-scope finding identified; no push, PR merge or issue/lane mutation performed.
+
+## Historical workpad for the previous #3257 notes-only merge
+
+Plan: retain the unpublished committed resolution, merge freshly fetched develop into it, resolve the handoff-notes conflict, and commit the merge for Detent verification.
+
+Validation: no tests, builds, asset generation, typecheck, local gate (including `true`), CI checks or waits run in this retry. All validation and generation claims below are historical and do not validate this head. Quiet-window, gate/CI, slow-check and post-merge timings are unmeasured. Detent owns validation and publishing after return.
+
+Historical status: complete; blockers: []; human_action: null.
 
 # Historical handoffs retained from the local resolution
 
@@ -229,3 +251,20 @@ Historical status record: status: complete; completion_work_attempt_id: "7129"; 
 - Attempt 7098 corrected the stale local notes and refreshed the completion Workpad for generation 29.
 - Retry attempt 7107, generation 37: fetched develop remains `d14138a37`; PR #3426 remains non-draft and mergeable at verified published head `2dba2ea9a`, with no actionable reviews, comments, or threads. Connector source and Go dependencies match the tested implementation exactly. No tests or live measurements were repeated because no implementation changed. This notes-only update refreshes the handoff; run the configured `true` gate on its committed head immediately before push. Current-head checks remain absent and provide no test evidence. No lane labels or tracker status fields are written. Merging and post-merge validation belong to the subsequent Merging stage.
 - Retry attempt 7117, generation 47: PR #3426 had no actionable feedback at published head `590f19b82`. Rebased onto fetched develop `c4455b927` (#3428), then onto `8a9459175` (#3320) after develop advanced during publication. The second rebase conflicted only in these notes; preserved both historical handoffs. The connector and `go.mod`/`go.sum` still exactly match tested implementation `cade2c6ba`; retained existing regression, vet, generation, and direct-query measurement evidence without rerunning them. Updated these notes only. Run configured `true` on the committed head immediately before publishing with an explicit lease against intermediate published head `cc7270477eb1d88b59d150fb8dc8227468dc626d`, then re-inspect feedback and checks on that exact head. Current-head checks were absent at initial inspection and provide no test evidence. No lane labels or tracker status fields are written; merge and post-merge validation remain with the Merging stage.
+
+# Additional historical handoff inherited from develop
+
+# Issue #3001
+
+PR: https://github.com/digitaldrywood/detent/pull/3004 (ready, target develop).
+Validated code head: d36c44c837dfbea11c1ee3d229c791638a4b1a67; rebased onto develop bccee4c50f86019fd961a4c457a59a2c91e9eb31 without conflict edits.
+
+Key files: internal/cli/runner.go classifies identified unusable configured paths with project.ErrProjectDefinition; internal/workspace/workspace.go preserves canonicalization PathError identity; internal/project/manager.go retries terminal pending definitions on explicit reconciliation. Regression tests live in internal/cli/runner_test.go and startup_workflow_test.go; INV-3 is updated in docs/invariants.md.
+
+Human review finding is fixed and resolved. ENOSPC, EIO, permission, backend and state-store failures remain fatal. No mechanism or configuration key added.
+
+Dependencies #2975 (PR #2986) and #3009 (PR #3018) are closed/merged to main; their main merge SHAs are not ancestors of develop. Historical full PR CI is no longer a blocker under current operator policy. Focused doctor and workspace portability cases pass on macOS; no Windows test credit claimed.
+
+Diagnostics: focused startup, classification, manager, doctor and workspace tests passed; go vet ./internal/cli/... ./internal/project/... ./internal/workspace/... passed. First rebased attempt could not compile because of retired SSH sentinel ErrSessionNoProgress; already fixed by merged #3431, incorporated in second clean rebase. Configured gate true is next immediately before push. No full checks or CI polling performed.
+
+Handoff: publish the rebased ready PR with an exact lease and a complete canonical issue Workpad; the configured true gate runs immediately before that push. Orchestrator owns lane transitions and merge dispatch. Skill draft: no — routine rebase and diagnostics added no reusable procedure.
