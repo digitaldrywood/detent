@@ -784,9 +784,23 @@ test.describe("decisions.md §10 corrections", () => {
     const id = currentConversation(page);
     await expect(page.getByTestId("user-turn").last()).toContainText("Count my history");
 
+    // The fixture's coordinator replies asynchronously. Sharing includes its
+    // answer as well as the user's message, so read the settled history.
+    await expect.poll(async () => {
+      const snapshot = await hubAPI(page, "GET", conversationPath(id));
+      return snapshot.payload.messages.map((message) => ({
+        role: message.role,
+        text: message.text,
+        delivery: message.delivery,
+      }));
+    }).toEqual([
+      { role: "user", text: "Count my history", delivery: "delivered" },
+      { role: "assistant", text: "Hello, world.", delivery: "completed" },
+    ]);
+
     const snapshot = await hubAPI(page, "GET", conversationPath(id));
     const count = snapshot.payload.conversation.message_count;
-    expect(count).toBe(1);
+    expect(count).toBe(2);
 
     await openCreateLinkedIssue(page);
     const form = page.getByRole("dialog", { name: "Create linked issue" });
@@ -905,9 +919,10 @@ test.describe("decisions.md §10 corrections", () => {
     await expect(options.first()).toBeVisible();
     await expect(options.filter({ hasText: "Auto" })).toHaveCount(1);
     await expect(page.getByText("Reasoning", { exact: true })).toBeVisible();
-    // Nothing is badged Default while the model is Auto: the badge marks what
-    // one model defaults to, and Auto is not one model.
-    await expect(page.getByTestId(/^composer-effort-default-/)).toHaveCount(0);
+    // Auto uses the hub's published vocabulary, including the fixture's
+    // configured Low default, even without a selected model's own ladder.
+    await expect(page.getByTestId(/^composer-effort-default-/)).toHaveCount(1);
+    await expect(page.getByTestId("composer-effort-default-low")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("option")).toHaveCount(0);
 
