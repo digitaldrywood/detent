@@ -1027,7 +1027,7 @@ func TestCapacityLegacyMetadataKeepsImmutablePlan(t *testing.T) {
 }
 
 func TestCapacityFreeNativeClaimRefusal(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "free-native")
+	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "Free exploration")
 	worker := f.worker(t, "free-worker")

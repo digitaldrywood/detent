@@ -49,6 +49,9 @@ type LaneSignalStatus struct {
 }
 
 type Issue struct {
+	// CleanupDeliveredHeadSHA is fresh delivery evidence for one cleanup call, never tracker state.
+	CleanupDeliveredHeadSHA string `json:"-" yaml:"-"`
+
 	IsolationPolicy    *isolation.Policy  `json:"-" yaml:"-"`
 	LaneSignalStatuses []LaneSignalStatus `json:"-" yaml:"-"`
 

@@ -663,8 +663,12 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	if captured.Runner == nil {
 		t.Fatal("project dependencies Runner = nil, want non-nil injected runner")
 	}
-	if _, ok := captured.Runner.(*runnerpkg.Runner); !ok {
-		t.Fatalf("injected Runner = %T, want *runner.Runner", captured.Runner)
+	run, ok := captured.Runner.(*sshRunner)
+	if !ok {
+		t.Fatalf("injected Runner = %T, want *sshRunner", captured.Runner)
+	}
+	if run.Runner == nil {
+		t.Fatal("SSH runner has no local runner")
 	}
 }
 

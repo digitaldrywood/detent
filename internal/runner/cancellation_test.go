@@ -35,7 +35,6 @@ func TestCancellationFirstCause(t *testing.T) {
 		{"session duration", ErrSessionDurationExceeded, "session_duration_exceeded"},
 		{"turn duration", ErrTurnDurationExceeded, "turn_duration_exceeded"},
 		{"memory", ErrSessionMemoryCeilingExceeded, "session_memory_ceiling_exceeded"},
-		{"no progress", ErrSessionNoProgress, "session_no_progress"},
 		{"deadline", context.DeadlineExceeded, "deadline_exceeded"},
 		{"shutdown", context.Canceled, "context_cancelled"},
 	} {
@@ -127,7 +126,6 @@ func TestCancellationProcessReapAttribution(t *testing.T) {
 		{ErrLaneRevoked, "lane_revoked:test.source"},
 		{ErrSessionDurationExceeded, "maximum_session_lifetime_exceeded"},
 		{ErrTurnDurationExceeded, "maximum_turn_lifetime_exceeded"},
-		{ErrSessionNoProgress, SessionBrakeReasonNoProgress},
 	} {
 		t.Run(tt.cause.Error(), func(t *testing.T) {
 			t.Parallel()

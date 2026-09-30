@@ -8059,9 +8059,6 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 				t.Fatalf("terminal PR must use default base only: %+v", got)
 			}
 			wantLanded := ""
-			if state == "MERGED" {
-				wantLanded = "old-head"
-			}
 			if got.LandedHeadSHA != wantLanded {
 				t.Fatalf("landed head = %q, want %q", got.LandedHeadSHA, wantLanded)
 			}
@@ -8079,7 +8076,8 @@ func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 		wantPreserved bool
 	}{
 		{name: "hub landed metadata", evidence: "hub"},
-		{name: "merged pull request with deleted branch", evidence: "pull", pullState: "MERGED"},
+		{name: "cached merged pull request with deleted branch", evidence: "pull", pullState: "MERGED", wantPreserved: true},
+		{name: "verified merged PR", evidence: "verified"},
 		{name: "closed unmerged pull request", evidence: "pull", pullState: "CLOSED", wantPreserved: true},
 		{name: "work after merged pull request", evidence: "pull", pullState: "MERGED", laterCommit: true, wantPreserved: true},
 		{name: "no landing evidence", wantPreserved: true},
@@ -8115,6 +8113,8 @@ func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 			runRunnerGit(t, source, "push", "origin", "main")
 			runRunnerGit(t, source, "push", "origin", "--delete", info.Branch)
 			switch tt.evidence {
+			case "verified":
+				issue.CleanupDeliveredHeadSHA = landedHead
 			case "hub":
 				issue.Metadata = map[string]string{"hub_landed_head_sha": landedHead}
 			case "pull":

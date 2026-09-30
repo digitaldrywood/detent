@@ -51,7 +51,6 @@ func NewCancellationCause(cause error, source string) *CancellationCause {
 		{ErrSessionDurationExceeded, "session_duration_exceeded"},
 		{ErrTurnDurationExceeded, "turn_duration_exceeded"},
 		{ErrSessionMemoryCeilingExceeded, "session_memory_ceiling_exceeded"},
-		{ErrSessionNoProgress, "session_no_progress"},
 		{context.DeadlineExceeded, "deadline_exceeded"},
 	} {
 		if errors.Is(cause, candidate.err) {

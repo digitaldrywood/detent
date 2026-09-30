@@ -15,7 +15,7 @@ import (
 func TestRunnerProblemsHeartbeat(t *testing.T) {
 	for _, code := range []string{"tier_unavailable", "backend_missing", "host_service_unreachable", "settings_invalid", "keep_awake_failed"} {
 		t.Run(code, func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "problems")
+			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 			r.enroll(t)
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}}
@@ -77,7 +77,7 @@ func TestRunnerHubProblems(t *testing.T) {
 		{"home_project_unservable", 2, false, true},
 	} {
 		t.Run(test.code, func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "hub-problems")
+			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			r.enroll(t)
 			if test.home {

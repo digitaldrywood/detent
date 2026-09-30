@@ -58,16 +58,16 @@ func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 	return wire
 }
 
-func (wire SSHRunRequest) Bind(peer *SSHPeer) RunRequest {
+func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 	request := wire.Request
 	for _, name := range wire.Callbacks {
 		switch name {
 		case "usage":
-			request.OnUsageUpdate = func(update UsageUpdate) error { return peer.Call(peer.Context(), "usage", nil, update) }
+			request.OnUsageUpdate = func(update UsageUpdate) error { return peer.Call(ctx, "usage", nil, update) }
 		case "activity":
-			request.OnActivityUpdate = func(update AgentActivityUpdate) error { return peer.Call(peer.Context(), "activity", nil, update) }
+			request.OnActivityUpdate = func(update AgentActivityUpdate) error { return peer.Call(ctx, "activity", nil, update) }
 		case "override":
-			request.OnOverrideRejected = func(update []AgentOverrideRejection) error { return peer.Call(peer.Context(), "override", nil, update) }
+			request.OnOverrideRejected = func(update []AgentOverrideRejection) error { return peer.Call(ctx, "override", nil, update) }
 		case "progress":
 			request.ProgressProbe = func(ctx context.Context) (string, error) {
 				var result string

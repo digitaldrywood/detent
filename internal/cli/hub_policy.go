@@ -88,6 +88,7 @@ func resolveHubPolicy(ctx context.Context, configPath, projectID string) (global
 		if err != nil {
 			return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, err
 		}
+		workflow.Config = project.MapNativeTracker(workflow.Config, cfg.Client.NativeProjects[selected.ID] != "")
 		descriptor, err := project.ResolvePolicy(selected, workflow)
 		return cfg, workflow, descriptor, err
 	}
