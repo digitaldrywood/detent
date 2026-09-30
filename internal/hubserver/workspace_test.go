@@ -44,10 +44,10 @@ func newWorkspaceFixture(t *testing.T, cfg *WorkspaceConfig) workspaceFixture {
 	if cfg == nil {
 		cfg = &WorkspaceConfig{Enabled: true}
 	}
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Workspace: cfg})
-	f := newNativeFixture(t, service, "", "workspace")
+	f := newDefaultNativeFixture(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Workspace: cfg})
+	service := f.service
 	var ownerID string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", "operator-workspace").Scan(&ownerID); err != nil {
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", "operator-native").Scan(&ownerID); err != nil {
 		t.Fatal(err)
 	}
 	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken,

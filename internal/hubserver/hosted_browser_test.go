@@ -222,6 +222,7 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 	for _, apply := range configure {
 		apply(&cfg)
 	}
+	seedHubDatabaseTemplate(t, cfg.DatabasePath)
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		server.Close()

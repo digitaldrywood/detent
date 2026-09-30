@@ -43,7 +43,7 @@ func TestRunnerCredentialExpiryBoundaries(t *testing.T) {
 
 func TestRunnerEnrollmentScopeRevocationAndCollisions(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "scopes")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read)
 	for _, test := range []struct {
 		name   string
