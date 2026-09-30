@@ -28,7 +28,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/lessons"
-	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -2100,12 +2099,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	} else {
 		r.logWorkerEvent(req.Issue, "worker_command_finished", commandFinishedAttrs...)
 	}
-	failureNoteRecorded := false
-	if strings.EqualFold(strings.TrimSpace(result.FinalState), FinalStateFailed) {
-		r.recordFailedRunNote(info.Path, req.Issue, result, turnErr, r.now().UTC())
-		failureNoteRecorded = true
-	}
-
 	afterRunPending = false
 	req.retainCheckpoint = result.Checkpoint != nil && turnErr != nil
 	if errors.Is(turnErr, ErrWorkerProcessReap) {
@@ -2162,9 +2155,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return result, nil
 		}
 		result.FinalState = FinalStateFailed
-		if !failureNoteRecorded {
-			r.recordFailedRunNote(info.Path, req.Issue, result, err, r.now().UTC())
-		}
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
@@ -3592,44 +3582,6 @@ func (r *Runner) afterRun(backend workspace.Backend, info workspace.Info, issue 
 	defer cancel()
 
 	backend.AfterRun(ctx, info, issue)
-}
-
-func (r *Runner) recordFailedRunNote(workspacePath string, issue connector.Issue, result RunResult, runErr error, at time.Time) {
-	notesPath, err := notes.WorkspacePath(workspacePath)
-	if err != nil {
-		r.logger.Warn("resolve failed run note path failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		return
-	}
-	if err := notes.Append(notesPath, notes.Entry{
-		Title: "Failed run output tail",
-		Body:  failedRunNoteBody(result, runErr),
-	}, notes.AppendOptions{Now: at, MaxBytes: notes.DefaultMaxBytes}); err != nil {
-		r.logger.Warn("record failed run note failed", "issue_id", issue.ID, "identifier", issue.Identifier, "path", notesPath, "error", err)
-	}
-}
-
-func failedRunNoteBody(result RunResult, runErr error) string {
-	var b strings.Builder
-	finalState := strings.TrimSpace(result.FinalState)
-	if finalState == "" {
-		finalState = FinalStateFailed
-	}
-	b.WriteString("- final_state: ")
-	b.WriteString(finalState)
-	if runErr != nil {
-		b.WriteString("\n- error: ")
-		b.WriteString(strings.TrimSpace(runErr.Error()))
-	}
-	output := strings.TrimSpace(notes.Tail(result.Output, notes.DefaultTailBytes))
-	if output != "" {
-		b.WriteString("\n\nOutput tail:\n\n```text\n")
-		b.WriteString(output)
-		if !strings.HasSuffix(output, "\n") {
-			b.WriteString("\n")
-		}
-		b.WriteString("```")
-	}
-	return b.String()
 }
 
 func (r *Runner) startSession(

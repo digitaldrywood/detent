@@ -47,7 +47,7 @@ func (s *Service) readyOrganization(ctx context.Context, id string) (Organizatio
 	return organization, nil
 }
 
-func (s *Service) beginLogin(c echo.Context, transaction loginTransaction, providerOrganization string) error {
+func (s *Service) beginLogin(c echo.Context, transaction loginTransaction, providerOrganization, screenHint string) error {
 	token, err := s.config.generateToken()
 	if err != nil {
 		return err
@@ -73,11 +73,14 @@ func (s *Service) beginLogin(c echo.Context, transaction loginTransaction, provi
 	if err != nil {
 		return err
 	}
+	query := target.Query()
 	if providerOrganization != "" {
-		query := target.Query()
 		query.Set("organization_id", providerOrganization)
-		target.RawQuery = query.Encode()
 	}
+	if screenHint == "sign-up" {
+		query.Set("screen_hint", "sign-up")
+	}
+	target.RawQuery = query.Encode()
 	return c.Redirect(http.StatusSeeOther, target.String())
 }
 
@@ -94,7 +97,7 @@ func (s *Service) startLogin(c echo.Context) error {
 	if !validReturnPath(returnPath, organizationID) {
 		return s.loginDenied(c, http.StatusBadRequest, "This sign-in link is invalid", auth.HostedDenial{Flow: "login_start", Reason: "return_path_invalid"})
 	}
-	if err := s.beginLogin(c, loginTransaction{Organization: organizationID, ReturnPath: returnPath}, providerOrganization); err != nil {
+	if err := s.beginLogin(c, loginTransaction{Organization: organizationID, ReturnPath: returnPath}, providerOrganization, c.QueryParam("screen_hint")); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "login_start", Reason: "transaction_failed"})
 	}
 	return nil
@@ -449,7 +452,7 @@ func (s *Service) startInvitation(c echo.Context) error {
 	if err != nil {
 		return s.loginDenied(c, http.StatusForbidden, "This invitation is unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "invitation_invalid", Err: err})
 	}
-	if err := s.beginLogin(c, loginTransaction{InvitationToken: token, InvitationOrganization: organization.ID}, ""); err != nil {
+	if err := s.beginLogin(c, loginTransaction{InvitationToken: token, InvitationOrganization: organization.ID}, "", ""); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "transaction_failed"})
 	}
 	return nil
