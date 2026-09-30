@@ -1251,6 +1251,13 @@ origin binding stays exact. `TestHostedDatabaseCloudAliases` covers forward
 migration, rollback, unchanged stored bindings and rejected environment/identity
 substitutions.
 
+The existing automatic backlog admission policy no longer shares the pending
+human proposal storage cap. Per-run evaluation/comment budgets and current
+criteria, confidence, author, effort and dependency checks remain authoritative;
+failed criteria or low confidence cannot overflow the human proposal queue.
+Prerequisite preference shares the existing dispatcher annotation and published
+owner evidence instead of another graph reader or promotion mechanism (#3519).
+
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
 allowlist or a dynamic-function digest; never refresh these blindly to pass CI.
@@ -1371,6 +1378,19 @@ regardless of success or failure. A selected occurrence whose existing ownership
 context is already canceled is consumed without starting an agent. This removes the
 implicit same-slot retry and relies on the existing schedule-ownership context rather
 than adding a retry, backoff, or lease mechanism (#2526).
+
+The backlog human proposal cap bounds pending human decisions, not opted-in
+automatic evaluation. Automatic admission remains bounded by the existing run,
+comment and auto-admission budgets, and requires the configured confidence,
+criteria, author, effort and fresh dependency checks. Disabled automatic policy
+keeps the pending proposal capacity limit. Failed criteria and low confidence do
+not create extra human proposals when that queue is full. Durable proposal and
+orchestrator lane ownership remain unchanged (#3519).
+
+Admission prerequisite ranking uses the same unblocker annotation as dispatch,
+with the orchestrator's published active/Blocked dependency cohort. It performs
+no extra forge scan and authorizes no lane change; fresh admission checks remain
+authoritative. This removes a disconnected ranking path (#3519).
 
 Backlog admission selection uses the existing run issue records for evaluation
 identity, fingerprints, and stale verdicts. Unchanged stale candidates join the

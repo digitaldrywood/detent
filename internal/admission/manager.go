@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -117,6 +118,7 @@ type Settings struct {
 	DispatchStates      []string
 	DispatchLabels      []string
 	PrioritizeBlockers  bool
+	DependencyIssues    func(context.Context) []connector.Issue
 	Runner              runner.Backend
 	Issues              IssueStore
 	Scheduler           scheduler.Scheduler
@@ -493,15 +495,25 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		return result, err
 	}
 	if open >= settings.Config.MaxOpenProposals {
-		result.Skipped["open_proposal_cap"] += len(candidates)
+		candidates = slices.DeleteFunc(candidates, func(candidate connector.Issue) bool {
+			if settings.Config.AutoAdmitForLabels(candidate.Labels) {
+				return false
+			}
+			result.Skipped["open_proposal_cap"]++
+			return true
+		})
+	}
+	if len(candidates) == 0 {
 		return result, nil
 	}
 	if commentsRemaining == 0 {
 		result.Skipped["comment_cap"] += len(candidates)
 		return result, nil
 	}
-	available := settings.Config.MaxOpenProposals - open
-	evaluationLimit := min(settings.Config.MaxProposalsPerRun, commentsRemaining, available)
+	evaluationLimit := min(settings.Config.MaxProposalsPerRun, commentsRemaining)
+	if !settings.Config.AutoAdmit && len(settings.Config.AutoAdmitByLabel) == 0 {
+		evaluationLimit = min(evaluationLimit, settings.Config.MaxOpenProposals-open)
+	}
 	if len(candidates) > evaluationLimit {
 		result.Truncated["candidates"] += len(candidates) - evaluationLimit
 		candidates = candidates[:evaluationLimit]
@@ -1529,9 +1541,6 @@ func (m *Manager) executeEvaluations(
 			result.Skipped["non_deliverable"]++
 			continue
 		}
-		if open >= settings.Config.MaxOpenProposals {
-			return result, errors.New("backlog admission proposal capacity changed during evaluation")
-		}
 		proposal := admissionmodel.Proposal{
 			ID:                proposalID(settings.ProjectID, current.ID, issueFingerprint(current, dependencies), at),
 			ProjectID:         settings.ProjectID,
@@ -1550,6 +1559,11 @@ func (m *Manager) executeEvaluations(
 			CreatedAt:         at,
 			ExpiresAt:         at.AddDate(0, 0, settings.Config.ProposalExpiryDays),
 		}
+		automatic := autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels)
+		if open >= settings.Config.MaxOpenProposals && !automatic {
+			result.Skipped["open_proposal_cap"]++
+			continue
+		}
 		created, err := m.store.CreateAdmissionProposal(ctx, proposal)
 		if err != nil {
 			return result, err
@@ -1566,7 +1580,7 @@ func (m *Manager) executeEvaluations(
 			}
 			commentsRemaining--
 		}
-		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels) {
+		if automatic {
 			if err := m.admitProposal(
 				ctx,
 				settings,
@@ -1577,10 +1591,13 @@ func (m *Manager) executeEvaluations(
 				return result, err
 			}
 			autoAdmitsRemaining--
+			open--
 		}
 	}
 	if len(result.Proposals) == 0 {
 		switch {
+		case result.Skipped["open_proposal_cap"] > 0:
+			result.ProposalReason = "open_proposal_cap"
 		case result.Skipped[admissionDeclineCriteriaNotMet] > 0:
 			result.ProposalReason = admissionDeclineCriteriaNotMet
 		case result.Skipped["unchanged_open_proposal"] > 0:

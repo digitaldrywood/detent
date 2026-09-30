@@ -223,3 +223,62 @@ func TestManagerPartialReadWithStaleHistory(t *testing.T) {
 		})
 	}
 }
+
+func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, source            string
+		enabled, human, unknown bool
+		wantFirst               string
+	}{
+		{name: "active frontier", source: "Rework", enabled: true, wantFirst: "frontier"},
+		{name: "blocked frontier", source: "Blocked", enabled: true, wantFirst: "frontier"},
+		{name: "disabled ranking", source: "Rework", wantFirst: "older"},
+		{name: "unaccepted backlog dependent", source: "Backlog", enabled: true, wantFirst: "older"},
+		{name: "human dependent", source: "Blocked", enabled: true, human: true, wantFirst: "older"},
+		{name: "unavailable owner", source: "Rework", enabled: true, unknown: true, wantFirst: "older"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 30, 22, 30, 0, 0, time.UTC)
+			older := admissionIssueFixture("older", "owner/repo#1", 0, now.Add(-time.Hour))
+			frontier := admissionIssueFixture("frontier", "owner/repo#3242", 0, now)
+			dependent := admissionIssueFixture("dependent", "owner/repo#3187", 0, now)
+			dependent.State = tt.source
+			dependent.BlockedBy = []connector.BlockedRef{{ID: frontier.ID, Identifier: frontier.Identifier, State: "Backlog"}}
+			if tt.human {
+				dependent.Labels = []string{"human-owned"}
+			}
+			cohort := []connector.Issue{dependent, dependent}
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{older, frontier}, Stateful: true})
+			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{})
+			settings.DispatchStates = []string{"Merging", "Rework", "In Progress", "Todo"}
+			settings.TerminalStates = []string{"Done"}
+			settings.PrioritizeBlockers = tt.enabled
+			calls := 0
+			settings.DependencyIssues = func(context.Context) []connector.Issue {
+				calls++
+				if tt.unknown {
+					return nil
+				}
+				return cohort
+			}
+			backend := openManagerTestStore(t)
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+			got, err := manager.orderCandidateWindow(t.Context(), settings, []connector.Issue{older, frontier}, map[string]int{}, now)
+			if err != nil || len(got) != 2 || got[0].ID != tt.wantFirst {
+				t.Fatalf("order=%+v err=%v", got, err)
+			}
+			wantCalls := 0
+			if tt.enabled {
+				wantCalls = 1
+			}
+			if calls != wantCalls || cohort[0].ID != dependent.ID || cohort[1].ID != dependent.ID {
+				t.Fatalf("callback=%d cohort=%+v", calls, cohort)
+			}
+			if got[0].ID == "frontier" && got[0].UnblockerCount != 1 {
+				t.Fatalf("duplicate-dependent count=%d", got[0].UnblockerCount)
+			}
+		})
+	}
+}
