@@ -57,6 +57,9 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 		checks = append(checks, checkDoctorProjectWithStore(ctx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes)...)
 		if cfg.Client.Configured() {
 			checks = append(checks, checkDoctorHubPolicy(ctx, cfg, project, deps))
+			if check, ok := checkDoctorNativeHumanReviewLane(ctx, cfg, project, deps); ok {
+				checks = append(checks, check)
+			}
 		}
 	}
 
@@ -490,6 +493,10 @@ func checkDoctorProjectWithProgress(
 			setDoctorCurrentCheck("Project " + id + " validator health")
 			checks = append(checks, checkDoctorValidatorHealth(ctx, id, storePath, deps, time.Now()))
 		}
+	}
+	if !workflow.Config.Review.Human && workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
+		setDoctorCurrentCheck("Project " + id + " Human Review policy")
+		checks = append(checks, checkDoctorHumanReviewLane(ctx, id, workflow.Config, deps))
 	}
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) && workflow.Config.Deliverable.Kind == workflowconfig.DeliverablePullRequest {
 		setDoctorCurrentCheck("Project " + id + " repository merge policy")
