@@ -125,11 +125,12 @@ func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map
 	if err != nil {
 		return err
 	}
-	for _, name := range []string{"unarchived_issues", "members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work", "collaboration_bytes", "history_records"} {
+	for _, name := range []string{"unarchived_issues", "projects", "repositories", "registered_runners", "connected_runners", "collaboration_bytes", "history_records"} {
 		if completion && (name == "collaboration_bytes" || name == "history_records" || name == "connected_runners") {
 			continue
 		}
-		if after[name] > before[name] && after[name] > entitlement.Allowances[name] {
+		limit, limited := entitlement.Allowances[name]
+		if limited && after[name] > before[name] && after[name] > limit {
 			return &hostedLimitError{Resource: name, Allowance: entitlement.Allowances[name], Consumption: before[name]}
 		}
 	}
@@ -159,13 +160,6 @@ func (d *database) checkHostedClaim(ctx context.Context, tx *sql.Tx, now time.Ti
 	entitlement, err := d.hostedEntitlement(ctx, tx, now)
 	if err != nil {
 		return err
-	}
-	count, err := countHostedAfter(ctx, tx, "SELECT expires_at FROM leases WHERE released_at IS NULL", now)
-	if err != nil {
-		return err
-	}
-	if count >= entitlement.Allowances["concurrent_work"] {
-		return &hostedLimitError{Resource: "concurrent_work", Allowance: entitlement.Allowances["concurrent_work"], Consumption: count}
 	}
 	window := now.Unix() / d.hostedPlans.WindowSeconds * d.hostedPlans.WindowSeconds
 	var used int64

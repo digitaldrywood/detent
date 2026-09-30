@@ -239,7 +239,9 @@ func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error
 	}
 	usage.WindowEndsAt = entitlement.WindowEndsAt.UTC().Format(time.RFC3339)
 	for _, name := range hostedAllowanceNames() {
-		usage.Allowances[name] = hostedFleetAllowance{Used: entitlement.Usage[name], Limit: entitlement.Allowances[name]}
+		if limit, limited := entitlement.Allowances[name]; limited {
+			usage.Allowances[name] = hostedFleetAllowance{Used: entitlement.Usage[name], Limit: limit}
+		}
 	}
 	return usage, nil
 }

@@ -1433,6 +1433,16 @@ is not an authorized resurrection.
   higher-ranked projects has anything ready, dispatch whatever is ready.
 - The system never cancels, stops, or preempts running work. Only a user cancels work.
 
+Hosted organization subscriptions price project and unarchived-issue capacity,
+never seats or concurrent agent work (#3268). The Hub removes plan membership
+and concurrent-work admission limits while preserving independent runner/host
+capacity and provider safety limits. Free refuses new AI turns at the existing
+execution feature boundary, including Luna coordinator chat and native claims;
+downgrades preserve safe completion. `TestCapacityCatalog`,
+`TestCoordinatorFreeRefusesLuna`, `TestCapacityPaidPlanChanges`, and
+`TestHostedConcurrentClaimsDowngradeRelease` cover this boundary. No new scheduler
+mechanism, reason code, reservation, or recovery loop is introduced.
+
 **Why:** Priority cancellation discarded running attempts, while selected-slot
 reservations refused ready work even with real global capacity available.
 
