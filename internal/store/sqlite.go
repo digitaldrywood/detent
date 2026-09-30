@@ -799,6 +799,10 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 }
 
 func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWindow) ([]DailyDigestDay, error) {
+	outcomes, err := s.dailyShippedOutcomes(ctx)
+	if err != nil {
+		return nil, err
+	}
 	days := make([]DailyDigestDay, 0, len(windows))
 	for _, window := range windows {
 		if strings.TrimSpace(window.Date) == "" || window.From.IsZero() || window.To.IsZero() || !window.From.Before(window.To) {
@@ -859,6 +863,9 @@ func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWind
 				TotalTokens:           model.TotalTokens,
 				Events:                model.Sessions,
 			})
+		}
+		if err := s.populateDailyShippedCohort(ctx, &day, window, outcomes); err != nil {
+			return nil, err
 		}
 		days = append(days, day)
 	}

@@ -174,4 +174,19 @@ func TestReportsDigestViewShowsTrailingSevenDayDelta(t *testing.T) {
 	if metrics["efficiency-anomalies"].Value != "1" || metrics["dwell-working"].Value != "2m 0s" {
 		t.Fatalf("efficiency anomaly/dwell metrics = %#v / %#v", metrics["efficiency-anomalies"], metrics["dwell-working"])
 	}
+	// Receipt coverage and lifetime gaps belong to the displayed cohort, while
+	// absent release history must never look like a measured daily zero.
+	empty := reportsDigestMetrics(DailyDigestDayData{UnknownDwellSeconds: 60}, nil)
+	for _, metric := range empty {
+		switch metric.ID {
+		case "releases":
+			if metric.Value != "Unavailable" || metric.Delta != "" {
+				t.Fatalf("release availability=%#v", metric)
+			}
+		case "tokens-per-merged", "dwell-unknown":
+			if metric.Value != "—" {
+				t.Fatalf("empty cohort metric=%#v", metric)
+			}
+		}
+	}
 }
