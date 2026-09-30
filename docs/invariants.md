@@ -1524,6 +1524,17 @@ without rewriting immutable plan versions. Self-hosted databases have no quota.
 `TestHostedIssueConcurrentAllocation`, and `TestHostedIssueImportAllocation`
 exercise these boundaries without adding a brake, lease, or recovery mechanism.
 
+Repository notes handoff (#3498) is removed from normal, planning and merge
+fallback prompts. Failed turns no longer append diagnostics to a repository
+file. Existing issue Workpads, native completion contracts, attempt outcomes,
+usage updates and provider/session records own handoff and diagnostics; no new
+artifact or coordination mechanism is added. Existing notes files remain intact.
+`TestPromptDoesNotUseRepositoryNotes`,
+`TestBuildPromptUsesPriorAttemptWithoutRepoNotes` and
+`TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes` cover all prompt profiles,
+prior-attempt findings, retained output and durable failed-session outcomes without
+reading, creating or changing repository notes.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.
