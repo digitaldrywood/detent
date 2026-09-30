@@ -18,6 +18,7 @@ func TestDailyDigestOutcomeProvenance(t *testing.T) {
 		want                                  int64
 	}{
 		{"merged", "pull_request_merged", "applied", "Done", "", false, 1},
+		{"historical programmatic ledger time", "merge_worker_programmatic_merge", "applied", "Done", "", true, 1},
 		{"closed", "issue_closed_completed", "applied", "Done", "", true, 1},
 		{"operational", "operational_completion", "applied", "Done", "", false, 1},
 		{"configured artifact", "ready", "applied", "Published", "artifact", false, 1},
