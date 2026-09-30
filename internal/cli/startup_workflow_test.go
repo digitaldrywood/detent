@@ -162,11 +162,12 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range []struct {
-		name    string
-		badRoot bool
+		name      string
+		badRoot   bool
+		wantError string
 	}{
-		{name: "workspace root cannot be created", badRoot: true},
-		{name: "source root cannot be resolved"},
+		{name: "workspace root cannot be created", badRoot: true, wantError: "create workspace root:"},
+		{name: "source root cannot be resolved", wantError: "source root: canonicalize"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -215,7 +216,7 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 				manager.Wait()
 			})
 			pending, ok := manager.Registry().Pending("invalid")
-			if !ok || !pending.RetryStopped || !strings.Contains(pending.LastError, badPath) || !strings.Contains(pending.LastError, "not a directory") {
+			if !ok || !pending.RetryStopped || !strings.Contains(pending.LastError, badPath) || !strings.Contains(pending.LastError, tt.wantError) {
 				t.Fatalf("invalid project health = %+v, found = %v", pending, ok)
 			}
 			if healthy, ok := manager.Registry().Get("healthy"); !ok || !healthy.Running() {

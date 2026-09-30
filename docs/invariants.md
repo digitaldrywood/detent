@@ -801,7 +801,9 @@ terminal pending definitions even when the global project entry is unchanged, so
 corrected workflow path can recover without a restart. Runtime state-store failures
 remain instance-fatal.
 `TestStartupIsolatesWorkspacePathFailureAndReloads` covers both workspace and
-source paths, another running project, and correction on reconciliation.
+source paths, another running project, and correction on reconciliation. It
+asserts the failing backend stage and configured path across platforms rather
+than requiring POSIX filesystem error wording (#3551).
 `TestStartupIsolatesWorkflowLoadFailure` verifies healthy-project dispatch and
 unavailable-project dashboard snapshots in both project orders, including a paused
 project referencing the unavailable tracker. `TestStartupInfrastructureFailureRemainsFatal`
@@ -1265,6 +1267,10 @@ failures while preserving earlier snapshots after partial deletion.
 Quarantine removal in this existing sweep makes read-only directories writable
 before deletion; persistent failures are warned once per path while later
 sweeps still retry (#3039). This does not add a sweep or recovery path.
+Warning deduplication uses native path separators on Windows as well as POSIX
+(#3551). `TestRetentionQuarantineWarningOncePerPath` replays repeated removal
+errors on every platform; the chmod-based filesystem fixture runs only on POSIX,
+where removing directory write permission prevents removal.
 `TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
 `TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
 lossless expiry, and repeated removal failures. See

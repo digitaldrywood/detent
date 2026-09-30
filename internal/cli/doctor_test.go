@@ -1745,7 +1745,7 @@ func TestCheckDoctorProjectSkills(t *testing.T) {
 			},
 			available:  true,
 			wantStatus: doctorWarn,
-			wantDetail: []string{"max_skills_in_prompt=2", "files=4", "loaded=2", "dropped=2", ".detent/skills/03-release.md (max_skills_in_prompt:", ".detent/skills/04-diagnose.md (max_skills_in_prompt:"},
+			wantDetail: []string{"max_skills_in_prompt=2", "files=4", "loaded=2", "dropped=2", filepath.Join(".detent", "skills", "03-release.md") + " (max_skills_in_prompt:", filepath.Join(".detent", "skills", "04-diagnose.md") + " (max_skills_in_prompt:"},
 		},
 		{
 			name: "invalid duplicate and over limit files warn with reasons",
