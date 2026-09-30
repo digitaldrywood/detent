@@ -247,6 +247,14 @@ SSH host loss uses the existing host-scoped instance-capacity retry without incr
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
 
+Pull-request hydration failures retain the existing per-PR readiness refusal and
+credential-scoped REST reserve/backoff (#3497). Fresh successful reads restore
+normal admission without a project-wide worker-progress canary; missing or
+unavailable PR evidence remains conservative. Backend recovery remains unchanged.
+`TestPullRequestHydrationRecoveryKeepsAdmissionWithFreshEvidence` reproduces a
+quota-refused PR followed by three fresh candidates without waiting for a worker
+turn to admit the remaining candidates.
+
 Linked native GitHub issues hydrate title, body and complete paginated discussion
 with runner credentials before agent dispatch (#3257). Missing credentials,
 inaccessible sources, throttling, partial reads and failed persistence release
@@ -495,16 +503,10 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
-Repository notes handoff (#3498) is removed from normal, planning and merge
-fallback prompts. Failed turns no longer append diagnostics to a repository
-file. Existing issue Workpads, native completion contracts, attempt outcomes,
-usage updates and provider/session records own handoff and diagnostics; no new
-artifact or coordination mechanism is added. Existing notes files remain intact.
-`TestPromptDoesNotUseRepositoryNotes`,
-`TestBuildPromptUsesPriorAttemptWithoutRepoNotes` and
-`TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes` cover all prompt profiles,
-prior-attempt findings, retained output and durable failed-session outcomes without
-reading, creating or changing repository notes.
+The pull-request hydration recovery ramp is removed (#3497). Request-family
+budget enforcement and each PR's existing hydration predicate own admission;
+a second project-wide ramp no longer limits healthy candidates after reads
+recover. No new recovery path, configuration, or reason is introduced.
 
 Label refresh (#3017) consolidates candidate and observed lane enumeration into
 one fresh pass. Routing lanes reuse the existing complete, paginated scheduler
@@ -1521,6 +1523,17 @@ without rewriting immutable plan versions. Self-hosted databases have no quota.
 `TestHostedIssueAllowanceBoundaries`, `TestHostedIssueArchiveAndDowngrade`,
 `TestHostedIssueConcurrentAllocation`, and `TestHostedIssueImportAllocation`
 exercise these boundaries without adding a brake, lease, or recovery mechanism.
+
+Repository notes handoff (#3498) is removed from normal, planning and merge
+fallback prompts. Failed turns no longer append diagnostics to a repository
+file. Existing issue Workpads, native completion contracts, attempt outcomes,
+usage updates and provider/session records own handoff and diagnostics; no new
+artifact or coordination mechanism is added. Existing notes files remain intact.
+`TestPromptDoesNotUseRepositoryNotes`,
+`TestBuildPromptUsesPriorAttemptWithoutRepoNotes` and
+`TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes` cover all prompt profiles,
+prior-attempt findings, retained output and durable failed-session outcomes without
+reading, creating or changing repository notes.
 
 ## INV-4 — Native merge queue
 
