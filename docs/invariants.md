@@ -419,6 +419,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Dispatch ordering (#3298) consolidates urgency into the existing comparator.
+Merging remains first when the project config places it first; other lanes
+compare tracker priority and configured label rank before lane rank, then retain
+unblocker, age, and identifier ties.
+A Todo hotfix can therefore precede ordinary Rework without a separate selector,
+capacity change, configuration key, or new mechanism. `TestSortIssuesForDispatch`
+covers cross-lane urgency, normalized Merging precedence, and equal-priority lane
+ties; the existing safety boundary fuzz seeds remain required.
+
 The stranded-active lane recovery is removed (#3238). In Progress remains an
 active dispatch candidate after a long refresh, and the existing completion
 transition owns finished attempts. The diagnostic snapshot still reports the
