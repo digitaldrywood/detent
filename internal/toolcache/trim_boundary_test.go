@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ func (c *trimSwapContext) Err() error {
 }
 
 func TestTrimRootReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows prevents replacing a directory held open by os.Root")
+	}
 	for _, tt := range []struct {
 		name     string
 		age      time.Duration

@@ -4741,8 +4741,10 @@ func TestRunnerRunReportsGitMetadataFailuresByWorkspaceKind(t *testing.T) {
 				t.Fatalf("Run() error = %v", err)
 			}
 
-			if !reflect.DeepEqual(agentBackend.request.ExtraWritableRoots, []string{agentBackend.request.TempDir}) {
-				t.Fatalf("ExtraWritableRoots = %#v, want only worker scratch %q", agentBackend.request.ExtraWritableRoots, agentBackend.request.TempDir)
+			roots := agentBackend.request.ExtraWritableRoots
+			scratch := agentBackend.request.TempDir
+			if len(roots) != 1 || roots[0] != scratch || filepath.Dir(scratch) != workspace.WorkerScratchRoot(workspacePath) {
+				t.Fatalf("ExtraWritableRoots = %#v, want only owned scratch %q", roots, scratch)
 			}
 			gotWarning := strings.Contains(logs.String(), "workspace git metadata writable roots unavailable")
 			if gotWarning != tt.wantWarning {
