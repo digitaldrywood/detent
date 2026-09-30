@@ -141,7 +141,7 @@ func TestAvailabilityInterruptionsPreserveIssueBudgets(t *testing.T) {
 	orch := Orchestrator{cfg: cfg, workAttempts: attempts}
 	state := newState(cfg)
 	issue := dispatchTestIssue("availability-worker", "Todo")
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		now := time.Now().Add(time.Duration(i) * time.Minute)
 		state.Running[issue.ID] = Running{Issue: issue, Mode: runpkg.RunModeImplement, Attempt: 3, WorkAttemptID: int64(5000 + i), StartedAt: now.Add(-time.Minute), TurnCount: 1}
 		cause := runpkg.NewCancellationCause(context.Canceled, "runner.availability")
