@@ -69,6 +69,7 @@ const (
 type DashboardData struct {
 	latestBoardAttempts       map[string]*telemetry.WorkAttempt
 	ConfiguredAgents          map[string]agentidentity.Identity
+	ConfiguredStageAgents     map[string]agentidentity.Identity
 	RunnerFleetEnabled        bool
 	Title                     string
 	ApplicationName           string

@@ -344,3 +344,70 @@ func TestBoardConfiguredAgentsAlternatingScopes(t *testing.T) {
 		t.Fatal("fleet refresh retained departed projects")
 	}
 }
+
+func TestBoardStageAgents(t *testing.T) {
+	cfg := config.Default()
+	cfg.Plan.Enabled = true
+	cfg.Gate.Validator.Enabled = true
+	cfg.Agent.AutoPromote.SourceState = "Ready for review"
+	cfg.Agents.Backends = []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}}
+	cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Backend: "codex", Default: true}}
+	cfg.Agents.ModelSelection = config.SolFirstModelSelection()
+	cfg.Agents.ModelSelection.NormalModel = new("gpt-6.1-sol")
+	for _, role := range []string{"code", "rework", "merge"} {
+		cfg.Agents.ModelSelection.Stages[role] = config.ModelSelectionStage{Effort: new("high")}
+	}
+	cfg.Agents.ModelSelection.Stages["plan"] = config.ModelSelectionStage{Model: new("complex"), Effort: new("low")}
+	cfg.Agents.ModelSelection.Stages["validator"] = config.ModelSelectionStage{Model: new("complex"), Effort: new("medium")}
+	global := globalconfig.Config{}
+	global.Global.Agents = cfg.Agents
+	s := &Server{kanbanWorkflow: cfg, globalConfigSource: func() globalconfig.Config { return global }}
+	for _, tt := range []struct {
+		name, state, liveRole, role, effort string
+		readyPR, retry, draft, gatePending  bool
+	}{
+		{name: "never attempted", state: "Todo", role: "plan", effort: "low"},
+		{name: "running plan in active lane", state: "In Progress", liveRole: "plan", role: "plan", effort: "low"},
+		{name: "previous plan now building", state: "In Progress", role: "code", effort: "high"},
+		{name: "ready PR awaiting validation", state: "In Progress", readyPR: true, role: "validator", effort: "medium"},
+		{name: "draft PR stays build", state: "In Progress", readyPR: true, draft: true, role: "code", effort: "high"},
+		{name: "custom review lane", state: "Ready for review", readyPR: true, role: "validator", effort: "medium"},
+		{name: "completed rework waiting on validation", state: "Rework", readyPR: true, gatePending: true, role: "validator", effort: "medium"},
+		{name: "running validation", state: "In Progress", liveRole: "validator", role: "validator", effort: "medium"},
+		{name: "retry planning", state: "In Progress", liveRole: "plan", retry: true, role: "plan", effort: "low"},
+		{name: "rework", state: "Rework", role: "rework", effort: "high"},
+		{name: "merge", state: "Merging", role: "merge", effort: "high"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := telemetry.Issue{ProjectID: "project", ID: "issue", State: tt.state, Description: "```detent-agent\nschema: 1\neffort: high\n```"}
+			issue.GatePending = tt.gatePending
+			if tt.readyPR {
+				issue.PullRequest = &telemetry.PullRequest{Draft: tt.draft}
+			}
+			snapshot := telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}}
+			if tt.liveRole != "" {
+				live := issue
+				live.RuntimeIdentity.Role = tt.liveRole
+				if tt.retry {
+					snapshot.Queue = []telemetry.Queued{{Issue: live, QueueState: telemetry.QueueStateRetrying}}
+				} else {
+					snapshot.Running = []telemetry.Running{{Issue: live}}
+				}
+			}
+			_, stages := s.boardAgentIdentitiesForProject(snapshot, "")
+			got := stages["project:project:id:issue"]
+			model := "gpt-6.1-sol"
+			if tt.role == "plan" || tt.role == "validator" {
+				model = "gpt-6-astra"
+			}
+			if got.Role != tt.role || got.Model() != model || got.ReasoningEffort.Value != tt.effort {
+				t.Fatalf("identity = %+v, want %s: %s/%s", got, tt.role, model, tt.effort)
+			}
+			// Reusing the same issue key across cases must match an uncached render.
+			_, fresh := (&Server{kanbanWorkflow: cfg, globalConfigSource: func() globalconfig.Config { return global }}).boardAgentIdentitiesForProject(snapshot, "")
+			if !reflect.DeepEqual(stages, fresh) {
+				t.Fatal("stage identity cache retained a different stage")
+			}
+		})
+	}
+}

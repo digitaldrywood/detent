@@ -1,6 +1,55 @@
-# Issue #3244 Rework — attempt 7327, generation 15
+# Issue #3244 Rework — attempt 7338, generation 26
 
 ## Codex Workpad
+
+Plan: merge fetched develop ad7ab10857ba845495bc9ace4bf57fd362fb946a into published PR #3354 head 56edd1c4277eddf7b3be44d8426da31795f0aba0 without rewriting published history. Resolve the notes-only conflict, verify issue-source identity, review the full issue diff, run focused integration diagnostics and configured true gate, then publish with an explicit lease and update the canonical GitHub Workpad.
+
+Verified prior notes and Git history: clean starting local and published PR head agree; prior merge retains recovered a03aaa99b and target 69874645a. PR is non-draft against develop and includes Fixes #3244. Reviews/threads are empty; only the review bot usage-limit notice remains. The new target conflicts only in notes. Incoming model/effort source and generated template merge automatically, without issue source changes. Preserve both historical handoffs below.
+
+Key files: internal/cli/runner_diagnostics.go and registration/startup; internal/hubserver/onboarding.go, runner_identity.go and migration 52; internal/onboarding/project.go; internal/runnerauth/diagnostics.go; hosted Setup.tsx and EnrollRunner.tsx; the generated React bundle. No new implementation, migration collision, generated-input edit, mechanism, invariant change or out-of-scope discovery.
+
+Validation: focused merged-source diagnostics passed in 10.6s command wall time (onboarding 0.230s, runnerauth 0.429s, hubserver 0.972s, hubclient 0.891s, CLI 1.108s). Existing cases cover first/resumed readiness, policy-independent enrollment, missing checkout/config, failed doctor/provider sign-in, sanitized success, registration ordering, observed policy approval, heartbeat intake delivery and migration/archive/intake/integrity/reopen preservation. All 48 issue-owned source, fixture, generated-asset and screenshot paths exactly match published head 56edd1c4277eddf7b3be44d8426da31795f0aba0. Migration versions are unique through 52. Reviewed the complete issue diff; handwritten whitespace inspection and conflict-marker checks passed. The generated bundle matches prior publication byte-for-byte; existing vendor whitespace is preserved. No manual template/query/CSS/generated-input changes, so generation was not repeated.
+
+Browser/frontend evidence: prior attempt 7327 recorded successful TypeScript checking, 113 focused frontend tests, generation and desktop/narrow Playwright verification (1280x900 and 390x900). Source identity was verified above; no fresh browser/frontend run or current-head browser test credit is claimed. Earlier real-Hub/first-run screenshots remain historical evidence. Chrome DevTools navigate_page is genuinely absent from this worker tool list. Live port 4000 untouched; all scratch used provided TMPDIR.
+
+Publication: source work and full-diff review are complete. Configured true runs on the committed head immediately before explicit-lease publication; the canonical GitHub Workpad records final head, gate/push timings and exact-head review/check observations. Initial checks are absent, without test credit; no reviews/threads/P1 findings. No full gate, coverage/race suite, Actions polling or CI wait. Quiet window not configured; CI/merge-group/post-merge timings not applicable to this unmerged Rework delivery. Detent owns promotion, tracker lanes and squash merge.
+
+Skill draft: no — existing merge and focused diagnostic guidance covers this notes-only conflict.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7338"
+  completion_generation: "26"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+# Issue #3430 implementation handoff
+
+## Implementation notes
+
+Plan and result: recover and finish the stage-aware Model / Effort row directly under State. Shared worker selection resolves configured plan/build/validate/rework/merge identities. The row attributes current and last attempts, uses the next-stage default after stage changes, and retains the last stage for terminal cards. Removed the buried Configured effort row; Session identity rows and board card rendering remain unchanged.
+
+Recovery: inspected all 14 recovered paths and retained them as issue-owned work. Finished running-attempt provenance and custom review/Rework gate-wait stage cases. No stray files, invariant enforcement changes, mechanisms, or out-of-scope findings.
+
+Key files: internal/runner/board_identity.go; internal/web/board_identity.go; internal/web/templates/sheet_data.go and sheet.templ; snapshot draft propagation; tests/visual/sheet-model-effort.spec.js.
+
+Validation: original generated renderer fails the never-attempted-plan regression because the Model / Effort row is missing. Focused runner, web, template, and snapshot table tests pass (14.1s original command; 11.0s after rebasing); focused vet and preview build pass (9.7s combined). make generate passes (22.4s), with frontend CSS/font/sourcemap/chunk warnings and no unrelated generated changes. Six selected Playwright diagnostics pass (5.4s), including both non-running card morph refresh cases and existing Session identity, activity-tab, and density assertions. The final spec waits for htmx:afterSettle before checking preserved row identity; both strengthened cases pass (1.9s). The first browser run exposed only a whitespace expectation in the new spec; corrected it and reran successfully. Chrome DevTools verified the non-running review card at 1440px and 390px without overflow; isolated preview stopped cleanly. macOS screenshot comparison is skipped by existing configuration, with no baseline changes or screenshot-test credit claimed.
+
+Rebased onto fetched develop 9f171a33c; only notes conflicted and all source files were unchanged. Preserved incoming historical handoffs.
+
+Publication: PR #3493 targets develop and includes Fixes #3430. Initial published head f3713ef3e was mergeable, with no reviews, review threads, comments, or status-check rollup. Final-head publication, configured gate, ready promotion, review/check evidence, and completion for attempt 7315 / generation 7 are recorded in the canonical issue Workpad. No implementation items remain. Configured gate is true and runs on the final committed head before publication; no full gate, coverage, race suite, or CI wait. Orchestrator owns lane transitions and merge.
+
+Skill draft: no — existing selection and isolated preview procedures cover this change.
+
+# Issue #3244 Rework — attempt 7327, generation 15
+
+## Historical Workpad
 
 Plan: retain recovered merge a03aaa99b, merge fetched develop 69874645ab6254f5480990b298e0ce4deeb5e987, resolve source/notes/assets, verify the integrated behavior and publish ready PR #3354. The canonical GitHub Workpad owns exact published-head completion evidence.
 
@@ -14,7 +63,7 @@ Recovery/full-diff review: inspected all 27 paths in a03aaa99b; 26 source paths 
 
 Skill draft: no — existing migration and isolated preview guidance covers this integration.
 
-```detent-status
+```yaml
 schema: 1
 status: in_progress
 blockers: []

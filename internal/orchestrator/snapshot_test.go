@@ -1849,14 +1849,19 @@ func TestTelemetryPullRequestMergeQueueIdentities(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name  string
+		draft bool
 		entry *connector.PullRequestMergeQueueEntry
 	}{
 		{name: "not queued"},
+		{name: "draft", draft: true},
 		{name: "awaiting integration", entry: &connector.PullRequestMergeQueueEntry{ID: "entry"}},
 		{name: "integrated", entry: &connector.PullRequestMergeQueueEntry{ID: "entry", HeadSHA: "group-head", BaseSHA: "group-base"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := telemetryPullRequest(connector.Issue{PullRequest: &connector.PullRequest{HeadSHA: "pr-head", BaseSHA: "pr-base", MergeQueueEntry: tt.entry}}, 0, 0)
+			got := telemetryPullRequest(connector.Issue{PullRequest: &connector.PullRequest{HeadSHA: "pr-head", BaseSHA: "pr-base", Draft: tt.draft, MergeQueueEntry: tt.entry}}, 0, 0)
+			if got.Draft != tt.draft {
+				t.Fatalf("draft = %v, want %v", got.Draft, tt.draft)
+			}
 			if tt.entry == nil {
 				if got.MergeQueueEntry != nil {
 					t.Fatalf("unexpected queue entry: %#v", got.MergeQueueEntry)
