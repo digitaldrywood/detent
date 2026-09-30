@@ -1043,7 +1043,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.auto_promote.gate_wait_state` | `string` | `"source"` | No | must be one of source, review |
 | `agent.auto_promote.gate_wait_timeout_action` | `string` | `"human_review"` | No | must be one of merge, human_review |
 | `agent.auto_promote.gate_wait_timeout_seconds` | `integer` | `3600` | No | must be greater than 0 |
-| `agent.auto_promote.optout_label` | `string` | `"requires-human-review"` | No | must not be blank |
+| `agent.auto_promote.optout_label` | `string` | `none` | No | None |
 | `agent.auto_promote.pass_state` | `string` | `"Merging"` | No | None |
 | `agent.auto_promote.quiet_seconds` | `integer` | `600` | No | must be greater than or equal to 0 |
 | `agent.auto_promote.rework_state` | `string` | `"Rework"` | No | None |
@@ -1399,6 +1399,8 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `retro.schedule` | `string` | `"0 3 * * *" when configured` | No | must be a valid five-field cron expression |
 | `retro.single_occurrence_severity` | `string` | `"critical" when configured` | No | must be one of info, warning, high, critical |
 | `retro.target_state` | `string` | `"Backlog" when configured` | No | must name a configured tracker state |
+| `review` | `object` | `see child fields` | No | agent.auto_promote.gate_wait_state must be one of source, review |
+| `review.human` | `boolean` | `false` | No | None |
 | `routines` | `list<object>` | `[]` | No | None |
 | `routines[].labels` | `list<string>` | `[]` | Conditional | labels must not be blank |
 | `routines[].max_findings_per_run` | `integer` | `3 when configured` | No | must be greater than 0 |

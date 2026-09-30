@@ -521,6 +521,7 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	writeScalar(&b, "  ", "root", form.WorkspaceRoot)
 	writeScalar(&b, "  ", "source_root", sourceRoot)
 	b.WriteString("  auto_branch: true\n")
+	b.WriteString("review:\n  human: false\n")
 	b.WriteString("agent:\n")
 	writeScalar(&b, "  ", "max_concurrent_agents", form.MaxConcurrentAgents)
 	writeScalar(&b, "  ", "max_turns", form.MaxTurns)
@@ -538,7 +539,6 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 		b.WriteString("    quiet_seconds: 600\n")
 		b.WriteString("    gate_wait_state: review\n")
 	}
-	b.WriteString("    optout_label: requires-human-review\n")
 	b.WriteString("    allowed_issue_labels: []\n")
 	b.WriteString("    gate_wait_timeout_seconds: 3600\n")
 	b.WriteString("    rework_limit: 3\n")

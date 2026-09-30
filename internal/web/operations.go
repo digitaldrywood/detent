@@ -398,6 +398,9 @@ func (s *Server) operationsProjectHumanReviewPolicy(issue telemetry.Issue, fallb
 		configured:     true,
 		terminalStates: append([]string(nil), workflow.Tracker.TerminalStates...),
 	}
+	if !workflow.Review.Human {
+		return policy
+	}
 	if !workflow.Agent.AutoPromote.Enabled {
 		policy.required = true
 		policy.passState = workflow.Agent.AutoPromote.PassState

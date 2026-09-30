@@ -69,6 +69,8 @@ workspace:
   cleanup_sweep_interval_ms: 600000
 deliverable:
   merge_method: squash
+review:
+  human: false
 agent:
   max_concurrent_agents: 5
   # Optional per-role reasoning defaults. Unset roles retain backend behavior.
@@ -101,7 +103,6 @@ agent:
   auto_promote:
     enabled: false
     quiet_seconds: 600
-    optout_label: requires-human-review
     allowed_issue_labels: []
     gate_wait_state: review
     gate_wait_timeout_seconds: 3600
