@@ -13,10 +13,11 @@ import (
 )
 
 type nativeClaim struct {
-	source   *NativeConnector
-	lease    tracker.NativeLease
-	recovery tracker.NativeRecovery
-	deadline time.Time
+	availabilityDeadline time.Time
+	source               *NativeConnector
+	lease                tracker.NativeLease
+	recovery             tracker.NativeRecovery
+	deadline             time.Time
 }
 
 func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bool) {
@@ -75,6 +76,17 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		return nil, err
 	}
 	claimStarted := s.now()
+	var availabilityDeadline time.Time
+	if s.client.runner != nil {
+		availability, err := s.client.runner.availability()
+		if err != nil {
+			return nil, err
+		}
+		availabilityDeadline, err = availability.Deadline(claimStarted)
+		if err != nil {
+			return nil, err
+		}
+	}
 	claimRequest := tracker.NativeClaim{
 		PolicyID:  request.Policy.ID,
 		MachineID: s.machine.ID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2,
@@ -101,7 +113,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	issue.AssignedToWorker = true
 	s.mu.Lock()
 	s.claims[issue.ID] = nativeTrackerLease(lease)
-	s.nativeClaims[issue.ID] = nativeClaim{source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)}
+	s.nativeClaims[issue.ID] = nativeClaim{availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)}
 	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	s.mu.Unlock()
 	return []connector.Issue{issue}, nil

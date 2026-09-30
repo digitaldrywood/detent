@@ -111,13 +111,14 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		return true
 	}
 	var metadata struct {
+		Cancellation    *runpkg.CancellationCause   `json:"cancellation"`
 		BlockerEvidence []telemetry.BlockerEvidence `json:"blocker_evidence"`
 		Fence           struct {
 			Excluded bool `json:"excluded_from_worker_outcomes"`
 		} `json:"historical_completion_fence"`
 	}
 	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
-		if metadata.Fence.Excluded {
+		if metadata.Fence.Excluded || attempt.TerminalState == store.WorkAttemptTerminalCancelled && metadata.Cancellation.IsAvailabilityInterruption() {
 			return true
 		}
 		for _, evidence := range metadata.BlockerEvidence {

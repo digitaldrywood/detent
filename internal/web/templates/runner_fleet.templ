@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+ "time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -57,7 +58,7 @@ templ runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) {
 	<section class="flex flex-none flex-col gap-3 rounded-card border border-line bg-surface p-3" data-runner={ r.RunnerID }>
 		<header class="flex min-w-0 flex-wrap items-center justify-between gap-2">
 			<a class="min-w-0 break-words text-sm font-semibold text-text" href={ templ.SafeURL("/fleet/runners?runner="+url.QueryEscape(r.RunnerID)) }>{ r.DisplayName }</a>
-			<span class="rounded border border-line px-2 py-1 text-xs text-sec">{ r.Health } · { r.State }</span>
+			<span class="rounded border border-line px-2 py-1 text-xs text-sec">{ runnerHealthLabel(r, time.Now()) } · { r.State }</span>
 		</header>
 		<div class="flex flex-wrap gap-1" aria-label="Runner tags">
 			if len(r.Tags) == 0 {
