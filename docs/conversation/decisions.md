@@ -1097,6 +1097,25 @@ Michael's review items and the contract for each:
 
    On main: `00030_attempt_usage.sql` keys the table by `period` rather than `day` and adds `organization_id`, `project_id`, `currency` and `updated_at`; the price table is the hosted config's `usage:` section (`internal/cli/hub_usage.go`, `internal/hubserver/hosted_usage_config.go`).
 
+   Coordinator chat is metered separately from runner attempts. Each turn stores
+   its organization, project, conversation, provider, model, start time, outcome,
+   input, cached input, output, and reasoning output in the same transaction as
+   the turn outcome. Reasoning is a subset of
+   output and is billed once. Versioned USD price rows are selected by the turn's
+   start time; stored costs and cache savings are retained when prices change.
+   Initial OpenAI `gpt-6-luna` rates per million tokens are $0.10 input,
+   $0.01 cached input, and $0.50 output. Unknown models retain tokens and report
+   unpriced turns rather than inventing a price.
+
+   The usage report includes chat in its totals, provider/model breakdowns and
+   time series, with a `chat` summary for the requested range. Runner rows
+   remain runner-only. Chat reads follow the same project grants as runner
+   usage. Billing exports include `chat_usage` for the current verified
+   subscription period, or the UTC calendar month without a current subscription
+   period. Periods include their start and exclude their end. The billing page
+   shows tokens, turns and USD cost with fractional-cent precision. This is
+   metering only; it does not provide allowances, credits or refusal.
+
 ## 18. Right panel surfaces, workspace sessions and review sandboxes (September 11, 2026)
 
 Michael's direction after the T3 right panel landed: the surfaces are real,

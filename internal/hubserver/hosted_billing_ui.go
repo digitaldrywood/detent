@@ -16,6 +16,7 @@ import (
 )
 
 type hostedBillingReport struct {
+	ChatUsage      chatUsageSummary               `json:"chat_usage"`
 	OrganizationID string                         `json:"organization_id"`
 	State          hostedBillingState             `json:"state"`
 	Entitlement    HostedEntitlement              `json:"entitlement"`
@@ -32,6 +33,10 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 		return report, err
 	}
 	report.Entitlement, err = s.database.hostedPlanUsage(ctx, s.config.now())
+	if err != nil {
+		return report, err
+	}
+	report.ChatUsage, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, chatBillingWindow(s.config.now(), report.State.Snapshot), nil)
 	if err != nil {
 		return report, err
 	}
@@ -101,6 +106,11 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	data.BillingStatus, data.BillingMessage = hostedBillingMessage(report.State, now)
 	data.BillingAudit = report.Audit
 	data.BillingCheckedAt = report.ReconciledAt
+	data.ChatUsage = fmt.Sprintf("%d tokens · $%.6f USD · turns: %d", report.ChatUsage.Tokens, report.ChatUsage.CostUSD, report.ChatUsage.Turns)
+	data.ChatUsagePeriod = report.ChatUsage.Range.From.Format("Jan 2, 2006") + " – " + report.ChatUsage.Range.To.Format("Jan 2, 2006")
+	if report.ChatUsage.UnpricedTurns > 0 {
+		data.ChatUsage += fmt.Sprintf(" · turns awaiting pricing: %d", report.ChatUsage.UnpricedTurns)
+	}
 	if report.PendingEvents > 0 {
 		data.Notice = "A billing update is awaiting verification. Current access follows the last verified subscription deadline."
 	}
