@@ -359,13 +359,16 @@ Plan: #3417 repairs the existing operator-move regression fixture. Reproduced th
 
 Validation: original focused reproduction failed at orchestrator_test.go:2285 with the dispatch hydration warning. Repaired regression passed (0.616s package time). Related operator-move, blocked-status, and transition-snapshot tests passed five repetitions (0.774s package time; 3.1s command wall time). No source changes followed diagnostics; no generated inputs changed. Configured gate: true, to run on committed head before publication; no full suite, coverage, race suite, or CI wait. Current-head PR review/check evidence belongs in the canonical issue Workpad. Quiet window not configured; no-op gate under 1s; no PR or merge-group CI configured; post-merge validation belongs to Detent.
 
-Open items: publish draft PR against develop with Fixes #3417, inspect actionable feedback, mark ready, and report completion for attempt 7136 / generation 7. No dependency or out-of-scope finding. No tracker lane writes.
+Handoff: PR #3435 targets develop and includes Fixes #3417. Initial published head had no reviews, comments, threads, or status checks. Final committed-head gate, publication, ready state, and feedback evidence are recorded in the canonical issue Workpad. Merge and post-merge validation remain orchestrator-owned. No dependency or out-of-scope finding. No tracker lane writes.
 
 Skill draft: no — existing operator-mutation-runtime-reconciliation guidance covers this regression; no new reusable procedure needed.
 
 ```detent-status
 schema: 1
-status: in_progress
+status: complete
+fields:
+  completion_work_attempt_id: "7136"
+  completion_generation: "7"
 blockers: []
 human_action: null
 ```
