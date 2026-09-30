@@ -954,6 +954,57 @@ func TestCapacityCostDriversUnknownInputs(t *testing.T) {
 			t.Fatalf("cost drivers disclosed %s", sentinel)
 		}
 	}
+	for _, test := range []struct {
+		name     string
+		observed int64
+		known    bool
+	}{{"unobserved", 0, false}, {"measured zero", 1, true}} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_artifact_usage(singleton,service_id,usage_json,observed_at) VALUES(1,'service_capacity','{}',?) ON CONFLICT(singleton) DO UPDATE SET observed_at=excluded.observed_at", test.observed); err != nil {
+				t.Fatal(err)
+			}
+			entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			drivers, err := f.service.hostedCostDrivers(t.Context(), entitlement)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (drivers.ArtifactRetainedBytes != nil) != test.known || (drivers.ArtifactReservedBytes != nil) != test.known {
+				t.Fatalf("artifact measurement = %#v", drivers)
+			}
+		})
+	}
+}
+
+func TestCapacityGrantPreservesUnrestrictedResources(t *testing.T) {
+	f := newHostedSecurityFixture(t)
+	config := capacityHostedPlans()
+	grant := HostedPlan{PlanReference: PlanReference{ID: "capacity_grant", Version: 1}, Allowances: map[string]int64{"projects": 9, "repositories": 1, "registered_runners": 1, "connected_runners": 1}}
+	config.Plans = append(config.Plans, grant)
+	d := f.service.database
+	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &config}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-base", Action: "base", ExpectedRevision: 1, Plan: config.Base, Reason: "capacity access"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-grant", Action: "grant", ExpectedRevision: 2, GrantID: "capacity", Plan: grant.PlanReference, Scope: []string{"projects", "repositories", "registered_runners", "connected_runners"}, Reason: "additional capacity"}); err != nil {
+		t.Fatal(err)
+	}
+	entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entitlement.Allowances["projects"] != 9 {
+		t.Fatalf("project grant = %#v", entitlement.Allowances)
+	}
+	for _, resource := range []string{"repositories", "registered_runners", "connected_runners"} {
+		if _, limited := entitlement.Allowances[resource]; limited {
+			t.Fatalf("grant introduced a %s restriction", resource)
+		}
+	}
 }
 
 func TestCapacityLegacyMetadataKeepsImmutablePlan(t *testing.T) {

@@ -351,7 +351,7 @@ func (s *Service) hostedCostDrivers(ctx context.Context, entitlement HostedEntit
 		}
 	}
 	var artifacts int64
-	if err := d.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_artifact_usage").Scan(&artifacts); err != nil {
+	if err := d.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_artifact_usage WHERE observed_at > 0").Scan(&artifacts); err != nil {
 		return result, err
 	}
 	if artifacts > 0 {

@@ -10,7 +10,11 @@ templ hostedBilling(data HostedPageData) {
                     <dt class="capitalize">{ row.Label }</dt>
                     <dd>{ row.Consumption } used / { row.Allowance } allowed · { row.Remaining } remaining</dd>
                     if row.OverLimit {
-                        <dd class="text-warn">Over limit. Upgrade or archive issues to free capacity.</dd>
+                        if row.Label == "unarchived issues" {
+                            <dd class="text-warn">Over limit. Upgrade or archive issues to free capacity.</dd>
+                        } else {
+                            <dd class="text-warn">Over limit. Upgrade to increase project capacity.</dd>
+                        }
                     }
                 </div>
             }

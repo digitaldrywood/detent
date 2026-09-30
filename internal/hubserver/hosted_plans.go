@@ -385,7 +385,8 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 			return result, err
 		}
 		for _, scope := range grant.Scope {
-			if value, ok := plan.Allowances[scope]; ok {
+			_, limited := result.Allowances[scope]
+			if value, ok := plan.Allowances[scope]; ok && limited {
 				result.Allowances[scope] = max(result.Allowances[scope], value)
 			}
 			if slices.Contains(plan.Features, scope) && !slices.Contains(result.Features, scope) {
