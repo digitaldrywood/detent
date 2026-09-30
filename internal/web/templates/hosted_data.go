@@ -21,6 +21,7 @@ type HostedPageData struct {
 	BillingCheckedAt     string
 	BillingPrices        []HostedBillingPrice
 	BillingAudit         []HostedBillingAudit
+	PlanPrice            string
 	PlanName             string
 	PlanSource           string
 	UsageWindow          string
@@ -159,6 +160,7 @@ func hostedProjectMode(data HostedPageData) bool {
 }
 
 type HostedAllowanceRow struct {
+	Remaining   string
 	LimitOnly   bool
 	Label       string
 	Consumption string

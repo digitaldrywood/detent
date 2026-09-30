@@ -395,7 +395,9 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	t.Helper()
 	path := filepath.Join(t.TempDir(), id+".db")
 	hosted := func(shared bool) *hubserver.HostedConfig {
-		config := &hubserver.HostedConfig{OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
+		plans := pilotPlans()
+		plans.Plans[0].Allowances["projects"] = 10
+		config := &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
 		if shared {
 			config.PublicURL = testPublicURL
 			config.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}

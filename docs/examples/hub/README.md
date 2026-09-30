@@ -108,7 +108,8 @@ empty lists admit any verified account. `entitlements` is the tenant's
 [versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
 plan every new organization starts on, and no Stripe customer or card is created.
 Left empty (`entitlements: {}`, an empty block, or no key at all), tenants use the
-default catalog: `pilot_free` as the base and `comp_team` for complimentary grants.
+capacity catalog: `free` as the base, with `starter`, `growth`, and `scale` paid
+versions. Legacy `pilot_free` and `comp_team` remain for existing assignments and grants.
 An explicit catalog replaces both, so include a plan to grant alongside the base.
 Any key set inside the section makes it an explicit catalog that must be complete
 (`base`, `plans` and the window settings). `detent cloud serve` generates the tenant
