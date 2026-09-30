@@ -783,10 +783,11 @@ test.describe("decisions.md §10 corrections", () => {
     await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
     const id = currentConversation(page);
     await expect(page.getByTestId("user-turn").last()).toContainText("Count my history");
+    await expect(page.getByTestId("assistant-turn").last()).toContainText("Hello, world.");
 
-    const snapshot = await hubAPI(page, "GET", conversationPath(id));
-    const count = snapshot.payload.conversation.message_count;
-    expect(count).toBe(1);
+    const messageCount = async () => (await hubAPI(page, "GET", conversationPath(id))).payload.conversation.message_count;
+    await expect.poll(messageCount).toBe(2);
+    const count = await messageCount();
 
     await openCreateLinkedIssue(page);
     const form = page.getByRole("dialog", { name: "Create linked issue" });
