@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -34,12 +33,10 @@ func (s *Server) dailyDigestData(ctx context.Context, snapshot telemetry.Snapsho
 	days := make([]templates.DailyDigestDayData, 0, len(runtimeDays))
 	for index, runtimeDay := range runtimeDays {
 		window := windows[index]
-		efficiencyRollup, err := s.store.EfficiencyRollup(ctx, efficiency.Query{From: window.From, To: window.To})
-		if err != nil {
-			return templates.DailyDigestData{}, err
-		}
 		day := templates.DailyDigestDayData{
 			Date:                 runtimeDay.Date,
+			IssuesShipped:        runtimeDay.IssuesShipped,
+			UnknownDwellSeconds:  runtimeDay.UnknownDwellSeconds,
 			From:                 window.From,
 			To:                   window.To,
 			Sessions:             runtimeDay.Sessions,
@@ -56,9 +53,9 @@ func (s *Server) dailyDigestData(ctx context.Context, snapshot telemetry.Snapsho
 			BreakerTrips:         runtimeDay.BreakerTrips,
 			FailedSessions:       runtimeDay.FailedSessions,
 			DominantErrorClass:   runtimeDay.DominantErrorClass,
-			Efficiency:           efficiencyRollup.Current,
+			Efficiency:           runtimeDay.Efficiency,
 		}
-		populateDailyDigestTracker(&day, snapshot, projectNames)
+		populateDailyDigestTracker(&day, snapshot, projectNames, runtimeDay.ShippedByProject)
 		days = append(days, day)
 	}
 	return templates.DailyDigestData{Timezone: location.String(), Days: days}, nil
@@ -80,7 +77,7 @@ func dailyDigestWindows(now time.Time, location *time.Location, count int) []sto
 	return windows
 }
 
-func populateDailyDigestTracker(day *templates.DailyDigestDayData, snapshot telemetry.Snapshot, projectNames map[string]string) {
+func populateDailyDigestTracker(day *templates.DailyDigestDayData, snapshot telemetry.Snapshot, projectNames map[string]string, shipped map[string]int64) {
 	projects := map[string]*templates.DailyDigestProjectData{}
 	project := func(id string) *templates.DailyDigestProjectData {
 		id = strings.TrimSpace(id)
@@ -108,20 +105,9 @@ func populateDailyDigestTracker(day *templates.DailyDigestDayData, snapshot tele
 			day.IssuesFiled++
 			project(projectID).Filed++
 		}
-		if dailyDigestShippedState(issue.State) && timeInDigestWindow(issue.StageUpdatedAt, day.From, day.To) {
-			day.IssuesShipped++
-			project(projectID).Shipped++
-		}
 	}
-	for _, release := range dailyDigestReleases(snapshot) {
-		if timeInDigestWindow(release.LastReleaseAt, day.From, day.To) {
-			projectID := strings.TrimSpace(release.ProjectID)
-			if projectID == "" {
-				projectID = strings.TrimSpace(snapshot.Project.ID)
-			}
-			day.ReleasesTagged++
-			project(projectID).Releases++
-		}
+	for id, count := range shipped {
+		project(id).Shipped = count
 	}
 
 	day.Projects = make([]templates.DailyDigestProjectData, 0, len(projects))
@@ -177,36 +163,6 @@ func dailyDigestSnapshotIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
 		unique = append(unique, issue)
 	}
 	return unique
-}
-
-func dailyDigestReleases(snapshot telemetry.Snapshot) []telemetry.Release {
-	releases := append([]telemetry.Release(nil), snapshot.Releases...)
-	if !snapshot.Release.IsZero() {
-		releases = append(releases, snapshot.Release)
-	}
-	unique := make([]telemetry.Release, 0, len(releases))
-	seen := map[string]struct{}{}
-	for _, release := range releases {
-		if release.LastReleaseAt == nil {
-			continue
-		}
-		key := strings.TrimSpace(release.ProjectID) + "\x00" + strings.TrimSpace(release.LastRelease) + "\x00" + release.LastReleaseAt.UTC().Format(time.RFC3339Nano)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		unique = append(unique, release)
-	}
-	return unique
-}
-
-func dailyDigestShippedState(state string) bool {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "done", "completed", "closed", "merged", "shipped":
-		return true
-	default:
-		return false
-	}
 }
 
 func timeInDigestWindow(value *time.Time, from time.Time, to time.Time) bool {
