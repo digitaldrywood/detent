@@ -145,7 +145,6 @@ type Config struct {
 	ServiceIdentity               string
 	OutputTruncationMaxBytes      int
 	EfficiencyThresholds          efficiency.Thresholds
-	Lessons                       LessonCaptureConfig
 	Staleness                     staleness.Config
 	StalenessDelivery             staleness.DeliveryConfig
 	StrandedActiveThreshold       time.Duration
@@ -158,12 +157,6 @@ type Config struct {
 	CPUPressureSomeAvg10Max       float64
 	CPUPressureDegradedMaxAgents  int
 	CPUPressurePollInterval       time.Duration
-}
-
-type LessonCaptureConfig struct {
-	Enabled    bool
-	Path       string
-	MaxEntries int
 }
 
 type FailureBreakerConfig struct {

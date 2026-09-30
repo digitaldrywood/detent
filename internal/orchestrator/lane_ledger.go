@@ -225,11 +225,6 @@ func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue conn
 		o.recordLaneTransition(ctx, before, issue.State, enteredAt, "operator_move", workflowLaneMetadata{Provenance: attribution})
 		o.handleOperatorMove(state, OperatorMoveRequest{IssueID: issue.ID, Identifier: issue.Identifier, FromState: previous.State, ToState: strings.TrimSpace(issue.State)}, enteredAt)
 	}
-	if !same && normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
-		observed := cloneIssue(issue)
-		observed.State = ""
-		o.captureReworkLesson(observed, enteredAt, "tracker_state_observed")
-	}
 	return observation, attribution, nil
 }
 
