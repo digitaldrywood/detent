@@ -3,7 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"reflect"
+	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,11 +68,31 @@ func TestBackendProbeReapsDescendantPipes(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	cmd := backendProbeCommand(ctx, "sh -c 'sleep 30 & wait'", "sh", nil)
-	_, err := cmd.Output()
+	_, err := runBackendProbe(cmd)
 	if err == nil {
 		t.Fatal("probe ignored cancellation")
 	}
 	if elapsed := time.Since(started); elapsed > 3*time.Second {
 		t.Fatalf("probe pipe cleanup took %v", elapsed)
+	}
+}
+
+func TestBackendProbeReapsChildrenAfterParentExits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Unix process groups")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := backendProbeCommand(ctx, "sh -c 'sleep 30 & echo $!'", "sh", nil)
+	output, err := runBackendProbe(cmd)
+	if err == nil {
+		t.Fatal("probe did not report inherited output pipes")
+	}
+	pid := strings.TrimSpace(string(output))
+	if _, err := strconv.Atoi(pid); err != nil {
+		t.Fatalf("child PID = %q: %v", pid, err)
+	}
+	if err := exec.CommandContext(ctx, "sh", "-c", `kill -0 "$1"`, "probe", pid).Run(); err == nil {
+		t.Fatalf("probe left child %s alive", pid)
 	}
 }

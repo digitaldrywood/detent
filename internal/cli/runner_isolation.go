@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -120,7 +121,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	if command == "" {
 		return errors.New("backend command is empty")
 	}
-	output, err := backendProbeCommand(ctx, command, shell, []string{"--version"}).Output()
+	output, err := runBackendProbe(backendProbeCommand(ctx, command, shell, []string{"--version"}))
 	if err != nil {
 		return errors.New("backend version probe failed")
 	}
@@ -153,7 +154,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		}
 		profile := settings["permissions"].(map[string]any)[options.PermissionProfile]
 		args := []string{"-c", "permissions." + options.PermissionProfile + "=" + tomlInline(profile), "-c", "features.network_proxy=true", "sandbox", "-P", options.PermissionProfile, "-C", inside, "/bin/sh", "-c", `touch allowed && ! touch "$1/denied" && test -n "${HTTPS_PROXY:-${https_proxy:-}}"`, "probe", base}
-		if err := backendProbeCommand(ctx, command, shell, args).Run(); err != nil {
+		if _, err := runBackendProbe(backendProbeCommand(ctx, command, shell, args)); err != nil {
 			return errors.New("Codex sandbox enforcement probe failed")
 		}
 		return nil
@@ -218,4 +219,15 @@ func backendProbeCommand(ctx context.Context, command, shell string, args []stri
 	cmd.Cancel = func() error { return procgroup.TerminateTree(cmd, procgroup.GroupID(cmd)) }
 	cmd.WaitDelay = time.Second
 	return cmd
+}
+
+func runBackendProbe(cmd *exec.Cmd) ([]byte, error) {
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	groupID := procgroup.GroupID(cmd)
+	err := cmd.Wait()
+	return output.Bytes(), errors.Join(err, procgroup.Cleanup(groupID))
 }
