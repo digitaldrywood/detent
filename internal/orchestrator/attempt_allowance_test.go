@@ -989,7 +989,7 @@ func TestAttemptAllowanceExternalWaitRestart(t *testing.T) {
 					t.Fatal("start failed")
 				}
 				got, err := orch.issueAttemptAllowance(t.Context(), issue)
-				want := i + 1
+				want := 1
 				if human {
 					want = 0
 				}
@@ -1004,11 +1004,7 @@ func TestAttemptAllowanceExternalWaitRestart(t *testing.T) {
 			}
 			restarted := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
 			got, err := restarted.issueAttemptAllowance(t.Context(), issue)
-			want := 3
-			if human {
-				want = 0
-			}
-			if err != nil || got.Sessions != want || got.exhausted() != !human {
+			if err != nil || got.Sessions != 0 || got.exhausted() {
 				t.Fatalf("restart allowance=%+v err=%v", got, err)
 			}
 			if len(tracker.updates) != 0 {
@@ -1032,7 +1028,7 @@ func TestAttemptAllowanceSuccessfulPRDelivery(t *testing.T) {
 		{name: "no progress PR", terminal: store.WorkAttemptTerminalSuccess, phase: "completed", errorClass: "no_progress", pr: &pr, want: 1},
 		{name: "incomplete PR", terminal: store.WorkAttemptTerminalSuccess, phase: "rework", pr: &pr, want: 1},
 		{name: "failed PR", terminal: store.WorkAttemptTerminalFailure, phase: "completed", pr: &pr, want: 1},
-		{name: "no PR", terminal: store.WorkAttemptTerminalSuccess, phase: "completed", want: 1},
+		{name: "successful completion without PR association", terminal: store.WorkAttemptTerminalSuccess, phase: "completed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			attempt := store.WorkAttempt{WorkerType: "agent", Lane: "In Progress", TerminalState: tt.terminal, Phase: tt.phase, ErrorClass: tt.errorClass, PRNumber: tt.pr}

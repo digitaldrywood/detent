@@ -2732,3 +2732,86 @@ func (c *blockedReadyPullRequestLookupConnector) LookupBranchHead(_ context.Cont
 	c.remoteRepository, c.remoteBranch = repository, branch
 	return c.remoteHead, c.remoteErr
 }
+
+func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, priorLane, humanAction string
+		failures                     int
+		incomplete                   bool
+		dependencyState              string
+		wantLane                     string
+	}{
+		{name: "missing PR association is not failure", priorLane: "Rework", failures: 2, wantLane: "Rework"},
+		{name: "preserve prior In Progress", priorLane: "In Progress", failures: 2, wantLane: "In Progress"},
+		{name: "resolved dependency", priorLane: "Rework", failures: 2, dependencyState: "Done", wantLane: "Rework"},
+		{name: "real failures remain exhausted", priorLane: "Rework", failures: 3},
+		{name: "human hold remains", priorLane: "Rework", failures: 2, humanAction: "approve data migration"},
+		{name: "active dependency remains", priorLane: "Rework", failures: 2, dependencyState: "In Progress"},
+		{name: "incomplete success remains charged", priorLane: "Rework", failures: 2, incomplete: true},
+		{name: "do not start fresh Todo work", priorLane: "Todo", failures: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			at := time.Date(2026, 9, 30, 15, 11, 41, 0, time.UTC)
+			issue := dependencyAutoUnblockIssue("legacy-allowance", tt.priorLane)
+			issue.Identifier = "digitaldrywood/detent#3123"
+			cfg := laneMutationTestConfig()
+			cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{Enabled: true, Readiness: DependencyReadinessTerminalOrMerged})
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, at)
+			for i := range tt.failures + 1 {
+				start := at.Add(time.Duration(i-10) * time.Minute)
+				id, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: tt.priorLane, AttemptNumber: i + 1, StartedAt: start})
+				if err != nil {
+					t.Fatal(err)
+				}
+				terminal, phase := store.WorkAttemptTerminalNoProgress, "no_progress"
+				if i == tt.failures {
+					terminal, phase = store.WorkAttemptTerminalSuccess, "completed"
+				}
+				if i == tt.failures && tt.incomplete {
+					phase = "waiting"
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: start.Add(time.Second), TerminalState: terminal, Phase: phase}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			orch.recordLaneTransition(t.Context(), issue, blockedStatusState, at, attemptAllowanceExhaustedReason, workflowLaneMetadata{})
+			issue.State = blockedStatusState
+			issue.StageUpdatedAt = &at
+			if tt.humanAction != "" {
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: tt.humanAction}
+			}
+			if tt.dependencyState != "" {
+				blocker := dependencyAutoUnblockIssue("dependency", tt.dependencyState)
+				blocker.Identifier = "digitaldrywood/detent#3134"
+				blocker.Closed = tt.dependencyState == "Done"
+				issue.DependencySource = connector.BlockedRefSourceNative
+				issue.BlockedBy = []connector.BlockedRef{{ID: blocker.ID, Identifier: blocker.Identifier, State: blocker.State, Source: connector.BlockedRefSourceNative}}
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Ref: blocker.Identifier, Identifier: blocker.Identifier, Reason: "prior validation gate awaits dependency"}}}
+				tracker.blockers = []connector.Issue{blocker}
+			}
+			tracker.stateIssues = []connector.Issue{issue}
+			state := newState(cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: attemptAllowanceExhaustedReason, Source: BlockedSourceProjectStatus, BlockedAt: at}
+			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, at.Add(time.Minute))
+			if tt.wantLane == "" {
+				if len(tracker.updates) != 0 {
+					t.Fatalf("updates=%+v, want retained hold", tracker.updates)
+				}
+				return
+			}
+			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantLane {
+				t.Fatalf("updates=%+v, want prior lane %s", tracker.updates, tt.wantLane)
+			}
+			if _, held := state.Blocked[issue.ID]; held {
+				t.Fatal("cleared allowance remains blocked")
+			}
+			entry, ok := orch.latestWorkflowLaneEntry(t.Context(), promotedIssue(issue, tt.wantLane, at.Add(time.Minute)))
+			if !ok || entry.Event.Reason != workflowActionRecordedBlockerRecovery {
+				t.Fatalf("entry=%+v, found=%v", entry, ok)
+			}
+		})
+	}
+}

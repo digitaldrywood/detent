@@ -65,7 +65,7 @@ func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt t
 		if allowanceExternalWaitAttempt(attempt) {
 			continue
 		}
-		if attempt.TerminalState != store.WorkAttemptTerminalSuccess || attempt.PRNumber == nil || *attempt.PRNumber <= 0 || attempt.ErrorClass != "" || attempt.Phase != "completed" {
+		if attempt.TerminalState != store.WorkAttemptTerminalSuccess || attempt.ErrorClass != "" || attempt.Phase != "completed" {
 			result.Sessions++
 			result.Attempts = append(result.Attempts, attempt)
 		}

@@ -81,9 +81,10 @@ the independent corroboration. The dispatch fingerprint and mergeability baselin
 persist with the attempt across restart, including merge-mode conflict repairs in active lanes
 (#2929); a changed head SHA alone is not implementation. No-progress
 outcomes consume the existing issue attempt allowance, including merge-mode
-conflict repairs dispatched in active lanes. Completed, successful PR deliveries
-without a recorded error do not consume the allowance, including successful
-conflict repairs; a subsequent completion-gate wait is not a failed delivery. Merging-lane runs,
+conflict repairs dispatched in active lanes. Completed successful sessions
+without a recorded error do not consume the allowance, including missing PR
+associations and successful conflict repairs; a subsequent completion-gate wait
+is not a failed delivery. Merging-lane runs,
 legacy merge-mode rows without a lane, and historical merge-routing receipts
 remain excluded (`TestAttemptAllowanceExcludesMergeRouting` and
 `TestAttemptAllowanceDispatchAndRestart`, #2933). No-progress outcomes
@@ -1046,8 +1047,13 @@ Allowance triage retains its single durable result while current-head CI is
 queued or running and no required check is missing. It does not publish the
 stall note or park the issue for that Detent-owned wait. The existing Blocked
 sweep also reconciles historical `attempt_allowance_exhausted` parks from the
-recorded PR head through the same
-promotion gate: a clean, green unchanged or newer head returns to Merging for
+recorded failed-session outcomes: when the original allowance trigger no longer
+holds, the issue returns to its durable prior In Progress or Rework lane after
+live dependency and human-hold checks. Unknown prior lanes and real exhausted
+failures remain held. `TestAttemptTriageParkRechecksFailedAllowance` covers these
+boundaries with durable attempts and lane records. Exhausted issues with a
+recorded PR head still use the same promotion gate: a clean, green unchanged or
+newer head returns to Merging for
 the exact-head audit. Recovery evaluates audit eligibility once through the
 shared Rework readiness predicate, then applies the remaining promotion gates.
 This local evaluation leaves the instance audit requirement enabled for Merging.
