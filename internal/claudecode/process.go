@@ -136,7 +136,7 @@ func (b *AgentBackend) RunTurn(
 		waitDone <- waitAndCleanup(cmd, processGroupID)
 	}()
 	var streamOutput io.Reader = stdout
-	if managedSandbox {
+	if sandboxInput != nil {
 		reader, verifyErr := verifySandboxProcess(ctx, sandboxInput, stdout, sandboxSettings)
 		if verifyErr == nil {
 			verifyErr = json.NewEncoder(sandboxInput).Encode(map[string]any{"type": "user", "session_id": "", "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": req.Prompt}})

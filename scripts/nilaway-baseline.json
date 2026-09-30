@@ -8,28 +8,28 @@
   },
   {
     "file": "internal/hubserver/hosted_tenant_api_test.go",
-    "line": 50,
+    "line": 51,
     "column": 55,
     "rule": "Potential nil panic detected",
     "source_sha256": "87d3391d93b44b405c4b0ecacfab396558bfd48653806d081346127a6245a006"
   },
   {
     "file": "internal/hubserver/hosted_tenant_api_test.go",
-    "line": 593,
+    "line": 594,
     "column": 58,
     "rule": "Potential nil panic detected",
     "source_sha256": "61724430bfa87a3cbd1b3bc1934bdd28250462a046a5812d5fa648579fb50d42"
   },
   {
     "file": "internal/hubserver/hosted_tenant_api_test.go",
-    "line": 72,
+    "line": 73,
     "column": 170,
     "rule": "Potential nil panic detected",
     "source_sha256": "3ec01ab70a39b9bbf21fdec9457390566da7f325f0f5d9c33f051b3060faec0e"
   },
   {
     "file": "internal/hubserver/onboarding_test.go",
-    "line": 170,
+    "line": 171,
     "column": 18,
     "rule": "Potential nil panic detected",
     "source_sha256": "a54216f84acf4a18b69905dc75f0151a103542ab5ff513d9d731c439dcf822e0"
