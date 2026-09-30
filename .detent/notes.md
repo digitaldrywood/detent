@@ -1,5 +1,30 @@
 ## Codex Workpad
 
+Plan and result: Rework attempt 7334 / generation 22 retains published PR #3455 head aa657230e3072a70c0b29b56642fa80db2818cf4 and merges fetched develop ad7ab10857ba845495bc9ace4bf57fd362fb946a without rebasing. Only handoff notes conflicted; both histories are preserved. Source files, generated assets, visual fixtures and baselines merged automatically. All issue-owned source, tests, generated assets and screenshots exactly match the prior published head.
+
+Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
+
+Validation: focused Hub shell/HTTP/OIDC/login and shared-entry transaction/invitation diagnostics passed on the resolved source (9.63s command; Hub 2.097s, shared entry 0.988s). Prior attempt 7329 evidence is retained for the unchanged frontend and auth implementation: generation, TypeScript checking, 99 account/entry component tests, affected-package vet, Linux preview compilation and four strict Linux Chromium Playwright cases passed. No frontend/browser diagnostics or generation repeated because source and generated assets are unchanged. Only four new hub-login baselines differ from develop; all pre-existing desktop baselines are unchanged. Full issue diff and merge resolution reviewed. No issue-owned invariant change; incoming invariants match develop.
+
+Handoff: commit the resolution, run configured true on the exact committed head immediately before lease-protected publication, then record published-head ancestry and current feedback/checks in the canonical issue Workpad. PR #3455 is open, non-draft, targets develop and references Fixes #3440. Reviews and threads are empty; only the review bot usage-limit notice exists, with no findings. Initial current-head checks were absent, an expected skip with no test credit. No required checks, merge-group workflow, quiet window, PR CI wait, full checks, coverage or race suite applies. Orchestrator owns lane transitions, squash merge and integrated-develop validation. No dependencies or out-of-scope discoveries. Scratch stays under supplied TMPDIR; live port 4000 is untouched.
+
+Skill draft: no — routine notes conflict resolution and target refresh need no new reusable procedure.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7334"
+  completion_generation: "22"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both sides
+
+## Historical Workpad
+
 Plan and result: Rework attempt 7329 / generation 17 retains published PR #3455 head 76c04274a2de1de73697cdc393bc1fe42999611c and merges fetched develop 69874645ab6254f5480990b298e0ce4deeb5e987 without rebasing. Conflicts were limited to handoff notes and generated client JavaScript/CSS. Both histories are preserved; make generate rebuilt combined assets. All source merged automatically. The issue-owned sign-in source and tests exactly match the prior published head.
 
 Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
@@ -10,7 +35,7 @@ Handoff: commit the resolution, run configured true on the exact committed head 
 
 Skill draft: no — existing merge-resolution and Linux preview guidance covers this refresh.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
@@ -94,6 +119,29 @@ human_action: null
 # Issue #3258 merge fallback handoff — 2026-09-30
 
 ## Historical Workpad
+# Issue #3430 implementation handoff
+
+## Implementation notes
+
+Plan and result: recover and finish the stage-aware Model / Effort row directly under State. Shared worker selection resolves configured plan/build/validate/rework/merge identities. The row attributes current and last attempts, uses the next-stage default after stage changes, and retains the last stage for terminal cards. Removed the buried Configured effort row; Session identity rows and board card rendering remain unchanged.
+
+Recovery: inspected all 14 recovered paths and retained them as issue-owned work. Finished running-attempt provenance and custom review/Rework gate-wait stage cases. No stray files, invariant enforcement changes, mechanisms, or out-of-scope findings.
+
+Key files: internal/runner/board_identity.go; internal/web/board_identity.go; internal/web/templates/sheet_data.go and sheet.templ; snapshot draft propagation; tests/visual/sheet-model-effort.spec.js.
+
+Validation: original generated renderer fails the never-attempted-plan regression because the Model / Effort row is missing. Focused runner, web, template, and snapshot table tests pass (14.1s original command; 11.0s after rebasing); focused vet and preview build pass (9.7s combined). make generate passes (22.4s), with frontend CSS/font/sourcemap/chunk warnings and no unrelated generated changes. Six selected Playwright diagnostics pass (5.4s), including both non-running card morph refresh cases and existing Session identity, activity-tab, and density assertions. The final spec waits for htmx:afterSettle before checking preserved row identity; both strengthened cases pass (1.9s). The first browser run exposed only a whitespace expectation in the new spec; corrected it and reran successfully. Chrome DevTools verified the non-running review card at 1440px and 390px without overflow; isolated preview stopped cleanly. macOS screenshot comparison is skipped by existing configuration, with no baseline changes or screenshot-test credit claimed.
+
+Rebased onto fetched develop 9f171a33c; only notes conflicted and all source files were unchanged. Preserved incoming historical handoffs.
+
+Publication: PR #3493 targets develop and includes Fixes #3430. Initial published head f3713ef3e was mergeable, with no reviews, review threads, comments, or status-check rollup. Final-head publication, configured gate, ready promotion, review/check evidence, and completion for attempt 7315 / generation 7 are recorded in the canonical issue Workpad. No implementation items remain. Configured gate is true and runs on the final committed head before publication; no full gate, coverage, race suite, or CI wait. Orchestrator owns lane transitions and merge.
+
+Skill draft: no — existing selection and isolated preview procedures cover this change.
+
+# Historical notes from develop
+
+# Issue #3258 merge fallback handoff — 2026-09-30
+
+## Historical Workpad (develop before #3430)
 
 Plan and result: merged freshly fetched develop `f5f3d56e7f17a3fa0f3611c7886c124f9244a0bc` into source-clean published PR #3472 head `68c8c1ab86196a7435df184c1ae39adab08257ed`, preserving published history without rebasing. PR #3472 is open against develop on the assigned isolated branch and includes Fixes #3258. No merge or rebase was in progress at session start.
 

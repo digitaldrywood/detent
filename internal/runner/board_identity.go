@@ -5,11 +5,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/agentoverride"
-
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/agentoverride"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -31,13 +31,17 @@ func NewBoardIdentityResolver(cfg config.Config, ctx selector.Context) (*BoardId
 
 // Identity resolves each issue independently; attempt identity remains authoritative.
 func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.Identity, error) {
-	cfg := r.cfg
-	runtime := agentRuntime{router: r.router}
 	mode := RunModeImplement
-	if cfg.Plan.Enabled && strings.EqualFold(strings.TrimSpace(issue.State), "todo") {
+	if r.cfg.Plan.Enabled && strings.EqualFold(strings.TrimSpace(issue.State), "todo") {
 		mode = RunModePlan
 	}
-	role := runRole(mode, issue)
+	return r.IdentityForRole(issue, runRole(mode, issue))
+}
+
+// IdentityForRole previews the same stage-specific selection used by workers.
+func (r *BoardIdentityResolver) IdentityForRole(issue connector.Issue, role string) (agentidentity.Identity, error) {
+	cfg := r.cfg
+	runtime := agentRuntime{router: r.router}
 	routeRole := runtime.effectiveRunRole(role)
 	route, err := r.router.RouteForRole(issue, r.ctx, routeRole)
 	if err != nil {
@@ -48,6 +52,9 @@ func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.I
 			continue
 		}
 		baseModel := effectiveModel(route.Model, runtime.defaultModelForRole(role))
+		if role == RoleValidator {
+			baseModel = effectiveModel(gate.Effective(cfg.Gate).Validator.Model, baseModel)
+		}
 		policy := cfg.EffectiveModelSelection()
 		var selected agentSelection
 		if policy.Active() && policy.BackendKinds != nil && slices.Contains(*policy.BackendKinds, backend.Kind) {
