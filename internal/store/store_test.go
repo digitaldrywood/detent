@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
@@ -2691,6 +2693,57 @@ func TestWorkflowMetricsStoreRoundTripAndAggregates(t *testing.T) {
 	if timeline.Events[1].Turns != 3 || timeline.Events[1].TotalTokens != 1250 || timeline.Events[1].MetadataJSON != `{"session_id":42}` {
 		t.Fatalf("timeline agent event = %#v, want turns/tokens/metadata", timeline.Events[1])
 	}
+	// Checkpointing must update one durable profile, not append snapshots that
+	// double-count activity. An independent reader must retain incomplete data.
+	profile := workflowmetrics.ActivityProfile{Schema: 1, SessionID: 42, AttemptID: 3390, StartedAt: base, AsOf: base.Add(time.Minute), Status: "running", Coverage: "partial", Spans: []workflowmetrics.ActivitySpan{{ID: "test", Kind: "local_validation", StartedAt: base.Add(10 * time.Second), FinishedAt: base.Add(30 * time.Second), Outcome: "completed", Repeat: 2}}}
+	data, _ := json.Marshal(profile)
+	event := WorkflowPhaseEvent{ProjectID: "detent", IssueID: "issue-722", Identifier: "digitaldrywood/detent#722", SessionID: 42, PhaseType: workflowmetrics.PhaseTypeAgentActivity, PhaseName: "instruction_activity", StartedAt: base, MetadataJSON: string(data)}
+	writer := backend.(*sqliteStore)
+	id, err := writer.SaveWorkflowActivityProfile(ctx, 0, event, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.AsOf = base.Add(2 * time.Minute)
+	data, _ = json.Marshal(profile)
+	event.MetadataJSON = string(data)
+	if next, err := writer.SaveWorkflowActivityProfile(ctx, id, event, profile); err != nil || next != id {
+		t.Fatalf("checkpoint id=%d err=%v", next, err)
+	}
+	reader, err := Open(ctx, Config{Backend: BackendSQLite, Path: writer.path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	durable, err := reader.IssueWorkflowTimeline(ctx, IssueIdentity{ProjectID: "detent", IssueID: "issue-722"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audits := workflowmetrics.ActivityAudits(durable.Events, base.Add(3*time.Minute))
+	if len(durable.Events) != 3 || len(audits) != 1 || audits[0].Profile.Instance == "" || audits[0].Profile.AsOf != profile.AsOf || audits[0].Breakdown.ObservedSeconds != 20 || audits[0].UnobservedTailSeconds != 60 {
+		t.Fatalf("durable audit=%+v", audits)
+	}
+	wrongSession := profile
+	wrongSession.SessionID++
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, id, event, wrongSession); err == nil {
+		t.Fatal("cross-session profile accepted")
+	}
+	profile.Status = "ended"
+	profile.FinishedAt = profile.AsOf
+	data, _ = json.Marshal(profile)
+	event.MetadataJSON = string(data)
+	event.FinishedAt = profile.FinishedAt
+	event.Status = profile.Status
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, id, event, profile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, id+100, event, profile); err == nil {
+		t.Fatal("missing checkpoint accepted")
+	}
+	report, err = backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{ProjectID: "detent", From: base.Add(-time.Minute), To: base.Add(2 * time.Hour)})
+	if err != nil || len(report.SubPhases) != 1 {
+		t.Fatalf("activity changed session totals: %+v, %v", report, err)
+	}
+
 }
 
 func TestWorkflowMetricsReportComputesLaneFlowEfficiency(t *testing.T) {
