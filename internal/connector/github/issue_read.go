@@ -529,7 +529,8 @@ func (c *Connector) fetchLabelRefreshIssues(ctx context.Context, candidateStates
 	if err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
 	}
-	var selected, fallback []connector.Issue
+	selected := make([]connector.Issue, 0, len(issues))
+	fallback := make([]connector.Issue, 0, len(issues))
 	var indexes, fallbackIndexes []int
 	var nodes []githubIssueNode
 	for i, issue := range issues {
@@ -567,7 +568,8 @@ func (c *Connector) fetchLabelRefreshIssues(ctx context.Context, candidateStates
 	if err := c.resolveBlockedByProjectState(ctx, selected); err != nil {
 		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
 	}
-	var candidates, statuses []connector.Issue
+	candidates := make([]connector.Issue, 0, len(selected))
+	statuses := make([]connector.Issue, 0, len(selected))
 	var candidateIndexes, statusIndexes []int
 	for i, issue := range selected {
 		if stateInList(issue.State, observedStates) && pullRequestStatusPolicy(issue.State, false) != pullRequestStatusSkip {

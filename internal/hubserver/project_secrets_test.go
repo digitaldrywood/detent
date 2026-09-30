@@ -287,8 +287,12 @@ func TestProjectSecretLifecycle(t *testing.T) {
 	raw := httptest.NewRequest(http.MethodPut, f.server.URL+base, strings.NewReader(`{"SPRITES-VALUE-SENTINEL":true}`))
 	raw.Header.Set("Content-Type", "application/json")
 	raw.Header.Set("Origin", f.server.URL)
-	raw.Header.Set("X-CSRF-Token", hostedCSRF(f.cookies["owner"].Value))
-	raw.AddCookie(f.cookies["owner"])
+	owner := f.cookies["owner"]
+	if owner == nil {
+		t.Fatal("missing owner session cookie")
+	}
+	raw.Header.Set("X-CSRF-Token", hostedCSRF(owner.Value))
+	raw.AddCookie(owner)
 	response := httptest.NewRecorder()
 	f.service.Handler().ServeHTTP(response, raw)
 	if response.Code != 422 || strings.Contains(response.Body.String()+logs.String(), "SPRITES-VALUE-SENTINEL") {

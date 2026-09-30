@@ -1177,7 +1177,8 @@ func (c *Connector) attachMatchingPullRequests(
 					return "", err
 				}
 				if includeStatus {
-					if err := c.populatePullRequestStatus(ctx, repo, &hydratedPullRequest, useStatusCache); err != nil {
+					statusTarget := &hydratedPullRequest
+					if err := c.populatePullRequestStatus(ctx, repo, statusTarget, useStatusCache); err != nil {
 						if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
 							applyPullRequestHydrationUnavailableState(&hydratedPullRequest, state)
 							hydrated[pullRequest.Number] = hydratedPullRequest
