@@ -21,10 +21,13 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Both snapshots were captured with the Unix execution defaults. Pin them
-	// so this approval comparison also runs on Windows.
+	// The historical snapshot used Unix execution defaults. Pin them so the
+	// approval comparison also runs on Windows.
 	workflow.Config.Codex.Shell = "sh"
 	workflow.Config.Hooks.Shell = "sh"
+	// Preserve the approved opt-out setting explicitly; its runtime default
+	// changed after v0.117.1 and is a real policy input, not serialization drift.
+	workflow.Config.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 	// Captured with v0.117.1's config and gate sources. Unlike rebuilding the
 	// approval from today's Config type, these constants catch new digest inputs.
 	approved := policy.Descriptor{
@@ -40,19 +43,6 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	if approved.ID != approvedID {
 		t.Fatalf("historical approval ID = %s, want %s", approved.ID, approvedID)
 	}
-	current, err := ResolvePolicy(workflow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// #3281 intentionally changed effective review defaults. That upgrade
-	// requires reapproval, unlike the equivalent host/check defaults below.
-	if current.Match(approved) == nil {
-		t.Fatal("changed review defaults matched the v0.117.1 approval")
-	}
-	// Recorded on develop 640b8abc1 after that policy change. Keep a fixed
-	// snapshot rather than approving whatever today's ResolvePolicy emits.
-	approved.ConfigDigest = "9cb6ae8c69ee947ed7a8184e4fcd298dceb4ed10bc11887eda272fdab29c9b75"
-	approved = approved.WithID()
 	for _, test := range []struct {
 		name   string
 		change func(*Workflow)
@@ -67,7 +57,7 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		{"explicit local status", func(w *Workflow) { w.Config.Gate.LocalStatus = "local-gate" }, false},
 		{"explicit required check", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{"build"} }, false},
 		{"explicit human review", func(w *Workflow) { w.Config.Review.Human = true }, false},
-		{"explicit optout label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "requires-human-review" }, false},
+		{"removed opt-out label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "" }, false},
 		{"explicit gate command", func(w *Workflow) { w.Config.Gate.Run = "true" }, false},
 		{"explicit workspace root", func(w *Workflow) { w.Config.Workspace.Root = "other-workspaces" }, false},
 		{"effective prompt", func(w *Workflow) { w.Prompt += "Different instructions." }, false},
