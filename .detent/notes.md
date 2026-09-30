@@ -1,3 +1,11 @@
+# Issue #3400 merge fallback handoff (attempt 7103, generation 34)
+
+- Verified PR #3421 is open, targets `develop`, includes `Fixes #3400`, and has published head `f68005c60c44dfe93c667666e928cefbac980066`, matching the source-clean local branch before this merge. The prior #3400 handoff is historical; the published head already contains its resolution.
+- Merged freshly fetched develop commit `d14138a37c7597542c30e19616271a971b62fc8f` into the published PR head without rebasing, preserving published history.
+- Only conflict: `.detent/notes.md`. Preserved the historical #3400 and incoming #3403 handoffs and consolidated the current Workpad. All source changes merged automatically, including develop's SSH subprocess justification in `internal/cli/ssh_runner.go`; no manual source edits were required.
+- Validation: no tests, builds, local gate, or CI checks run. Prior macOS tests and Windows cross-compilation are historical and do not validate this head. Detent owns ancestry/cleanliness verification, bounded validation, lease-protected publishing, and current-head CI after return.
+- Open items: Detent verification, validation/publication, and native Windows scheduled validation. No out-of-scope repair identified. No push, PR merge, or issue/lane mutation performed.
+
 # Issue #3400 merge fallback handoff (attempt 7096, generation 27)
 
 - Verified PR #3421 is open, targets `develop`, includes `Fixes #3400`, and has published head `c20d5099bb95e4991cb7def7d55488986b5690ca`. The workspace started source-clean with no rebase in progress; that head already includes the previous fallback merge described below.
@@ -8,16 +16,18 @@
 
 ## Codex Workpad
 
-Plan: merge the fetched develop commit into the published PR branch, preserve both overlapping SSH fixture changes, and commit the resolution.
+Plan: merge fetched develop into the published PR branch, preserve published history and historical handoff notes, and commit the resolution.
 
-Validation: deferred to Detent by the merge-fallback instructions; no current-head gate or CI evidence claimed. Quiet-window, gate/CI, slow-check, and post-merge CI timings are not measured in this session.
+Validation: deferred to Detent by the merge-fallback instructions. No tests, builds, local gate, or CI checks run in this session; no current-head validation evidence claimed. Quiet-window, gate/CI, slow-check, and post-merge CI timings are not measured.
+
+Open items: Detent verification, bounded validation, lease-protected publication, and native Windows scheduled validation. No out-of-scope findings identified.
 
 ```detent-status
 schema: 1
 status: complete
 fields:
-  completion_work_attempt_id: "7096"
-  completion_generation: "27"
+  completion_work_attempt_id: "7103"
+  completion_generation: "34"
 blockers: []
 human_action: null
 ```
@@ -54,3 +64,11 @@ human_action: null
 - This fallback ran no tests, builds, local gate, or CI. Resolved-file conflict and whitespace inspection was clean. A broader Git whitespace inspection flagged inherited generated JavaScript in static/app/conversation/app.js; it was left unchanged and does not require conflict-resolution work.
 - Detent owns resolved-head verification, bounded validation, lease-protected publishing, and CI after return. No push, PR merge, or issue/lane mutations were performed.
 - Open items: Detent validation of the merged head and next native Windows scheduled validation. No additional repair work identified.
+
+# Issue #3403 merge fallback (historical target notes)
+
+- Issue #3403 / PR #3423 merge fallback: merge fetched `origin/develop` (`1eba695b60a6f903847178ac71ca297053c6ae3b`) into the published PR head (`b389174201070adc3aa1c325ba47b27ad17593c8`), preserving both as ancestors.
+- Resolution: `internal/runner/ssh_workspace.go` retains develop's equivalent G204 justification on the unchanged clone command. `internal/cli/ssh_runner.go` retains the PR's G204 justification on the SSH command through the automatic merge.
+- Prior notes above concern #3252; they are historical and do not establish validation for this resolved head. PR #3423 already includes `Fixes #3403`.
+- Validation: no local gate, tests, or CI checks run during this fallback, as instructed. Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI waiting.
+- Open items: Detent's verification and validation; no out-of-scope findings identified. No push, PR merge, or issue-state changes performed.
