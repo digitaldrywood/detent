@@ -1,5 +1,7 @@
 import React from "react";
 
+import { SpritesCard } from "./SpritesCard.tsx";
+
 import { Button } from "../../components/ui/button.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import type { ObservedPolicy, PolicyApproval, ProjectIntegration } from "../../contracts/account.ts";
@@ -201,6 +203,7 @@ export function ProjectSettingsView({
   approveError,
   onOpenFleet,
   header,
+  sprites,
 }: {
   readonly projectName: string;
   readonly integration: ProjectIntegration;
@@ -223,6 +226,7 @@ export function ProjectSettingsView({
    * side by side would be two scrolling columns rather than one page.
    */
   readonly header?: React.ReactNode;
+  readonly sprites?: React.ReactNode;
 }): React.ReactElement {
   const unbound = (integration.repository ?? "").length === 0;
   const dirty = draftChanged(draft, draftOf(integration));
@@ -377,6 +381,7 @@ export function ProjectSettingsView({
             </Button>
           }
         />
+        {sprites}
       </SettingsSection>
     </SettingsPageContainer>
   );
@@ -536,6 +541,7 @@ export function ProjectSettingsRoute({
       approveError={approve.error?.message ?? null}
       header={header}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
+      sprites={<SpritesCard key={projectId} projectId={projectId} canManage={canManage} />}
     />
   );
 }

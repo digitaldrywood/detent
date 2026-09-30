@@ -1,12 +1,5 @@
 [
   {
-    "file": "internal/hubclient/native_change_test.go",
-    "line": 463,
-    "column": 24,
-    "rule": "Potential nil panic detected",
-    "source_sha256": "9afadf1f77f3e4ea0f32b2eaf0146c3e109a234058da08859a8381242a06e1a6"
-  },
-  {
     "file": "internal/hubserver/hosted_tenant_api_test.go",
     "line": 51,
     "column": 55,

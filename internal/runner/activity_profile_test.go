@@ -108,6 +108,9 @@ func TestActivityRecorderDoesNotWaitForPersistence(t *testing.T) {
 	probe := &activityCheckpointProbe{started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 2)}
 	r := &Runner{store: probe, projectID: "test", now: time.Now, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	recorder := r.startActivityProfile(RunRequest{Issue: connector.Issue{ID: "1"}, WorkAttemptID: 3390, Generation: 23}, 42, t.TempDir(), config.Workflow{Prompt: "Run go test ./foo"}, "implementation")
+	if recorder == nil {
+		t.Fatal("activity profile did not start for the persistence probe")
+	}
 	<-probe.started
 	recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "large", Command: strings.Repeat("private", 2048)}, time.Now(), "", time.Time{})
 	for range 300 {

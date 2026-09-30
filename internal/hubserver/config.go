@@ -5,11 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 )
 
 const (
@@ -40,6 +42,8 @@ var (
 )
 
 type Config struct {
+	SecretKeys            *hubsecrets.Keyring
+	SpritesHTTPClient     *http.Client
 	CredentialMaintenance bool
 	Hosted                *HostedConfig
 	Conversation          *ConversationConfig
