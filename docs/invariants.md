@@ -609,6 +609,14 @@ instance diagnostic; only a successful response can enforce the existing REST
 reserve. This removes a self-protection path that converted a transient probe
 timeout into a project-wide dispatch outage.
 
+Generic issue no-progress outcomes do not become a shared project failure class
+(#3489). Existing issue progress, retry, allowance, and workpad paths own those
+outcomes; unrelated unpushed work and external evidence waits cannot pause the
+whole project. Concrete backend, startup, deliverable, and durable error classes
+retain the configured project failure policy. Terminal attempt outcomes remain
+unchanged. `TestGenericNoProgressDoesNotPauseProject` covers repeated unrelated
+stalls and preservation of a concrete backend failure pause.
+
 Operator rejection (#2943) consolidates promotion eligibility with existing lane
 history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate
 the PR best-effort before recording Rework and identify an otherwise unattributed
