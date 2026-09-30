@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -208,8 +209,9 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 		base: base, organization: auth.Organization{ID: "org_browser_provider", ExternalID: organization, Name: "Browser organization"},
 		members: make(map[string]auth.Membership), sessions: make(map[string]auth.HostedIdentity), invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string), authorizations: make(map[string]string), codes: make(map[string]auth.Identity),
 	}
+	legacyPlans := pilotHostedPlans()
 	cfg := Config{InitialAdminToken: []byte(testHubAdminToken), DatabasePath: filepath.Join(t.TempDir(), "hosted-browser.db"), GitHubDisabled: true, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &HostedConfig{
-		OrganizationID: organization, BootstrapSubject: "user_browser_owner", PublicURL: base, Provider: provider,
+		Plans: &legacyPlans, OrganizationID: organization, BootstrapSubject: "user_browser_owner", PublicURL: base, Provider: provider,
 		StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 		Directory: []HostedDestination{{OrganizationID: organization, WorkOSOrganizationID: "org_browser_provider", PublicURL: base}},
 	}}
@@ -687,6 +689,26 @@ func TestHostedBrowserPreview(t *testing.T) {
 	}
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
+		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id='starter',base_version=1"); err != nil {
+			t.Fatal(err)
+		}
+		provider := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
+		cfg := f.service.config.Hosted
+		cfg.Billing = &HostedBillingConfig{Mode: billing.ModeTest, AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_browser_capacity"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: provider}
+		for _, id := range []string{"starter", "growth", "scale"} {
+			cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_" + id + "_test", Label: id, Plan: PlanReference{ID: id, Version: 1}})
+		}
+		if err := f.service.database.configureHostedBilling(t.Context(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		close(done)
+		f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_USAGE") != "" {
 		err := f.service.database.RecordConversationUsage(t.Context(), ConversationUsage{OrganizationID: "org_browser_preview", ProjectID: tracker.ProjectID(f.project), ConversationID: f.conversation, TurnID: "preview-chat-usage", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: 1_000_000, CachedInputTokens: 400_000, OutputTokens: 100_000, ReasoningOutputTokens: 30_000}})
 		if err != nil {

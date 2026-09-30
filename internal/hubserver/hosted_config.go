@@ -87,7 +87,12 @@ func (c *HostedConfig) validate() error {
 			return err
 		}
 	}
-	return c.Billing.validate(c.Plans)
+	plans := c.Plans
+	if plans == nil {
+		defaults := defaultHostedPlans(c)
+		plans = &defaults
+	}
+	return c.Billing.validate(plans)
 }
 
 func (c *HostedConfig) deployment() (string, int64) {

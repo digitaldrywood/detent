@@ -451,6 +451,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 
 	state := &coordinatorTurnState{coordinator: c, conversationID: conversationID, toolMessages: map[string]conversationMessageRecord{}}
 	var transcript []conversationMessageRecord
+	var refusal error
 	err := c.write(turnCtx, conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		if !coordinatorHandles(*record) {
 			return errCoordinatorNothingPending
@@ -461,6 +462,11 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		}
 		if len(pending) == 0 {
 			return errCoordinatorNothingPending
+		}
+		refusal = c.service.server.database.requireHostedFeature(ctx, tx, "native_execution", now)
+		var limit *hostedLimitError
+		if refusal != nil && !errors.As(refusal, &limit) {
+			return refusal
 		}
 		if record.ProviderThreadID == "" {
 			transcript, err = c.transcript(ctx, tx, record.ID, pending[0].Seq)
@@ -498,6 +504,13 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	}
 	if err != nil {
 		return false, fmt.Errorf("start coordinator turn: %w", err)
+	}
+
+	if refusal != nil {
+		state.assistant.Text = refusal.Error()
+		ctx, cancel := context.WithTimeout(context.Background(), coordinatorWriteTimeout)
+		defer cancel()
+		return true, state.finish(ctx, conversation.DeliveryFailed, refusal, nil)
 	}
 
 	// Files the user attached to the pending messages ride the turn: the

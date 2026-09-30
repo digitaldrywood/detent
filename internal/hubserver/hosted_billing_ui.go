@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,8 +103,16 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	}
 	now := s.config.now()
 	data := templates.HostedPageData{Mode: "billing", Title: "Organization billing", CanManage: true, CanManageOwnership: true}
-	data.PlanName = fmt.Sprintf("%s · version %d", report.Entitlement.EffectiveBase.ID, report.Entitlement.EffectiveBase.Version)
+	data.PlanName = report.Entitlement.Name
+	data.PlanPrice = hostedPlanPrice(report.Entitlement.MonthlyUSDCents)
+	for _, name := range []string{"projects", "unarchived_issues"} {
+		used, limit := report.Entitlement.Usage[name], report.Entitlement.Allowances[name]
+		data.Allowances = append(data.Allowances, templates.HostedAllowanceRow{Label: strings.ReplaceAll(name, "_", " "), Consumption: strconv.FormatInt(used, 10), Allowance: strconv.FormatInt(limit, 10), Remaining: strconv.FormatInt(max(limit-used, 0), 10), OverLimit: used > limit})
+	}
 	data.BillingStatus, data.BillingMessage = hostedBillingMessage(report.State, now)
+	if (report.State.Status == "free" || report.State.Status == "") && report.Entitlement.EffectiveBase.ID != "free" {
+		data.BillingStatus, data.BillingMessage = "Complimentary access", "Your existing plan access is complimentary. No paid subscription is active."
+	}
 	data.BillingAudit = report.Audit
 	data.BillingCheckedAt = report.ReconciledAt
 	data.ChatUsage = fmt.Sprintf("%d tokens · $%.6f USD · turns: %d", report.ChatUsage.Tokens, report.ChatUsage.CostUSD, report.ChatUsage.Turns)
@@ -130,7 +139,7 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 		data.BillingEnabled = true
 		data.BillingCanPurchase = report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
 		for _, price := range cfg.Prices {
-			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: price.Label})
+			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: s.hostedPriceLabel(price)})
 		}
 	}
 	return s.renderHosted(c, http.StatusOK, data)
@@ -196,7 +205,7 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
 	if cfg := s.config.Hosted.Billing; cfg != nil {
 		for _, price := range cfg.Prices {
-			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: price.Label})
+			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: s.hostedPriceLabel(price)})
 		}
 		view.CanCheckout = !cfg.CheckoutDisabled && report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
 		if _, err := s.database.hostedBillingBinding(ctx, cfg); err == nil {
@@ -212,4 +221,12 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 		view.Audit = []templates.HostedBillingAudit{}
 	}
 	return c.JSON(http.StatusOK, view)
+}
+
+func (s *Service) hostedPriceLabel(price HostedBillingPrice) string {
+	plan, err := readHostedPlan(context.Background(), s.database.db, price.Plan)
+	if err != nil || plan.MonthlyUSDCents == nil {
+		return price.Label
+	}
+	return plan.Name + " · " + hostedPlanPrice(plan.MonthlyUSDCents)
 }
