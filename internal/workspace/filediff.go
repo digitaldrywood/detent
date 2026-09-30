@@ -67,9 +67,6 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 		}
 		return FileDiffs{}, fmt.Errorf("stat workspace path: %w", err)
 	}
-	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
-		return FileDiffs{}, err
-	}
 	indexPath, err := gitIndexPath(ctx, workspacePath)
 	if err != nil {
 		return FileDiffs{}, err
@@ -81,7 +78,7 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 	defer cleanup()
 
 	env := []string{"GIT_INDEX_FILE=" + tempIndex}
-	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
+	if _, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("add", "--intent-to-add")...); err != nil {
 		return FileDiffs{}, fmt.Errorf("git add intent to add: %w", err)
 	}
 	diffBase := gitDiffBase(ctx, workspacePath, baseRef)
@@ -90,7 +87,7 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 	// --find-renames is passed explicitly on every command below so the file
 	// list, the counts and the patch agree even where diff.renames is off in
 	// the repository's configuration.
-	numstat, err := runGitAtWithEnv(ctx, workspacePath, env, "diff", "--no-ext-diff", "--find-renames", "--numstat", "-z", diffBase)
+	numstat, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("diff", "--no-ext-diff", "--find-renames", "--numstat", "-z", diffBase)...)
 	if err != nil {
 		return FileDiffs{}, fmt.Errorf("git diff numstat: %w", err)
 	}
@@ -98,7 +95,7 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 	if err != nil {
 		return FileDiffs{}, err
 	}
-	statuses, err := runGitAtWithEnv(ctx, workspacePath, env, "diff", "--no-ext-diff", "--find-renames", "--name-status", "-z", diffBase)
+	statuses, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("diff", "--no-ext-diff", "--find-renames", "--name-status", "-z", diffBase)...)
 	if err != nil {
 		return FileDiffs{}, fmt.Errorf("git diff name-status: %w", err)
 	}
@@ -109,7 +106,7 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 		return result, nil
 	}
 	patch, truncated, err := gitDiffArgsWithinLimit(ctx, workspacePath, env, maxBytes,
-		"diff", "--no-ext-diff", "--find-renames", diffBase)
+		gitDiagnosticArgs("diff", "--no-ext-diff", "--find-renames", diffBase)...)
 	if err != nil {
 		return FileDiffs{}, err
 	}
