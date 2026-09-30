@@ -41,6 +41,7 @@ SELECT printf('project-%d',(id-1)%10),printf('issue-%d',(id-1)%300),printf('owne
 	if err != nil {
 		b.Fatal(err)
 	}
+	defer rows.Close()
 	byProject := map[string][]IssueIdentity{}
 	var projects []string
 	for rows.Next() {

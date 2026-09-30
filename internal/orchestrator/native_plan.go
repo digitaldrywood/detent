@@ -19,7 +19,7 @@ type nativePlanWorkflow struct {
 // without a dedicated plan lane use their configured review destination; an
 // approved automated result goes directly to implementation under the same lease.
 func (o *Orchestrator) nativePlanLanes(ctx context.Context, issue connector.Issue) (nativePlanWorkflow, error) {
-	states, err := o.connector.(connector.WorkflowStateReader).WorkflowStates(ctx)
+	states, err := o.connector.(connector.WorkflowStateReader).WorkflowStates(ctx) //nolint:errcheck // nativeWorkflow verifies this capability before native planning.
 	if err != nil {
 		return nativePlanWorkflow{}, err
 	}

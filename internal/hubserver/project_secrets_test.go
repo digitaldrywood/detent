@@ -12,11 +12,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 )
 
 const spritesSecretSentinel = "detent-test/org-id/token-id/SPRITES-VALUE-SENTINEL"

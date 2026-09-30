@@ -75,6 +75,7 @@ func TestRefreshHistoryQueriesUseIndexes(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				defer rows.Close()
 				var details []string
 				for rows.Next() {
 					var id, parent, unused int

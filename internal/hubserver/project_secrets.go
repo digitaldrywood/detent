@@ -7,8 +7,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 )
 
 const flySpritesToken = "fly_sprites_token"
@@ -30,7 +31,7 @@ type projectSecretRow struct {
 func secretAAD(organization, project, kind string) []byte {
 	// Array framing makes tenant, project and kind unambiguous and binds both
 	// the value and the wrapped data key to their original row.
-	encoded, _ := json.Marshal([3]string{organization, project, kind})
+	encoded, _ := json.Marshal([3]string{organization, project, kind}) //nolint:errcheck // A fixed array of strings cannot fail JSON encoding.
 	return encoded
 }
 

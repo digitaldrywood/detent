@@ -762,7 +762,7 @@ func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 				if !ok {
 					t.Fatalf("injected Runner = %T, want *sshRunner", captured.Runner)
 				}
-				workflow, _, _, err := run.Runner.SSHWorkflow(t.Context())
+				workflow, _, _, err := run.SSHWorkflow(t.Context())
 				if err != nil {
 					t.Fatal(err)
 				}

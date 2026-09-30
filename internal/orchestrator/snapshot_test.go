@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -1961,7 +1962,7 @@ func (c *slowPromotionHydrator) HydratePullRequest(ctx context.Context, issue co
 	close(c.started)
 	select {
 	case <-c.release:
-		return issue, fmt.Errorf("profile read finished")
+		return issue, errors.New("profile read finished")
 	case <-ctx.Done():
 		return issue, ctx.Err()
 	}
