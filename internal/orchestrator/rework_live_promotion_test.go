@@ -174,6 +174,7 @@ func TestCompletedReworkStartsCurrentHeadAuditBeforePromotion(t *testing.T) {
 	o.cfg.AutoPromote.Gate.RequireAutomatedReview = new(false)
 	o.cfg.AutoPromote.Gate.AutomatedReview = gate.AutomatedReviewOff
 	issue.State = "Rework"
+	issue.AssignedToWorker = true
 	issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusComplete}
 	tracker.stateIssues = []connector.Issue{issue}
 	old := securityAuditPassingRun(issue)
@@ -186,6 +187,8 @@ func TestCompletedReworkStartsCurrentHeadAuditBeforePromotion(t *testing.T) {
 	t.Cleanup(func() { close(auditor.release); o.securityAuditWG.Wait() })
 	state := newState(o.cfg)
 	now := time.Now()
+	state.Completed[issue.ID] = Completed{Issue: cloneIssue(issue), FinalState: FinalStateCompleted,
+		CompletedAt: now.Add(-time.Minute), GateWaitReason: completedReworkGateWaitReason}
 	o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
 	select {
 	case <-auditor.started:
@@ -195,6 +198,13 @@ func TestCompletedReworkStartsCurrentHeadAuditBeforePromotion(t *testing.T) {
 	o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Minute))
 	if len(tracker.updates) != 0 || !o.securityAuditEvaluation(t.Context(), issue).Running {
 		t.Fatalf("promoted while current-head audit pending: updates=%+v", tracker.updates)
+	}
+	var reason string
+	plan := newDispatchPlanner(o.cfg).plan(&state, []connector.Issue{issue}, now.Add(time.Minute), dispatchPlanHooks{
+		decision: func(d dispatchPlanDecision) { reason = d.SkipReason },
+	})
+	if len(plan.Dispatches) != 0 || reason != dispatchSkipAwaitingGate {
+		t.Fatalf("dispatch while audit pending = %v, reason = %q; want awaiting_gate", plan.DispatchOrder(), reason)
 	}
 	auditor.release <- struct{}{}
 	o.securityAuditWG.Wait()
