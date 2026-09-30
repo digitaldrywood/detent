@@ -106,6 +106,10 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
+		// Unfinished ready PRs need the existing repair lane before a worker can
+		// publish corrections. They do not gain eligibility for promotion.
+		repairOnly := autoPromoteInProgressRepairIssue(issue, cfg) &&
+			(!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg))
 		rework := gateRequiresPullRequest(cfg.Gate) && normalizeState(issue.State) == normalizeState(cfg.ReworkState)
 		if rework {
 			if _, running := state.Running[issueID]; running {
@@ -127,17 +131,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if allowanceErr != nil {
 			continue
 		}
-		if allowance.exhausted() && o.cfg.DeliverableKind != "artifact" {
-			if _, running := state.Running[issueID]; running {
-				continue
-			}
-			if allowance.Triage != nil {
-				if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil && o.logger != nil {
-					o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
-				}
-			} else if !mergeWorkerIssue(issue) {
-				o.dispatchIssue(ctx, state, issue, 1, now, "")
-			}
+		allowanceExhausted := allowance.exhausted() && o.cfg.DeliverableKind != "artifact"
+		if allowanceExhausted && !repairOnly {
+			o.handleExhaustedAutoPromoteAllowance(ctx, state, issue, allowance, now)
 			continue
 		}
 
@@ -194,6 +190,13 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		} else {
 			summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
 			decision = EvaluateAutoPromote(issue, summary, cfg, now)
+			if repairOnly && (decision.Action != AutoPromoteActionRework ||
+				(decision.Reason != AutoPromoteReasonUnresolvedReviewThreads && decision.Reason != AutoPromoteReasonCINotGreen)) {
+				if allowanceExhausted {
+					o.handleExhaustedAutoPromoteAllowance(ctx, state, issue, allowance, now)
+				}
+				continue
+			}
 		}
 		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, now)
@@ -273,6 +276,21 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		return autoPromoteTickResult{}
 	}
 	return result
+}
+
+func (o *Orchestrator) handleExhaustedAutoPromoteAllowance(
+	ctx context.Context, state *State, issue connector.Issue, allowance attemptAllowance, now time.Time,
+) {
+	if _, running := state.Running[strings.TrimSpace(issue.ID)]; running {
+		return
+	}
+	if allowance.Triage != nil {
+		if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil && o.logger != nil {
+			o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
+		}
+	} else if !mergeWorkerIssue(issue) {
+		o.dispatchIssue(ctx, state, issue, 1, now, "")
+	}
 }
 
 func autoPromoteCompletedFinalState(state *State, issueID string) string {
@@ -359,13 +377,21 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 			_, running = state.Running[issueID]
 		}
 		liveRework := gateRequiresPullRequest(cfg.Gate) && !running && normalizeState(issue.State) == normalizeState(cfg.ReworkState) && issueHasOpenPullRequest(issue) && completedActiveIssueReadyForReview(issue, true, false)
-		if !liveRework && (!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
+		if !liveRework && !autoPromoteInProgressRepairIssue(issue, cfg) && (!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
 			continue
 		}
 		out = append(out, cloneIssue(issue))
 		seen[issueID] = struct{}{}
 	}
 	return out
+}
+
+func autoPromoteInProgressRepairIssue(issue connector.Issue, cfg AutoPromoteConfig) bool {
+	state := normalizeState(issue.State)
+	return gateRequiresPullRequest(cfg.Gate) && state == "in progress" &&
+		state != normalizeState(cfg.SourceState) && state != normalizeState(cfg.PassState) &&
+		state != normalizeState(cfg.ReworkState) &&
+		issueHasOpenPullRequest(issue) && !issue.PullRequest.Draft
 }
 
 func autoPromoteIssueCompleted(state *State, issueID string) bool {
