@@ -228,6 +228,27 @@ func TestSleepInhibitorCommand(t *testing.T) {
 	}
 }
 
+func TestKeepAwakeProblems(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fail), func(t *testing.T) {
+			r := &Runner{logger: slog.Default(), sleepInhibitor: func(_ context.Context, report func()) (func(), error) {
+				if fail {
+					return nil, errors.New("inhibitor unavailable")
+				}
+				return func() {}, nil
+			}}
+			release := r.keepAwake(t.Context())
+			if got := len(r.Problems()) > 0; got != fail {
+				t.Fatalf("has problems=%v want=%v", got, fail)
+			}
+			release()
+			if len(r.Problems()) != 0 {
+				t.Fatal("finished job retained sleep diagnostic")
+			}
+		})
+	}
+}
+
 func TestSleepInhibitorProcess(t *testing.T) {
 	if os.Getenv("DETENT_TEST_SLEEP_INHIBITOR") != "1" {
 		return

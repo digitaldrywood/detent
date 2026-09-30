@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -715,48 +716,64 @@ func TestHostedBrowserPreview(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var problemRunner runnerauth.Binding
+	var problemCredential string
 	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER") != "" {
-		binding := runnerauth.NewBinding()
 		base := browserHostedOrganizationBase
 		for _, project := range []string{f.project, f.privateProject} {
 			f.api(t, "owner", http.MethodPut, base+"/members/membership_user_browser_owner/grants", map[string]any{
 				"project_id": project, "write": true, "runner": true, "idempotency_key": "preview-runner-" + project,
 			}, http.StatusOK)
 		}
-		request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 900}
-		response := f.api(t, "owner", http.MethodPost, base+"/runner-enrollments", request, http.StatusCreated)
-		var enrollment runnerauth.Enrollment
-		decodeHubResponse(t, response, &enrollment)
-		credential, err := apikey.GenerateToken()
-		if err != nil {
-			t.Fatal(err)
+		names := []string{"Settings runner"}
+		if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_PROBLEMS") != "" {
+			names = append(names, "Healthy runner")
 		}
-		redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "test-host", DisplayName: "Settings runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "arm64"}
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+		for _, name := range names {
+			binding := runnerauth.NewBinding()
+			request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 900}
+			response := f.api(t, "owner", http.MethodPost, base+"/runner-enrollments", request, http.StatusCreated)
+			var enrollment runnerauth.Enrollment
+			decodeHubResponse(t, response, &enrollment)
+			credential, err := apikey.GenerateToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "test-host", DisplayName: name, Capacity: 2, Version: "test", OS: "linux", Architecture: "arm64"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+			if name == "Settings runner" && os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_PROBLEMS") != "" {
+				problemRunner, problemCredential = binding, credential
+				heartbeat := map[string]any{"display_name": name, "capacity": 2, "version": "test", "backend_isolation": redemption.BackendIsolation, "problems": []runnerauth.Problem{runnerauth.NewProblem("tier_unavailable")}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/projects/"+f.project+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, heartbeat), http.StatusOK)
+			}
+		}
 	}
 	accounts := make(map[string]string, len(f.cookies))
 	for account := range f.cookies {
 		accounts[account] = f.server.URL + "/__preview/account/" + account
 	}
 	fixture := struct {
-		URL            string            `json:"url"`
-		Login          string            `json:"login"`
-		Organization   string            `json:"organization"`
-		Project        string            `json:"project"`
-		PrivateProject string            `json:"private_project"`
-		Chat           string            `json:"chat"`
-		ProjectID      string            `json:"project_id"`
-		Conversation   string            `json:"conversation"`
-		WorkItem       string            `json:"work_item"`
-		OwnerEmail     string            `json:"owner_email"`
-		Accounts       map[string]string `json:"accounts"`
-		Stop           string            `json:"stop"`
-		Expires        time.Time         `json:"expires"`
+		URL               string             `json:"url"`
+		Login             string             `json:"login"`
+		Organization      string             `json:"organization"`
+		Project           string             `json:"project"`
+		PrivateProject    string             `json:"private_project"`
+		Chat              string             `json:"chat"`
+		ProjectID         string             `json:"project_id"`
+		Conversation      string             `json:"conversation"`
+		WorkItem          string             `json:"work_item"`
+		OwnerEmail        string             `json:"owner_email"`
+		Accounts          map[string]string  `json:"accounts"`
+		Stop              string             `json:"stop"`
+		Expires           time.Time          `json:"expires"`
+		ProblemRunner     runnerauth.Binding `json:"problem_runner"`
+		ProblemCredential string             `json:"problem_credential,omitempty"`
 	}{
 		URL: f.server.URL, Login: f.server.URL + "/login", Organization: f.server.URL + "/organization",
 		Project: f.server.URL + "/projects/" + f.project, PrivateProject: f.server.URL + "/projects/" + f.privateProject,
 		Chat: f.server.URL + "/chat", ProjectID: f.project, Conversation: f.conversation, WorkItem: f.workItem,
 		OwnerEmail: browserHostedOwnerEmail, Accounts: accounts, Stop: f.server.URL + "/__preview/stop", Expires: time.Now().Add(browserHostedPreviewLifetime),
+		ProblemRunner: problemRunner, ProblemCredential: problemCredential,
 	}
 	encoded, err := json.MarshalIndent(fixture, "", "  ")
 	if err != nil {

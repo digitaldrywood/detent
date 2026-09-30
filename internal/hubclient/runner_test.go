@@ -140,6 +140,41 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := fleetWorker.UpdateHost(t.Context(), machine.ID, runnerauth.HostChange{}); err == nil {
 		t.Fatal("worker changed host")
 	}
+	t.Run("diagnostics without a project orchestrator", func(t *testing.T) {
+		report := isolation.Report{"native/workflow": {}}
+		now := time.Now()
+		scheduler, err := NewScheduler(client, SchedulerConfig{
+			OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine,
+			HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, Now: func() time.Time { return now },
+			IsolationReport: func(context.Context) isolation.Report { return report },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := scheduler.Heartbeat(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		view, err := fleetAdmin.Fleet(t.Context())
+		if err != nil || len(view.Runners) != 1 || view.Runners[0].Health != "needs_attention" {
+			t.Fatalf("failed startup fleet = %#v, %v", view, err)
+		}
+		found := false
+		for _, problem := range view.Runners[0].Problems {
+			found = found || problem.Code == "settings_invalid"
+		}
+		if !found {
+			t.Fatal("invalid workflow diagnostic was not reported")
+		}
+		report = machine.BackendIsolation
+		now = now.Add(time.Minute)
+		if err := scheduler.Heartbeat(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		view, err = fleetAdmin.Fleet(t.Context())
+		if err != nil || len(view.Runners[0].Problems) != 0 || view.Runners[0].Health != "online" {
+			t.Fatalf("recovered startup fleet = %#v, %v", view, err)
+		}
+	})
 	descriptor := clientTestPolicy()
 	descriptor.Requirements = policy.Requirements{RequiredTags: []string{"build"}, RunnerID: file.Identity.RunnerID, MachineID: string(file.Identity.MachineID)}
 	descriptor = descriptor.WithID()

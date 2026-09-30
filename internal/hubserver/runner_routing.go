@@ -52,11 +52,15 @@ WHERE r.organization_id = ? AND r.id = ?`, organization, id).Scan(&r.RunnerID, &
 	case now.Before(r.LastHeartbeatAt) || !now.Before(r.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)):
 		r.Health = "offline"
 	}
+	r.ConnectionHealth = r.Health
 	r.ProjectIDs, err = readRunnerProjects(ctx, db, token)
 	if err != nil {
 		return r, err
 	}
 	r.Routing = r.Normalized()
+	if err := readRunnerProblems(ctx, db, &r); err != nil {
+		return r, err
+	}
 	if dry.Valid {
 		since, err := parseTimeValue(dry.String)
 		if err != nil {
@@ -270,6 +274,9 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants (token_id, organization_id, project_id) SELECT token_id, organization_id, ? FROM runner_identities WHERE id = ?", project, r.RunnerID); err != nil {
 				return nil, err
 			}
+		}
+		if err := refreshRunnerProblems(ctx, tx, organization, r.RunnerID, now); err != nil {
+			return nil, err
 		}
 		return readRunner(ctx, tx, organization, r.RunnerID, now)
 	})

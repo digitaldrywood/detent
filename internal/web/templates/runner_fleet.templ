@@ -15,6 +15,9 @@ templ RunnerFleetPage(data DashboardData, view RunnerFleetData) {
 		<main class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-5 py-4.5" { apiKeyDashboardRequestAttributes(APIKeysData{DashboardManagementToken:view.ManagementToken})... }>
 			<header class="flex flex-none flex-wrap items-center justify-between gap-3">
 				<div><h1 class="text-lg font-semibold text-text">Runners</h1><p class="text-xs text-sec">Named runners and the hosts available for repository work.</p></div>
+				if count := view.attentionCount(); count > 0 {
+					<a class="text-xs text-accent underline" href="/fleet/runners?health=needs_attention">{ fmt.Sprintf("%d %s attention", count, runnerAttentionVerb(count)) }</a>
+				}
 				<a class="text-xs text-accent" href="/fleet">Fleet activity</a>
 			</header>
 			<nav aria-label="Runner eligibility" class="flex flex-none flex-wrap gap-3 text-xs text-accent">
@@ -46,7 +49,7 @@ templ RunnerFleetPage(data DashboardData, view RunnerFleetData) {
 				<section class="rounded-card border border-line bg-surface p-5"><h2 class="text-sm font-semibold text-text">No runners enrolled</h2><p class="mt-2 text-xs text-sec">Enroll a runner from its authorized host, then assign tags and project access here. Repository profiles describe requirements; enrollment connects the actual machine.</p></section>
 			}
 			for _, runner := range view.Fleet.Runners {
-				if view.SelectedRunner == "" || view.SelectedRunner == runner.RunnerID {
+				if view.visible(runner) {
 					@runnerFleetCard(runner, view)
 				}
 			}
@@ -58,8 +61,15 @@ templ runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) {
 	<section class="flex flex-none flex-col gap-3 rounded-card border border-line bg-surface p-3" data-runner={ r.RunnerID }>
 		<header class="flex min-w-0 flex-wrap items-center justify-between gap-2">
 			<a class="min-w-0 break-words text-sm font-semibold text-text" href={ templ.SafeURL("/fleet/runners?runner="+url.QueryEscape(r.RunnerID)) }>{ r.DisplayName }</a>
-			<span class="rounded border border-line px-2 py-1 text-xs text-sec">{ runnerHealthLabel(r, time.Now()) } · { r.State }</span>
+			<span class="rounded border border-line px-2 py-1 text-xs text-sec" data-health={ r.Health }>{ runnerHealthLabel(r, time.Now()) } · { r.State }</span>
 		</header>
+		if len(r.Problems) > 0 {
+			<ul aria-label="Runner problems" role={ runnerProblemRole(r.Health) } class="flex flex-col gap-2 text-xs">
+				for _, problem := range r.Problems {
+					<li data-problem={ problem.Code }><p class="font-medium text-text">{ problem.Message }</p><p class="text-sec">{ problem.FixHint }</p></li>
+				}
+			</ul>
+		}
 		<div class="flex flex-wrap gap-1" aria-label="Runner tags">
 			if len(r.Tags) == 0 {
 				<span class="text-xs text-sec">No tags assigned</span>
@@ -72,7 +82,7 @@ templ runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) {
 			<dt class="text-sec">Host</dt><dd class="break-words text-text">{ r.HostDisplayName } <span class="text-sec">{ r.Hostname }</span></dd>
 			<dt class="text-sec">System</dt><dd class="text-text">{ r.OS } / { r.Architecture }</dd>
 			<dt class="text-sec">Runner capacity</dt><dd class="font-mono text-text">{ fmt.Sprintf("%d / %d", r.Used, min(r.CapacityLimit, r.ReportedCapacity)) }</dd>
-			<dt class="text-sec">Isolation setting</dt><dd class="text-text">{ runnerIsolationLabel(r.IsolationTier) } (not yet enforced)</dd>
+			<dt class="text-sec">Isolation setting</dt><dd class="text-text">{ runnerIsolationLabel(r.IsolationTier) }</dd>
 			<dt class="text-sec">Home projects</dt><dd class="break-words text-text">{ runnerRequirement(runnerProjectIDs(r.HomeProjectIDs), "None") }</dd>
 			if r.HomeStatus != "" {
 				<dt class="text-sec">Home work</dt><dd class="text-text" data-home-status>{ r.HomeStatus }</dd>
@@ -105,7 +115,6 @@ templ runnerFleetCard(r runnerauth.Runner, view RunnerFleetData) {
 			<details class="border-t border-line pt-3">
 				<summary class="cursor-pointer text-xs font-semibold text-accent">Edit runner and host</summary>
 				<form class="mt-3 grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2" hx-post={ "/fleet/runners/"+r.RunnerID } hx-target="#runner-fleet-feedback" hx-swap="innerHTML">
-					<p class="text-xs text-sec sm:col-span-2">Isolation and availability settings are saved but not yet enforced.</p>
 					<input type="hidden" name="revision" value={ strconv.FormatInt(r.Revision, 10) }/>
 					@runnerTextField("Runner name", "display_name", r.DisplayName)
 					@runnerTextField("Tags, separated by commas", "tags", strings.Join(r.Tags, ", "))

@@ -19,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.SchedulingSource, error) {
+func newHubScheduling(cfg globalconfig.Config, version string, problems ...func() []runnerauth.Problem) (orchestrator.SchedulingSource, error) {
 	clientConfig := cfg.Client
 	if !clientConfig.Configured() {
 		return nil, errors.New("hub client is not configured")
@@ -76,7 +76,12 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 			return providercapacity.Load(clientConfig.ProviderCapacityFile)
 		}
 	}
+	var reportProblems func() []runnerauth.Problem
+	if len(problems) > 0 {
+		reportProblems = problems[0]
+	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		Problems:        reportProblems,
 		IsolationReport: func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
