@@ -249,15 +249,15 @@ func TestCompletionDiffFingerprint(t *testing.T) {
 func TestCompletionRebaseAfterRestart(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, lane, status, mergeAfter string
-		want                           store.WorkAttemptTerminalState
+		name, lane, mode, status, mergeAfter string
+		want                                 store.WorkAttemptTerminalState
 	}{
-		{"unfinished unchanged", "In Progress", "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"stale completion", "In Progress", "complete", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"conflict cleared", "In Progress", "in_progress", "clean", store.WorkAttemptTerminalSuccess},
-		{"unfinished Rework", "Rework", "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"stale Rework completion", "Rework", "complete", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"Rework conflict cleared", "Rework", "in_progress", "clean", store.WorkAttemptTerminalSuccess},
+		{"unfinished unchanged/Rework", "Rework", runpkg.RunModeImplement, "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"stale completion/Rework", "Rework", runpkg.RunModeImplement, "complete", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"conflict cleared/Rework", "Rework", runpkg.RunModeImplement, "in_progress", "clean", store.WorkAttemptTerminalSuccess},
+		{"unfinished unchanged/In Progress", "In Progress", runpkg.RunModeMerge, "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"stale completion/In Progress", "In Progress", runpkg.RunModeMerge, "complete", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"conflict cleared/In Progress", "In Progress", runpkg.RunModeMerge, "in_progress", "clean", store.WorkAttemptTerminalSuccess},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -275,12 +275,8 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, workAttempts: db}
 			state := newState(cfg)
 			mode := orch.dispatchMode(t.Context(), &state, before)
-			wantMode := runpkg.RunModeMerge
-			if tt.lane == "Rework" {
-				wantMode = runpkg.RunModeImplement
-			}
-			if mode != wantMode {
-				t.Fatalf("conflict repair mode = %s, want %s", mode, wantMode)
+			if mode != tt.mode {
+				t.Fatalf("conflict repair mode = %s, want %s", mode, tt.mode)
 			}
 			start := newDispatchLoopStartRecord(before, mode)
 			start.PRDiffFingerprint = before.PullRequest.DiffFingerprint

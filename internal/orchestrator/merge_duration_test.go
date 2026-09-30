@@ -626,32 +626,26 @@ func TestRepairDurationBound(t *testing.T) {
 				t.Fatal("dispatch failed")
 			}
 			request := receiveWorkerHostRunRequest(t, runner.started)
-			wantDuration := cfg.MergeWorkerMaxDuration
-			wantMode := runpkg.RunModeMerge
 			wantErr := runpkg.ErrMergeWorkerDurationExceeded
 			if lane == "Rework" {
-				wantDuration = 0
-				wantMode = runpkg.RunModeImplement
+				if request.Mode != runpkg.RunModeImplement || limit.cancel != nil {
+					t.Fatalf("Rework mode = %s, merge duration limit installed = %t", request.Mode, limit.cancel != nil)
+				}
 				wantErr = context.Canceled
-			}
-			if request.Mode != wantMode {
-				t.Fatalf("mode = %s, want %s", request.Mode, wantMode)
-			}
-			if limit.duration != wantDuration {
-				t.Fatalf("duration = %s, want %s", limit.duration, wantDuration)
-			}
-			if lane == "Rework" {
 				cancel()
 			} else {
+				if request.Mode != runpkg.RunModeMerge || limit.duration != cfg.MergeWorkerMaxDuration {
+					t.Fatalf("mode = %s, duration = %s, want merge with %s", request.Mode, limit.duration, cfg.MergeWorkerMaxDuration)
+				}
 				limit.Expire()
 			}
 			select {
 			case result := <-orch.runResults:
 				if !errors.Is(result.Err, wantErr) {
-					t.Fatalf("completion error = %v", result.Err)
+					t.Fatalf("completion error = %v, want %v", result.Err, wantErr)
 				}
 			case <-time.After(5 * time.Second):
-				t.Fatal("duration expiry did not cancel repair")
+				t.Fatal("cancellation did not complete repair")
 			}
 		})
 	}
