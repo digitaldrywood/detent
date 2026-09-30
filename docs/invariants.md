@@ -118,6 +118,12 @@ Blocked still reset the allowance and auto-promote decision memory (#2880).
 The dependency auto-unblock sweep retains these non-review decisions in Blocked
 even when an unconsumed body or native dependency is already Done; both reasons
 reuse the existing sticky-reason policy.
+Current recorded sticky reasons are evaluated before dependency hydration and
+comment reads; blocked cards that cannot auto-unblock do not consume tracker
+requests. Freshly hydrated workpad reasons still use the same sticky policy,
+and mismatched lane timestamps continue through ordinary hydration.
+`TestDependencyAutoUnblockRetainsNonReviewDecision` covers the absence of tracker
+reads for persisted allowance and workpad holds.
 
 Any closed issue, regardless of its closure reason, retains its
 non-terminal label snapshots in ordinary refresh reads, even without prior pipeline membership (#2865). The existing

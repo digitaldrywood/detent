@@ -819,6 +819,9 @@ func TestDependencyAutoUnblockRetainsNonReviewDecision(t *testing.T) {
 				if len(tracker.comments) != 0 {
 					t.Fatalf("comments = %#v, want no auto-unblock comment", tracker.comments)
 				}
+				if len(tracker.identifierCalls) != 0 {
+					t.Fatalf("identifier reads = %#v, want no tracker reads for the current persisted hold", tracker.identifierCalls)
+				}
 			})
 		}
 	}
