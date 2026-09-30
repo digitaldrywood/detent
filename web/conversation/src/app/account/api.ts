@@ -347,6 +347,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       state: string;
       capacityLimit: number;
       projectIds: readonly string[];
+      homeProjectIds?: readonly string[];
       isolationTier?: string;
       hostServices?: readonly string[];
       availability?: { timezone: string; windows: readonly string[]; hard_deadline: string };
@@ -359,6 +360,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         state: input.state,
         capacity_limit: input.capacityLimit,
         project_ids: input.projectIds,
+        ...(input.homeProjectIds !== undefined ? { home_project_ids: input.homeProjectIds } : {}),
         ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}),
         ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}),
         ...(input.availability !== undefined ? { availability: input.availability } : {}),

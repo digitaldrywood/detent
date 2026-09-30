@@ -311,3 +311,113 @@ func TestHostedBillingAuthorizationAndCheckout(t *testing.T) {
 	p.snapshot = activeBillingSnapshot(time.Now())
 	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusConflict)
 }
+
+func TestCapacityTestPriceCompatibility(t *testing.T) {
+	f := newBrowserHostedFixture(t, true)
+	d := f.service.database
+	provider := &hostedBillingProvider{snapshot: activeBillingSnapshot(time.Now())}
+	cfg := *f.service.config.Hosted
+	cfg.Billing = &HostedBillingConfig{Mode: billing.ModeTest, AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_capacity_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: provider, Prices: []HostedBillingPrice{{PriceID: "price_legacy49", Label: "Legacy $49", Plan: PlanReference{ID: "comp_team", Version: 1}}}}
+	provider.snapshot.PriceID = "price_legacy49"
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.configureHostedBilling(t.Context(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	f.service.config.Hosted = &cfg
+	worker := &hostedBillingWorker{service: f.service}
+	if err := worker.reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	before, err := d.readHostedBilling(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Plans = nil
+	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_starter_test", Label: "Starter", Plan: PlanReference{ID: "starter", Version: 1}})
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.configureHostedPlans(t.Context(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.configureHostedBilling(t.Context(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := d.readHostedBilling(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mapped PlanReference
+	if err := d.db.QueryRowContext(t.Context(), "SELECT plan_id,plan_version FROM hosted_billing_prices WHERE price_id='price_legacy49'").Scan(&mapped.ID, &mapped.Version); err != nil {
+		t.Fatal(err)
+	}
+	if mapped.ID != "comp_team" || after.Plan != before.Plan || !after.PaidThrough.Equal(before.PaidThrough) || len(provider.checkouts) != 0 {
+		t.Fatalf("legacy paid access changed: before=%#v after=%#v mapping=%#v", before, after, mapped)
+	}
+	entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entitlement.Allowances["projects"] < 20 || entitlement.Allowances["unarchived_issues"] != 2000 {
+		t.Fatalf("legacy lost access: %#v", entitlement)
+	}
+	cfg.Billing.Prices[0].Plan = PlanReference{ID: "starter", Version: 1}
+	if err := d.configureHostedBilling(t.Context(), &cfg); err == nil {
+		t.Fatal("legacy price was repointed")
+	}
+}
+
+func TestCapacityPaidPlanChanges(t *testing.T) {
+	f, provider := newHostedBillingFixture(t)
+	d := f.service.database
+	cfg := f.service.config.Hosted
+	cfg.Plans = nil
+	cfg.Billing.Prices = nil
+	for _, id := range []string{"starter", "growth", "scale"} {
+		cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_" + id, Label: id, Plan: PlanReference{ID: id, Version: 1}})
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.configureHostedPlans(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.configureHostedBilling(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id='free',base_version=1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		id               string
+		projects, issues int64
+	}{{"starter", 5, 2000}, {"growth", 25, 10000}, {"scale", 100, 50000}, {"starter", 5, 2000}, {"free", 1, 200}} {
+		t.Run(test.id, func(t *testing.T) {
+			provider.mu.Lock()
+			provider.snapshot = activeBillingSnapshot(time.Now())
+			provider.snapshot.PriceID = "price_" + test.id
+			if test.id == "free" {
+				provider.snapshot.Status = "canceled"
+			}
+			provider.mu.Unlock()
+			if err := f.service.billing.reconcile(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entitlement.EffectiveBase.ID != test.id || entitlement.Allowances["projects"] != test.projects || entitlement.Allowances["unarchived_issues"] != test.issues {
+				t.Fatalf("plan change=%#v", entitlement)
+			}
+			for _, path := range []string{"/organization/plan", "/organization/billing", "/api/cloud/billing"} {
+				requireNativeStatus(t, f.page(t, "owner", path), http.StatusOK)
+			}
+		})
+	}
+}

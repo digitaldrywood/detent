@@ -28,9 +28,10 @@ type stripeSubscription struct {
 	TrialEnd          int64           `json:"trial_end"`
 	LatestInvoice     *stripeInvoice  `json:"latest_invoice"`
 	Items             stripeList[struct {
-		Quantity         int64
-		CurrentPeriodEnd int64 `json:"current_period_end"`
-		Price            stripePrice
+		Quantity           int64
+		CurrentPeriodStart int64 `json:"current_period_start"`
+		CurrentPeriodEnd   int64 `json:"current_period_end"`
+		Price              stripePrice
 	}]
 }
 
@@ -93,6 +94,7 @@ func (s *stripeProvider) subscriptionSnapshot(ctx context.Context, binding Bindi
 		return result, nil
 	}
 	result.PriceID = item.Price.ID
+	result.PeriodStart = stripeTime(item.CurrentPeriodStart)
 	result.PeriodEnd = stripeTime(item.CurrentPeriodEnd)
 	invoice := subscription.LatestInvoice
 	if invoice == nil {

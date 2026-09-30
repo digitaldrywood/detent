@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,14 +31,16 @@ func TestRunnerHubTarget(t *testing.T) {
 		wantOrg      tracker.OrganizationID
 		wantErr      bool
 	}{
-		{name: "shared entry URL", url: "https://hub.detent.build/organizations/org_abc/", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "shared entry URL", url: "https://cloud.detent.build/organizations/org_abc/", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "legacy hosted URL remains stable", url: "https://hub.detent.build/organizations/org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "staging Cloud URL", url: "https://staging.cloud.detent.build/organizations/org_abc", wantBase: "https://staging.cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
 		{name: "self-hosted with flag", url: "https://hub.example.test", organization: "org_self", wantBase: "https://hub.example.test", wantOrg: "org_self"},
-		{name: "flag agrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
-		{name: "flag disagrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
+		{name: "flag agrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "flag disagrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
 		{name: "no organization", url: "https://hub.example.test", wantErr: true},
 		{name: "not an organization ID", url: "https://hub.example.test/organizations/acme", wantErr: true},
 		{name: "empty", url: " ", wantErr: true},
-		{name: "query string", url: "https://hub.detent.build/organizations/org_abc?x=1", wantErr: true},
+		{name: "query string", url: "https://cloud.detent.build/organizations/org_abc?x=1", wantErr: true},
 		{name: "no host", url: "/organizations/org_abc", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -176,7 +179,12 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if strings.Contains(output, "det_enroll_example") {
 		t.Fatal("register output echoed the enrollment token")
 	}
-	if len(started) != 0 || !strings.Contains(output, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(output, "detent start --config") {
+	var registration runnerRegistration
+	if err := json.Unmarshal([]byte(output), &registration); err != nil {
+		t.Fatal(err)
+	}
+	steps := strings.Join(registration.NextSteps, "\n")
+	if len(started) != 0 || !strings.Contains(steps, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(steps, "detent start --config") {
 		t.Fatalf("service started before every checkout exists (%v):\n%s", started, output)
 	}
 
@@ -185,7 +193,7 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 		t.Fatalf("written config = %+v, %v", written, err)
 	}
 	info, err := os.Stat(configPath)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %v, %v", info, err)
 	}
 

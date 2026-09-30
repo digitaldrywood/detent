@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -36,7 +37,7 @@ func prepareRunner(t *testing.T, f nativeFixture, operations ...string) runnerFi
 	var enrollment runnerauth.Enrollment
 	decodeHubResponse(t, response, &enrollment)
 	return runnerFixture{nativeFixture: f, binding: binding, enrollment: enrollment, base: base,
-		redemption: runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}}
+		redemption: runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}}
 }
 
 func (r *runnerFixture) enroll(t *testing.T) {
@@ -238,7 +239,7 @@ func TestRunnerEnrollmentValidationAndClock(t *testing.T) {
 
 func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 9, 5, 12, 0, 0, 123, time.UTC)
+	now := time.Date(2026, 9, 29, 0, 31, 39, 0, time.UTC)
 	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
 	f := newNativeFixture(t, openTestService(t, config), "", "lifecycle")
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -260,6 +261,21 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	if !renewed.ExpiresAt.Equal(now.Add(runnerauth.CredentialTTL)) || renewed.Binding != r.binding {
 		t.Fatal("renewal changed binding or expiry incorrectly")
 	}
+	// Production sequence: last renewal 12:31:39Z, stopped 22:17Z,
+	// restarted the next day at 12:34Z, after the 12:31:39Z expiry.
+	now = time.Date(2026, 9, 29, 22, 17, 0, 0, time.UTC)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), http.StatusOK)
+	now = time.Date(2026, 9, 30, 12, 34, 0, 0, time.UTC)
+	heartbeatPath := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
+	heartbeat := map[string]any{"capacity": 2, "version": "test"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeatPath, r.redemption.Credential, heartbeat), http.StatusUnauthorized)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/renew", r.redemption.Credential, struct{}{})
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &renewed)
+	if renewed.Binding != r.binding || renewed.OrganizationID != r.identity.OrganizationID || !renewed.ExpiresAt.Equal(now.Add(runnerauth.CredentialTTL)) {
+		t.Fatal("restart renewal changed identity or expiry incorrectly")
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeatPath, r.redemption.Credential, heartbeat), http.StatusOK)
 	replacement, err := apikey.GenerateToken()
 	if err != nil {
 		t.Fatal(err)
@@ -286,11 +302,12 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service = openTestService(t, config)
+	now = now.Add(30 * 24 * time.Hour)
 	for _, path := range []string{r.identityPath() + "/renew", r.identityPath() + "/rotate", f.base + "/claims", f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"} {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, replacement, struct{}{}), http.StatusUnauthorized)
 	}
 	var events string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT group_concat(kind, ',') FROM (SELECT kind FROM runner_identity_events WHERE runner_id = ? ORDER BY id)", r.binding.RunnerID).Scan(&events); err != nil || events != "enrolled,renewed,rotated,revoked" {
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT group_concat(kind, ',') FROM (SELECT kind FROM runner_identity_events WHERE runner_id = ? ORDER BY id)", r.binding.RunnerID).Scan(&events); err != nil || events != "enrolled,renewed,renewed,rotated,revoked" {
 		t.Fatalf("lifecycle audit = %q, err=%v", events, err)
 	}
 }

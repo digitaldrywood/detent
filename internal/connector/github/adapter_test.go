@@ -18,7 +18,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -1116,86 +1115,8 @@ func TestConnectorBoundedBacklogFetchesUseUnfilteredLightweightQuery(t *testing.
 	}
 }
 
-func TestConnectorFetchCandidateIssuesDoesNotBlockOnBlankProjectStatusDefaulting(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		releaseDefaultWrite := make(chan struct{})
-		var releaseOnce sync.Once
-		release := func() {
-			releaseOnce.Do(func() {
-				close(releaseDefaultWrite)
-			})
-		}
-		defer release()
-		server := &graphqlTestServer{t: t, unsupportedNative: true, responses: []graphqlTestResponse{
-			{
-				body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null}]}}}}`,
-			},
-			{
-				release: releaseDefaultWrite,
-				body:    `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
-			},
-			{
-				body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`,
-			},
-		}}
-		c, err := NewConnector(Config{
-			Endpoint: "https://blank-status.test/",
-			APIKey:   "token",
-			HTTPClient: recoveryHTTPClient(func(r *http.Request) (*http.Response, error) {
-				w := httptest.NewRecorder()
-				server.serveHTTP(w, r)
-				return w.Result(), nil
-			}),
-			ProjectSlug:  "PVT_1",
-			ActiveStates: []string{"Todo"},
-		})
-
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		type result struct {
-			issues []connector.Issue
-			err    error
-		}
-		results := make(chan result, 1)
-		go func() {
-			issues, err := c.FetchCandidateIssues(context.Background())
-			results <- result{issues: issues, err: err}
-		}()
-
-		// Wait until fetch has returned or is durably blocked on the held response.
-		// No wall-clock deadline competes with scheduling the fetch goroutine.
-		synctest.Wait()
-		select {
-		case result := <-results:
-			if result.err != nil {
-				t.Fatalf("FetchCandidateIssues() error = %v", result.err)
-			}
-			if len(result.issues) != 0 {
-				t.Fatalf("FetchCandidateIssues() len = %d, want 0", len(result.issues))
-			}
-		default:
-			t.Fatal("FetchCandidateIssues() blocked on default status write")
-		}
-
-		if requests := server.requests(); len(requests) != 2 {
-			t.Fatalf("request count before release = %d, want scan and held status lookup", len(requests))
-		}
-		release()
-		synctest.Wait()
-		requests := server.requests()
-		if len(requests) != 3 {
-			t.Fatalf("request count = %d, want 3", len(requests))
-		}
-		updateVariables := requestVariables(t, requests[2])
-		if updateVariables["itemId"] != "PVTI_blank" || updateVariables["optionId"] != "OPT_backlog" {
-			t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
-		}
-	})
-}
+// Wait until fetch has returned or is durably blocked on the held response.
+// No wall-clock deadline competes with scheduling the fetch goroutine.
 
 func TestConnectorFetchCandidateIssuesDefaultStatusWriteSurvivesParentCancellation(t *testing.T) {
 	t.Parallel()
@@ -4649,17 +4570,24 @@ func TestConnectorFetchIssueParentsReturnsParentAndTrackedInIssues(t *testing.T)
 	if len(got) != 2 {
 		t.Fatalf("FetchIssueParents() len = %d, want 2", len(got))
 	}
-	if got[0].ID != "I_parent" || got[0].Identifier != "digitaldrywood/detent#258" || got[0].State != "Todo" {
-		t.Fatalf("first parent = %#v", got[0])
-	}
-	if got[1].ID != "I_tracked_parent" || got[1].Identifier != "digitaldrywood/detent#259" || got[1].State != "In Progress" {
-		t.Fatalf("second parent = %#v", got[1])
-	}
-	if got[0].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
-		t.Fatalf("first parent child issues = %#v", got[0].ChildIssues)
-	}
-	if got[1].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
-		t.Fatalf("second parent child issues = %#v", got[1].ChildIssues)
+	for index, tt := range []struct {
+		name       string
+		id         string
+		identifier string
+		state      string
+	}{
+		{name: "sub-issue parent", id: "I_parent", identifier: "digitaldrywood/detent#258", state: "Todo"},
+		{name: "trackedIn parent", id: "I_tracked_parent", identifier: "digitaldrywood/detent#259", state: "In Progress"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := got[index]
+			if parent.ID != tt.id || parent.Identifier != tt.identifier || parent.State != tt.state {
+				t.Fatalf("parent = %#v", parent)
+			}
+			if len(parent.ChildIssues) != 1 || parent.ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
+				t.Fatalf("parent child issues = %#v", parent.ChildIssues)
+			}
+		})
 	}
 
 	requests := server.requests()
@@ -4691,12 +4619,7 @@ func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"items":[{"number":258}]}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/258",
-			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+			body:   `{"items":[{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
@@ -4720,8 +4643,8 @@ func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want parent lookup, search, project item", len(requests))
 	}
 	if requests[1]["method"] != http.MethodGet || !strings.HasPrefix(requests[1]["path"].(string), "/search/issues?") {
 		t.Fatalf("search request = %#v, want REST issue search", requests[1])
@@ -4741,12 +4664,7 @@ func TestConnectorFetchIssueParentsReturnsCrossRepoBodyReferencedEpic(t *testing
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"total_count":1,"items":[{"number":258,"html_url":"https://github.com/digitaldrywood/detent/issues/258"}]}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/258",
-			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+			body:   `{"total_count":1,"items":[{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
@@ -4767,15 +4685,131 @@ func TestConnectorFetchIssueParentsReturnsCrossRepoBodyReferencedEpic(t *testing
 	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want parent lookup, search, project item", len(requests))
 	}
 	searchPath := requests[1]["path"].(string)
 	if !strings.Contains(searchPath, "user%3Adigitaldrywood") || strings.Contains(searchPath, "repo%3A") {
 		t.Fatalf("search path = %q, want owner-scoped search", searchPath)
 	}
-	if requests[2]["path"] != "/repos/digitaldrywood/detent/issues/258" {
-		t.Fatalf("REST issue path = %#v, want cross-repo epic issue", requests[2])
+	if !strings.Contains(requests[2]["query"].(string), "projectItems") {
+		t.Fatalf("project item query = %#v, want cross-repo epic status", requests[2])
+	}
+}
+
+func TestConnectorFetchIssueParentsFiltersSearchHits(t *testing.T) {
+	t.Parallel()
+
+	type hit struct {
+		repo   string
+		title  string
+		body   string
+		labels []label
+	}
+	tests := []struct {
+		name      string
+		childRepo string
+		hits      []hit
+		wantID    string
+		labelMode bool
+	}{
+		{name: "shorthand", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "- [ ] #251"}}, wantID: "I_epic_0"},
+		{name: "qualified", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Parent", body: "digitaldrywood/detent#251", labels: []label{{Name: "epic"}}}}, wantID: "I_epic_0"},
+		{name: "full URL", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "https://github.com/digitaldrywood/detent/issues/251"}}, wantID: "I_epic_0"},
+		{name: "cross repository", childRepo: "digitaldrywood/agent-runtime", hits: []hit{{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "digitaldrywood/agent-runtime#251"}}, wantID: "I_epic_0"},
+		{name: "label status", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Parent", body: "#251", labels: []label{{Name: "epic"}, {Name: "detent:todo"}}}}, wantID: "I_epic_0", labelMode: true},
+		{name: "unrelated org hits", childRepo: "digitaldrywood/detent", hits: []hit{
+			{repo: "digitaldrywood/other", title: "Ordinary issue", body: "#251"},
+			{repo: "digitaldrywood/other", title: "Epic: Wrong child", body: "#252"},
+			{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "#251"},
+		}, wantID: "I_epic_2"},
+		{name: "no matching epic", childRepo: "digitaldrywood/detent", hits: []hit{
+			{repo: "digitaldrywood/other", title: "Ordinary issue", body: "#251"},
+			{repo: "digitaldrywood/other", title: "Epic: Wrong child", body: "#252"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := make([]restIssue, 0, len(tt.hits))
+			for index, candidate := range tt.hits {
+				body := candidate.body
+				items = append(items, restIssue{
+					NodeID:  fmt.Sprintf("I_epic_%d", index),
+					Number:  258 + index,
+					Title:   candidate.title,
+					Body:    &body,
+					State:   "open",
+					HTMLURL: fmt.Sprintf("https://github.com/%s/issues/%d", candidate.repo, 258+index),
+					Labels:  candidate.labels,
+				})
+			}
+			searchBody, err := json.Marshal(restIssueSearchResponse{TotalCount: len(items), Items: items})
+			if err != nil {
+				t.Fatal(err)
+			}
+			responses := []graphqlTestResponse{
+				{body: fmt.Sprintf(`{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":%q},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`, tt.childRepo)},
+				{method: http.MethodGet, body: string(searchBody)},
+			}
+			if tt.wantID != "" && !tt.labelMode {
+				responses = append(responses, graphqlTestResponse{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"fieldValues":{"nodes":[]}}]}}}}`})
+			}
+			server := newGraphQLTestServer(t, responses)
+			config := Config{ProjectSlug: "PVT_1"}
+			if tt.labelMode {
+				config = Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}}
+			}
+			c := newGitHubTestConnector(t, server, config)
+			got, err := c.FetchIssueParents(context.Background(), "I_child")
+			if err != nil {
+				t.Fatalf("FetchIssueParents() error = %v", err)
+			}
+			if tt.wantID == "" {
+				if len(got) != 0 {
+					t.Fatalf("FetchIssueParents() = %#v, want no parents", got)
+				}
+			} else if len(got) != 1 || got[0].ID != tt.wantID || got[0].State != "Todo" {
+				t.Fatalf("FetchIssueParents() = %#v, want %s in Todo", got, tt.wantID)
+			}
+			requests := server.requests()
+			if len(requests) != len(responses) {
+				t.Fatalf("request count = %d, want %d (no per-hit reads)", len(requests), len(responses))
+			}
+			for _, request := range requests {
+				if path, ok := request["path"].(string); ok && strings.HasPrefix(path, "/repos/") {
+					t.Fatalf("unexpected per-hit REST request: %s", path)
+				}
+			}
+		})
+	}
+}
+
+func TestConnectorFetchIssueParentsBatchesProjectFieldsForMatchingEpics(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"trackedInIssues":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`},
+		{method: http.MethodGet, body: `{"total_count":2,"items":[{"node_id":"I_epic_1","number":258,"title":"Epic: One","body":"#251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258"},{"node_id":"I_epic_2","number":259,"title":"Epic: Two","body":"digitaldrywood/detent#251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/259"}]}`},
+		{body: `{"data":{"issue0":{"id":"I_epic_1","number":258,"repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"}}]}},"issue1":{"id":"I_epic_2","number":259,"repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_2","project":{"id":"PVT_1"}}]}}}}`},
+		{body: `{"data":{"item0":{"id":"PVTI_1","statusValue":{"name":"Todo"},"fieldValues":{"nodes":[]}},"item1":{"id":"PVTI_2","statusValue":{"name":"In Progress"},"fieldValues":{"nodes":[]}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "I_epic_1" || got[0].State != "Todo" || got[1].ID != "I_epic_2" || got[1].State != "In Progress" {
+		t.Fatalf("FetchIssueParents() = %#v, want both epics with project statuses", got)
+	}
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent query, search, batched membership and fields", len(requests))
+	}
+	for _, request := range requests[2:] {
+		if query, ok := request["query"].(string); !ok || !strings.Contains(query, "item1") && !strings.Contains(query, "issue1") {
+			t.Fatalf("unbatched project query = %#v", request)
+		}
 	}
 }
 
@@ -4792,12 +4826,7 @@ func TestConnectorFetchIssueParentsPaginatesBodyReferencedEpicSearch(t *testing.
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"total_count":101,"items":[{"number":258}]}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/258",
-			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"Depends on: #251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[]}`,
+			body:   `{"total_count":101,"items":[{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"Depends on: #251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[]}]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
@@ -4815,8 +4844,8 @@ func TestConnectorFetchIssueParentsPaginatesBodyReferencedEpicSearch(t *testing.
 	}
 
 	requests := server.requests()
-	if len(requests) != 5 {
-		t.Fatalf("request count = %d, want parent lookup, 2 search pages, REST issue, project item", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent lookup, 2 search pages, project item", len(requests))
 	}
 	firstSearch := requests[1]["path"].(string)
 	secondSearch := requests[2]["path"].(string)

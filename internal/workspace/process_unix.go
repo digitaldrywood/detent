@@ -58,8 +58,10 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	// but renew the budget after each completed stage so healthy progress is not
 	// constrained by one aggregate wall-clock deadline.
 	ctx = withWorkspaceProcessScanBudget(ctx, max(2*grace, minimumWorkspaceProcessScanTimeout), context.WithTimeout)
-	return reapProcesses(ctx, path, grace, workspaceProcessIDs, syscall.Kill)
+	return reapProcesses(ctx, path, grace, reapProcessScanner, syscall.Kill)
 }
+
+var reapProcessScanner workspaceProcessScanner = workspaceProcessIDs
 
 type workspaceProcessScanContextFactory func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 

@@ -60,7 +60,7 @@ func TestWorkerScratchEnvironmentMatchesPathAlias(t *testing.T) {
 	}
 	for _, key := range []string{"TMPDIR", "DETENT_WORKER_SCRATCH"} {
 		t.Run(key, func(t *testing.T) {
-			if !workerScratchEnvironmentMatches(root, []string{key + "=" + alias}) {
+			if !workerScratchEnvironmentMatches(workerScratchOwnerRoots(root), []string{key + "=" + alias}) {
 				t.Fatal("scratch ownership was lost through a parent directory alias")
 			}
 		})

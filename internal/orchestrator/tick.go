@@ -886,7 +886,22 @@ func (o *Orchestrator) refreshTransitionSets(
 	transitionIssues := cloneIssues(fetched.candidates)
 	pipelineIssues, pipelineRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previous.pipeline)
 	transitionIssues = append(transitionIssues, pipelineIssues...)
-	watchedIssues, watchRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previous.epicTransitionWatch)
+	watchToFetch := previous.epicTransitionWatch
+	if fetched.statusOK {
+		candidateIDs := make(map[string]struct{}, len(fetched.candidates))
+		for _, issue := range fetched.candidates {
+			if id := strings.TrimSpace(issue.ID); id != "" {
+				candidateIDs[id] = struct{}{}
+			}
+		}
+		watchToFetch = make([]connector.Issue, 0, len(previous.epicTransitionWatch))
+		for _, issue := range previous.epicTransitionWatch {
+			if _, found := candidateIDs[strings.TrimSpace(issue.ID)]; !found {
+				watchToFetch = append(watchToFetch, issue)
+			}
+		}
+	}
+	watchedIssues, watchRefreshOK := o.fetchEpicTransitionIssueStates(ctx, watchToFetch)
 	transitionIssues = append(transitionIssues, watchedIssues...)
 	blockedIssues, blockedRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previous.blockedStatusIssues)
 	transitionIssues = append(transitionIssues, blockedIssues...)
