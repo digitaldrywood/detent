@@ -125,6 +125,12 @@ non-terminal label snapshots in ordinary refresh reads, even without prior pipel
 continues to exclude closed issues. `TestTickReconcilesClosedLabelsWithoutPreviousPipeline`
 covers first-refresh and between-refresh closure without direct-ID retention.
 Any closed issue leaves non-terminal lanes on the first successful reconciliation.
+Transition refresh reuses the current successful candidate and status scans for
+retained pipeline, watched, and blocked identities. It fetches retained identities
+missing from those scans so external moves and closures still resolve; a failed
+status scan preserves the existing direct refresh and retention behavior.
+`TestRefreshTransitionSetsReusesStatusSnapshots` covers fresh closed and moved
+snapshots, missing identities, and failed status scans without duplicate reads.
 Non-completed closures are also removed from the board, pipeline, and active-work
 tracking, including the lane writer’s pending publication overlays (#2869).
 Completed closures retain their existing immediate Done transition visibility.
