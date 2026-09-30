@@ -39,17 +39,24 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 	for _, configuredProject := range boot.Global.Projects {
 		id := doctorProjectID(configuredProject)
 		workflow, loadErr := loadDoctorProjectWorkflow(ctx, configuredProject, deps)
+		var migrationErr error
 		if loadErr == nil {
+			workflow.Config = projectpkg.MapNativeTracker(workflow.Config, boot.Global.Client.NativeProjects[id] != "")
 			workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, githubToken)
-			if configuredProject.Identity.Configured() {
-				identity := configuredProject.Identity
-				identity.Normalize()
-				workflow.Config.Identity = identity
-			}
-			workflow.Config.ActiveHours = projectpkg.EffectiveActiveHours(configuredProject, workflow.Config.ActiveHours)
-			loadErr = errors.Join(workflow.Config.Validate(), workflowconfig.ValidateWorkflowAdmission(workflow))
+			workflow.Config = projectpkg.EffectivePolicyConfig(configuredProject, workflow.Config)
+			migrationErr = projectpkg.ValidateNativeTrackerFeatures(workflow.Config)
+			loadErr = errors.Join(migrationErr, workflow.Config.Validate(), workflowconfig.ValidateWorkflowAdmission(workflow))
 		}
 		if loadErr != nil {
+			if migrationErr != nil {
+				report.Add(doctorCheck{
+					Name:   "Project " + id + " startup",
+					Status: doctorFail,
+					Detail: "mapped native project cannot start: " + strings.TrimSpace(loadErr.Error()),
+					Hint:   "Migrate unsupported intake or scheduled routines before approving this native project policy.",
+				})
+				continue
+			}
 			report.Add(doctorCheck{
 				Name:   "Project " + id + " startup",
 				Status: doctorWarn,
