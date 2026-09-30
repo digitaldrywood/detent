@@ -199,7 +199,7 @@ type PullRequestReferenceRefresher interface {
 }
 
 type PullRequestAssociationRevalidator interface {
-	RevalidatePullRequestAssociation(context.Context, Issue) (Issue, error)
+	RevalidatePullRequestAssociation(context.Context, Issue, bool) (Issue, error)
 }
 
 // BranchHeadLookup resolves a remote branch without requiring a local workspace.

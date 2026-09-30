@@ -48,6 +48,16 @@ failures even when the validator turn also fails, and cannot yield a verdict.
 and `TestLocalGitVerifyReviewTreeAfterSeeding`
 cover these boundaries (#3031).
 
+Verified PR delivery uses immutable forge `MergedAt` when hydrated, otherwise a
+successful programmatic merge's post-API observation time (#3482). The existing
+lane ledger and phase metadata record delivery time and its source; worker attempt
+completion retains the worker's timestamp. Receipts and merge durations use the
+delivery clock. Historical ledger rows without integration evidence retain their
+recorded attribution. `TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalState`
+replays the #3445/#3465 audit and Chicago midnight; the operator, observed-merge,
+and merge-duration fixtures cover the other existing completion paths. Lane
+ownership, failure routing and verified outcome deduplication are unchanged.
+
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; current unfinished work cannot promote on completion or
 the Rework tick. Completion and promotion use the same forge-over-assertion
@@ -303,8 +313,10 @@ preserve the checked head and a non-strict base policy; advancement of a
 non-strict base does not require workspace synchronization or a CI retry.
 `TestReadyMergeAllowsNonStrictBaseAdvancement` covers the native merge of the
 unchanged checked head; the safety matrix retains changed-head, strict-policy,
-CI, draft, thread, and operator-withdrawal controls. The same checked merge may continue
-when the matching forge condition came from a Git read; forge write and
+CI, draft, thread, and operator-withdrawal controls. A Git-read condition holds
+its failed operation retry, not unrelated merge preparation. Dirty or unchecked
+PRs still require their ordinary preparation and merge eligibility; removing
+the separate read hold does not make them ready to merge. Forge write and
 credential conditions retain their existing merge hold.
 `TestClassifyWorkspaceForgeReadFailure`,
 `TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
@@ -472,6 +484,14 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Workspace Git-read failures no longer apply a second admission brake to
+unrelated merge workers (#3487). The affected operation retains its existing
+forge retry and backoff; ordinary preparation owns its actual remote reads,
+and normal merge policy owns eligibility. No probe, recovery loop, reason,
+or configuration is added. `TestCheckedMergeUnderForgeCondition` covers dirty,
+pending and failing heads without granting merge-control readiness, and
+retains write, credential and affected-retry holds.
+
 Review routing for projects with `review.human: false` uses the existing Blocked
 lane and existing decision reasons (#3211). The reviewed fingerprints cover the
 completed-run transition reason, merge-revocation destination, and the central
@@ -609,6 +629,14 @@ instance diagnostic; only a successful response can enforce the existing REST
 reserve. This removes a self-protection path that converted a transient probe
 timeout into a project-wide dispatch outage.
 
+Generic issue no-progress outcomes do not become a shared project failure class
+(#3489). Existing issue progress, retry, allowance, and workpad paths own those
+outcomes; unrelated unpushed work and external evidence waits cannot pause the
+whole project. Concrete backend, startup, deliverable, and durable error classes
+retain the configured project failure policy. Terminal attempt outcomes remain
+unchanged. `TestGenericNoProgressDoesNotPauseProject` covers repeated unrelated
+stalls and preservation of a concrete backend failure pause.
+
 Operator rejection (#2943) consolidates promotion eligibility with existing lane
 history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate
 the PR best-effort before recording Rework and identify an otherwise unattributed
@@ -678,6 +706,15 @@ Shutdown cancels and joins cleanup. `TestWorkspaceCleanupBatch`,
 `TestWorkspaceUseAndCleanup`, and `TestFilesystemCleanupBatch` cover batch bounds,
 continued tick liveness, and workspace ownership. No configuration, lane writer,
 recovery path, or operator-facing reason is added.
+
+Cleanup delivery verification (#3484) uses the existing association reader with
+status enrichment disabled and one fresh scalar PR read. Cached association
+heads, issue closure, and branch deletion never prove delivery. Issue identity,
+repository and PR number binding, merged state, merge time, and head remain
+required before cleanup receives a delivered head. CI, workflow, review, and
+branch-policy reads remain enabled for live merge evaluation.
+`TestRevalidatePullRequestAssociationWithoutStatus` and
+`TestVerifyCleanupDelivery` cover this read consolidation and evidence boundary.
 
 PR conflict classification and conflict-cleared progress share connector helpers
 (#2934), replacing separate completion, spend, dispatch, and display checks.

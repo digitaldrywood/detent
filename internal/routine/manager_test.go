@@ -402,7 +402,7 @@ func TestManagerRoutineOptoutLabelPreventsAutoPromote(t *testing.T) {
 	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
 	workflow := config.Default()
 	workflow.Agent.AutoPromote.Enabled = true
-	workflow.Agent.AutoPromote.OptoutLabel = "requires-human-review"
+	workflow.Agent.AutoPromote.OptoutLabel = "routine-review"
 	optoutLabel := workflow.Agent.AutoPromote.OptoutLabel
 	tracker := memory.New(memory.Config{Stateful: true, Now: func() time.Time { return now }})
 	manager, err := New(Settings{

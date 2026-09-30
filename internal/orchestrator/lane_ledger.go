@@ -44,7 +44,7 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		return
 	}
 	if event.Err == nil && stateIn(running.Issue.State, o.cfg.TerminalStates) {
-		o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+		o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
 		return
 	}
 	errorClass := ""
@@ -283,4 +283,21 @@ func latestLedgerBaseline(events []store.WorkflowPhaseEvent) (store.WorkflowPhas
 		}
 	}
 	return latest, !latest.StartedAt.IsZero()
+}
+
+// programmaticMergeDelivery is called only after a successful merge API return.
+// ActivityAt records that observation; MergedAt remains immutable forge evidence.
+func (o *Orchestrator) programmaticMergeDelivery(issue connector.Issue) (connector.Issue, time.Time) {
+	merged := cloneIssue(issue)
+	observedAt := o.clockNow().UTC()
+	merged.PullRequest.State = "MERGED"
+	merged.PullRequest.ActivityAt = &observedAt
+	return merged, mergedDeliveryAt(merged, observedAt)
+}
+
+func mergedDeliveryAt(issue connector.Issue, fallback time.Time) time.Time {
+	if pr := issue.PullRequest; pr != nil && normalizePullRequestState(pr.State) == "merged" && pr.MergedAt != nil && !pr.MergedAt.IsZero() {
+		return pr.MergedAt.UTC()
+	}
+	return fallback.UTC()
 }

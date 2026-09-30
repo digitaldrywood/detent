@@ -85,7 +85,7 @@ func TestCompleteTerminalRunningClearsInFlightHeartbeatLease(t *testing.T) {
 	completionDone := make(chan struct{})
 	go func() {
 		defer close(completionDone)
-		orchestrator.completeTerminalRunning(t.Context(), &state, issue.ID, running, now, TokenTotals{})
+		orchestrator.completeTerminalRunning(t.Context(), &state, issue.ID, running, now, TokenTotals{}, now)
 	}()
 	completedBeforeRenewal := false
 	select {
