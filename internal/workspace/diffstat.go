@@ -257,9 +257,6 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 		}
 		return Diff{}, fmt.Errorf("stat workspace path: %w", err)
 	}
-	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
-		return Diff{}, err
-	}
 
 	indexPath, err := gitIndexPath(ctx, workspacePath)
 	if err != nil {
@@ -272,11 +269,11 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 	defer cleanup()
 
 	env := []string{"GIT_INDEX_FILE=" + tempIndex}
-	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
+	if _, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("add", "--intent-to-add")...); err != nil {
 		return Diff{}, fmt.Errorf("git add intent to add: %w", err)
 	}
 	diffBase := gitDiffBase(ctx, workspacePath, baseRef)
-	statOutput, err := runGitAtWithEnv(ctx, workspacePath, env, "diff", "--stat", diffBase)
+	statOutput, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("diff", "--stat", diffBase)...)
 	if err != nil {
 		return Diff{}, fmt.Errorf("git diff stat: %w", err)
 	}
@@ -299,9 +296,6 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 }
 
 func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, error) {
-	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
-		return DiffStat{}, err
-	}
 	indexPath, err := gitIndexPath(ctx, workspacePath)
 	if err != nil {
 		return DiffStat{}, err
@@ -313,7 +307,7 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, err
 	defer cleanup()
 
 	env := []string{"GIT_INDEX_FILE=" + tempIndex}
-	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
+	if _, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("add", "--intent-to-add")...); err != nil {
 		return DiffStat{}, fmt.Errorf("git add intent to add: %w", err)
 	}
 	return gitDiffStatWithEnv(ctx, workspacePath, env, "HEAD")
@@ -346,7 +340,7 @@ func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string, base s
 }
 
 func gitTrackedPaths(ctx context.Context, workspacePath string) ([]string, error) {
-	output, err := runGitAt(ctx, workspacePath, "diff", "--name-only", "--no-ext-diff", "-z", "HEAD", "--")
+	output, err := runGitAt(ctx, workspacePath, gitDiagnosticArgs("diff", "--name-only", "--no-ext-diff", "-z", "HEAD")...)
 	if err != nil {
 		return nil, fmt.Errorf("git list tracked workspace changes: %w", err)
 	}
@@ -354,7 +348,7 @@ func gitTrackedPaths(ctx context.Context, workspacePath string) ([]string, error
 }
 
 func gitUntrackedPaths(ctx context.Context, workspacePath string) ([]string, error) {
-	output, err := runGitAt(ctx, workspacePath, "ls-files", "--others", "--exclude-standard", "-z", "--")
+	output, err := runGitAt(ctx, workspacePath, gitDiagnosticArgs("ls-files", "--others", "--exclude-standard", "-z")...)
 	if err != nil {
 		return nil, fmt.Errorf("git list untracked workspace changes: %w", err)
 	}
@@ -485,7 +479,7 @@ func workspaceRecoveryFingerprint(parts ...string) string {
 }
 
 func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string, diffBase string) (DiffStat, error) {
-	output, err := runGitAtWithEnv(ctx, workspacePath, env, "diff", "--stat", diffBase)
+	output, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("diff", "--stat", diffBase)...)
 	if err != nil {
 		return DiffStat{}, fmt.Errorf("git diff stat: %w", err)
 	}
@@ -503,6 +497,7 @@ func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string,
 
 func gitDiffFingerprint(ctx context.Context, workspacePath string, env []string, diffBase string) (string, error) {
 	args := []string{"-C", workspacePath, "diff", "--no-ext-diff", "--binary", "--full-index", diffBase}
+	args = gitDiagnosticArgs(args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = append([]string{"git"}, args...)
 	cmd.WaitDelay = workspaceCommandWaitDelay
@@ -550,7 +545,7 @@ func gitDiffBase(ctx context.Context, workspacePath string, baseRef string) stri
 }
 
 func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []string, diffBase string, maxBytes int) (string, bool, error) {
-	return gitDiffArgsWithinLimit(ctx, workspacePath, env, maxBytes, "diff", diffBase)
+	return gitDiffArgsWithinLimit(ctx, workspacePath, env, maxBytes, gitDiagnosticArgs("diff", diffBase)...)
 }
 
 // gitDiffArgsWithinLimit streams one git diff invocation through a byte cap.
@@ -622,62 +617,14 @@ func gitDiffStopError(killErr error, waitErr error) error {
 	return fmt.Errorf("git diff stop after limit: %w", killErr)
 }
 
-func ensureGitInfoExcludes(ctx context.Context, workspacePath string, patterns []string) error {
-	if len(patterns) == 0 {
-		return nil
+// gitDiagnosticArgs applies runtime exclusions to one command without changing
+// repository ignore rules. Top-level pathspecs also exclude tracked artifacts.
+func gitDiagnosticArgs(args ...string) []string {
+	args = append(args, "--", ".")
+	for _, exclude := range detentHandoffDiffExcludes {
+		args = append(args, ":(top,exclude)"+exclude)
 	}
-	output, err := runGitAt(ctx, workspacePath, "rev-parse", "--git-path", "info/exclude")
-	if err != nil {
-		return fmt.Errorf("git info exclude path: %w", err)
-	}
-	excludePath := strings.TrimSpace(output)
-	if excludePath == "" {
-		return errors.New("git info exclude path is empty")
-	}
-	if !filepath.IsAbs(excludePath) {
-		excludePath = filepath.Join(workspacePath, excludePath)
-	}
-	excludePath = filepath.Clean(excludePath)
-
-	content, err := os.ReadFile(excludePath)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read git info exclude: %w", err)
-	}
-	existing := map[string]struct{}{}
-	for _, line := range strings.Split(string(content), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		existing[line] = struct{}{}
-	}
-
-	var b strings.Builder
-	b.Write(content)
-	for _, pattern := range patterns {
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" {
-			continue
-		}
-		if _, ok := existing[pattern]; ok {
-			continue
-		}
-		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
-			b.WriteString("\n")
-		}
-		b.WriteString(pattern)
-		b.WriteString("\n")
-	}
-	if b.String() == string(content) {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(excludePath), 0o700); err != nil {
-		return fmt.Errorf("create git info exclude directory: %w", err)
-	}
-	if err := os.WriteFile(excludePath, []byte(b.String()), 0o600); err != nil {
-		return fmt.Errorf("write git info exclude: %w", err)
-	}
-	return nil
+	return args
 }
 
 func gitIndexPath(ctx context.Context, workspacePath string) (string, error) {
@@ -700,7 +647,7 @@ func copyGitIndex(indexPath string) (string, func(), error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("read git index: %w", err)
 	}
-	file, err := os.CreateTemp(filepath.Dir(indexPath), "detent-index-*")
+	file, err := os.CreateTemp("", "detent-index-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("create temporary git index: %w", err)
 	}

@@ -1560,6 +1560,19 @@ artifact or coordination mechanism is added. Existing notes files remain intact.
 prior-attempt findings, retained output and durable failed-session outcomes without
 reading, creating or changing repository notes.
 
+Workspace diagnostics never rewrite shared Git metadata, including human-authored
+`info/exclude` (#3503). Diff statistics, fingerprints, patches, per-file diffs,
+and recovery path evidence apply the existing runtime exclusions through
+command-local pathspecs; tracked and untracked runtime artifacts stay excluded.
+Workspace creation and worker scratch preparation no longer install repository
+ignore rules. Diagnostic index copies live in worker-provided scratch and leave
+the real worktree indexes intact.
+`TestWorkspaceDiagnosticsPreserveSharedGitMetadata` runs diagnostics concurrently
+in two linked worktrees and checks unchanged shared exclusions (contents, inode,
+and modification time), unchanged real indexes, preserved human ignore behavior,
+and worktree-specific source changes. `TestPrepareWorkerScratchPreservesGitExclude`
+covers scratch preparation without installing exclusions.
+
 Workflow timeline reads consolidate identity matching through the existing
 issue ID, project/identifier, and project/URL indexes. The indexed identity
 union retains every matching durable event once, in timestamp/ID order, without

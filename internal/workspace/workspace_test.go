@@ -2226,9 +2226,7 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 		restoreWritableTree(t, info.Path)
 	})
 
-	if err := ensureGitInfoExcludes(t.Context(), info.Path, []string{"tmp/"}); err != nil {
-		t.Fatal(err)
-	}
+	writeFileDiffFile(t, source, ".git/info/exclude", "tmp/\n")
 	cacheDir := filepath.Join(info.Path, "tmp", "_validation-cache", "go-mod", "modernc.org", "libc@v1.73.4")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatalf("mkdir cache dir: %v", err)
@@ -2432,10 +2430,15 @@ func TestPrepareWorkerScratchPreservesPriorAttempt(t *testing.T) {
 	}
 }
 
-func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
+func TestPrepareWorkerScratchPreservesGitExclude(t *testing.T) {
 	t.Parallel()
 
 	workspacePath := initSourceRepo(t)
+	excludePath := filepath.Join(workspacePath, ".git", "info", "exclude")
+	before, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = os.RemoveAll(WorkerScratchRoot(workspacePath)) })
 	scratchPath, err := PrepareWorkerScratch(context.Background(), workspacePath)
 	if err != nil {
@@ -2449,16 +2452,12 @@ func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
 	if strings.Contains(status, ".detent/worker-tmp") {
 		t.Fatalf("git status includes worker scratch:\n%s", status)
 	}
-	excludePath := strings.TrimSpace(runCommand(t, workspacePath, "git", "rev-parse", "--git-path", "info/exclude"))
-	if !filepath.IsAbs(excludePath) {
-		excludePath = filepath.Join(workspacePath, excludePath)
-	}
-	exclude, err := os.ReadFile(excludePath)
+	after, err := os.ReadFile(excludePath)
 	if err != nil {
 		t.Fatalf("read git exclude: %v", err)
 	}
-	if !strings.Contains(string(exclude), ".detent/worker-tmp/") {
-		t.Fatalf("git exclude = %q, want worker scratch pattern", exclude)
+	if string(after) != string(before) {
+		t.Fatalf("scratch preparation changed git exclude: %q", after)
 	}
 }
 

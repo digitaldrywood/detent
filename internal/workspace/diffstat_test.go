@@ -322,12 +322,111 @@ func TestLocalGitDiffStat(t *testing.T) {
 	if !strings.Contains(status, "?? other.txt") {
 		t.Fatalf("git status = %q, want other.txt to remain untracked", status)
 	}
-	if strings.Contains(status, ".detent/notes.md") || strings.Contains(status, ".detent/lessons.md") || strings.Contains(status, ".detent/tmp") {
-		t.Fatalf("git status = %q, want Detent runtime files ignored", status)
+	if !strings.Contains(runGit(t, info.Path, "status", "--short", "--untracked-files=all"), ".detent/notes.md") {
+		t.Fatal("diagnostics changed repository ignore rules for runtime files")
 	}
-	for _, path := range []string{".detent/notes.md", ".detent/lessons.md", ".detent/tmp/scratch"} {
-		if ignored := runGit(t, info.Path, "check-ignore", path); strings.TrimSpace(ignored) != path {
-			t.Fatalf("check-ignore %s = %q, want %s", path, ignored, path)
+}
+
+// Diagnostics in linked worktrees must not rewrite their shared exclusions or
+// the worker's real index, and must filter runtime paths even when tracked.
+func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
+	t.Parallel()
+	source := initSourceRepo(t)
+	writeFileDiffFile(t, source, ".detent/notes.md", "old runtime\n")
+	runGit(t, source, "add", ".detent/notes.md")
+	runGit(t, source, "commit", "-m", "tracked runtime fixture")
+	excludePath := filepath.Join(source, ".git", "info", "exclude")
+	exclude := "# operator exclusions without a final newline\n*.operator-local"
+	writeFileDiffFile(t, source, ".git/info/exclude", exclude)
+	before, err := os.Stat(excludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	worktrees := []string{filepath.Join(root, "first"), filepath.Join(root, "second")}
+	indexes := make([][]byte, len(worktrees))
+	indexPaths := make([]string, len(worktrees))
+	for i, path := range worktrees {
+		runGit(t, source, "worktree", "add", "--detach", path, "HEAD")
+		resolved := strings.TrimSpace(runGit(t, path, "rev-parse", "--git-path", "info/exclude"))
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(path, resolved)
+		}
+		shared, err := os.Stat(resolved)
+		if err != nil || !os.SameFile(before, shared) {
+			t.Fatalf("linked worktree does not share info/exclude: %v", err)
+		}
+		writeFileDiffFile(t, path, "README.md", "source repo\nchanged\n")
+		writeFileDiffFile(t, path, "new file.txt", "worktree "+filepath.Base(path)+"\n")
+		writeFileDiffFile(t, path, "secret.operator-local", "ignored\n")
+		for _, runtime := range []string{".detent/notes.md", ".detent/lessons.md", ".detent/tmp/nested/scratch", ".detent/worker-tmp/attempt/scratch"} {
+			writeFileDiffFile(t, path, runtime, "runtime\n")
+		}
+		indexPaths[i], err = gitIndexPath(t.Context(), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		indexes[i], err = os.ReadFile(indexPaths[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name string
+		run  func(*testing.T, string)
+	}{
+		{"diffstat", func(t *testing.T, path string) {
+			stat, err := GitDiffStat(t.Context(), path)
+			if err != nil || stat.Files != 2 || stat.Added != 2 || stat.Removed != 0 || stat.Fingerprint == "" {
+				t.Errorf("GitDiffStat = %+v, %v; want only source changes and fingerprint", stat, err)
+			}
+		}},
+		{"diff", func(t *testing.T, path string) {
+			diff, err := GitDiff(t.Context(), path, 1<<20)
+			if err != nil || diff.Stat.Files != 2 || diff.Truncated || strings.Contains(diff.Patch, ".detent/") ||
+				!strings.Contains(diff.Patch, "+worktree "+filepath.Base(path)) || !strings.Contains(diff.Patch, "+changed") {
+				t.Errorf("GitDiff = %+v, %v; want this worktree's source patch only", diff, err)
+			}
+		}},
+		{"filediff", func(t *testing.T, path string) {
+			diff, err := GitFileDiffs(t.Context(), path, "", 1<<20)
+			if err != nil || len(diff.Files) != 2 {
+				t.Errorf("GitFileDiffs = %+v, %v; want two source files", diff, err)
+			}
+			file, ok := fileDiffByPath(diff.Files, "new file.txt")
+			if !ok || !strings.Contains(file.Patch, "+worktree "+filepath.Base(path)) {
+				t.Errorf("missing worktree-specific file patch: %+v", file)
+			}
+		}},
+		{"recovery paths", func(t *testing.T, path string) {
+			tracked, err := gitTrackedPaths(t.Context(), path)
+			if err != nil || !slices.Equal(tracked, []string{"README.md"}) {
+				t.Errorf("tracked paths = %v, %v", tracked, err)
+			}
+			untracked, err := gitUntrackedPaths(t.Context(), path)
+			if err != nil || !slices.Equal(untracked, []string{"new file.txt"}) {
+				t.Errorf("untracked paths = %v, %v", untracked, err)
+			}
+		}},
+	}
+	for _, test := range tests {
+		for i, path := range worktrees {
+			t.Run(test.name+"/"+filepath.Base(path), func(t *testing.T) {
+				t.Parallel()
+				test.run(t, path)
+				got, err := os.ReadFile(excludePath)
+				if err != nil || string(got) != exclude {
+					t.Errorf("shared info/exclude changed: %q, %v", got, err)
+				}
+				after, err := os.Stat(excludePath)
+				if err != nil || !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
+					t.Errorf("shared info/exclude metadata changed: %v", err)
+				}
+				index, err := os.ReadFile(indexPaths[i])
+				if err != nil || !slices.Equal(index, indexes[i]) {
+					t.Errorf("worker index changed: %v", err)
+				}
+			})
 		}
 	}
 }
