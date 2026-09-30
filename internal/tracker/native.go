@@ -56,6 +56,7 @@ type NativeIssue struct {
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	State              string              `json:"state"`
+	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`
 	Priority           *int                `json:"priority,omitempty"`
 	Labels             []string            `json:"labels"`

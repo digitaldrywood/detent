@@ -175,6 +175,7 @@ export function toWorkItemView(
   const labels = [...issue.labels];
   return {
     id: issue.work_item_id,
+    archived: issue.archived ?? false,
     projectId: issue.project_id,
     projectName,
     identifier: `${projectName}#${issue.number}`,

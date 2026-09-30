@@ -248,6 +248,9 @@ func insertHostedComplimentaryGrant(ctx context.Context, tx *sql.Tx, command hos
 }
 
 func hostedCompletionMutation(c echo.Context, input any) bool {
+	if strings.HasSuffix(c.Path(), "/work-items/:item/archive") {
+		return true
+	}
 	if event, ok := input.(tracker.NativeRunEvent); ok {
 		return event.Type == "run.finished" || event.Type == "run.checkpointed"
 	}

@@ -2305,3 +2305,44 @@ test.describe("the footer's update check", () => {
     expect(errors).toEqual([]);
   });
 });
+
+
+test("archives native work, finds retained history, and restores from the archived list", async ({ page }, testInfo) => {
+  const errors = watchConsole(page);
+  await openChat(page);
+  const project = `/projects/${hub.fixture.project_id}`;
+  const created = await hubAPI(page, "POST", `${project}/work-items`, {
+    idempotency_key: `archive-browser-${Date.now()}`,
+    title: "Retain completed archive history",
+    body: "This issue remains readable after archive.",
+    state: "Done",
+  });
+  expect(created.status).toBe(200);
+  const item = created.payload.work_item_id;
+  await page.goto(new URL(`/work/i/${item}`, hub.fixture.url).toString());
+  await expect(page.getByRole("button", { name: "Archive issue", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Archive issue", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Restore issue", exact: true })).toBeEnabled();
+  await expect(page.getByTestId("issue-identifier")).toContainText("Archived");
+  await expect(page.getByText("This issue remains readable after archive.", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("archived-issue.png") });
+  const history = await hubAPI(page, "GET", `${project}/work-items/${item}/history`);
+  expect(history.status).toBe(200);
+  expect(JSON.stringify(history.payload)).toContain('"operation":"archive"');
+  await page.goto(new URL(`/work/p/${hub.fixture.project_id}?view=list`, hub.fixture.url).toString());
+  await expect(page.getByText("Retain completed archive history", { exact: true })).toHaveCount(0);
+  await page.getByTestId("work-archived").click();
+  await expect(page.getByText("Retain completed archive history", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/archived=true/);
+  await page.reload();
+  await expect(page.getByTestId("work-archived")).toHaveAttribute("aria-pressed", "true");
+  await page.screenshot({ path: testInfo.outputPath("archived-list.png") });
+  await page.getByText("Retain completed archive history", { exact: true }).click();
+  await page.getByRole("button", { name: "Restore issue", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Archive issue", exact: true })).toBeEnabled();
+  await expect(page.getByTestId("issue-identifier")).not.toContainText("Archived");
+  const restored = await hubAPI(page, "GET", `${project}/work-items/${item}`);
+  expect(restored.payload.archived).toBe(false);
+  expect(restored.payload.state).toBe("Done");
+  expect(errors).toEqual([]);
+});

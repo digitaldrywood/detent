@@ -112,6 +112,7 @@ async function loadProject(
     // Single-valued only: the hub rejects a repeated query parameter, so one
     // value goes to the server and any others are applied client-side.
     state: serverFilter(view.state),
+    archived: view.archived === true,
     label: serverFilter(view.label),
     assignee: serverFilter(view.assignee),
     priority: undefined,
@@ -297,7 +298,7 @@ export function useBoard(
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, projects, nonce, serverState, serverLabel, serverAssignee, runnerNames]);
+  }, [http, projectId, projects, nonce, serverState, serverLabel, serverAssignee, runnerNames, view.archived]);
 
   // The hosted activity stream. It carries one integer for the whole project
   // and no event id, so it cannot say what changed and cannot be resumed: the
