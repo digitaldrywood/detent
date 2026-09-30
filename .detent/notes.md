@@ -1,6 +1,62 @@
-# Issue #3452 Rework handoff — 2026-09-30
+# Issue #3449 Rework handoff — 2026-09-30
 
 ## Codex Workpad
+
+Plan and result: attempt 7302 / generation 11 retains recovered merge f12b4e1066386e639fc86f0e1aa3d102d16edaea and publishes it with this handoff update to ready PR #3466. The merge preserves published head b99cde04a1029051c4b9dd2b534441d6f48b982c and fetched develop 3ce76fc185cf1d090eacaa27779ac77cfc84587c. Reviewed all 71 recovered merge paths: 69 exactly match the target; only notes and the config assertion differ among those paths. No stray artifacts or additional source edits. Publication resolves the unpushed recovery commit.
+
+Dependency: #3448 is closed and PR #3464 is merged at 69781ca9505d8356771e2e4d5c1552d5316cbac5, verified as an ancestor of fetched origin/develop. The orchestrator already cleared its blocker. No worker dependency or lane writes.
+
+Final issue diff: internal/config/runner_policy_test.go directly compares the effective config digest for every existing compatibility-table case, catching digest changes independently of Descriptor.Match. internal/routine/manager_test.go uses the custom routine-review opt-out label in the existing filing/auto-promotion regression. Develop already contains the equivalent zero Review omission, empty/historical label normalization, obsolete release text-test removal, INV-3 documentation, and invariant source-audit repair. Retained incoming portable shell defaults, enabled-human-review/custom-label rejection, and runtime-label preservation. No new mechanism, generated inputs, invariant enforcement change, or out-of-scope finding.
+
+Validation on the recovered source: env -u DETENT_API_TOKEN GOMAXPROCS=4 go test -p 4 . ./internal/config ./internal/policy ./internal/routine ./internal/invariants -run '^(TestRunnerPolicyUpgradeKeepsApprovedID|TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit|TestRunnerPolicyCompatibility|TestManagerRoutineOptoutLabelPreventsAutoPromote|TestReleaseWorkflowAuthenticatesExactCommitProvenance|TestReleaseHooksDoNotRegenerate|TestRepositorySources)$' -count=1 passed (22.0s command; invariant audit 15.026s). The policy package selected no tests and receives no test credit. Full remaining issue diff and merge-resolution source reviewed; whitespace inspection passed. Subsequent edits are notes only. Earlier reproduction evidence remains in the canonical issue Workpad. No full suite, coverage, race suite, or Actions rerun/wait.
+
+Handoff: configured true must run on the final committed head immediately before publication; exact gate, push, current-head checks and feedback evidence are recorded in the canonical issue Workpad. PR #3466 is already non-draft against develop and references Fixes #3449. Initial reviews and threads were empty; automated review hit its usage limit without findings and is not required. Branch protection is absent and current-head checks were absent under repository policy, with no test credit. No merge-group workflow or quiet window applies. The next scheduled integrated develop validation confirms the shard repair. Orchestrator owns lane transitions, squash merge and scheduled closure; live port 4000 is untouched.
+
+Skill draft: no — existing debugging and policy-compatibility guidance covers this repair.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7302"
+  completion_generation: "11"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+The following records concern earlier heads or other issues. Their validation, dependency and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+# Issue #3449 handoff
+
+## Historical Workpad
+
+Plan and result: reproduced all four recorded assertion failures from scheduled run 36758716559 / job 110035612931 on clean develop 640b8abc10f0adb4ad580d1835b349796062130e. No data race was reported. This branch repairs the three independent failures; the identical INV-3 source fingerprint failure remains owned by #3448 / PR #3464. Native dependency registered before coding.
+
+Key files: internal/config/config.go omits zero Review from JSON while retaining enabled review as a digest input. The existing runner_policy_test.go table pins the old opt-out default explicitly, retains the historical approval ID, and checks both config-digest and descriptor rejection of human-review enablement and opt-out removal. internal/routine/manager_test.go configures a custom opt-out label. ci_workflow_test.go removes the obsolete release-configuration text test requiring retired blocking hooks, in accordance with the test audit policy. docs/invariants.md updates INV-3; no new mechanism or generated inputs.
+
+Validation: baseline focused reproduction exited 1 in all four recorded areas (20.8s command). After pinning the old label alone, the policy regression still failed with config digest 98345caedcb8265db4907d47227b90103434cf3e3fced96c2b21c977895e4f9f, confirming the zero Review serialization defect before its fix. Passed config subtree, policy and routine tests (12.7s command), focused release provenance/hooks tests (1.6s), affected-package vet (1.1s), and final strengthened policy table (1.5s). Whitespace inspection passed. No full checks, coverage, race suite, or Actions rerun/wait. Configured gate true runs on the committed head immediately before push; final publication, review and checks evidence belongs to the canonical issue Workpad.
+
+Depends on: digitaldrywood/detent#3448. Its unmerged PR #3464 repairs the remaining recorded source-audit failure. Independent source repair is complete; publish and ready this PR, then retain the dependency for orchestrator handoff. The next scheduled integrated develop validation confirms the complete shard repair. No tracker lane writes or live-instance changes.
+
+Skill draft: no — existing debugging and policy-compatibility guidance covers this repair.
+
+```yaml
+schema: 1
+status: blocked
+blockers:
+  - ref: "digitaldrywood/detent#3448"
+    reason: "remaining recorded TestRepositorySources failure is repaired by unmerged PR #3464"
+human_action: null
+```
+
+## Historical handoffs from develop
+
+# Issue #3452 Rework handoff — 2026-09-30
+
+## Historical Workpad
 
 Plan: attempt 7270 / generation 26 refreshes ready PR #3469 after merge_fast_path_head_not_ready. Verified clean starting local/published head 6d0197539304ed9162a089c05fbbfe2ed60aaa6f. Merged fetched develop f6c8aa5746b049b71fad5c7704fe74054a5630e6, preserving published history. Develop advanced during publication; merged second fetched target 69781ca9505d8356771e2e4d5c1552d5316cbac5 into published refresh bc1bb6f680d71a5dfa87f9ff67fb41489b046c8c. Both merges conflicted only in notes; retained historical handoffs. No manual source edits were needed.
 
@@ -12,7 +68,7 @@ Handoff: ready PR #3469 targets develop and includes Fixes #3452. At initial ins
 
 Skill draft: no — existing native-helper and portable-fixture guidance covers this repair.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
