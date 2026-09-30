@@ -17,6 +17,13 @@ import {
   type WorkViewState,
 } from "./viewState.ts";
 
+function viewSearch(state: WorkViewState): Record<string, string | boolean> {
+  return {
+    ...Object.fromEntries(new URLSearchParams(serializeViewState(state))),
+    ...(state.archived === true ? { archived: true } : {}),
+  };
+}
+
 export function useViewState(
   projectId: string | null,
 ): readonly [WorkViewState, (next: WorkViewState) => void] {
@@ -33,7 +40,7 @@ export function useViewState(
         // `to: "."` keeps the route and replaces only the query, so changing a
         // filter never re-mounts the board.
         to: ".",
-        search: Object.fromEntries(new URLSearchParams(serializeViewState(next))),
+        search: viewSearch(next),
         replace: true,
       });
     },
@@ -50,7 +57,7 @@ export function useViewState(
     if (stored === null) return;
     void navigate({
       to: ".",
-      search: Object.fromEntries(new URLSearchParams(serializeViewState(stored))),
+      search: viewSearch(stored),
       replace: true,
     });
     // `searchStr` is read, not depended on: a later edit to the query must not

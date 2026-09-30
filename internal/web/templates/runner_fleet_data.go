@@ -4,6 +4,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -57,4 +58,12 @@ func runnerAvailabilityLabel(availability runnerauth.Availability) string {
 		return "Always available"
 	}
 	return strings.Join(availability.Windows, ", ") + " (" + availability.Timezone + ")"
+}
+
+func runnerHealthLabel(r runnerauth.Runner, now time.Time) string {
+	if status := r.Status(now); status == "outside_hours" {
+		return "Outside hours"
+	} else {
+		return status
+	}
 }

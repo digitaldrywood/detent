@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -21,6 +22,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	IsolationReport   func(context.Context) isolationpolicy.Report
 	ProviderReports   func() ([]providercapacity.Report, error)
 	OrganizationID    tracker.OrganizationID
 	NativeProjects    map[string]tracker.ProjectID
@@ -32,6 +34,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	isolationReport   func(context.Context) isolationpolicy.Report
 	providerReports   func() ([]providercapacity.Report, error)
 	claimPolicies     map[string]claimPolicy
 	nativeProjects    map[string]*NativeConnector
@@ -71,6 +74,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		isolationReport: config.IsolationReport,
 		providerReports: config.ProviderReports,
 		claimPolicies:   make(map[string]claimPolicy),
 		client:          client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
@@ -145,6 +149,9 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ time.Time) (orchestrator.Claimed, error) {
 	s.mu.Lock()
 	lease, ok := s.claims[strings.TrimSpace(issue.ID)]
+	if native, exists := s.nativeClaims[strings.TrimSpace(issue.ID)]; exists {
+		issue.IsolationPolicy = native.lease.IsolationPolicy
+	}
 	s.mu.Unlock()
 	if !ok {
 		return orchestrator.Claimed{}, errors.New("hub claim was not found for candidate")

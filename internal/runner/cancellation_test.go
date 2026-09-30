@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -201,6 +204,57 @@ func TestCancellationDuringDispatchPacing(t *testing.T) {
 			}
 			if !strings.Contains(logs.String(), "cancellation_source="+tt.source) {
 				t.Fatalf("completion log lacks pacing attribution: %s", logs.String())
+			}
+		})
+	}
+}
+
+func TestSleepInhibitorCommand(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		platform, name string
+		args           []string
+	}{
+		{"darwin", "caffeinate", []string{"-i", "-w", strconv.Itoa(os.Getpid())}},
+		{"linux", "systemd-inhibit", []string{"--what=sleep", "--mode=block", "--who=Detent", "--why=Runner job", "cat"}},
+		{"windows", "", nil},
+	} {
+		t.Run(tt.platform, func(t *testing.T) {
+			name, args := sleepInhibitorCommand(tt.platform)
+			if name != tt.name || strings.Join(args, "|") != strings.Join(tt.args, "|") {
+				t.Fatalf("command = %s %v", name, args)
+			}
+		})
+	}
+}
+
+func TestSleepInhibitorProcess(t *testing.T) {
+	if os.Getenv("DETENT_TEST_SLEEP_INHIBITOR") != "1" {
+		return
+	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
+	os.Exit(0)
+}
+
+func TestSleepInhibitorRelease(t *testing.T) {
+	for _, platform := range []string{"darwin", "linux", "windows"} {
+		t.Run(platform, func(t *testing.T) {
+			var process *exec.Cmd
+			command := func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+				process = exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSleepInhibitorProcess$")
+				process.Env = append(os.Environ(), "DETENT_TEST_SLEEP_INHIBITOR=1")
+				return process
+			}
+			release, err := startSleepInhibitor(t.Context(), platform, command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if platform != "windows" && (process == nil || process.Process == nil) {
+				t.Fatal("inhibitor did not start")
+			}
+			release()
+			if process != nil && process.ProcessState == nil {
+				t.Fatal("inhibitor was not reaped")
 			}
 		})
 	}
