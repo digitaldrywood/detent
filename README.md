@@ -177,6 +177,10 @@ at hand.
 
 ### Get started
 
+[Detent Cloud](https://cloud.detent.build) is the shared hosted product. See
+[Cloud onboarding](docs/cloud-onboarding.md) for sign-in and runner enrollment.
+
+
 - [Quick Start](docs/getting-started.md) — configure a tracker and run Detent.
 - [Project Onboarding](docs/ONBOARDING.md) — agent-guided installation and project setup.
 - [Bootstrap a new machine](docs/bootstrap.md) — install prerequisites, templates, and service files.

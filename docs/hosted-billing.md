@@ -1,6 +1,6 @@
 # Hosted subscription billing
 
-The shared product at `https://hub.detent.build` bills organizations only for use
+The shared product at `https://cloud.detent.build` bills organizations only for use
 of the operator's hosted service. Self-hosted Detent is free with any supported
 authentication provider, including WorkOS/custom; auth selection never enables
 Detent billing, a subscription check or Cloud networking.
@@ -230,8 +230,8 @@ first live purchase creates a new live customer; switching `live` back to `test`
 is refused.
 
 Register one webhook endpoint per mode in the Stripe dashboard:
-`https://hub.detent.build/webhooks/stripe/test` (and, only after live activation,
-`https://hub.detent.build/webhooks/stripe/live`). Send the subscription, invoice,
+`https://cloud.detent.build/webhooks/stripe/test` (and, only after live activation,
+`https://cloud.detent.build/webhooks/stripe/live`). Send the subscription, invoice,
 checkout session, charge refund/dispute and customer events. The entry verifies
 the signature with the mode's secret and the event's `livemode` before anything
 else, stores the event ID, type and customer in its registry inbox, then routes it
@@ -312,7 +312,7 @@ startup; neither auth choice nor a key prefix silently chooses a deployment mode
 | --- | --- | --- |
 | API key environment reference | `DETENT_STRIPE_TEST_KEY` (`sk_test_` / `rk_test_`) | `DETENT_STRIPE_LIVE_KEY` (`sk_live_` / `rk_live_`) |
 | Webhook secret environment reference | `DETENT_STRIPE_TEST_WEBHOOK_SECRET` | `DETENT_STRIPE_LIVE_WEBHOOK_SECRET` |
-| Shared endpoint | `https://hub.detent.build/webhooks/stripe/test` | `https://hub.detent.build/webhooks/stripe/live` |
+| Shared endpoint | `https://cloud.detent.build/webhooks/stripe/test` | `https://cloud.detent.build/webhooks/stripe/live` |
 | Object/event requirement | Verified account, mapped customer/price, `livemode=false` | Verified account, separate mapped customer/price, `livemode=true` |
 
 Both secrets use `whsec_`; the prefix cannot establish mode. Verify the signature

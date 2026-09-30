@@ -896,6 +896,16 @@ retains its last successful value on refresh failure and does not independently
 audit GitHub or include observed-only lanes. No additional polling or dispatch
 gate is introduced.
 
+The approved Cloud domain migration (#3241) consolidates shared hosted origin
+comparison around the explicit production and staging alias pairs. Reopening a
+shared tenant may use its environment's old or canonical hostname while keeping
+its immutable stored origin as history. Organization, provider, bootstrap identity,
+deployment mode and allocation generation must still match. This introduces no
+binding migration, revocation, configuration key or recovery path; self-hosted
+origin binding stays exact. `TestHostedDatabaseCloudAliases` covers forward
+migration, rollback, unchanged stored bindings and rejected environment/identity
+substitutions.
+
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
 allowlist or a dynamic-function digest; never refresh these blindly to pass CI.

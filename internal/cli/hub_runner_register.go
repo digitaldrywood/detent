@@ -57,7 +57,7 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 		Short: "Register this host as a runner with one command from the Enroll dialog",
 		Long: "Generates this host's runner identity locally, redeems the one-time enrollment token, writes the runner configuration, and with --service installs and starts it as a background service. " +
 			"The token is single-use and expires within 15 minutes; the credential the host generates is sent once and stored only as a hash by the Hub.",
-		Example:      `detent hub runner register --url https://hub.detent.build/organizations/org_example --token det_enroll_example --name "Build host" --service`,
+		Example:      `detent hub runner register --url https://cloud.detent.build/organizations/org_example --token det_enroll_example --name "Build host" --service`,
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -219,7 +219,7 @@ func runnerHubTarget(raw, organization string) (string, tracker.OrganizationID, 
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", "", errors.New("--url must be the organization's Hub URL, for example https://hub.detent.build/organizations/org_example")
+		return "", "", errors.New("--url must be the organization's Hub URL, for example https://cloud.detent.build/organizations/org_example")
 	}
 	org := strings.TrimSpace(organization)
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")

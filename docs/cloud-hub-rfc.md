@@ -9,7 +9,7 @@ RFC before dependent implementation. The RFC can finish independently of every
 implementation below.
 
 Detent remains a Go agent orchestrator delivered as one binary. Local operation,
-a customer-hosted Hub, and the shared hosted service at `https://hub.detent.build`
+a customer-hosted Hub, and the shared hosted service at `https://cloud.detent.build`
 are supported directions. Hosted access has organization free/paid entitlements.
 Self-hosted Detent is free with customer-selected authentication, including WorkOS,
 custom, generic or local options; it never requires a Detent hosted account,
@@ -143,7 +143,7 @@ Each Hub process alone opens its database. Remote clients use authenticated HTTP
 no SQLite file is shared over NFS/SMB, and no replicated writers are added. Hosted
 placement retains one organization per dedicated Hub process and SQLite file.
 The September 8 correction separates that storage boundary from the public site:
-all customer application navigation uses `https://hub.detent.build`
+all customer application navigation uses `https://cloud.detent.build`
 (external identity/payment screens return to this same origin). A shared entry service
 owns authentication, organization selection, provisioning and trusted routing.
 It does not open tenant databases. Tenant filters remain mandatory.
@@ -170,7 +170,7 @@ claim those implementations or any live deployment are complete.
 
 ```mermaid
 flowchart LR
-    Browser[Browser and customer runners] --> Edge[hub.detent.build TLS ingress]
+    Browser[Browser and customer runners] --> Edge[cloud.detent.build TLS ingress]
     Edge --> Entry[Shared entry and authenticated routing]
     Entry --> Registry[(Metadata registry: one SQLite owner)]
     Entry -->|Private authenticated requests for A| A[Tenant A Hub]
@@ -898,7 +898,7 @@ services; the RFC author does not configure live customer accounts.
 | Scenario | Evidence required |
 | --- | --- |
 | Local and self-hosted portability | Run custom/local auth with Detent Cloud, WorkOS and Stripe networking denied; auth/claims/recovery work without hosted entitlements. Separately use a WorkOS fixture with Cloud/Stripe blocked and verify auth choice does not enable billing |
-| Shared-site journey | Execute the two-organization, concurrent-tab trace in [onboarding](cloud-onboarding.md#shared-site-acceptance-trace); all customer routes use hub.detent.build |
+| Shared-site journey | Execute the two-organization, concurrent-tab trace in [onboarding](cloud-onboarding.md#shared-site-acceptance-trace); all customer routes use cloud.detent.build |
 | Shared ingress isolation | Spoof headers/paths, replay assertions, bypass the entry service, change allocation generation and reuse cross-tenant cursors/grants; deny before content or mutation |
 | Self-service recovery | Crash between each provider/registry/tenant commit, repeat creation concurrently, exhaust capacity, restore mismatched snapshots and replay deletion; no duplicate owner, tenant, customer or live SQLite writer |
 | Cloud native work | Hosted fixture login, scoped organization/project, full native issue/comment/dependency edits, customer runner execution and Change creation; no external issue identity required |

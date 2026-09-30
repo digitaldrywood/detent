@@ -105,7 +105,7 @@ and the projects the runner may work on, creates a token-first enrollment, and
 shows one command to run on the host:
 
 ```sh
-detent hub runner register --url https://hub.detent.build/organizations/org_example \
+detent hub runner register --url https://cloud.detent.build/organizations/org_example \
   --token det_enroll_example --name "Build host" --capacity 2 --service
 ```
 
