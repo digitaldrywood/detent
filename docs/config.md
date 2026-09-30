@@ -44,6 +44,15 @@ It then evicts remaining build entries oldest-first until the cache fits
 (`trim.txt` and `README`) is never removed. The module cache is reported and
 shared but is not trimmed. Concurrent builds can grow the cache between sweeps.
 
+## GitHub completion CI policy
+
+Omitting `gate.required_status_checks` retains aggregate CI evaluation. Explicit
+`gate.required_status_checks: []` uses the PR base branch's native required
+checks. If the branch requires none, absent or pending optional CI does not
+block promotion or merging. Reported failed CI always blocks. Native missing,
+pending, and failed checks still block. A nonempty list retains the existing
+configured-check behavior.
+
 ## Issue session allowance
 
 Code and rework share a fixed allowance of three sessions without a merged PR.
@@ -51,7 +60,9 @@ The next code dispatch runs one read-only triage pass, publishes its explanation
 and leaves the issue in Human Review. An operator move out of Human Review
 renews the allowance, as does a merged PR. Detent-instance moves, new PR heads,
 changed CI signatures, ordinary lane moves, and acknowledgements alone do not
-renew it; instance-attributed failures do not consume it. The existing triage
+renew it; instance-attributed failures do not consume it. Completed, successful
+PR deliveries without a recorded error also do not consume it; waiting on the
+completion gate is not a failed delivery. The existing triage
 comment records the operator reset timestamp when comment updates are supported.
 
 The former `agent.auto_promote.rework_limit` and

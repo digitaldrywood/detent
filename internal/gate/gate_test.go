@@ -1014,3 +1014,21 @@ func TestLocalStatusConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectivePreservesRequiredStatusPolicyPresence(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		checks []string
+	}{
+		{name: "omitted"},
+		{name: "explicitly empty", checks: []string{}},
+		{name: "configured", checks: []string{"Checks"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Effective(Effective(Config{RequiredStatusChecks: tt.checks}))
+			if (got.RequiredStatusChecks == nil) != (tt.checks == nil) || !slices.Equal(got.RequiredStatusChecks, tt.checks) {
+				t.Fatalf("required checks=%#v, want %#v", got.RequiredStatusChecks, tt.checks)
+			}
+		})
+	}
+}
