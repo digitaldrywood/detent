@@ -2,11 +2,13 @@ package web
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -24,11 +26,12 @@ type boardIdentityCache struct {
 }
 
 type boardIdentityEntry struct {
-	projectID string
-	config    string
-	issue     string
-	identity  agentidentity.Identity
-	valid     bool
+	projectID     string
+	config        string
+	issue         string
+	identity      agentidentity.Identity
+	stageIdentity agentidentity.Identity
+	valid         bool
 }
 
 func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]agentidentity.Identity {
@@ -36,6 +39,11 @@ func (s *Server) boardConfiguredAgents(snapshot telemetry.Snapshot) map[string]a
 }
 
 func (s *Server) boardConfiguredAgentsForProject(snapshot telemetry.Snapshot, projectID string) map[string]agentidentity.Identity {
+	identities, _ := s.boardAgentIdentitiesForProject(snapshot, projectID)
+	return identities
+}
+
+func (s *Server) boardAgentIdentitiesForProject(snapshot telemetry.Snapshot, projectID string) (map[string]agentidentity.Identity, map[string]agentidentity.Identity) {
 	s.boardIdentities.mu.Lock()
 	defer s.boardIdentities.mu.Unlock()
 	next := make(map[string]*boardIdentityEntry)
@@ -49,6 +57,8 @@ func (s *Server) boardConfiguredAgentsForProject(snapshot telemetry.Snapshot, pr
 	defer func() { s.boardIdentities.entries = next }()
 	configKeys := make(map[string]string)
 	identities := make(map[string]agentidentity.Identity, len(snapshot.BoardIssues))
+	stages := make(map[string]agentidentity.Identity, len(snapshot.BoardIssues))
+	configs := make(map[string]workflowconfig.Config)
 	defaults := s.kanbanWorkflow.WithAgentDefaults(s.currentGlobalConfig().Global.Agents, workflowconfig.AgentBudgetDefaults{})
 	resolvers := make(map[string]*runner.BoardIdentityResolver)
 	issues := boardIdentityIssues(snapshot)
@@ -63,6 +73,7 @@ func (s *Server) boardConfiguredAgentsForProject(snapshot telemetry.Snapshot, pr
 					tracker = tracked.Connector()
 				}
 			}
+			configs[issue.ProjectID] = cfg
 			ctx := selector.Context{Persona: cfg.Tracker.Assignee}
 			if identifier, ok := tracker.(connector.InstanceIdentifier); ok {
 				ctx.InstanceLogin = identifier.InstanceLogin()
@@ -91,7 +102,11 @@ func (s *Server) boardConfiguredAgentsForProject(snapshot telemetry.Snapshot, pr
 			Labels: issue.Labels, AuthorID: issue.AuthorID, AssigneeID: issue.AssigneeID,
 			Assignees: issue.Assignees, Priority: issue.Priority, Fields: issue.Fields, ModelOverride: issue.ModelOverride,
 		}
-		inputJSON, err := json.Marshal(input)
+		role := boardSheetRole(snapshot, issue, configs[issue.ProjectID])
+		inputJSON, err := json.Marshal(struct {
+			Issue connector.Issue
+			Role  string
+		}{input, role})
 		if err != nil {
 			continue
 		}
@@ -101,17 +116,56 @@ func (s *Server) boardConfiguredAgentsForProject(snapshot telemetry.Snapshot, pr
 			next[key] = entry
 			if entry.valid {
 				identities[key] = entry.identity
+				stages[key] = entry.stageIdentity
 			}
 			continue
 		}
 		identity, err := resolver.Identity(input)
-		next[key] = &boardIdentityEntry{projectID: issue.ProjectID, config: configKeys[issue.ProjectID], issue: string(inputJSON), identity: identity, valid: err == nil}
+		stageIdentity := identity
+		if err == nil && role != "" && role != identity.Role {
+			var stageErr error
+			stageIdentity, stageErr = resolver.IdentityForRole(input, role)
+			if stageErr != nil {
+				stageIdentity = agentidentity.Identity{Role: role}
+			}
+		}
+		next[key] = &boardIdentityEntry{projectID: issue.ProjectID, config: configKeys[issue.ProjectID], issue: string(inputJSON), identity: identity, stageIdentity: stageIdentity, valid: err == nil}
 		if err != nil {
 			continue
 		}
 		identities[key] = identity
+		stages[key] = stageIdentity
 	}
-	return identities
+	return identities, stages
+}
+
+// Prefer live role evidence; a ready PR awaiting the validator has a different
+// next stage from its last implementation attempt.
+func boardSheetRole(snapshot telemetry.Snapshot, issue telemetry.Issue, cfg workflowconfig.Config) string {
+	key := templates.BoardIssueKey(issue)
+	for _, running := range snapshot.Running {
+		if templates.BoardIssueKey(running.Issue) == key && running.RuntimeIdentity.Role != "" {
+			return running.RuntimeIdentity.Role
+		}
+	}
+	for _, queued := range snapshot.Queue {
+		if templates.BoardIssueKey(queued.Issue) == key && queued.QueueState == telemetry.QueueStateRetrying && queued.RuntimeIdentity.Role != "" {
+			return queued.RuntimeIdentity.Role
+		}
+	}
+	for _, attempt := range snapshot.WorkAttempts {
+		if templates.BoardIssueKey(telemetry.Issue{ProjectID: attempt.ProjectID, ID: attempt.IssueID, Identifier: attempt.Identifier}) == key && attempt.Status == "running" && attempt.RuntimeIdentity.Role != "" {
+			return attempt.RuntimeIdentity.Role
+		}
+	}
+	state := strings.ToLower(strings.TrimSpace(issue.State))
+	reviewState := strings.TrimSpace(cfg.Agent.AutoPromote.SourceState)
+	if gate.Effective(cfg.Gate).Validator.Enabled && issue.PullRequest != nil && !issue.PullRequest.Draft &&
+		(state == "in progress" || state == "human review" || state == "in review" ||
+			(reviewState != "" && strings.EqualFold(state, reviewState)) || (state == "rework" && issue.GatePending)) {
+		return runner.RoleValidator
+	}
+	return ""
 }
 
 func boardIdentityIssues(snapshot telemetry.Snapshot) map[string]telemetry.Issue {

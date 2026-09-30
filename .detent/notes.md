@@ -2,6 +2,55 @@
 
 ## Codex Workpad
 
+Plan and result: attempt 7335 / generation 23 merges fetched develop ad7ab10857ba845495bc9ace4bf57fd362fb946a into published PR #3471 head 943b9d26ff92ab2d01ddc3322c4ae40ad35066c1, preserving both as ancestors. Rework is target merge conflict repair; no actionable human or bot findings remain. Only these notes conflicted; retained both historical handoffs. All source files merged automatically and match fetched develop except the existing account browser test repair. No manual source edit, generated-input change, invariant enforcement change or out-of-scope finding.
+
+Key file: tests/visual/account.spec.js selects the checked card through its contained radio, asserts exactly one selected card before and after switching, and matches Runs at once exactly to exclude its help button. It exactly matches passing implementation 8d5843246bb94582fd284844171e662d602bb549. Newly integrated develop changes affect hydration and board detail identity; account sources, generated account assets and the repaired test are unchanged relative to the preceding handoff.
+
+Validation: current JavaScript syntax and full issue whitespace diagnostics pass. Reviewed the complete issue diff; all non-notes source matches fetched develop except the unchanged account test repair. Both ancestors are verified after committing. Historical Linux Playwright account-file evidence: both failures reproduced before repair, then 11 passed and one intentional skip, with retries disabled. This notes conflict repair repeats no browser diagnostics and claims no current-head browser or full-job pass. No full checks, coverage, race suite, Actions rerun or CI wait. make generate is not applicable because no generated inputs are manually changed. Run configured true on the final committed head immediately before explicit-lease publication; exact head, diagnostics, gate/push timings and final feedback/check evidence belong in the canonical issue Workpad.
+
+Handoff: PR #3471 is already non-draft, targets develop and includes Fixes #3454. Initial GraphQL inspection found no reviews or threads; the sole PR comment is the review bot usage limit, which is not a required review. Current-head checks absent, an expected skip providing no test credit. No merge-group workflow or quiet window applies. Detent owns lane transitions and squash merging; scheduled integrated-develop validation confirms the job and closes the issue. No dependency, human action, stash or live port-4000 mutation.
+
+Skill draft: no — existing guidance covers this notes conflict repair and publication.
+
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+These records concern earlier heads or other issues; their validation and completion metadata do not apply to this attempt.
+
+# Issue #3454 Rework handoff — 2026-09-30
+
+# Incoming develop handoff
+
+# Issue #3430 implementation handoff
+
+## Implementation notes
+
+Plan and result: recover and finish the stage-aware Model / Effort row directly under State. Shared worker selection resolves configured plan/build/validate/rework/merge identities. The row attributes current and last attempts, uses the next-stage default after stage changes, and retains the last stage for terminal cards. Removed the buried Configured effort row; Session identity rows and board card rendering remain unchanged.
+
+Recovery: inspected all 14 recovered paths and retained them as issue-owned work. Finished running-attempt provenance and custom review/Rework gate-wait stage cases. No stray files, invariant enforcement changes, mechanisms, or out-of-scope findings.
+
+Key files: internal/runner/board_identity.go; internal/web/board_identity.go; internal/web/templates/sheet_data.go and sheet.templ; snapshot draft propagation; tests/visual/sheet-model-effort.spec.js.
+
+Validation: original generated renderer fails the never-attempted-plan regression because the Model / Effort row is missing. Focused runner, web, template, and snapshot table tests pass (14.1s original command; 11.0s after rebasing); focused vet and preview build pass (9.7s combined). make generate passes (22.4s), with frontend CSS/font/sourcemap/chunk warnings and no unrelated generated changes. Six selected Playwright diagnostics pass (5.4s), including both non-running card morph refresh cases and existing Session identity, activity-tab, and density assertions. The final spec waits for htmx:afterSettle before checking preserved row identity; both strengthened cases pass (1.9s). The first browser run exposed only a whitespace expectation in the new spec; corrected it and reran successfully. Chrome DevTools verified the non-running review card at 1440px and 390px without overflow; isolated preview stopped cleanly. macOS screenshot comparison is skipped by existing configuration, with no baseline changes or screenshot-test credit claimed.
+
+Rebased onto fetched develop 9f171a33c; only notes conflicted and all source files were unchanged. Preserved incoming historical handoffs.
+
+Publication: PR #3493 targets develop and includes Fixes #3430. Initial published head f3713ef3e was mergeable, with no reviews, review threads, comments, or status-check rollup. Final-head publication, configured gate, ready promotion, review/check evidence, and completion for attempt 7315 / generation 7 are recorded in the canonical issue Workpad. No implementation items remain. Configured gate is true and runs on the final committed head before publication; no full gate, coverage, race suite, or CI wait. Orchestrator owns lane transitions and merge.
+
+Skill draft: no — existing selection and isolated preview procedures cover this change.
+
+# Historical notes from develop
+
+# Issue #3258 merge fallback handoff — 2026-09-30
+
+## Historical Workpad (develop before #3430)
+
 Plan and result: attempt 7330 / generation 18 resolves merge_conflicts by merging fetched develop 69874645ab6254f5480990b298e0ce4deeb5e987 into published PR #3471 head 5c0c67f048edd771192dc72a993a94fc87291479, preserving published history. Only these notes conflicted; retained both sides' historical handoffs. All source changes merged automatically from develop. No manual source edits or out-of-scope findings.
 
 Key file: tests/visual/account.spec.js selects the checked card by its contained radio, asserts exactly one selected card before and after switching, and matches Runs at once exactly to exclude its help button. The issue-owned test exactly matches passing implementation 8d5843246bb94582fd284844171e662d602bb549. Develop adds an issue-intake section to Setup.tsx and updated generated assets; its diff does not change the repaired radio cards or enrollment field. All source files match fetched develop except the existing account test repair. No generated inputs or invariant enforcement are changed by this resolution.
@@ -10,7 +59,7 @@ Validation: current JavaScript syntax and full issue whitespace inspection pass.
 
 Handoff: PR #3471 is already non-draft, targets develop and includes Fixes #3454. Initial GraphQL inspection found no reviews or threads; automated review usage limit is not a required review. Current-head checks absent, expected under repository policy and providing no test credit. No merge-group workflow or quiet window applies. Detent owns lane transitions and squash merging; scheduled integrated-develop validation confirms the job and closes the issue. No dependencies, human action, stash or live port-4000 mutation.
 
-```detent-status
+```yaml
 schema: 1
 status: in_progress
 blockers: []

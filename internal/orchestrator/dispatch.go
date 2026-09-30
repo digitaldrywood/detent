@@ -414,14 +414,14 @@ func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, state *State, i
 		if o.logger != nil {
 			o.logger.Warn("hydrate dispatch issue failed", "issue_id", issue.ID, "error", err)
 		}
-		return connector.Issue{}, false
+		return issue, false
 	}
 	for _, hydrated := range issues {
 		if hydrated.ID == issue.ID {
 			return mergeIssueTrackerFields(issue, hydrated), true
 		}
 	}
-	return connector.Issue{}, false
+	return issue, false
 }
 
 func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
