@@ -38,9 +38,7 @@ func TestLocalGitCleanupRemovesHookArtifacts(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if err := ensureGitInfoExcludes(t.Context(), info.Path, []string{"node_modules/", "uploads/", ".local/"}); err != nil {
-		t.Fatal(err)
-	}
+	writeFileDiffFile(t, source, ".git/info/exclude", "node_modules/\nuploads/\n.local/\n")
 
 	artifacts := []struct {
 		name string
@@ -83,9 +81,7 @@ func TestLocalGitCleanupRetriesAfterGitDeregistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err := ensureGitInfoExcludes(t.Context(), info.Path, []string{"node_modules/"}); err != nil {
-		t.Fatal(err)
-	}
+	writeFileDiffFile(t, source, ".git/info/exclude", "node_modules/\n")
 	locked := filepath.Join(info.Path, "node_modules", "locked")
 	if err := os.MkdirAll(locked, 0o700); err != nil {
 		t.Fatalf("create locked artifact directory: %v", err)
@@ -274,9 +270,7 @@ func strandCleanupWorkspace(t *testing.T, backend *LocalGit, source string, issu
 	if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
 		t.Fatalf("recordCleanupOwnership() error = %v", err)
 	}
-	if err := ensureGitInfoExcludes(t.Context(), info.Path, []string{"node_modules/"}); err != nil {
-		t.Fatal(err)
-	}
+	writeFileDiffFile(t, source, ".git/info/exclude", "node_modules/\n")
 	locked := filepath.Join(info.Path, "node_modules", "locked")
 	if err := os.MkdirAll(locked, 0o700); err != nil {
 		t.Fatalf("create locked artifact directory: %v", err)
