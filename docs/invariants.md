@@ -1871,6 +1871,10 @@ operator interventions unrelated to the assigned repository task.
 isolation, per-worker SQLite state, and rejection of inherited instructions.
 Worker and launchd profiles own real `sessions` and `archived_sessions`
 directories; sync replaces legacy symlinks without touching host transcripts.
+Before verification or resume, only the requested persisted legacy thread is
+copied into profile storage. Resumed writes leave the host rollout unchanged;
+existing profile rollouts take precedence. `TestPrepareLegacyCodexRollout` and
+`TestAppServerThreadPreparation` cover continuity across this migration.
 History prefers profile transcripts and falls back to host history. Startup
 retention removes profile rollouts older than 30 days, preserving unfinished
 threads, their resume sources, and descendants of retained parents. It never
