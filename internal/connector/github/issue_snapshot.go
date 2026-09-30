@@ -58,7 +58,7 @@ func (c *Client) FetchIssueSnapshot(ctx context.Context, rawURL string) (tracker
 	seenCursors := map[string]bool{}
 	seenComments := map[string]bool{}
 	var total int
-	for {
+	for page := 0; page < 20; page++ {
 		var response struct {
 			Repository *struct {
 				Name  string `json:"nameWithOwner"`
@@ -122,4 +122,5 @@ func (c *Client) FetchIssueSnapshot(ctx context.Context, rawURL string) (tracker
 		seenCursors[next] = true
 		cursor = next
 	}
+	return tracker.GitHubIssueSnapshot{}, fmt.Errorf("github discussion exceeds 20 pages; source context remains incomplete: %w", ErrInvalidResponse)
 }

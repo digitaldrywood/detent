@@ -23,6 +23,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	GitHubDiscovery    func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
 	GitHubIntake       func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	Problems           func() []runnerauth.Problem
 	IsolationReport    func(context.Context) isolationpolicy.Report
@@ -38,6 +39,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	githubDiscovery    func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
 	githubIntake       func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	problems           func() []runnerauth.Problem
 	isolationReport    func(context.Context) isolationpolicy.Report
@@ -82,6 +84,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 	}
 	scheduler := &Scheduler{
 		githubIntake:    config.GitHubIntake,
+		githubDiscovery: config.GitHubDiscovery,
 		problems:        config.Problems,
 		isolationReport: config.IsolationReport,
 		providerReports: config.ProviderReports,
@@ -95,6 +98,9 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		native, err := client.Native(config.OrganizationID, id)
 		if err != nil {
 			return nil, err
+		}
+		native.githubBatch = func(ctx context.Context, task tracker.GitHubBatchTask) error {
+			return scheduler.processGitHubBatch(ctx, native, task)
 		}
 		scheduler.nativeProjects[project] = &NativeConnector{client: native}
 	}
