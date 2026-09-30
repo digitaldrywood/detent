@@ -15,7 +15,7 @@ import {
   LoginCard,
   loginErrorMessage,
   OIDC_START,
-  OIDC_START_UNSCOPED,
+  OIDC_SIGN_UP,
 } from "../../src/app/account/Login.tsx";
 import {
   grantFor,
@@ -27,6 +27,7 @@ import {
 } from "../../src/app/account/Organization.tsx";
 import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "../../src/app/account/Setup.tsx";
 import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
+import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { noApprovedPolicy, saveMessage } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
@@ -83,15 +84,24 @@ function renderMembers(overrides: Partial<React.ComponentProps<typeof MembersTab
 }
 
 describe("the login card", () => {
-  it("offers both ways in, pointed at the hub's own start", () => {
-    render(<LoginCard />);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Sign in to Detent");
-    expect(screen.getByRole("link", { name: "Continue with WorkOS" }).getAttribute("href")).toBe(
-      OIDC_START,
-    );
-    expect(screen.getByRole("link", { name: "Join with invitation" }).getAttribute("href")).toBe(
-      OIDC_START_UNSCOPED,
-    );
+  it.each([LoginCard, EntrySignIn])("offers sign-in and account creation with the site navigation (%s)", (Component) => {
+    render(<Component />);
+    const card = screen.getByRole("region", { name: "Sign in to Detent" });
+    expect(within(card).getAllByRole("link").map((link) => link.textContent)).toEqual(["Sign in", "Create account"]);
+    expect(within(card).getByRole("link", { name: "Sign in" }).getAttribute("href")).toBe(OIDC_START);
+    expect(within(card).getByRole("link", { name: "Create account" }).getAttribute("href")).toBe(OIDC_SIGN_UP);
+    expect(document.body.textContent).not.toContain("WorkOS");
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Join with invitation" })).toBeNull();
+    const nav = screen.getByRole("navigation", { name: "Primary" });
+    expect(within(nav).getByRole("link", { name: "detent.build home" }).getAttribute("href")).toBe("https://detent.build/");
+    for (const [label, path] of [
+      ["How it works", "/how-it-works"], ["Why Detent", "/why-detent"],
+      ["Dashboard", "/dashboard"], ["Install", "/install"], ["Docs", "/docs"],
+      ["Videos", "/videos"], ["Open source", "/open-source"],
+    ]) {
+      expect(within(nav).getByRole("link", { name: label }).getAttribute("href")).toBe(`https://detent.build${path}`);
+    }
   });
 
   it("says what went wrong in words, never a raw code", () => {
@@ -112,22 +122,7 @@ describe("the login card", () => {
     expect(loginErrorMessage("   ")).toBeNull();
   });
 
-  it("submits the invitation token through the callback when a session exists", () => {
-    const onAcceptInvitation = vi.fn();
-    render(<LoginCard onAcceptInvitation={onAcceptInvitation} />);
-    fireEvent.change(screen.getByLabelText("Have an invitation token?"), {
-      target: { value: " inv_abc " },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Join" }));
-    expect(onAcceptInvitation).toHaveBeenCalledWith("inv_abc");
-  });
 
-  it("refuses to submit an empty token", () => {
-    const onAcceptInvitation = vi.fn();
-    render(<LoginCard onAcceptInvitation={onAcceptInvitation} />);
-    fireEvent.click(screen.getByRole("button", { name: "Join" }));
-    expect(onAcceptInvitation).not.toHaveBeenCalled();
-  });
 });
 
 describe("the members table", () => {

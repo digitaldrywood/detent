@@ -105,14 +105,7 @@ export function SignOut({ csrf }: { readonly csrf: string }): React.ReactElement
 }
 
 export function EntrySignIn(): React.ReactElement {
-  return (
-    <LoginCard
-      error={locationError()}
-      onAcceptInvitation={(token) =>
-        assign(`/invite?invitation_token=${encodeURIComponent(token)}`)
-      }
-    />
-  );
+  return <LoginCard error={locationError()} />;
 }
 
 const STATE_LABELS: Record<string, string> = {
