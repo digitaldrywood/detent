@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// The shared entry's screens: chooser, creation, provisioning progress and
-// invitation joins, each against a scripted entry API, plus the entry router.
+// The shared entry's chooser, creation and provisioning screens, each against
+// a scripted entry API, plus the entry router.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import React from "react";
@@ -19,7 +19,6 @@ import {
 import {
   CreateOrganization,
   EntryApiContext,
-  JoinInvitation,
   OrganizationChooser,
   ProvisioningProgress,
 } from "../../src/app/entry/EntryScreens.tsx";
@@ -58,7 +57,6 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     provisioning: vi.fn(async () => ({ id: "org_b", name: "Beta", state: "allocating", step: "admission", error: "", can_resume: false })),
     createOrganization: vi.fn(async () => ({ next: "/organizations/org_new/provisioning" })),
     resume: vi.fn(async () => ({ next: "/organizations/org_b/provisioning" })),
-    joinInvitation: vi.fn(async () => ({ next: "/auth/oidc/start?organization=org_a" })),
     platformOrganizations: vi.fn(async () => ({ email: "", csrf: "", can_support: false, organizations: [], unavailable: [] })),
     platformAllowlist: vi.fn(async () => ({ self_service: false, allowed_emails: [], allowed_domains: [], source: { file: "", keys: [] } })),
     platformHealth: vi.fn(async () => ({ registry: { ok: true } })),
@@ -90,13 +88,15 @@ describe("organization chooser", () => {
     expect((signOut?.querySelector('input[name="csrf"]') as HTMLInputElement).value).toBe("csrf-token");
   });
 
-  it("hides creation where the entry does not offer it", async () => {
+  it("directs an account with no organization to request an email invitation", async () => {
     renderWith(
-      fakeApi({ organizations: vi.fn(async () => ({ ...listing, can_create: false })) }),
+      fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [], pending: [], can_create: false })) }),
       <OrganizationChooser onNavigate={vi.fn()} />,
     );
-    await screen.findByRole("link", { name: /Alpha/ });
+    await screen.findByText("Ask an owner to send you an invitation.");
     expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Join with invitation" })).toBeNull();
+    expect(screen.queryByLabelText("Invitation token")).toBeNull();
   });
 
   it("sends an expired session back to sign-in", async () => {
@@ -232,17 +232,6 @@ describe("provisioning progress", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/organizations/org_b/"));
   });
 
-  it("keeps actions available when the organization list is unavailable", async () => {
-    const api = fakeApi({
-      organizations: vi.fn(async () => {
-        throw new AccountError({ status: 503, code: "membership_unavailable", message: "down" });
-      }),
-    });
-    renderWith(api, <JoinInvitation onNavigate={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("Invitation token"), { target: { value: "inv_1" } });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Join organization" }) as HTMLButtonElement).disabled).toBe(false));
-  });
-
   it("never overlaps status reads when responses are slower than the poll interval", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
@@ -272,18 +261,6 @@ describe("provisioning progress", () => {
     expect(currentStepIndex("")).toBe(0);
     expect(currentStepIndex("admission")).toBe(1);
     expect(currentStepIndex("publish")).toBe(PROVISIONING_STEPS.length - 1);
-  });
-});
-
-describe("join with invitation", () => {
-  it("joins and follows the organization sign-in", async () => {
-    const api = fakeApi();
-    renderWith(api, <JoinInvitation onNavigate={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("Invitation token"), { target: { value: " inv_1 " } });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Join organization" }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole("button", { name: "Join organization" }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("/auth/oidc/start?organization=org_a"));
-    expect(api.joinInvitation).toHaveBeenCalledWith({ token: "inv_1", csrf: "csrf-token" });
   });
 });
 
@@ -321,7 +298,7 @@ describe("entry API", () => {
 });
 
 describe("entry router", () => {
-  it.each(["/organizations", "/organizations/new", "/organizations/org_b/provisioning", "/invitations/join", "/platform", "/"])(
+  it.each(["/organizations", "/organizations/new", "/organizations/org_b/provisioning", "/platform", "/"])(
     "resolves %s",
     async (path) => {
       const router = makeEntryRouter(createMemoryHistory({ initialEntries: [path] }));

@@ -12,7 +12,6 @@ import { type EntryApi, SIGN_IN_PLATFORM } from "../../src/app/entry/api.ts";
 import {
   CreateOrganization,
   EntryApiContext,
-  JoinInvitation,
   OrganizationChooser,
 } from "../../src/app/entry/EntryScreens.tsx";
 import { formatBytes, PlatformConsole } from "../../src/app/entry/PlatformConsole.tsx";
@@ -95,7 +94,6 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     provisioning: vi.fn(async () => ({ id: "", name: "", state: "", step: "", error: "", can_resume: false })),
     createOrganization: vi.fn(async () => ({ next: "/" })),
     resume: vi.fn(async () => ({ next: "/" })),
-    joinInvitation: vi.fn(async () => ({ next: "/" })),
     platformOrganizations: vi.fn(async () => organizations),
     platformAllowlist: vi.fn(async () => allowlist),
     platformHealth: vi.fn(async () => health),
@@ -113,7 +111,6 @@ describe("staff landing", () => {
   it.each([
     ["chooser", OrganizationChooser],
     ["create", CreateOrganization],
-    ["join", JoinInvitation],
   ] as const)("sends staff from the %s screen to the platform console without customer actions", async (_, Screen) => {
     const navigate = vi.fn();
     renderWith(fakeApi(), <Screen onNavigate={navigate} />);

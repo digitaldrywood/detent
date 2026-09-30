@@ -140,13 +140,6 @@ func hostedSignInURL(data HostedPageData) templ.SafeURL {
 	return templ.SafeURL("/auth/oidc/start")
 }
 
-func hostedJoinURL(data HostedPageData) templ.SafeURL {
-	if data.SharedOrigin {
-		return templ.SafeURL("/invitations/join")
-	}
-	return templ.SafeURL("/auth/oidc/start?unscoped=1")
-}
-
 func hostedProjectPath(project string) string {
 	return "/projects/" + url.PathEscape(project)
 }

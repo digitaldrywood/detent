@@ -240,149 +240,151 @@ func TestHostedLoginSupportStartRequiresAuthorizationAndCSRF(t *testing.T) {
 	}
 }
 
-func TestHostedLoginInvitationIntentAndReplay(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name       string
-		wantStatus int
-		acceptCall bool
-	}{
-		{name: "valid", wantStatus: http.StatusSeeOther, acceptCall: true},
-		{name: "wrong recipient", wantStatus: http.StatusForbidden},
-		{name: "wrong organization", wantStatus: http.StatusForbidden},
-		{name: "provider acceptance recovery", wantStatus: http.StatusSeeOther},
-		{name: "accepted by another user", wantStatus: http.StatusForbidden},
-		{name: "expired invitation", wantStatus: http.StatusForbidden},
-		{name: "unissued invitation", wantStatus: http.StatusForbidden},
-		{name: "used local invitation", wantStatus: http.StatusForbidden},
-		{name: "membership role mismatch", wantStatus: http.StatusForbidden, acceptCall: true},
-		{name: "provider acceptance failure", wantStatus: http.StatusForbidden, acceptCall: true},
-		{name: "missing token", wantStatus: http.StatusForbidden},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			p := newHostedLoginProvider()
-			s := openTestService(t, hostedLoginConfig(t, p, true))
-			identity := hostedLoginIdentity("user_invited", "invitee@example.test", "")
-			token := hostedLoginSession(t, s, p, identity)
-			p.invitation = auth.Invitation{ID: "invitation_login", Email: identity.Email, OrganizationID: "org_provider_login", State: "pending", ExpiresAt: time.Now().Add(time.Hour)}
-			membership := hostedLoginMembership(identity.Subject, "org_provider_login", "member")
-			p.memberships = append(p.memberships, membership)
-			hostedLoginExec(t, s, "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?)", p.invitation.ID, identity.Email, "org_local_login", "member", formatHubTime(time.Now()))
-			form := url.Values{"token": {"invitation_secret"}}
-			switch tt.name {
-			case "wrong recipient":
-				p.invitation.Email = "other@example.test"
-			case "wrong organization":
-				p.invitation.OrganizationID = "org_other_provider"
-			case "provider acceptance recovery":
-				p.invitation.State, p.invitation.AcceptedUserID = "accepted", identity.Subject
-			case "accepted by another user":
-				p.invitation.State, p.invitation.AcceptedUserID = "accepted", "user_other"
-			case "expired invitation":
-				p.invitation.ExpiresAt = time.Now().Add(-time.Hour)
-			case "unissued invitation":
-				p.invitation.ID = "invitation_not_issued_locally"
-			case "used local invitation":
-				hostedLoginExec(t, s, "UPDATE hosted_invitations SET accepted_user_id = ?", identity.Subject)
-			case "membership role mismatch":
-				p.memberships[len(p.memberships)-1].Role.Slug = "admin"
-			case "provider acceptance failure":
-				p.acceptErr = auth.ErrHostedIdentity
-			case "missing token":
-				form.Del("token")
-			}
-			recorder := hostedLoginRequest(s, http.MethodPost, "/organization/join", token, form, true)
-			if recorder.Code != tt.wantStatus || (p.accepted != 0) != tt.acceptCall {
-				t.Fatalf("join status = %d, acceptance calls = %d: %s", recorder.Code, p.accepted, recorder.Body.String())
-			}
-			var count int
-			if err := s.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members WHERE user_id = ? AND active = 1", identity.Subject).Scan(&count); err != nil {
-				t.Fatal(err)
-			}
-			if tt.wantStatus == http.StatusSeeOther {
-				if count != 1 || recorder.Header().Get("Location") != "/auth/oidc/start" {
-					t.Fatal("accepted invitation did not establish membership and restart scoped login")
-				}
-				replay := hostedLoginRequest(s, http.MethodPost, "/organization/join", token, form, true)
-				if replay.Code != http.StatusForbidden || (p.accepted != 0) != tt.acceptCall {
-					t.Fatal("used invitation was accepted twice")
-				}
-			} else if count != 0 {
-				t.Fatal("rejected invitation granted local membership")
-			}
-		})
-	}
-}
-
 func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name       string
-		entryCode  int
-		resultCode int
+		name                  string
+		entryCode, resultCode int
+		message               string
 	}{
-		{name: "pending invitation", entryCode: http.StatusSeeOther, resultCode: http.StatusSeeOther},
-		{name: "provider acceptance recovery", entryCode: http.StatusSeeOther, resultCode: http.StatusSeeOther},
-		{name: "wrong recipient login", entryCode: http.StatusSeeOther, resultCode: http.StatusForbidden},
-		{name: "wrong organization", entryCode: http.StatusForbidden},
-		{name: "unissued invitation", entryCode: http.StatusForbidden},
-		{name: "reused local invitation", entryCode: http.StatusForbidden},
-		{name: "accepted by another user", entryCode: http.StatusSeeOther, resultCode: http.StatusForbidden},
+		{name: "new user sign-up", entryCode: 303, resultCode: 303},
+		{name: "existing user sign-in", entryCode: 303, resultCode: 303},
+		{name: "legacy token alias", entryCode: 303, resultCode: 303},
+		{name: "canonical parameter wins", entryCode: 303, resultCode: 303},
+		{name: "provider acceptance recovery", entryCode: 303, resultCode: 303},
+		{name: "wrong recipient login", entryCode: 303, resultCode: 403, message: "different account at example.test"},
+		{name: "expired invitation", entryCode: 403, message: "has expired"},
+		{name: "already used invitation", entryCode: 403, message: "already been used"},
+		{name: "wrong organization", entryCode: 403, message: "unavailable"},
+		{name: "unissued invitation", entryCode: 403, message: "unavailable"},
+		{name: "reused local invitation", entryCode: 403, message: "already been used"},
+		{name: "accepted by another user during login", entryCode: 303, resultCode: 403, message: "already been used"},
+		{name: "provider rejected expired invitation", entryCode: 303, resultCode: 403, message: "has expired"},
+		{name: "expired during login", entryCode: 303, resultCode: 403, message: "has expired"},
+		{name: "membership role mismatch", entryCode: 303, resultCode: 403, message: "unavailable"},
+		{name: "provider acceptance failure", entryCode: 303, resultCode: 403, message: "unavailable"},
+		{name: "missing token", entryCode: 403, message: "unavailable"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
 			s := openTestService(t, hostedLoginConfig(t, p, true))
 			p.identity = hostedLoginIdentity("user_invited", "invitee@example.test", "")
+			p.newUser = tt.name == "new user sign-up"
 			p.sessions[p.identity.Hosted.SessionID] = *p.identity.Hosted
 			p.memberships = append(p.memberships, hostedLoginMembership(p.identity.Subject, "org_provider_login", "member"))
 			p.invitation = auth.Invitation{ID: "invitation_email", Email: p.identity.Email, OrganizationID: "org_provider_login", State: "pending", ExpiresAt: time.Now().Add(time.Hour)}
 			hostedLoginExec(t, s, "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?)", p.invitation.ID, p.identity.Email, "org_local_login", "member", formatHubTime(time.Now()))
 			switch tt.name {
-			case "provider acceptance recovery":
-				p.invitation.State, p.invitation.AcceptedUserID = "accepted", p.identity.Subject
 			case "wrong recipient login":
 				p.identity.Email = "different@example.test"
 			case "wrong organization":
 				p.invitation.OrganizationID = "org_other_provider"
 			case "unissued invitation":
 				p.invitation.ID = "invitation_unissued"
+			case "expired invitation":
+				p.invitation.ExpiresAt = time.Now().Add(-time.Hour)
+			case "already used invitation":
+				p.invitation.State, p.invitation.AcceptedUserID = "accepted", p.identity.Subject
 			case "reused local invitation":
 				hostedLoginExec(t, s, "UPDATE hosted_invitations SET accepted_user_id = ?", p.identity.Subject)
-			case "accepted by another user":
-				p.invitation.State, p.invitation.AcceptedUserID = "accepted", "user_other"
+			case "membership role mismatch":
+				p.memberships[len(p.memberships)-1].Role.Slug = "admin"
+			case "provider acceptance failure":
+				p.acceptErr = auth.ErrHostedIdentity
 			}
-			entry := hostedLoginRequest(s, http.MethodGet, "/invite?invitation_token=invitation_secret", "", nil, false)
+			path := "/invite?invitation_token=invitation_secret"
+			switch tt.name {
+			case "legacy token alias":
+				path = "/invite?token=invitation_secret"
+			case "canonical parameter wins":
+				path += "&token=attacker_token"
+			case "missing token":
+				path = "/invite"
+			}
+			entry := hostedLoginRequest(s, http.MethodGet, path, "", nil, false)
 			if entry.Code != tt.entryCode {
-				t.Fatalf("invitation entry status = %d, want %d: %s", entry.Code, tt.entryCode, entry.Body.String())
+				t.Fatalf("entry = %d, want %d: %s", entry.Code, tt.entryCode, entry.Body.String())
 			}
-			if tt.entryCode != http.StatusSeeOther {
+			assertExplanation := func(body string) {
+				t.Helper()
+				for _, want := range []string{tt.message, "Ask the person who invited you for a new invitation", `href="https://detent.build"`} {
+					if !strings.Contains(body, want) {
+						t.Errorf("explanation missing %q", want)
+					}
+				}
+				if strings.Contains(body, "invitee@example.test") || strings.Contains(body, "invitation_secret") {
+					t.Fatal("explanation leaked recipient or token")
+				}
+			}
+			if entry.Code != http.StatusSeeOther {
+				assertExplanation(entry.Body.String())
 				return
 			}
 			authorization, err := url.Parse(entry.Header().Get("Location"))
-			if err != nil || authorization.Query().Has("invitation_token") || authorization.Query().Has("organization_id") || strings.Contains(authorization.String(), "invitation_secret") {
-				t.Fatalf("invitation forwarded before recipient verification: %q, %v", entry.Header().Get("Location"), err)
+			if err != nil || authorization.Query().Get("invitation_token") != "invitation_secret" || authorization.Query().Has("organization_id") {
+				t.Fatalf("invitation AuthKit URL = %q, %v", entry.Header().Get("Location"), err)
+			}
+			wantHint := ""
+			if p.newUser {
+				wantHint = "sign-up"
+			}
+			if got := authorization.Query().Get("screen_hint"); got != wantHint {
+				t.Fatalf("screen_hint = %q, want %q", got, wantHint)
+			}
+			switch tt.name {
+			case "provider acceptance recovery":
+				p.invitation.State, p.invitation.AcceptedUserID = "accepted", p.identity.Subject
+			case "accepted by another user during login":
+				p.invitation.State, p.invitation.AcceptedUserID = "accepted", "user_other"
+			case "expired during login", "provider rejected expired invitation":
+				p.invitation.ExpiresAt = time.Now().Add(-time.Hour)
 			}
 			transaction := hostedLoginCookie(t, entry, hostedTransactionCookie)
 			query := url.Values{"code": {"invitation_callback"}, "state": {authorization.Query().Get("state")}, "invitation_token": {"attacker_token"}}
+			if tt.name == "provider rejected expired invitation" {
+				query.Set("error", "access_denied")
+			}
 			callback := hostedLoginRequest(s, http.MethodGet, "/auth/oidc/callback?"+query.Encode(), "", nil, false, transaction)
 			if callback.Code != tt.resultCode {
-				t.Fatalf("invitation callback status = %d, want %d: %s", callback.Code, tt.resultCode, callback.Body.String())
+				t.Fatalf("callback = %d, want %d: %s", callback.Code, tt.resultCode, callback.Body.String())
 			}
 			if p.lastInvitationToken != "invitation_secret" {
-				t.Fatal("callback used invitation token outside the protected transaction")
+				t.Fatal("callback used token outside protected transaction")
 			}
-			if tt.resultCode == http.StatusSeeOther {
-				if callback.Header().Get("Location") != "/auth/oidc/start" {
-					t.Fatal("invitation callback omitted fresh organization login")
+			var members int
+			if err := s.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members WHERE user_id = ? AND active = 1", p.identity.Subject).Scan(&members); err != nil {
+				t.Fatal(err)
+			}
+			if callback.Code != http.StatusSeeOther {
+				assertExplanation(callback.Body.String())
+				if members != 0 {
+					t.Fatal("rejected invitation granted membership")
 				}
-				var acceptedUser string
-				if err := s.database.db.QueryRowContext(t.Context(), "SELECT accepted_user_id FROM hosted_invitations WHERE id = ?", p.invitation.ID).Scan(&acceptedUser); err != nil || acceptedUser != p.identity.Subject {
-					t.Fatalf("local invitation recipient = %q, error = %v", acceptedUser, err)
-				}
-				replay := hostedLoginRequest(s, http.MethodGet, "/auth/oidc/callback?"+query.Encode(), "", nil, false, transaction)
-				if replay.Code != http.StatusUnauthorized || len(p.exchanges) != 1 {
-					t.Fatal("invitation callback transaction was reusable")
-				}
+				return
+			}
+			if members != 1 || callback.Header().Get("Location") != "/auth/oidc/start" {
+				t.Fatal("invitation did not establish membership and restart scoped login")
+			}
+			var acceptedUser string
+			if err := s.database.db.QueryRowContext(t.Context(), "SELECT accepted_user_id FROM hosted_invitations WHERE id = ?", p.invitation.ID).Scan(&acceptedUser); err != nil || acceptedUser != p.identity.Subject {
+				t.Fatalf("accepted recipient = %q, error = %v", acceptedUser, err)
+			}
+			replay := hostedLoginRequest(s, http.MethodGet, "/auth/oidc/callback?"+query.Encode(), "", nil, false, transaction)
+			if replay.Code != http.StatusUnauthorized || len(p.exchanges) != 1 {
+				t.Fatal("callback transaction reusable")
+			}
+			replay = hostedLoginRequest(s, http.MethodGet, path, "", nil, false)
+			if replay.Code != http.StatusForbidden {
+				t.Fatal("used invitation started another login")
+			}
+			// The organization-scoped session completes the landing for both sign-up and sign-in.
+			p.identity = hostedLoginIdentity(p.identity.Subject, p.identity.Email, "org_provider_login")
+			p.sessions[p.identity.Hosted.SessionID] = *p.identity.Hosted
+			scoped := hostedLoginRequest(s, http.MethodGet, "/auth/oidc/start", "", nil, false)
+			scopedURL, _ := url.Parse(scoped.Header().Get("Location"))
+			landing := hostedLoginRequest(s, http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {"scoped_callback"}, "state": {scopedURL.Query().Get("state")}}.Encode(), "", nil, false, hostedLoginCookie(t, scoped, hostedTransactionCookie))
+			if landing.Code != http.StatusSeeOther || landing.Header().Get("Location") != "/organization" {
+				t.Fatalf("scoped landing = %d %s", landing.Code, landing.Header().Get("Location"))
 			}
 		})
 	}
@@ -834,6 +836,7 @@ type hostedLoginProvider struct {
 	createdRole         string
 	createMembershipErr error
 	lastInvitationToken string
+	newUser             bool
 }
 
 func newHostedLoginProvider() *hostedLoginProvider {
@@ -928,3 +931,5 @@ func (p *hostedLoginProvider) RevokeSession(_ context.Context, id string) error 
 }
 
 var _ auth.HostedProvider = (*hostedLoginProvider)(nil)
+
+func (p *hostedLoginProvider) HasUser(context.Context, string) (bool, error) { return !p.newUser, nil }
