@@ -1,4 +1,18 @@
 {
+  "chat": {
+    "range": {
+      "from": "2026-08-12T00:00:00.000Z",
+      "to": "2026-09-11T00:00:00.000Z"
+    },
+    "input": 0,
+    "cached_input": 0,
+    "output": 0,
+    "reasoning_output": 0,
+    "tokens": 0,
+    "turns": 0,
+    "unpriced_turns": 0,
+    "cost_usd": 0
+  },
   "range": {
     "from": "2026-08-12T00:00:00.000Z",
     "to": "2026-09-11T00:00:00.000Z"

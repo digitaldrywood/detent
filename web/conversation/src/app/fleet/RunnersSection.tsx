@@ -133,6 +133,7 @@ function RunnerSettingsForm({
       state: field(data, "state"),
       capacity_limit: Number(field(data, "capacity_limit")),
       project_ids: lines(field(data, "project_ids")),
+      home_project_ids: lines(field(data, "home_project_ids")),
       isolation_tier: field(data, "isolation_tier"),
       host_services: field(data, "host_services").split("\n").map((part) => part.trim()).filter(Boolean),
       availability: {
@@ -160,12 +161,13 @@ function RunnerSettingsForm({
     <details className="border-t border-border/60 pt-2 text-xs">
       <summary className="cursor-pointer font-medium">Edit runner settings</summary>
       <form className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2" onSubmit={(event) => void submit(event)}>
-        <p className="text-muted-foreground sm:col-span-2">Isolation, availability, and spillover settings are saved but not yet enforced.</p>
+        <p className="text-muted-foreground sm:col-span-2">Isolation and availability settings are saved but not yet enforced.</p>
         <label>Runner name<input className="mt-1 w-full rounded border p-2" name="display_name" defaultValue={routing.display_name} required /></label>
         <label>Tags<input className="mt-1 w-full rounded border p-2" name="tags" defaultValue={routing.tags.join(", ")} /></label>
         <label>State<select className="mt-1 w-full rounded border p-2" name="state" defaultValue={routing.state}><option value="active">Active</option><option value="draining">Draining</option><option value="disabled">Disabled</option></select></label>
         <label>Runner capacity limit<input className="mt-1 w-full rounded border p-2" name="capacity_limit" type="number" min="0" max="10000" defaultValue={routing.capacity_limit} required /></label>
-        <label>Home project IDs<input className="mt-1 w-full rounded border p-2" name="project_ids" defaultValue={routing.project_ids.join(", ")} /></label>
+        <label>Authorized project IDs<input className="mt-1 w-full rounded border p-2" name="project_ids" defaultValue={routing.project_ids.join(", ")} /></label>
+        <label>Home project IDs<input className="mt-1 w-full rounded border p-2" name="home_project_ids" defaultValue={(routing.home_project_ids ?? []).join(", ")} /></label>
         <label>Isolation tier<select className="mt-1 w-full rounded border p-2" name="isolation_tier" defaultValue={routing.isolation_tier}><option value="sandbox">Sandbox</option><option value="native-trusted">Trusted only: full host access</option></select></label>
         <label className="sm:col-span-2">Host services, one per line<textarea className="mt-1 w-full rounded border p-2" name="host_services" rows={2} defaultValue={routing.host_services.join("\n")} placeholder="tcp:127.0.0.1:8080" /></label>
         <label>Availability timezone<input className="mt-1 w-full rounded border p-2" name="timezone" defaultValue={routing.availability.timezone} placeholder="America/Chicago" /></label>
@@ -319,7 +321,7 @@ export function RunnersSettings(): React.ReactElement {
           {...(canEnroll && fleet.value.editable ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {
             await api.setRunnerRouting({ runner: runner.id, revision: runner.revision ?? 0, displayName: routing.display_name,
               tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids,
-              isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability,
+              homeProjectIds: routing.home_project_ids ?? [], isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability,
               spillover: routing.spillover });
             await fleet.refresh();
           } } : {})}

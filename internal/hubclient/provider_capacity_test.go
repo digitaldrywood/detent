@@ -34,6 +34,43 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 	}
 }
 
+func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
+	t.Parallel()
+	claims := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v2/organizations/org_test/projects/prj_test/claims/preview":
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		case "/api/v2/organizations/org_test/projects/prj_test/claims":
+			claims++
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"no_claimable_work","message":"No work"}`))
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := &Scheduler{}
+	request := orchestrator.SchedulingRequest{ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+		t.Error("empty preview should not resolve a model")
+		return providercapacity.Requirement{}, nil
+	}}
+	_, err = scheduler.claimProviderCandidate(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{})
+	if !errors.Is(err, ErrNoClaimableWork) || claims != 1 {
+		t.Fatalf("empty preview: claims=%d, error=%v", claims, err)
+	}
+}
+
 func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	t.Helper()
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte("provider-test-admin")})
@@ -62,17 +99,25 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "capacity", "idempotency_key": "capacity", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &project); err != nil {
 		t.Fatal(err)
 	}
+	var otherHome tracker.NativeProject
+	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "other home", "idempotency_key": "other-home", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &otherHome); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
 	file, err := runnerauth.Initialize(path, server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, err := admin.CreateRunnerEnrollment(t.Context(), organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60})
+	enrollment, err := admin.CreateRunnerEnrollment(t.Context(), organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60})
 	if err != nil {
 		t.Fatal(err)
 	}
 	machine := Machine{ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 2, Version: "test"}
 	if _, err := EnrollRunner(t.Context(), path, organization, enrollment.Token, machine); err != nil {
+		t.Fatal(err)
+	}
+	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}, HomeProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}}}
+	if err := admin.request(t.Context(), http.MethodPut, "/api/v2/organizations/"+string(organization)+"/runners/"+file.Identity.RunnerID+"/routing", routing, nil); err != nil {
 		t.Fatal(err)
 	}
 	client, err := New(Config{URL: server.URL, IdentityFile: path, HTTPClient: server.Client()})
@@ -85,6 +130,16 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	}
 	descriptor := clientTestPolicy()
 	if _, err := native.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := admin.Native(organization, otherHome.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-unsupported"}, Title: "higher priority unsupported home", Body: "```detent-agent\nschema: 1\nmodel: astra\n```", State: "Todo", Priority: new(1)}); err != nil {
 		t.Fatal(err)
 	}
 	for _, title := range []string{"unsupported model", "compatible model"} {

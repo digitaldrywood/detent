@@ -419,6 +419,17 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Home-project spillover (#3170, human-approved) is claim-time eligibility using
+one nullable `home_dry_since` timestamp per runner. Home projects are a subset
+of administrator-authorized projects; spillover never widens grants or selectors.
+Only dispatchable Todo/Rework home work counts, after dependency, policy,
+selector, lease, and provider checks. Claims retain normal ordering among home
+projects, clear the timestamp when home work is available, and start it only
+when home work runs dry. General work becomes eligible after the configured
+idle period. Active work finishes without preemption; workspace sessions do not
+participate. There is no background loop or capacity reservation for home work.
+`TestRunnerHomeClaims` and `TestRunnerHomeReturnAndOrdering` enforce this behavior.
+
 Dispatch ordering (#3298) consolidates urgency into the existing comparator.
 Merging remains first when the project config places it first; other lanes
 compare tracker priority and configured label rank before lane rank, then retain
@@ -1566,7 +1577,9 @@ and read-only diagnostics. All are registered in the invariant manifest.
 Doctor reports native Go cache paths and readable sizes once per host, the last completed
 reaper trim (or “not recorded”), and warns about legacy `.detent/cache` roots in
 the workspace root or workdirs, including former per-attempt cache components
-under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
+under `.detent/worker-tmp` and under each workdir's worker scratch root in the
+OS temp directory (`detent-worker-scratch/`), where attempt scratch lives so
+toolchain churn stays out of file-watched workspace trees. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
 The native build cache defaults to 10% of total cache-volume capacity with the
 existing 48-hour age trim; explicit bounds win, and unavailable capacity falls
