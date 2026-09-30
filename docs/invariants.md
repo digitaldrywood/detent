@@ -1241,6 +1241,8 @@ changing the ownership or fallback behavior.
 runs `make check-fast` in its own worktree before merge. The target takes no
 shared validation lock and supports concurrent worktrees. Short tests skip
 shared databases and ports. Focused tests and vet remain available during edits.
+The lint command disables golangci-lint's shared runner lock with
+`--allow-parallel-runners`; analyzers and the existing timeout remain unchanged.
 
 GitHub Actions schedules the full suite hourly from the default `main` branch.
 Preflight pins the current `develop` SHA and skips when that commit already has

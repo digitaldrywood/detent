@@ -233,7 +233,7 @@ visual-e2e-update: build
 	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test --update-snapshots
 
 lint: $(GOLANGCI_LINT)
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=15m
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --timeout=15m
 
 $(GOLANGCI_LINT):
 	@mkdir -p "$(GOLANGCI_LINT_DIR)"
