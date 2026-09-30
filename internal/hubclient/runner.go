@@ -242,6 +242,7 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		problems, rejected = c.client.runner.heartbeatProblems(ctx, machine)
 	}
 	request := struct {
+		LocalChecks      *runnerauth.LocalChecks   `json:"local_checks,omitempty"`
 		Problems         []runnerauth.Problem      `json:"problems"`
 		ProtocolMajor    int                       `json:"protocol_major,omitempty"`
 		SettingsRejected bool                      `json:"settings_rejected,omitempty"`
@@ -257,7 +258,7 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
 		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
-	}{problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
+	}{machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
 	if c.client.runner == nil {
 		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 	}

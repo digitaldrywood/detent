@@ -261,9 +261,9 @@ export function EnrollRunnerDialog({
                 </div>
                 <div className="flex flex-col gap-1.5 sm:w-32">
                   <div className="flex items-center gap-1">
-                    <Label htmlFor="enroll-runner-capacity">Runs at once</Label>
-                    <ContextHelp label="Runs at once">
-                      One runner identity and process can execute up to this many distinct jobs concurrently. 6 means up to six jobs on this runner; it does not enroll six runners. Start with 1, then increase as CPU, memory, and provider capacity allow. Shared host, project, provider, and other dispatch limits can lower effective concurrency.
+                    <Label htmlFor="enroll-runner-capacity">Concurrent work items</Label>
+                    <ContextHelp label="Concurrent work items">
+                      One runner identity and process can execute up to this many independent work items concurrently, each with its own workspace and agent. 6 means up to six jobs on this runner; it does not enroll six runners. Start with 1, then increase as CPU, memory, and provider capacity allow. Shared host, project, provider, and other dispatch limits can lower effective concurrency.
                     </ContextHelp>
                   </div>
                   <Input
@@ -290,6 +290,9 @@ export function EnrollRunnerDialog({
                   </p>
                 </div>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Default: 1 independent work item at a time. Higher capacity lets this host run that many independent work items concurrently, each with its own workspace and agent, subject to host resources and provider limits.
+              </p>
               <fieldset className="flex flex-col gap-2">
                 <legend className="pb-1 text-[13px] font-medium">
                   <span className="flex items-center gap-1">

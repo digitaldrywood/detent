@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -46,7 +47,7 @@ func newBatchFixture(t *testing.T) *batchFixture {
 }
 func (f *batchFixture) heartbeat(t *testing.T) *tracker.GitHubBatchTask {
 	t.Helper()
-	r := performHubAPIRequest(t, f.service, http.MethodPost, f.nativeFixture.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 1, "display_name": "runner", "checkout_repository": "acme/orders"})
+	r := performHubAPIRequest(t, f.service, http.MethodPost, f.nativeFixture.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 1, "display_name": "runner", "checkout_repository": "acme/orders", "local_checks": runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}})
 	requireNativeStatus(t, r, http.StatusOK)
 	var response runnerauth.RoutingSnapshot
 	decodeHubResponse(t, r, &response)
@@ -94,6 +95,13 @@ func (f *batchFixture) preview(t *testing.T, closed bool) {
 	f.command(t, tracker.GitHubBatchCommand{Action: "discover", IncludeClosed: closed}, http.StatusOK)
 	if task := f.heartbeat(t); task == nil || task.Discovery == nil || task.Discovery.IncludeClosed != closed {
 		t.Fatalf("discovery task = %#v", task)
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.nativeFixture.base+"/onboarding", f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var setup onboarding.Project
+	decodeHubResponse(t, response, &setup)
+	if len(setup.Runners) != 1 || setup.Runners[0].LocalChecks == nil || !setup.Runners[0].LocalChecks.Passed() || setup.Runners[0].LocalChecks.ObservedAt.IsZero() {
+		t.Fatalf("heartbeat lost local checks while delivering intake: %+v", setup.Runners)
 	}
 	issues := []tracker.GitHubIssuePreview{previewIssue(12, false), previewIssue(13, closed), previewIssue(14, false)}
 	f.report(t, tracker.GitHubBatchResult{Page: &tracker.GitHubDiscoveryPage{Issues: issues, Total: 3}}, http.StatusOK)

@@ -289,13 +289,13 @@ describe("the wizard stepper", () => {
       ready: false,
     });
     expect(ordered.map((step) => step.name)).toEqual([
-      "Repository configuration",
-      "Local validation",
       "Execution runner",
+      "Local validation",
+      "Repository configuration",
       "Artifact history",
     ]);
-    expect(ordered[0]?.state).toBe("action_required");
-    expect(ordered[2]?.state).toBe("ready");
+    expect(ordered[0]?.state).toBe("ready");
+    expect(ordered[2]?.state).toBe("action_required");
   });
 
   it("says ready or action required in words, not only in colour", () => {

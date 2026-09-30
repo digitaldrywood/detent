@@ -25,7 +25,7 @@ type hubSchedulingOptions struct {
 	problems    func() []runnerauth.Problem
 }
 
-func newHubScheduling(cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
+func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
 	clientConfig := cfg.Client
 	if !clientConfig.Configured() {
 		return nil, errors.New("hub client is not configured")
@@ -87,6 +87,9 @@ func newHubScheduling(cfg globalconfig.Config, version string, options ...hubSch
 		providerReports = func() ([]providercapacity.Report, error) {
 			return providercapacity.Load(clientConfig.ProviderCapacityFile)
 		}
+	}
+	if err := reportRunnerSetup(ctx, cfg, version); err != nil {
+		return nil, err
 	}
 	tokenSource := githubconnector.StaticTokenSource("")
 	if len(options) > 0 && options[0].intakeToken != nil {
