@@ -1528,6 +1528,13 @@ It explicitly sets `gate.required_status_checks: []`, so pending optional or abs
 CI does not block progress. Reported failed CI still blocks, and native
 base-branch requirements remain authoritative;
 omitting the setting preserves aggregate CI behavior for other projects.
+The existing branch-policy enrichment projects applicable running and unstarted
+checks alongside CI status (#3477), so an optional queued housekeeping job
+cannot hold implementation Rework after CI status already passes that policy.
+Raw check observations and counts remain available for diagnosis; native
+required pending checks, strict branch information, and reported failures remain
+authoritative. `TestBranchPolicyProjectsApplicablePendingChecks` covers the
+projection and preserves omitted and named policies without a scheduler bypass.
 The operator also sets `gate.automated_review: "off"`; pending automated review
 does not create a completion wait in that mode. Required and optional modes
 retain their existing waits and timeout behavior; reported P1 findings still
