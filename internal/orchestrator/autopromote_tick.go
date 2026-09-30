@@ -141,8 +141,29 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			continue
 		}
 
-		issue, securityAudit := o.liveSecurityAuditEvaluation(ctx, issue)
-		if gateRequiresPullRequest(cfg.Gate) {
+		merging := mergeWorkerIssue(issue)
+		var securityAudit securityaudit.Evaluation
+		if merging {
+			// The tick already hydrated this PR. Merging consumes only its
+			// exact-head/base audit here; merge preparation owns fresh checks,
+			// reviews, threads, and the final live eligibility verification.
+			if issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) {
+				continue
+			}
+			securityAudit = o.securityAuditEvaluation(ctx, issue)
+			if verdict, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, securityAudit); pending && verdict.Action == gate.ActionRework {
+				// A lane-changing verdict still needs a live identity check. Reuse
+				// the existing refresh only for that side effect, never for a
+				// passing or running audit whose lane stays unchanged.
+				issue, securityAudit = o.liveSecurityAuditEvaluation(ctx, issue)
+				if !mergeWorkerIssue(issue) || issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) {
+					continue
+				}
+			}
+		} else {
+			issue, securityAudit = o.liveSecurityAuditEvaluation(ctx, issue)
+		}
+		if !merging && gateRequiresPullRequest(cfg.Gate) {
 			var hydrated bool
 			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 			if !hydrated {
@@ -160,9 +181,8 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		summary.SecurityAudit = securityAudit
-		summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
-		decision := EvaluateAutoPromote(issue, summary, cfg, now)
-		if mergeWorkerIssue(issue) {
+		var decision AutoPromoteDecision
+		if merging {
 			// Merging consumes only the audit verdict here; its other gates remain
 			// owned by merge preparation. Passing audits leave the lane unchanged.
 			auditDecision, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, securityAudit)
@@ -171,6 +191,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 			decision = autoPromoteDecision(autoPromoteActionFromGate(auditDecision.Action), autoPromoteReasonFromGate(auditDecision.Reason))
 			decision.Findings = autoPromoteFindingsFromGate(auditDecision.Findings)
+		} else {
+			summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
+			decision = EvaluateAutoPromote(issue, summary, cfg, now)
 		}
 		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, now)
