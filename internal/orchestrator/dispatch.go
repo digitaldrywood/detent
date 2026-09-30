@@ -713,9 +713,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}
 	mergeControlEligible := allowMergeControl && !modelPermitRequired && queuedRetry.MergePrecheck == nil && o.dispatchPlanner().readyMergeControlCandidate(state, issue)
-	mergeControl := mergeControlEligible && (o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
-		o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) ||
-		o.dispatchPlanner().forgeReadAllowsMerge(state, issue))
+	mergeControl := mergeControlEligible
 	if !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 		return dispatchIssueOutcome{reason: dispatchSkipProjectCapacityFull}
 	}

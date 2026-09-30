@@ -255,8 +255,13 @@ Git-index and hook failures, and `TestBoardAndHealthShowHostDiskExhaustionRetry`
 checks the operator signal. Other preparation failures remain instance-owned; their breaker
 uses `agent.failure_breaker.cooldown_seconds` rather than the separate
 blocked-recovery cooldown. A checked clean merge that needs no new workspace
-uses the no-workspace merge-control path under that breaker, even when worker
-capacity is free. The same checked merge may continue
+always uses the existing no-workspace merge-control path, including when worker
+capacity is free and no breaker or forge condition exists. Fresh hydration must
+preserve the checked head and a non-strict base policy; advancement of a
+non-strict base does not require workspace synchronization or a CI retry.
+`TestReadyMergeAllowsNonStrictBaseAdvancement` covers the native merge of the
+unchanged checked head; the safety matrix retains changed-head, strict-policy,
+CI, draft, thread, and operator-withdrawal controls. The same checked merge may continue
 when the matching forge condition came from a Git read; forge write and
 credential conditions retain their existing merge hold.
 `TestClassifyWorkspaceForgeReadFailure`,
