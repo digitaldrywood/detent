@@ -2,6 +2,29 @@
 
 Rework #3409 / PR #3463, attempt 7314 / generation 6.
 
+Plan: retain recovered merge 5149961d73e586f0836cf806c25911f182b9df30, finish the Reports merge at 19bcfddfd, and incorporate fetched develop 9f171a33cf5bec6bca4f98351a9916c1370257e3. Review the full feature diff, run focused diagnostics and configured true, then commit/push and verify exact-head feedback/checks.
+
+Recovery: inspected every one of the 18 pending paths and the recovered merge's six paths. Incoming source matches develop except the combined compute/report integrations. No stray artifacts. Both notes histories are retained as historical records; one current Workpad/status fence remains. The recovered merge and resolved changes will be published. No lane writes or live-instance mutations.
+
+Key files: internal/compute/compute.go, internal/runner/agent.go, internal/config/config.go, internal/store/migrations/00064_attempt_compute_usage.sql, internal/orchestrator/work_attempts.go, internal/web/attempt_costs.go and compute/report templates.
+
+Validation: make generate passed (15.6s), regenerated reportsv2_templ.go matches the combined source, whitespace inspection passes. Feature diagnostics and full-diff review pending. Prior browser evidence remains historical pending source-equivalence verification. Existing follow-up #3460 is addressed by inherited develop policy changes, not an added issue fix.
+
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both branches
+
+Earlier validation and completion records apply only to their recorded heads.
+
+## Historical Workpad
+
+Rework #3409 / PR #3463, attempt 7314 / generation 6.
+
 Plan: retain recovered merge 5149961d73e586f0836cf806c25911f182b9df30, merge fetched develop fd101c3bfd3b07dae495ebc1af0527d9d2168150, regenerate report code from merged templates, review the feature diff and run focused diagnostics, then commit, run configured true, push and verify the exact published PR head.
 
 Recovery: inspected all six changed paths in the recovered merge; source paths are inherited develop changes and notes retain issue-owned handoffs. The recovered commit belongs to the issue and will be published. PR #3463 is non-draft against develop with Fixes #3409. Rework reflects target advancement, with no actionable reviews or threads.
@@ -10,9 +33,32 @@ Key files: internal/compute/compute.go, internal/runner/agent.go, internal/confi
 
 Validation: incoming merge paths inspected against MERGE_HEAD; generated template regeneration and current-source diagnostics pending; prior implementation/browser evidence below remains historical. No live-instance mutation, tracker lane write or new out-of-scope finding.
 
-```detent-status
+```yaml
 schema: 1
 status: in_progress
+# Issue #3449 Rework handoff — 2026-09-30
+
+## Historical Workpad
+
+Plan and result: attempt 7302 / generation 11 retains recovered merge f12b4e1066386e639fc86f0e1aa3d102d16edaea and publishes it with this handoff update to ready PR #3466. The merge preserves published head b99cde04a1029051c4b9dd2b534441d6f48b982c and fetched develop 3ce76fc185cf1d090eacaa27779ac77cfc84587c. Reviewed all 71 recovered merge paths: 69 exactly match the target; only notes and the config assertion differ among those paths. No stray artifacts or additional source edits. Publication resolves the unpushed recovery commit.
+
+Dependency: #3448 is closed and PR #3464 is merged at 69781ca9505d8356771e2e4d5c1552d5316cbac5, verified as an ancestor of fetched origin/develop. The orchestrator already cleared its blocker. No worker dependency or lane writes.
+
+Final issue diff: internal/config/runner_policy_test.go directly compares the effective config digest for every existing compatibility-table case, catching digest changes independently of Descriptor.Match. internal/routine/manager_test.go uses the custom routine-review opt-out label in the existing filing/auto-promotion regression. Develop already contains the equivalent zero Review omission, empty/historical label normalization, obsolete release text-test removal, INV-3 documentation, and invariant source-audit repair. Retained incoming portable shell defaults, enabled-human-review/custom-label rejection, and runtime-label preservation. No new mechanism, generated inputs, invariant enforcement change, or out-of-scope finding.
+
+Validation on the recovered source: env -u DETENT_API_TOKEN GOMAXPROCS=4 go test -p 4 . ./internal/config ./internal/policy ./internal/routine ./internal/invariants -run '^(TestRunnerPolicyUpgradeKeepsApprovedID|TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit|TestRunnerPolicyCompatibility|TestManagerRoutineOptoutLabelPreventsAutoPromote|TestReleaseWorkflowAuthenticatesExactCommitProvenance|TestReleaseHooksDoNotRegenerate|TestRepositorySources)$' -count=1 passed (22.0s command; invariant audit 15.026s). The policy package selected no tests and receives no test credit. Full remaining issue diff and merge-resolution source reviewed; whitespace inspection passed. Subsequent edits are notes only. Earlier reproduction evidence remains in the canonical issue Workpad. No full suite, coverage, race suite, or Actions rerun/wait.
+
+Handoff: configured true must run on the final committed head immediately before publication; exact gate, push, current-head checks and feedback evidence are recorded in the canonical issue Workpad. PR #3466 is already non-draft against develop and references Fixes #3449. Initial reviews and threads were empty; automated review hit its usage limit without findings and is not required. Branch protection is absent and current-head checks were absent under repository policy, with no test credit. No merge-group workflow or quiet window applies. The next scheduled integrated develop validation confirms the shard repair. Orchestrator owns lane transitions, squash merge and scheduled closure; live port 4000 is untouched.
+
+Skill draft: no — existing debugging and policy-compatibility guidance covers this repair.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7302"
+  completion_generation: "11"
+  completion_cleanliness_resolution: committed
 blockers: []
 human_action: null
 ```
@@ -31,6 +77,103 @@ Merge fallback for #3409 / PR #3463, 2026-09-30.
 - Key issue files: `internal/compute/compute.go`, `internal/runner/agent.go`, `internal/config/config.go`, `internal/store/migrations/00064_attempt_compute_usage.sql`, `internal/orchestrator/work_attempts.go`, and attempt-cost/report templates. This resolution changes handoff notes only.
 - Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks, or validation waits run in this session. Historical diagnostics do not validate this head; gate/CI timings are unmeasured.
 - Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+# Historical handoffs
+
+The following records concern earlier heads or other issues. Their validation, dependency and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+# Issue #3449 handoff
+
+## Historical Workpad
+
+Plan and result: reproduced all four recorded assertion failures from scheduled run 36758716559 / job 110035612931 on clean develop 640b8abc10f0adb4ad580d1835b349796062130e. No data race was reported. This branch repairs the three independent failures; the identical INV-3 source fingerprint failure remains owned by #3448 / PR #3464. Native dependency registered before coding.
+
+Key files: internal/config/config.go omits zero Review from JSON while retaining enabled review as a digest input. The existing runner_policy_test.go table pins the old opt-out default explicitly, retains the historical approval ID, and checks both config-digest and descriptor rejection of human-review enablement and opt-out removal. internal/routine/manager_test.go configures a custom opt-out label. ci_workflow_test.go removes the obsolete release-configuration text test requiring retired blocking hooks, in accordance with the test audit policy. docs/invariants.md updates INV-3; no new mechanism or generated inputs.
+
+Validation: baseline focused reproduction exited 1 in all four recorded areas (20.8s command). After pinning the old label alone, the policy regression still failed with config digest 98345caedcb8265db4907d47227b90103434cf3e3fced96c2b21c977895e4f9f, confirming the zero Review serialization defect before its fix. Passed config subtree, policy and routine tests (12.7s command), focused release provenance/hooks tests (1.6s), affected-package vet (1.1s), and final strengthened policy table (1.5s). Whitespace inspection passed. No full checks, coverage, race suite, or Actions rerun/wait. Configured gate true runs on the committed head immediately before push; final publication, review and checks evidence belongs to the canonical issue Workpad.
+
+Depends on: digitaldrywood/detent#3448. Its unmerged PR #3464 repairs the remaining recorded source-audit failure. Independent source repair is complete; publish and ready this PR, then retain the dependency for orchestrator handoff. The next scheduled integrated develop validation confirms the complete shard repair. No tracker lane writes or live-instance changes.
+
+Skill draft: no — existing debugging and policy-compatibility guidance covers this repair.
+
+```yaml
+schema: 1
+status: blocked
+blockers:
+  - ref: "digitaldrywood/detent#3448"
+    reason: "remaining recorded TestRepositorySources failure is repaired by unmerged PR #3464"
+human_action: null
+```
+
+## Historical handoffs from develop
+
+# Issue #3452 Rework handoff — 2026-09-30
+
+## Historical Workpad
+
+Plan: attempt 7270 / generation 26 refreshes ready PR #3469 after merge_fast_path_head_not_ready. Verified clean starting local/published head 6d0197539304ed9162a089c05fbbfe2ed60aaa6f. Merged fetched develop f6c8aa5746b049b71fad5c7704fe74054a5630e6, preserving published history. Develop advanced during publication; merged second fetched target 69781ca9505d8356771e2e4d5c1552d5316cbac5 into published refresh bc1bb6f680d71a5dfa87f9ff67fb41489b046c8c. Both merges conflicted only in notes; retained historical handoffs. No manual source edits were needed.
+
+Key files: internal/workspace/land_github_test.go, internal/workspace/retention_test.go, internal/workspace/workspace_test.go. Issue source matches the published repair; complete source diff reviewed. Native gh helper retains existing landing/API-refusal assertions. Retention fixtures compare observed permissions and restrict POSIX denial semantics to POSIX hosts.
+
+Validation: Go 1.26.6 focused landing/API-refusal/quarantine tests passed (7.603s package, 8.467s command); workspace vet passed (0.299s); Windows/amd64 test cross-compilation passed (0.615s), with output under supplied TMPDIR. GOMAXPROCS=4 and -p 4. Full issue diff reviewed; whitespace check passed. Second target merge leaves all three issue workspace files unchanged from the tested source; diagnostics were not repeated. Incoming generated template output is retained unchanged from develop. Configured true runs on the committed head immediately before push. Cross-compilation proves build compatibility only; native Windows acceptance remains with the next scheduled validation. No full suite, coverage, race suite or CI wait.
+
+Handoff: ready PR #3469 targets develop and includes Fixes #3452. At initial inspection, no actionable reviews or unresolved threads existed; automated review hit its usage limit and is not required. Current-head checks were absent, an expected skip with no test credit. Exact committed-head gate, publication verification and final feedback evidence belong in the canonical issue Workpad. No quiet window, PR CI or merge-group workflow applies. Orchestrator owns lane changes, squash merging, and scheduled issue closure. No dependencies, generated inputs, invariant changes or out-of-scope findings.
+
+Skill draft: no — existing native-helper and portable-fixture guidance covers this repair.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7270"
+  completion_generation: "26"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+# Issue #3452 merge fallback handoff — 2026-09-30
+
+- PR #3469 is open against `develop`, on the assigned isolated branch, and includes `Fixes #3452`. Source-clean starting local HEAD and fetched published PR head match `9c62696155653bfd09b10fb0666edebe6ab305cc`. No merge or rebase was in progress at session start.
+- Prior #3452 notes match the published commit's three workspace test files: `internal/workspace/land_github_test.go`, `internal/workspace/retention_test.go`, and `internal/workspace/workspace_test.go`. Their diagnostics are historical and do not validate this resolved head.
+- Merged fetched target `09011d003ef74adb8a0fab414e7be80cbce6661a` into the published PR history without rebasing; the published head is preserved as the first parent.
+- Only `.detent/notes.md` conflicted. Preserved both sides' historical handoffs and retained one current Workpad/status fence. All source files merged automatically; no manual source edits, generated-input changes, or out-of-scope findings.
+
+## Historical Workpad (#3452)
+
+Plan and result: finish and commit the resolved target merge, preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
+
+Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks, or validation waits run in this session. Historical diagnostics below do not validate this resolved head. Gate/CI and post-merge timings are unmeasured.
+
+Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. Next scheduled native Windows validation confirms the portability repair. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+The following records concern earlier heads or other issues. Their validation and completion metadata do not apply to this resolved head or authorize validation or publication in this session.
+
+# Issue #3452 Windows portability repair
+
+- Recorded evidence: scheduled run 36758716559, Windows job 110035613055, failed eight GitHub landing cases and the API-refusal case by launching installed gh (exit 4, missing GH_TOKEN), plus two retention cases based on POSIX chmod semantics. The workspace script stopped before other packages ran.
+- Key files: `internal/workspace/land_github_test.go` installs a native copy of the test executable as gh/gh.exe under a path containing spaces and asserts PATH resolution; `workspace_test.go` dispatches that helper before normal test initialization. Existing fixture responses, Git mutations, operation receipts, and landing assertions are preserved. No new sibling tests or production changes.
+- `internal/workspace/retention_test.go` compares the symlink target's observed pre-sweep permissions and still checks preserved content. The chmod-denial fixture is explicitly POSIX-only; Windows does not deny directory removal through those mode bits.
+- Diagnostics: original selected tests passed on macOS, confirming no local reproduction of the Windows failure. Repaired selected landing/API-refusal/quarantine tests, affected workspace vet, and Windows/amd64 test cross-compilation pass with Go 1.26.6 and a four-process budget. Cross-compilation is not native Windows execution. Final source diagnostics and exact-head publication are recorded in the canonical issue Workpad.
+- No generated inputs or invariants changed; no full checks, coverage, race suite, Actions rerun, CI wait, or live-instance changes. Configured gate: `true`. No out-of-scope findings or dependencies.
+- Open items: next scheduled native Windows validation confirms the repair. PR publication/readiness and completion belong to the canonical issue Workpad; merging and tracker lanes remain orchestrator-owned.
+- Skill draft: no — existing native helper and portable fixture guidance cover this repair.
+
+
+# Historical notes from incoming develop
+
 # Issue #3448 merge fallback handoff — 2026-09-30
 
 - Verified PR #3464 is open against `develop`, uses the assigned isolated branch, and includes `Fixes #3448`. Source-clean starting local and fetched published PR head: `09d2120cc0fe01058491ee8d0be6903388ff8df7`; no merge or rebase was in progress.
@@ -39,6 +182,7 @@ Merge fallback for #3409 / PR #3463, 2026-09-30.
 - Only `.detent/notes.md` conflicted. Preserved both sides' historical handoffs, including incoming #3450 records, with one current Workpad/status fence. Source files and `docs/invariants.md` merged automatically. The issue's INV-3 completion-transition evidence and `internal/invariants/source_policy.json` fingerprint are retained. No manual source changes or out-of-scope findings.
 
 ## Historical Workpad
+## Historical Workpad (incoming develop)
 
 Plan and result: finish and commit the resolved target merge, preserving published history and target ancestry, then return immediately with a source-clean workspace. Key issue files: `internal/invariants/source_policy.json` and INV-3 in `docs/invariants.md`.
 

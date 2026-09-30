@@ -21,6 +21,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "gh" && os.Getenv("TEST_LANDING_GH_HELPER") == "1" {
+		os.Exit(landingGitHubCLIHelper())
+	}
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
