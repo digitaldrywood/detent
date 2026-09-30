@@ -203,6 +203,7 @@ join keys, rollout inspection, and runnable audit queries.
 ### Reference and contribute
 
 - [Native Hub and Cloud architecture RFC](docs/cloud-hub-rfc.md) — proposed native authority, portable execution, and launch contracts; [current Hub API](docs/hub-api.md).
+- [Sprites Cloud runners spike](docs/sprites-cloud-runners-spike.md) — measured viability and cost of running Detent runners on Fly Sprites, and the path to production.
 - [CLI reference](docs/cli.md) — exit codes, JSON errors, logging, and structured output.
 - [Release process](docs/release.md) and [branching](docs/branching.md).
 - [Development](docs/development.md) and [contribution guide](CONTRIBUTING.md).
