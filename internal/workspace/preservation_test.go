@@ -105,11 +105,18 @@ func TestLocalGitCleanupRecordedLanding(t *testing.T) {
 		name          string
 		method        string
 		terminal      bool
+		wrongHead     bool
+		verifiedPR    bool
 		recorded      bool
 		extraCommit   bool
 		dirty         bool
 		wantPreserved bool
 	}{
+		{name: "verified merged PR", method: "squash", terminal: true, verifiedPR: true},
+		{name: "mismatched PR head", method: "squash", terminal: true, verifiedPR: true, wrongHead: true, wantPreserved: true},
+		{name: "verified PR later commit", method: "squash", terminal: true, verifiedPR: true, extraCommit: true, wantPreserved: true},
+		{name: "verified PR dirty", method: "squash", terminal: true, verifiedPR: true, dirty: true, wantPreserved: true},
+		{name: "active PR proof", method: "squash", verifiedPR: true, wantPreserved: true},
 		{name: "squash landed", method: "squash", terminal: true, recorded: true},
 		{name: "merge landed", method: "merge", terminal: true, recorded: true},
 		{name: "fast-forward landed", method: "fast-forward", terminal: true, recorded: true},
@@ -138,6 +145,7 @@ func TestLocalGitCleanupRecordedLanding(t *testing.T) {
 			runGit(t, info.Path, "add", "native.txt")
 			runGit(t, info.Path, "commit", "-m", "native work")
 			landedHead := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			runGit(t, info.Path, "push", "origin", info.Branch)
 			switch tt.method {
 			case "squash":
 				runGit(t, source, "merge", "--squash", info.Branch)
@@ -148,6 +156,19 @@ func TestLocalGitCleanupRecordedLanding(t *testing.T) {
 				runGit(t, source, "merge", "--ff-only", info.Branch)
 			}
 			runGit(t, source, "push", "origin", "main")
+			runGit(t, source, "push", "origin", "--delete", info.Branch)
+			if tt.method == "squash" {
+				count, err := retainedGitCommitCount(t.Context(), info.Path, "HEAD")
+				if err != nil || count == 0 {
+					t.Fatalf("original head should fail live branch proof: count %d, %v", count, err)
+				}
+			}
+			if tt.verifiedPR {
+				issue.CleanupDeliveredHeadSHA = landedHead
+				if tt.wrongHead {
+					issue.CleanupDeliveredHeadSHA = strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+				}
+			}
 			if tt.recorded {
 				issue.LandedHeadSHA = landedHead
 			}
@@ -193,11 +214,12 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			issue := Issue{Identifier: "cleanup-hook"}
+			issue := Issue{Identifier: "cleanup-hook", Terminal: true}
 			info, err := backend.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
 			}
+			issue.CleanupDeliveredHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 			if dirty {
 				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("worker work"), 0o600); err != nil {
 					t.Fatal(err)

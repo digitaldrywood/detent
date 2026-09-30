@@ -62,3 +62,13 @@ the next sweep. Completed-workspace byte totals subtract the new archive size
 and are floored at zero. These are logical file sizes, not filesystem block or
 APFS clone accounting. The sweep never claims an archive failure as reclaimed
 workspace bytes.
+
+Terminal GitHub cleanup can also use a freshly verified merged PR head when a
+squash merge and deleted source branch leave no live branch ancestry proof.
+The existing reaper and `cleanup_workspace` action revalidate the issue's PR
+association and refresh merged state, merge time, repository, PR number, and
+head before passing that exact head to the normal cleanup lifecycle. Verification
+failure falls back to live remote branch proof; without either proof, work stays
+retained. A different local head or dirty files remain protected. Archive branches
+are not required for this verified delivery path. Cleanup counts describe actual
+removed worktrees; verify path absence before reporting recovered storage.

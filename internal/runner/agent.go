@@ -4326,9 +4326,6 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 	if issue.PullRequest != nil {
 		switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.State)) {
 		case "MERGED":
-			if landedHeadSHA == "" {
-				landedHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
-			}
 			issue.PullRequest = nil
 		case "CLOSED":
 			issue.PullRequest = nil
@@ -4341,18 +4338,19 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		progressBaseRef = strings.TrimSpace(issue.PullRequest.BaseRef)
 	}
 	return workspace.Issue{
-		ProjectID:             projectID,
-		ID:                    issue.ID,
-		Identifier:            issue.Identifier,
-		Terminal:              issue.Closed,
-		LandedHeadSHA:         landedHeadSHA,
-		BranchName:            issue.BranchName,
-		BaseRef:               baseRef,
-		ProgressBaseRef:       progressBaseRef,
-		PullRequestHeadSHA:    pullRequestHeadSHA(issue.PullRequest),
-		PullRequestRepository: strings.TrimSpace(issue.PRRepository),
-		PullRequestNumber:     workspacePullRequestNumber(issue.PullRequest),
-		PullRequestBranch:     pullRequestBranch(issue.PullRequest),
+		ProjectID:               projectID,
+		ID:                      issue.ID,
+		Identifier:              issue.Identifier,
+		Terminal:                issue.Closed,
+		LandedHeadSHA:           landedHeadSHA,
+		CleanupDeliveredHeadSHA: issue.CleanupDeliveredHeadSHA,
+		BranchName:              issue.BranchName,
+		BaseRef:                 baseRef,
+		ProgressBaseRef:         progressBaseRef,
+		PullRequestHeadSHA:      pullRequestHeadSHA(issue.PullRequest),
+		PullRequestRepository:   strings.TrimSpace(issue.PRRepository),
+		PullRequestNumber:       workspacePullRequestNumber(issue.PullRequest),
+		PullRequestBranch:       pullRequestBranch(issue.PullRequest),
 	}
 }
 
