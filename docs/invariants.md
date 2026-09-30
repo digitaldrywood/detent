@@ -237,6 +237,16 @@ SSH host loss uses the existing host-scoped instance-capacity retry without incr
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
 
+Linked native GitHub issues hydrate title, body and complete paginated discussion
+with runner credentials before agent dispatch (#3257). Missing credentials,
+inaccessible sources, throttling, partial reads and failed persistence release
+the existing claim as `work_item_hydration_failed` and return the existing
+instance scheduling diagnostic, without changing the issue lane or spending an
+agent attempt. `TestNativeSourceIntakeRetryBeforeDispatch` covers failure,
+retry and zero source calls after successful intake. Atomic intake retains the
+source snapshot and imported comment provenance while native edit history
+preserves field ownership (`TestLinkedIssueIntakeAtomicAndNativeEdits`).
+
 Validator PR-diff provenance failures are production failures, not code findings (#3066).
 The validator uses a repository/PR/base/head snapshot whose file list and patch
 agree, records its digest and identity with the verdict, and reuses only a
