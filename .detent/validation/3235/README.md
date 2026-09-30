@@ -120,3 +120,58 @@ DETENT_SQLITE_PROFILE_DB="$TMPDIR/isolated-backup.db" \
 ```
 
 Never set that benchmark-only variable to a running instance's database.
+
+## Single-connection holder and wait profile
+
+A September 30 follow-up reproduced overlapping lifetime reads on an isolated
+online backup of the worker host's local database (771,256,320 bytes, migration
+64, seven session projects, about 504,000 scheduler decisions and 8,200 sessions).
+This supplements the ten-project I/O replay above; it is a different source
+fixture and does not replace that acceptance evidence.
+
+The same before/after source revisions and production SQLite driver ran as
+linux/arm64 test binaries in isolated Alpine containers capped at four CPUs.
+Six samples of each query consumed its actual rows through the generated query
+or store method. A dedicated `database/sql.Conn` held the sole pool connection
+for that query. The lifetime reader was started with its existing 500 ms deadline
+and confirmed queued via `DB.Stats().WaitCount` before timing the holder. The
+connection was released immediately after row consumption; no artificial hold
+delay was inserted. `WaitDuration` records time waiting for a connection,
+separately from the lifetime reader's query/scan time. Migration and backup work
+were outside the measured intervals. Every sample retained the same row count.
+
+| Connection holder | Rows | Before mean hold | After mean hold | Before/after lifetime timeouts |
+| --- | ---: | ---: | ---: | ---: |
+| Project recent scheduler, limit 500 | 500 | 1,502.75 ms | 2.58 ms | 6/6 → 0/6 |
+| Fleet recent scheduler, limit 500 | 500 | 2,822.99 ms | 1.89 ms | 6/6 → 0/6 |
+| Fleet workflow duration, 30 days | 8,398 | 91.03 ms | 37.53 ms | 0/6 → 0/6 |
+| Fleet workflow flow, 30 days | 3,184 | 25.71 ms | 32.95 ms | 0/6 → 0/6 |
+| One issue's token aggregate | 7 | 3.65 ms | 0.35 ms | 0/6 → 0/6 |
+
+The project scheduler overlap's mean pool wait fell from 502.60 ms (deadline
+limited) to 2.74 ms; fleet wait fell from 503.10 ms to 1.91 ms. Mean total
+lifetime-reader latency after those two reads was 8.07 ms and 7.16 ms. This
+reproduces connection-pool queueing behind the wide scheduler sort, rather than
+assuming that the lifetime aggregate itself takes 500 ms. The workflow-flow
+holder did not improve on this fixture, so no latency improvement is claimed
+for that query. Cold first-sample effects also affect lifetime-alone averages;
+raw samples are retained instead of treating them as a hot-query attribution.
+
+Raw samples: [before](connection-holder-before.json),
+[after](connection-holder-after.json). I/O counters in overlapping samples
+include both the holder and the lifetime read, so use the original isolated
+refresh benchmark for the issue's I/O comparison.
+
+Port 4000 was unreachable from this worker. This controlled overlap identifies
+an expensive owner and a reproduced queueing sequence, not the exact holder
+behind any particular live timeout. No timeout increase, extra connection,
+cache, telemetry surface, or production instrumentation was added.
+
+Post-integration acceptance belongs to Detent's integration owner and the
+operator's release owner: deploy the integrated head under normal release
+policy, capture the live process's `/proc/<pid>/io` deltas over a steady hour
+with about ten projects and 300 open issues, record the refresh interval and
+state-change volume, and compare `rchar` and `write_bytes` with the issue's
+baseline. The full live 10x reduction and under-1-GB/h write target remain
+unverified; this source worker is not authorized to deploy or replace the live
+process to obtain those measurements.
