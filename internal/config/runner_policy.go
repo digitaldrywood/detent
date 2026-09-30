@@ -80,5 +80,8 @@ func normalizePolicyConfig(cfg Config) Config {
 	if cfg.Gate.RequiredStatusChecks == nil {
 		cfg.Gate.RequiredStatusChecks = []string{}
 	}
+	if cfg.Agent.AutoPromote.OptoutLabel == "" {
+		cfg.Agent.AutoPromote.OptoutLabel = "requires-human-review"
+	}
 	return cfg
 }
