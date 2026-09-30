@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -159,6 +160,128 @@ func TestCompletionForgeEvidencePreservesReceipt(t *testing.T) {
 			}
 			if completionCleanlinessAttempted(running, issue) {
 				t.Error("forge evidence accepted an authored current-attempt claim")
+			}
+		})
+	}
+}
+
+func TestMergedCompletionReconcilesClosedDraft(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []string{"Blocked", "Rework", "In Progress"} {
+		for _, tt := range []struct {
+			name   string
+			change func(*connector.Issue, *connector.PullRequest, *connector.PullRequest)
+			want   string
+		}{
+			{"verified merged replacement", nil, "Done"},
+			{"actual merged checks red", func(_ *connector.Issue, merged, _ *connector.PullRequest) { merged.CIStatus = "failure" }, "Rework"},
+			{"cached open draft", func(issue *connector.Issue, _, _ *connector.PullRequest) { issue.PullRequest.State = "OPEN" }, ""},
+			{"native reopened draft", func(_ *connector.Issue, _, previous *connector.PullRequest) { previous.State = "OPEN" }, ""},
+			{"mismatched old association", func(issue *connector.Issue, _, _ *connector.PullRequest) { number := 25; issue.PRNumber = &number }, ""},
+			{"mismatched native old number", func(_ *connector.Issue, _, previous *connector.PullRequest) { previous.Number = 25 }, ""},
+			{"unmerged claim", func(_ *connector.Issue, merged, _ *connector.PullRequest) { merged.State = "CLOSED" }, ""},
+			{"missing ancestry", func(issue *connector.Issue, _, _ *connector.PullRequest) {
+				issue.Comments[0].Body = strings.ReplaceAll(issue.Comments[0].Body, "completion_ancestry: verified", "completion_ancestry: unknown")
+			}, ""},
+			{"human action", func(issue *connector.Issue, _, _ *connector.PullRequest) {
+				issue.Comments[0].Body = strings.ReplaceAll(issue.Comments[0].Body, "human_action: null", "human_action: decide")
+			}, ""},
+			{"different repository", func(issue *connector.Issue, _, _ *connector.PullRequest) {
+				issue.Comments[0].Body = strings.ReplaceAll(issue.Comments[0].Body, "example/repo/pull/12", "other/repo/pull/12")
+			}, ""},
+			{"different native URL", func(_ *connector.Issue, merged, _ *connector.PullRequest) {
+				merged.URL = "https://github.com/example/repo/pull/13"
+			}, ""},
+			{"different native number", func(_ *connector.Issue, merged, _ *connector.PullRequest) { merged.Number = 13 }, ""},
+			{"different base", func(_ *connector.Issue, merged, _ *connector.PullRequest) { merged.BaseRef = "develop" }, ""},
+			{"missing native head", func(_ *connector.Issue, merged, _ *connector.PullRequest) { merged.HeadSHA = "" }, ""},
+			{"native hydration unavailable", func(_ *connector.Issue, merged, _ *connector.PullRequest) {
+				merged.HydrationUnavailableReason = "unavailable"
+			}, ""},
+		} {
+			t.Run(lane+"/"+tt.name, func(t *testing.T) {
+				issue := completionTransitionIssue(lane, "CLOSED")
+				issue.Identifier = "example/repo#1"
+				issue.PullRequest.Number = 24
+				issue.PullRequest.Draft = true
+				issue.PullRequest.HeadSHA = "stale"
+				issue.PRNumber = &issue.PullRequest.Number
+				issue.Comments = []connector.IssueComment{{Body: mergedCompletionWorkpadBody()}}
+				merged := &connector.PullRequest{Number: 12, URL: "https://github.com/example/repo/pull/12", State: "MERGED", HeadSHA: "merged-head", BaseRef: "main", CIStatus: "success"}
+				previous := *issue.PullRequest
+				if tt.change != nil {
+					tt.change(&issue, merged, &previous)
+				}
+				originalNumber := *issue.PRNumber
+				tracker := &dependencyAutoUnblockConnector{blockers: []connector.Issue{
+					{Identifier: "example/repo#12", PullRequest: merged},
+					{Identifier: "example/repo#24", PullRequest: &previous},
+				}}
+				orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
+				orch.cfg = normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}})
+				state := newState(orch.cfg)
+				orch.reconcileStaleLinkedPullRequestIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+				if tt.want == "" || tt.want == lane {
+					if len(tracker.updates) != 0 {
+						t.Fatalf("unexpected transition: %#v", tracker.updates)
+					}
+				} else if len(tracker.updates) != 1 || tracker.updates[0].state != tt.want {
+					t.Fatalf("updates = %#v, want %s", tracker.updates, tt.want)
+				}
+				if issue.PullRequest.Number != 24 || *issue.PRNumber != originalNumber {
+					t.Fatal("mutated source association")
+				}
+				if len(state.Running) != 0 || len(state.Completed) != 0 {
+					t.Fatal("recovery required a worker receipt")
+				}
+			})
+		}
+	}
+}
+
+func TestMergedCompletionRefreshReplacesClosedDraft(t *testing.T) {
+	t.Parallel()
+	for _, association := range []string{"closed", "number only", "absent", "missing native draft"} {
+		t.Run(association, func(t *testing.T) {
+			issue := completionTransitionIssue("Rework", "CLOSED")
+			issue.Identifier = "example/repo#1"
+			issue.PullRequest.Number = 24
+			issue.PullRequest.HeadSHA = "stale"
+			issue.PRNumber = &issue.PullRequest.Number
+			previous := connector.Issue{Identifier: "example/repo#24", PullRequest: issue.PullRequest}
+			issue.Comments = []connector.IssueComment{{Body: mergedCompletionWorkpadBody()}}
+			merged := connector.Issue{Identifier: "example/repo#12", PullRequest: &connector.PullRequest{Number: 12, URL: "https://github.com/example/repo/pull/12", State: "MERGED", HeadSHA: "merged", BaseRef: "main", CIStatus: "success"}}
+			if association == "number only" {
+				issue.PullRequest = nil
+			}
+			if association == "absent" {
+				issue.PullRequest = nil
+				issue.PRNumber = nil
+			}
+			refs := []connector.Issue{merged, previous}
+			if association == "missing native draft" {
+				refs = refs[:1]
+			}
+			tracker := &implementProgressConnector{refreshed: issue, hydrated: issue, resolvedBlockers: refs}
+			orch := &Orchestrator{cfg: normalizeConfig(Config{}), connector: tracker}
+			refreshed, current := orch.refreshImplementCompletionIssue(t.Context(), issue)
+			if !current {
+				t.Fatal("workpad refresh failed")
+			}
+			if association == "missing native draft" {
+				if refreshed.PullRequest.Number != 24 {
+					t.Fatal("unverified old association replaced")
+				}
+				return
+			}
+			if !pullRequestMerged(refreshed.PullRequest) || refreshed.PullRequest.Number != 12 || *refreshed.PRNumber != 12 {
+				t.Fatalf("replacement = %#v", refreshed.PullRequest)
+			}
+			if association == "closed" {
+				decision := orch.evaluateImplementCompletionCandidate(t.Context(), Running{Issue: issue, DiffStats: DiffStats{Status: "clean"}}, FinalStateCompleted, false)
+				if decision.Outcome != store.WorkAttemptTerminalSuccess || decision.Reason != implementMergedCompletionReason {
+					t.Fatalf("completion = %s/%s, want success/%s", decision.Outcome, decision.Reason, implementMergedCompletionReason)
+				}
 			}
 		})
 	}

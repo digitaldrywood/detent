@@ -1236,17 +1236,17 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 	transitioned := map[string]struct{}{}
 	for _, issue := range issuesInStates(issues, staleLinkedPullRequestReconciliationStates(o.cfg)) {
 		issueID := strings.TrimSpace(issue.ID)
-		if issueID == "" || issue.PullRequest == nil || issue.PullRequest.HydrationUnavailableReason == associationUnavailable {
+		if issueID == "" || stateIn(issue.State, o.cfg.TerminalStates) || staleTodoPullRequestAlreadyActive(state, issueID) {
+			continue
+		}
+		if resolved, ok := o.resolveMergedCompletionPullRequest(ctx, issue); ok {
+			issue = resolved
+		}
+		if issue.PullRequest == nil || issue.PullRequest.HydrationUnavailableReason == associationUnavailable {
 			continue
 		}
 		pullRequestState := normalizePullRequestState(issue.PullRequest.State)
 		if pullRequestState != "open" && pullRequestState != "merged" {
-			continue
-		}
-		if stateIn(issue.State, o.cfg.TerminalStates) {
-			continue
-		}
-		if staleTodoPullRequestAlreadyActive(state, issueID) {
 			continue
 		}
 

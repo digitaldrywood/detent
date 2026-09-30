@@ -107,6 +107,17 @@ decision. `TestCompletedReadyPullRequestEntersMergeGate` and
 `TestTickDispatchesPlanApprovedIssueAfterLongRefresh` cover completion and
 next-cycle dispatch.
 
+A structured merged-completion receipt can replace an absent or closed-unmerged
+PR association only after native lookup verifies the exact repository, PR URL,
+number, merged state, head, and base branch. The existing merged-PR owner scans
+active and observed lanes, including Blocked, and completes that verified work
+without another worker receipt. Completion classification shares that owner’s
+already-merged decision rather than waiting for new head checks after merge.
+Open associations, incomplete ancestry receipts,
+human actions, unavailable native evidence, and failing checks retain their
+existing behavior. `TestMergedCompletionReconcilesClosedDraft` covers stale draft
+associations, native reopening, and both completion and refusal controls.
+
 Authorized no-PR operational delivery reads the structured receipt from the
 canonical issue-body Workpad as well as Workpad comments (#3425). GitHub
 hydration and completion classification share the section parser; protocol
@@ -502,6 +513,11 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Merged-completion ownership (#3529) resolves stale closed associations through
+existing native reference lookup and the existing merged-PR owner. Completion
+classification uses that same decision instead of a separate post-merge CI wait;
+no recovery loop, exception marker, reason, configuration, or lane writer is added.
 
 Human Workpad recovery (#3504) derives the existing human-action park from its
 durable `workpad_blocker` lane entry when older entries have no recovery metadata.
