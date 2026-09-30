@@ -86,6 +86,26 @@ decision. `TestCompletedReadyPullRequestEntersMergeGate` and
 `TestTickDispatchesPlanApprovedIssueAfterLongRefresh` cover completion and
 next-cycle dispatch.
 
+Authorized no-PR operational delivery reads the structured receipt from the
+canonical issue-body Workpad as well as Workpad comments (#3425). GitHub
+hydration and completion classification share the section parser; protocol
+examples outside that section cannot complete an issue. Existing Workpad-comment
+precedence remains authoritative. Acceptance still requires the dispatch-time
+and current operational authorization, clean delivered workspace, and matching
+attempt/generation when the receipt supplies them. The accepted signal and
+generation persist with the existing successful attempt. Both cached promotion
+and restart restoration require unchanged receipt fields; an unrelated issue
+timestamp update does not revoke an accepted delivery. Legacy successful
+unattributed receipts retain the existing timing check and cannot acquire a
+generation from current issue text. Historical no-progress receipts do not
+manufacture acceptance. The existing orchestrator completion transition retires
+accepted work to Done without another model session, retaining Human Review when
+required. `TestOperationalBodyCompletionSurvivesRestart` reproduces #3058's
+attempt 7018 / generation 25 publication and completion followed by the
+2026-09-30T14:14:11Z restart reclaiming unrelated work; it also covers refusal
+of changed evidence and stale attribution. Live attribution cases extend
+`TestHandleRunResultClassifiesImplementWorkerProgress`.
+
 An operator rejects a reviewed PR by moving its card to Rework, including through
 the dashboard. The existing lane history records the PR identity and hydrated
 head. Both completion and auto-promotion consume this durable rejection evidence:

@@ -7,6 +7,7 @@
       "TestOperatorRejectionPromotion",
       "TestOperatorRejectionRepairDispatch",
       "TestCompletedActiveReviewRequiresFinishedWork",
+      "TestOperationalBodyCompletionSurvivesRestart",
       "TestUnfinishedCompletionClassification",
       "TestCompletionRebaseProgress",
       "TestCompletionForgeEvidence",

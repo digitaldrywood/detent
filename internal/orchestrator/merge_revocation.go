@@ -65,7 +65,7 @@ func (o *Orchestrator) revokeRunningMergeIfIneligible(
 	if _, pending := o.pendingMergeRevocations[running.Issue.ID]; pending {
 		return running, true
 	}
-	operationalCompletionAccepted := autoPromoteOperationalCompletionAccepted(state, running.Issue.ID)
+	operationalCompletionAccepted := autoPromoteOperationalCompletionAccepted(state, running.Issue)
 	if decision, revoked := mergeRevocationForIssue(running.Issue, o.cfg, false, operationalCompletionAccepted); revoked {
 		o.beginMergeRevocation(state, running, decision, now)
 		return running, true

@@ -1,20 +1,23 @@
 # Issue #3211 merge fallback handoff, 2026-09-30
 
-- Verified the clean starting published PR #3281 head `056f1273a0b402f9a2778b8024c06b91845799f0` has parents `74d20e4a358b95a6a05bd055aae8238140cdb4c1` and prior target `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c`, confirming the previous handoff. Earlier merge-parent notes were also verified against Git history.
-- Fetched the PR branch and target `origin/develop` at `8a94591757c917387c3530454e30d25962ed0448`. Merged the target into the assigned PR branch without rebasing; the published PR head is preserved as the first parent.
-- Resolved only two conflicts: `internal/policy/policy.go` retains both the PR's `HumanReview` field and develop's `GitHubPullRequest` field with their existing JSON tags; `.detent/notes.md` preserves historical handoffs below with one active workpad. All remaining files merged automatically.
+- Verified the clean starting published PR #3281 head `d56be7735f63444bc99fa5a25ebbf510ef3c56b4` has parents `056f1273a0b402f9a2778b8024c06b91845799f0` and prior target `8a94591757c917387c3530454e30d25962ed0448`, confirming the previous handoff. Earlier recorded merge parents were also verified against Git history. PR #3281 remains open against develop and includes `Fixes #3211`.
+- Fetched the PR branch and target `origin/develop` at `4686438c63f97741e8306726836a1d703961c664`. Merged the target into the assigned PR branch without rebasing; the published PR head is preserved as the first parent.
+- Only `.detent/notes.md` conflicted. Preserved both sides' historical handoffs below and consolidated the active workpad here. All source files merged automatically; no manual source changes or out-of-scope findings.
 
 ## Codex Workpad
 
-Plan: target merge resolved; commit the resolution and return immediately to Detent.
+Plan: finish and commit the target merge, then return immediately to Detent with a source-clean workspace.
 
-Validation: no tests, vet, builds, local gate, or CI checks run or awaited in this session. No validation success is claimed for this head. Earlier validation claims below apply only to historical heads.
+Validation: no tests, vet, builds, local gate, or CI checks run or awaited in this session. No validation success is claimed for this head. Earlier validation claims below apply only to historical heads. Gate/CI and other validation timings are unmeasured.
 
-Open items: Detent owns independent ownership, cleanliness, and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No out-of-scope findings, push, PR merge, issue-state changes, or tracker lane writes performed.
+Open items: Detent owns independent ownership, cleanliness, and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state changes, or tracker lane writes performed.
 
 ```detent-status
 schema: 1
 status: complete
+fields:
+  completion_work_attempt_id: "7127"
+  completion_generation: "57"
 blockers: []
 human_action: null
 ```
@@ -25,11 +28,34 @@ The following handoffs concern earlier heads or other issues; their validation c
 
 # Historical #3211 merge fallback handoff, 2026-09-30
 
+- Verified the clean starting published PR #3281 head `056f1273a0b402f9a2778b8024c06b91845799f0` has parents `74d20e4a358b95a6a05bd055aae8238140cdb4c1` and prior target `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c`, confirming the previous handoff. Earlier merge-parent notes were also verified against Git history.
+- Fetched the PR branch and target `origin/develop` at `8a94591757c917387c3530454e30d25962ed0448`. Merged the target into the assigned PR branch without rebasing; the published PR head is preserved as the first parent.
+- Resolved only two conflicts: `internal/policy/policy.go` retains both the PR's `HumanReview` field and develop's `GitHubPullRequest` field with their existing JSON tags; `.detent/notes.md` preserves historical handoffs below with one active workpad. All remaining files merged automatically.
+
+# Historical #3211 merge fallback handoff, 2026-09-30
+
 - Verified published PR #3281 head `74d20e4a358b95a6a05bd055aae8238140cdb4c1` has parents `2cbb7131b37b6e5b8d1554b36615aa11879d4816` and previous target `d14138a37c7597542c30e19616271a971b62fc8f`. Verified the prior published head's parents `27951a8e9f2950be91cd2a5830d3e161f93deda9` and `d80e68213d2768b5ebf7e95313bf35f40042411f`, and the earlier merge's parents `d97be0deadf64576efb6da220c16b47be8b9ba50` and `73d1c330b04253600438c12e0f774d3fe16b26d8`, confirming prior notes.
 - Started source-clean without an in-progress merge or rebase. Fetched `origin/develop` at `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c` and merged it into the assigned PR branch without rebasing; the published PR head remains the first parent.
 - Only `.detent/notes.md` conflicted. Resolved it by keeping the current #3211 handoff and preserving other issues' historical notes below. Source files merged automatically; no manual source changes were needed.
 - Prior resolution key files: `docs/invariants.md`, `internal/runner/prompt.go`, `internal/hubserver/migrations/00048_hosted_blocked_lane.sql`, `internal/hubserver/migrate.go`, and `internal/hubserver/hosted_review_lane_migration_test.go`. Prior schema 48 and 47→48 migration notes and validation claims apply to earlier heads only.
 
+# Issue #3425 merge fallback
+
+- PR: https://github.com/digitaldrywood/detent/pull/3429, targeting `develop`.
+- Merged fetched `origin/develop` at `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c` into the published PR head `b3410d6065ff54d47f28646debded7966d442275`, preserving published history.
+- The only conflict was `.detent/notes.md`; retained both the #3425 and #3401 handoffs and the shared historical #3252 notes. Source and `docs/invariants.md` merged automatically; no manual source changes.
+- Validation: no local gate, tests, or CI checks run in this session. Prior validation below is historical and does not validate the merged head.
+- Open items: Detent owns resolved-head verification, validation, publishing, and current-head CI waiting. No out-of-scope findings.
+
+# Issue #3425 handoff
+
+- Root cause established from read-only ledger and worker transcript: attempt 7018 / generation 25 published #3058's issue-body Workpad at 2026-09-30T13:58:57Z and verified it at 13:59:13Z, before completion at 13:59:24Z. Structured parsing only searched Workpad comments, so the durable receipt recorded no_progress / completed_clean_diff_without_pull_request. Restart reconciled terminal capacity at 14:14:16Z and could not restore an unaccepted delivery.
+- Shared section parsing: internal/workpad/workpad.go, connector/github/issue_text.go, orchestrator/autopromote.go. Accepted signal and generation persist in work_attempts.go; completion_classification.go validates attribution and receipt fields. Promotion consumers compare accepted and current fields, keeping authorization and human-review gates.
+- Regression TestOperationalBodyCompletionSurvivesRestart replays attempt 7018 / generation 25 and the 14:14:11Z restart in isolated SQLite, including reclamation of unrelated work. It covers timestamp-only edits, changed evidence, withdrawn authorization, invalid status, stale attempt/generation, and human-review routing. Live attribution extends the existing progress table; connector body parsing extends its existing parser table.
+- INV-1 documentation and manifest updated. No new loop, lane writer, reason, or configuration.
+- Focused completion-related tests across internal/workpad, internal/connector/github and internal/orchestrator passed; go vet passed for those trees. Both used a scratch Go overlay removing develop's obsolete ErrSessionNoProgress reference. Normal command fails to compile at ssh_protocol.go:210; follow-up #3427 records this independent build failure. The overlay is not shipped. No full gate, coverage or race suite ran; true is the configured gate and grants no test credit.
+- Historical no_progress metadata is not retroactively accepted without durable attribution/acceptance proof. The live instance and tracker lanes were not modified.
+- PR #3429: https://github.com/digitaldrywood/detent/pull/3429, targeting develop. Source diagnostics above cover the shipped source; subsequent notes edits do not change Go behavior. Final configured gate and current-head review/check evidence are recorded in the canonical issue Workpad. Skill draft: no — existing durable-tracker-authorizations guidance covers this method.
 
 # Issue #3401 merge fallback
 
@@ -98,3 +124,12 @@ Historical status: complete; blockers: []; human_action: null.
 - Passed: `go test -p 4 ./internal/config/... ./internal/policy -count=1`; `go vet -p 4 ./internal/config/... ./internal/policy`; `git diff --check`. Configured gate is `true`; no full gates or CI were run. No generated inputs changed.
 - Downstream approval/authorization diagnostics could not compile: `internal/runner/ssh_protocol.go:210:85: undefined: ErrSessionNoProgress`, already tracked by #3427. Added evidence under its existing fingerprint, without expanding this fix.
 - INV-3 documents the policy normalization consolidation. Do not claim live Mac Cloud recovery before a repaired release is deployed and verified.
+
+# Issue #3427 handoff
+
+- Removed the retired `ErrSessionNoProgress` entry from `internal/runner/ssh_protocol.go`; remaining SSH sentinel and structured-error encoding is unchanged. No invariant or enforcement change.
+- Reproduced the recorded command on baseline `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c`: `go test ./internal/orchestrator -run '^TestOperationalBodyCompletionSurvivesRestart$' -count=1 -p 4` exited 1 with the reported undefined symbol.
+- After the removal, the same command exits 0 and compiles the orchestrator, but reports `[no tests to run]`: that test belongs to separate work. This is compilation evidence only.
+- Passed existing runner protocol diagnostics: `go test ./internal/runner -run '^(TestSSHErrorRoundTrip|TestSSHPeerConcurrentCallbacksAndDisconnect|TestSSHCallbackDoesNotPublishRemotePID|TestSSHRunResponseRetainsResultOnFailure)$' -count=1 -p 4` (0.406s package time). Existing tests cover sentinel identity, wrappers, structured errors, callbacks, disconnects, and failure results; no duplicate test added.
+- No generated inputs changed. Configured gate is `true`; no full gates, coverage, race suite, or CI wait. No out-of-scope discovery or reusable skill draft.
+- Source repair and focused diagnostics are complete. PR publication, current-head review, and completion for attempt 7112 / generation 42 are tracked in the canonical issue Workpad.

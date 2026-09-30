@@ -157,7 +157,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
-		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issueID)
+		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		summary.SecurityAudit = securityAudit
 		summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
@@ -263,12 +263,13 @@ func autoPromoteCompletedFinalState(state *State, issueID string) string {
 	return completed.FinalState
 }
 
-func autoPromoteOperationalCompletionAccepted(state *State, issueID string) bool {
+func autoPromoteOperationalCompletionAccepted(state *State, issue connector.Issue) bool {
 	if state == nil {
 		return false
 	}
-	completed, ok := state.Completed[strings.TrimSpace(issueID)]
-	return ok && strings.TrimSpace(completed.CompletionKind) == workpad.CompletionOperational
+	completed, ok := state.Completed[strings.TrimSpace(issue.ID)]
+	return ok && strings.TrimSpace(completed.CompletionKind) == workpad.CompletionOperational &&
+		operationalCompletionEvidenceCurrent(completed.Issue, issue)
 }
 
 func autoPromoteReviewWaitExpired(state *State, issueID string, cfg AutoPromoteConfig, now time.Time) bool {
@@ -393,7 +394,7 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 		}
 		completed, completedOK := state.Completed[issueID]
 		trackedReworkWait := autoPromoteReworkGateWaitTrackedIssue(issue, o.cfg, autoCfg)
-		completion, operational := operationalCompletionFromIssue(issue)
+		_, operational := operationalCompletionFromIssue(issue)
 		var recentAttempts []store.WorkAttempt
 		recentAttemptsLoaded := false
 		if gate.Effective(autoCfg.Gate).Validator.Enabled && trackedReworkWait && !operational {
@@ -422,6 +423,10 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 				result.validatorHeadHydration[issueID] = true
 			}
 		}
+		if completedOK && completed.CompletionKind == workpad.CompletionOperational && !operationalCompletionEvidenceCurrent(completed.Issue, issue) {
+			delete(state.Completed, issueID)
+			completedOK = false
+		}
 		if completedOK {
 			if completed.GateWaitReason == completedReworkGateWaitReason &&
 				(!completedReworkGateWaitEvidenceCurrent(completed, issue) || !o.reworkGateWaitCurrent(ctx, issue)) {
@@ -436,7 +441,7 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 		)
 		switch {
 		case operational:
-			attempt, ok, err = o.latestSuccessfulOperationalCompletionAttempt(ctx, issue, completion)
+			attempt, ok, err = o.latestSuccessfulOperationalCompletionAttempt(ctx, issue)
 		case gateWaitTracking && autoPromoteDurableGateWaitTrackedIssue(issue, o.cfg, autoCfg):
 			if recentAttemptsLoaded {
 				attempt, ok = o.latestSuccessfulGateWaitAttemptFromHistory(ctx, issue, recentAttempts)
@@ -562,17 +567,13 @@ func containsReworkGateWaitAttempt(attempts []store.WorkAttempt, issue connector
 func (o *Orchestrator) latestSuccessfulOperationalCompletionAttempt(
 	ctx context.Context,
 	issue connector.Issue,
-	completion operationalCompletion,
 ) (store.WorkAttempt, bool, error) {
-	if completion.recordedAt == nil || completion.recordedAt.IsZero() {
-		return store.WorkAttempt{}, false, nil
-	}
 	attempts, err := o.recentAgentTerminalAttempts(ctx, issue)
 	if err != nil {
 		return store.WorkAttempt{}, false, err
 	}
 	for _, attempt := range attempts {
-		if attempt.TerminalState != store.WorkAttemptTerminalSuccess || attempt.CompletedAt.Before(*completion.recordedAt) {
+		if attempt.TerminalState != store.WorkAttemptTerminalSuccess || !operationalCompletionReceiptMatches(issue, attempt) {
 			continue
 		}
 		record, ok := implementProgressRecordFromAttempt(attempt)
@@ -1314,8 +1315,7 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			continue
 		}
 		if decision.reason == string(AutoPromoteReasonOperationalCompletion) {
-			completion, _ := operationalCompletionFromIssue(issue)
-			_, completed, err := o.latestSuccessfulOperationalCompletionAttempt(ctx, issue, completion)
+			_, completed, err := o.latestSuccessfulOperationalCompletionAttempt(ctx, issue)
 			if err != nil {
 				if o.logger != nil {
 					o.logger.Warn(
