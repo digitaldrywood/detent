@@ -105,7 +105,7 @@ and the projects the runner may work on, creates a token-first enrollment, and
 shows one command to run on the host:
 
 ```sh
-detent hub runner register --url https://hub.detent.build/organizations/org_example \
+detent hub runner register --url https://cloud.detent.build/organizations/org_example \
   --token det_enroll_example --name "Build host" --capacity 2 --service
 ```
 
@@ -124,12 +124,19 @@ detent hub runner register --url https://hub.detent.build/organizations/org_exam
    `native_projects`, `display_name`, `capacity`), `service_name:
    detent.runner`, and one `projects:` entry per project whose `workdir` is the
    project's checkout under `--workspace-root` (default `~/detent-runner/NAME`).
-   An existing `global.yaml` is left untouched.
+   An existing `global.yaml` is left untouched; checkout checks use its
+   configured projects and `workdir` paths instead of `--workspace-root`.
 4. With `--service`, installs and starts the `detent.runner` background service
    (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
    separate from a local board's `detent` service on the same host. If a
    project's checkout is missing, it prints the clone step and the
    `detent start --config ... --yes` command to run afterwards instead.
+
+`detent start` and `detent status` default to the runner service when the
+configuration has a `client.hub_url`, including older configurations without
+`service_name`. An explicit `service_name` selects that service. If launchd
+cannot bootstrap a disabled label, the error names it and prints the
+`launchctl enable` command to run before retrying.
 
 The token appears in the command because it is single-use and expires within 15
 minutes; once redeemed it grants nothing. To keep it out of shell history,
@@ -815,8 +822,8 @@ next version.
 An `approved` decision that leaves the current version `reviewed` moves the
 primary issue to the landing lane: the lane named `Merging`, when the issue's
 lane may move there and it dispatches. The runner that holds the project claims
-the issue there and lands the reviewed head with plain git and its own
-credentials: it fetches the base branch (the remote's default), verifies the
+the issue there and lands the reviewed head with its own credentials. By
+default it uses plain git: it fetches the base branch (the remote's default), verifies the
 worktree still stands at the reviewed head, combines the two by the approved
 policy's `merge_method` (a squash commit, a merge commit, or the head's commits
 replayed onto the base), and pushes the result to the base branch, refusing to
@@ -837,6 +844,19 @@ review lane with a comment that carries it, such as "allow the runner to push
 to develop, or enable GitHub pull request mode for this project". Only an
 infrastructure failure (the remote unreachable, the Hub refusing the report)
 fails the run and retries it.
+
+A project may opt in with `deliverable.github_pull_request: true` in its
+approved repository policy. For a github.com origin and an authenticated `gh`
+on the project runner, landing then publishes the reviewed attempt branch,
+finds or opens a pull request against the remote default branch, and asks
+GitHub to merge the exact reviewed head using the policy's `merge_method`.
+GitHub's branch protection, required checks, and required reviews decide
+whether the merge succeeds. The runner verifies that the returned merge commit
+is on the base branch before reporting it to the Hub. A refused merge returns
+the issue to review with the GitHub reason; the reviewer can approve it again
+after fixing that condition. This mode uses the runner's `gh` credentials and
+does not give them to the Hub. The default remains plain git and requires no
+GitHub API access.
 
 Native approval never becomes a required GitHub review. Detail optionally reuses
 the existing projected `PullRequestSummary`, labels it as a snapshot, and identifies

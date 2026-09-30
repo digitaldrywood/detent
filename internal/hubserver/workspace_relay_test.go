@@ -110,7 +110,7 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 		option(fixture)
 	}
 	recording := !fixture.noRecording
-	service := openTestService(t, Config{
+	f := newDefaultNativeFixture(t, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
 		Workspace: &WorkspaceConfig{Enabled: true,
 			Terminal: WorkspaceTerminalConfig{
@@ -123,7 +123,8 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 			return fixture.clock
 		},
 	})
-	fixture.nativeFixture = newNativeFixture(t, service, "", "relay")
+	fixture.nativeFixture = f
+	service := f.service
 	policy := hubTestPolicy()
 	approveHubTestPolicy(t, service, fixture.base+"/policy", policy)
 	fixture.server = httptest.NewServer(service.echo)

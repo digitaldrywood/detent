@@ -15,6 +15,31 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestHostedChangeReviewRequiresAdminAndWriteGrant(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, role, grant string
+		want              int
+	}{
+		{"owner", "owner", "write", http.StatusUnprocessableEntity},
+		{"admin", "admin", "write", http.StatusUnprocessableEntity},
+		{"member with write grant", "member", "write", http.StatusNotFound},
+		{"viewer with write grant", "viewer", "write", http.StatusNotFound},
+		{"owner with read grant", "owner", "read", http.StatusNotFound},
+		{"admin without grant", "admin", "", http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			user := f.user(t, "reviewer", test.role, "reviewer@example.test", test.grant, "")
+			// An empty body is rejected by JSON decoding after authorization.
+			// Unauthorized reviewers never reach that handler.
+			response := f.request(t, user, http.MethodPost, f.base+"/work-items/wi_example/changes/change_example/versions/version_example/reviews", nil)
+			requireNativeStatus(t, response, test.want)
+		})
+	}
+}
+
 func TestHostedChangePolicyAuthorization(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

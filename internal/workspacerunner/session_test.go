@@ -358,7 +358,10 @@ func filesFrame(t *testing.T, kind, stream string, request workspacesession.File
 
 func TestSessionServesTheFilesChannel(t *testing.T) {
 	t.Parallel()
-	f := startSession(t, nil)
+	root := worktreeWith(t)
+	// This fixture must not inherit the parent worktree's scratch ignore rule.
+	gitFixture(t, root, "init", "-q", ".")
+	f := startSessionWith(t, root, nil, nil)
 
 	f.send(t, filesFrame(t, workspacesession.TypeFilesList, "conn:1", workspacesession.FilesRequest{}))
 	answer := f.receive(t)

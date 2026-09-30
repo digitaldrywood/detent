@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -122,6 +123,10 @@ func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, iss
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	if req.Issue.IsolationPolicy != nil {
+		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
+	}
+
 	release := r.keepAwake(ctx)
 	defer release()
 	if req.Execution == nil {

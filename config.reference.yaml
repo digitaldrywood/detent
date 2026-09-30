@@ -595,6 +595,8 @@
 #   kind: "pull_request"
 #   # deliverable.merge_method | type: string | default: "squash" | required: No | validation: must be one of squash, merge, rebase
 #   merge_method: "squash"
+#   # deliverable.github_pull_request | type: boolean | default: false | required: No | validation: None
+#   github_pull_request: false
 #   # deliverable.output_root | type: string | default: none | required: No | validation: None
 #   output_root: null
 #   # deliverable.review_url | type: string | default: none | required: No | validation: None
@@ -609,8 +611,12 @@
 #   terminal_attempt_retry_limit: 3
 # # worker | type: object | default: see child fields | required: No | validation: None
 # worker:
-#   # worker.ssh_hosts | type: list<string> | default: [] | required: No | validation: None
+#   # worker.ssh_hosts | type: list<string> | default: [] | required: No | validation: must contain unique SSH destinations or local; worker.host_caps.__invalid__ must name a configured worker.ssh_hosts entry
 #   ssh_hosts: []
+#   # worker.host_selection | type: string | default: "least_loaded" | required: No | validation: must be least_loaded or preference
+#   host_selection: "least_loaded"
+#   # worker.host_caps | type: mapping<string, integer> | default: {} | required: No | validation: .__invalid__ must be greater than 0; .__invalid__ must name a configured worker.ssh_hosts entry
+#   host_caps: {}
 #   # worker.max_concurrent_agents_per_host | type: integer | default: none | required: No | validation: must be greater than 0
 #   max_concurrent_agents_per_host: null
 #   # worker.github_token | type: string | default: top-level github_token | required: No | validation: None

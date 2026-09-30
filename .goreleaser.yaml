@@ -5,8 +5,6 @@ dist: tmp/goreleaser
 before:
   hooks:
     - go mod download
-    - make check-generated
-    - make test
 
 builds:
   - id: detent

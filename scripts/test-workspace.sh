@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Serial runs exhausted 1200s with only five subtests left on the dogfood host
-# (#2962); allow 50% headroom over that observed cumulative workload.
-# Timing evidence and fixture analysis: .detent/validation/2962/README.md.
-# Share this package-only budget across ordinary, race, and coverage gates;
-# individual process/hook deadlines and the default serial workload stay intact.
+# Workspace tests stub the host-wide process scan (lsof / scratch environment
+# inventory) unless a test opts into the real scanner, so the package no longer
+# needs a serial run or the 30-minute budget recorded in
+# .detent/validation/2962/README.md. Share this package-only budget across
+# ordinary, race, and coverage gates.
 exec env -u DETENT_API_TOKEN go run ./tools/testgate \
-    -parallel 1 -timeout 30m -output tmp/workspace-test-evidence "$@" ./internal/workspace
+    -timeout 15m -output tmp/workspace-test-evidence "$@" ./internal/workspace

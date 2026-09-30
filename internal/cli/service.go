@@ -207,7 +207,7 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	}
 	dashboardURL := "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(dashboardPort.Value))
 	runner, err := factory(servicepkg.Config{
-		Name:         cfg.ServiceName,
+		Name:         serviceNameForConfig(cfg),
 		GOOS:         runtime.GOOS,
 		BinaryPath:   binaryPath,
 		ConfigPath:   resolution.Path,
@@ -663,8 +663,8 @@ func pointerInt(value *int, fallback int) int {
 	return *value
 }
 
-// configuredServiceName is the config's service_name, or empty for the
-// default service when the config cannot be read.
+// configuredServiceName selects the config's service, or the board default
+// when the config cannot be read.
 func configuredServiceName(configPath string, opts options) string {
 	read := opts.readOrDefault
 	if read == nil {
@@ -674,5 +674,15 @@ func configuredServiceName(configPath string, opts options) string {
 	if err != nil {
 		return ""
 	}
-	return cfg.ServiceName
+	return serviceNameForConfig(cfg)
+}
+
+func serviceNameForConfig(cfg globalconfig.Config) string {
+	if cfg.ServiceName != "" {
+		return cfg.ServiceName
+	}
+	if cfg.Client.Configured() {
+		return runnerServiceName
+	}
+	return servicepkg.DefaultName
 }

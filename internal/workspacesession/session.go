@@ -338,12 +338,13 @@ const (
 	IsolationUser = "user"
 	// IsolationContainer is a PTY confined to the worktree.
 	IsolationContainer = "container"
+	IsolationSandbox   = "sandbox"
 )
 
 // ValidIsolation reports whether value names an isolation level. An empty
 // value is valid and means the runner has not reported one.
 func ValidIsolation(value string) bool {
-	return value == "" || value == IsolationUser || value == IsolationContainer
+	return value == "" || value == IsolationUser || value == IsolationContainer || value == IsolationSandbox
 }
 
 // Worktree origins a workspace reports. A workspace on an attempt whose

@@ -29,7 +29,7 @@ import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
-import type { Onboarding, OnboardingStep } from "../../contracts/account.ts";
+import type { Onboarding, OnboardingStep, ProjectIntegration } from "../../contracts/account.ts";
 import { ONBOARDING_STEPS } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import { AccountError } from "./api.ts";
@@ -346,6 +346,7 @@ export function SetupRoute({
   const bootstrap = useAccountBootstrap();
   const project = bootstrap?.projects.find((candidate) => candidate.id === projectId) ?? null;
   const onboarding = useResource<Onboarding>(() => api.onboarding(projectId), [api, projectId]);
+  const integration = useResource<ProjectIntegration>(() => api.integration(projectId), [api, projectId]);
 
   const steps = orderedSteps(onboarding.value);
   const [activeIndex, setActiveIndex] = React.useState(0);
@@ -446,16 +447,20 @@ export function SetupRoute({
   const bindRepository = useMutation(async (name: string) => {
     const current = onboarding.value;
     if (current === undefined) return null;
-    const integration = await api.integration(projectId);
-    const body = { expected_revision: integration.revision, repository: name };
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name)) {
+      throw new AccountError({ status: 422, code: "invalid_request", message: "Enter the repository as owner/name, then retry." });
+    }
+    const currentIntegration = await api.integration(projectId);
+    const body = { expected_revision: currentIntegration.revision, repository: name, source: "runner_checkout" };
     const bound = await withSetupKey(`${base}/onboarding/repository`, body, (key) =>
       api.bindRepository({
         projectId,
         repository: name,
-        revision: integration.revision,
+        revision: currentIntegration.revision,
         key,
       }),
     );
+    integration.set(bound);
     await onboarding.refresh();
     return bound;
   });
@@ -583,13 +588,13 @@ export function SetupRoute({
             {
               value: "existing",
               name: "Use an existing repository",
-              help: "Choose this if the execution host already has detent.yaml and WORKFLOW.md. This saves your setup choice; the runner reads those files on the host. Attach separately binds the GitHub repository.",
+              help: "Choose this if the execution host already has detent.yaml and WORKFLOW.md. This saves your setup choice; the runner reads those files on the host. Associate separately verifies the runner checkout.",
               detail: "Detent reads detent.yaml and WORKFLOW.md from it",
             },
             {
               value: "generate",
               name: "Generate the configuration",
-              help: "Choose this when you need starting detent.yaml and WORKFLOW.md files. This screen records that choice; create the files on the execution host before inspecting and approving the policy. Attach does not generate files.",
+              help: "Choose this when you need starting detent.yaml and WORKFLOW.md files. This screen records that choice; create the files on the execution host before inspecting and approving the policy. Associate does not generate files.",
               detail: "Create starting detent.yaml and WORKFLOW.md on the host",
             },
           ]}
@@ -597,9 +602,9 @@ export function SetupRoute({
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5 sm:flex-row sm:items-end">
           <div className="flex flex-1 flex-col gap-1.5">
             <div className="flex items-center gap-1">
-              <Label htmlFor="setup-repository">Attach a GitHub repository</Label>
-              <ContextHelp label="Attach a GitHub repository">
-                Attach binds owner/name to this project’s GitHub integration so issues and pull requests use that repository. It does not clone the repository, write configuration files, or approve policy.
+              <Label htmlFor="setup-repository">Associate the runner checkout</Label>
+              <ContextHelp label="Associate the runner checkout">
+                Associate verifies that an enrolled runner’s checkout has a Git origin matching owner/name, including private repositories. Clone the repository on the runner and start it first; GitHub API integration is optional. This does not write configuration files or approve policy.
               </ContextHelp>
             </div>
             <Input
@@ -607,17 +612,25 @@ export function SetupRoute({
               placeholder="owner/name"
               value={repositoryName}
               onChange={(event) => setRepositoryName(event.currentTarget.value)}
+              disabled={Boolean(integration.value?.checkout_repository)}
             />
+            <p className="text-[13px] text-muted-foreground">
+              Clone this repository on an enrolled runner, including private repositories, and start the runner. Its Git origin must match owner/name. GitHub API integration is optional.
+            </p>
+            {integration.value?.checkout_repository ? (
+              <p className="text-[13px] text-success-foreground">Verified runner checkout: <code className="font-mono">{integration.value.checkout_repository}</code></p>
+            ) : null}
           </div>
           <Button
             variant="outline"
-            disabled={bindRepository.pending || repositoryName.trim().length === 0}
+            disabled={bindRepository.pending || repositoryName.trim().length === 0 || Boolean(integration.value?.checkout_repository)}
             onClick={() => void bindRepository.call(repositoryName.trim())}
           >
-            {bindRepository.pending ? "Attaching…" : "Attach"}
+            {bindRepository.pending ? "Associating…" : "Associate"}
           </Button>
         </div>
         <ControlError message={bindRepository.error?.message ?? null} />
+        <ControlError message={integration.error?.message ?? null} />
         <div className="mb-2.5 flex flex-col gap-1.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
           <div className="flex items-center gap-1">
             <Label htmlFor="setup-policy-descriptor">Resolved policy descriptor</Label>

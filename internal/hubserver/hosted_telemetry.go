@@ -31,6 +31,14 @@ func (s *Service) recordHostedRequest(c echo.Context, started time.Time) {
 			return
 		}
 	}
+	if c.Request().ContentLength >= 0 {
+		for metric, amount := range map[string]int64{"http_request_bytes": c.Request().ContentLength, "http_request_bytes_known": 1} {
+			if err := s.database.recordHostedUsage(ctx, tx, now, metric, amount); err != nil {
+				s.config.Logger.Warn("hosted request metrics unavailable")
+				return
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		s.config.Logger.Warn("hosted request metrics unavailable")
 	}

@@ -32,7 +32,6 @@ agent:
     no_progress_spend_limit_usd: 3
     max_turns: 20
     max_session_duration_ms: 7200000
-    no_progress_timeout_ms: 5400000
     # Optional per-role reasoning defaults. Unset roles retain backend behavior.
     # effort:
     #   merge: high

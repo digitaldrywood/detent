@@ -163,3 +163,79 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 		t.Fatalf("doctor mismatch = %#v", check)
 	}
 }
+
+func TestHubPolicyInspectRejectsMappedNativeUnsupportedWork(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, feature, want string
+	}{
+		{"intake", "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", "intake.sources"},
+		{"routines", "schedule_ownership:\n  enabled: true\n  key: acme/orders\n  repository: acme/orders\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", "routines"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			workflowPath := filepath.Join(root, "WORKFLOW.md")
+			raw := "---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"
+			if err := os.WriteFile(workflowPath, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(root, "global.yaml")
+			cfg, err := globalconfig.DefaultAt(configPath, globalconfig.WithHome(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
+			cfg.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", OrganizationID: "org_test", NativeProjects: map[string]string{"orders": "prj_test"}}
+			if err := globalconfig.Write(configPath, cfg); err != nil {
+				t.Fatal(err)
+			}
+			_, _, _, err = resolveHubPolicy(t.Context(), configPath, "orders")
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "migrate") {
+				t.Fatalf("mapped policy inspection error = %v, want %s migration guidance", err, test.want)
+			}
+			check := checkDoctorHubPolicy(t.Context(), cfg, cfg.Projects[0], doctorDeps{})
+			if check.Status != doctorFail || !strings.Contains(check.Detail, test.want) || !strings.Contains(check.Detail, "migrate") {
+				t.Fatalf("mapped doctor policy = %#v, want %s migration guidance", check, test.want)
+			}
+		})
+	}
+}
+
+func TestHubPolicyInspectUsesNativeStartupTracker(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	workflowPath := filepath.Join(root, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n---\nPrompt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "global.yaml")
+	cfg, err := globalconfig.DefaultAt(configPath, globalconfig.WithHome(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
+	cfg.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", OrganizationID: "org_test", NativeProjects: map[string]string{"orders": "prj_test"}}
+	if err := globalconfig.Write(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	_, inspected, descriptor, err := resolveHubPolicy(t.Context(), configPath, "orders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspected.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
+		t.Fatalf("inspected tracker = %s, want hub_native", inspected.Config.Tracker.Kind)
+	}
+	managed := project.ManagerConfigFromGlobal(cfg).Projects[0]
+	runtime, err := project.LoadWorkflow(managed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.Config = project.MapNativeTracker(runtime.Config, true)
+	runtimeDescriptor, err := project.ResolvePolicy(managed, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := descriptor.Match(runtimeDescriptor); err != nil {
+		t.Fatalf("inspected descriptor differs from startup descriptor: %v", err)
+	}
+}

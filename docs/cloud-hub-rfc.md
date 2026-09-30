@@ -9,7 +9,7 @@ RFC before dependent implementation. The RFC can finish independently of every
 implementation below.
 
 Detent remains a Go agent orchestrator delivered as one binary. Local operation,
-a customer-hosted Hub, and the shared hosted service at `https://hub.detent.build`
+a customer-hosted Hub, and the shared hosted service at `https://cloud.detent.build`
 are supported directions. Hosted access has organization free/paid entitlements.
 Self-hosted Detent is free with customer-selected authentication, including WorkOS,
 custom, generic or local options; it never requires a Detent hosted account,
@@ -143,7 +143,7 @@ Each Hub process alone opens its database. Remote clients use authenticated HTTP
 no SQLite file is shared over NFS/SMB, and no replicated writers are added. Hosted
 placement retains one organization per dedicated Hub process and SQLite file.
 The September 8 correction separates that storage boundary from the public site:
-all customer application navigation uses `https://hub.detent.build`
+all customer application navigation uses `https://cloud.detent.build`
 (external identity/payment screens return to this same origin). A shared entry service
 owns authentication, organization selection, provisioning and trusted routing.
 It does not open tenant databases. Tenant filters remain mandatory.
@@ -170,7 +170,7 @@ claim those implementations or any live deployment are complete.
 
 ```mermaid
 flowchart LR
-    Browser[Browser and customer runners] --> Edge[hub.detent.build TLS ingress]
+    Browser[Browser and customer runners] --> Edge[cloud.detent.build TLS ingress]
     Edge --> Entry[Shared entry and authenticated routing]
     Entry --> Registry[(Metadata registry: one SQLite owner)]
     Entry -->|Private authenticated requests for A| A[Tenant A Hub]
@@ -562,6 +562,42 @@ otherwise authorized compatible runner; an unknown ID/tag matches none and retur
 a structured reason. Renaming preserves routing. Disabled, drained, offline or
 unauthorized runners cannot receive new claims; no selector is silently widened.
 
+Runners report the probed isolation tiers of every configured backend at enrollment,
+registration, and each heartbeat. Agent claims require every reported backend to
+support the runner's administrator-selected tier, which defaults to `sandbox`.
+Missing reports and failed probes match no sandbox work. Reports belong to the
+logical runner, including when several runners share a host. A heartbeat replaces
+the report, so unavailable support is withdrawn rather than retained. Workspace
+shell capabilities remain separate: a native PTY reports `user`, never `sandbox`.
+
+Codex maps sandbox work to a named permission profile equivalent to
+`workspace-write`, with explicit worktree and Detent
+runtime and existing native Go-cache writable roots, no implicit system temporary-directory grant, and its
+limited network proxy. Claude enables its sandbox, fails if unavailable, disables
+unsandboxed retries and excluded commands, limits network destinations, and denies
+reads of SSH, AWS, and macOS keychain directories. Sandbox runs expose only
+Bash, Read, Glob, and Grep, with MCP disabled, so file writes and network access
+pass through the shell sandbox. Backend launches apply the
+isolation policy stored on the existing lease within the claim transaction.
+Heartbeats and routing-cache updates cannot change an active claim's policy.
+Missing claim policy fails execution. Claude verifies effective settings on the
+actual worker through its control protocol before sending a task prompt; managed
+settings that weaken the policy prevent startup.
+`native-trusted` explicitly disables the backend sandbox. Neither tier is a
+container or microVM guarantee. The workspace terminal default is `sandbox`;
+explicit legacy `container` and `user` settings remain readable.
+
+Network grants cover the model APIs, GitHub, and Go, npm, Python, and Rust package
+registries. Unix host services are granted by exact path. TCP host-service grants
+are unsupported in `sandbox`, because these backend settings cannot constrain
+localhost access to an exact port; such runners must not advertise sandbox support
+for that configuration. Probes conservatively require Codex 0.159.2 or newer and
+Claude Code 2.1.285 or newer on macOS, plus working OS sandbox support. Claude
+Linux is not advertised until its optional Unix socket filter can be proven;
+its version alone does not establish socket isolation. Heartbeat probes share a
+bounded aggregate budget and run outside the scheduler mutex. Unsupported hosts
+or configurations retain only the tiers they can deliver; there is no downgrade.
+
 Runner home projects are an administrator-selected subset of authorized project
 access, stored as `home_project_ids`; an empty list keeps ordinary selection.
 At claim time the Hub prefers the first dispatchable Todo/Rework home issue in
@@ -898,7 +934,7 @@ services; the RFC author does not configure live customer accounts.
 | Scenario | Evidence required |
 | --- | --- |
 | Local and self-hosted portability | Run custom/local auth with Detent Cloud, WorkOS and Stripe networking denied; auth/claims/recovery work without hosted entitlements. Separately use a WorkOS fixture with Cloud/Stripe blocked and verify auth choice does not enable billing |
-| Shared-site journey | Execute the two-organization, concurrent-tab trace in [onboarding](cloud-onboarding.md#shared-site-acceptance-trace); all customer routes use hub.detent.build |
+| Shared-site journey | Execute the two-organization, concurrent-tab trace in [onboarding](cloud-onboarding.md#shared-site-acceptance-trace); all customer routes use cloud.detent.build |
 | Shared ingress isolation | Spoof headers/paths, replay assertions, bypass the entry service, change allocation generation and reuse cross-tenant cursors/grants; deny before content or mutation |
 | Self-service recovery | Crash between each provider/registry/tenant commit, repeat creation concurrently, exhaust capacity, restore mismatched snapshots and replay deletion; no duplicate owner, tenant, customer or live SQLite writer |
 | Cloud native work | Hosted fixture login, scoped organization/project, full native issue/comment/dependency edits, customer runner execution and Change creation; no external issue identity required |

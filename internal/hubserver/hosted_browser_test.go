@@ -19,7 +19,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -208,8 +210,9 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 		base: base, organization: auth.Organization{ID: "org_browser_provider", ExternalID: organization, Name: "Browser organization"},
 		members: make(map[string]auth.Membership), sessions: make(map[string]auth.HostedIdentity), invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string), authorizations: make(map[string]string), codes: make(map[string]auth.Identity),
 	}
+	legacyPlans := pilotHostedPlans()
 	cfg := Config{InitialAdminToken: []byte(testHubAdminToken), DatabasePath: filepath.Join(t.TempDir(), "hosted-browser.db"), GitHubDisabled: true, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &HostedConfig{
-		OrganizationID: organization, BootstrapSubject: "user_browser_owner", PublicURL: base, Provider: provider,
+		Plans: &legacyPlans, OrganizationID: organization, BootstrapSubject: "user_browser_owner", PublicURL: base, Provider: provider,
 		StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 		Directory: []HostedDestination{{OrganizationID: organization, WorkOSOrganizationID: "org_browser_provider", PublicURL: base}},
 	}}
@@ -219,6 +222,7 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 	for _, apply := range configure {
 		apply(&cfg)
 	}
+	seedHubDatabaseTemplate(t, cfg.DatabasePath)
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		server.Close()
@@ -687,54 +691,90 @@ func TestHostedBrowserPreview(t *testing.T) {
 	}
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
+		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id='starter',base_version=1"); err != nil {
+			t.Fatal(err)
+		}
+		provider := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
+		cfg := f.service.config.Hosted
+		cfg.Billing = &HostedBillingConfig{Mode: billing.ModeTest, AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_browser_capacity"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: provider}
+		for _, id := range []string{"starter", "growth", "scale"} {
+			cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_" + id + "_test", Label: id, Plan: PlanReference{ID: id, Version: 1}})
+		}
+		if err := f.service.database.configureHostedBilling(t.Context(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		close(done)
+		f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_USAGE") != "" {
 		err := f.service.database.RecordConversationUsage(t.Context(), ConversationUsage{OrganizationID: "org_browser_preview", ProjectID: tracker.ProjectID(f.project), ConversationID: f.conversation, TurnID: "preview-chat-usage", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: 1_000_000, CachedInputTokens: 400_000, OutputTokens: 100_000, ReasoningOutputTokens: 30_000}})
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
+	var problemRunner runnerauth.Binding
+	var problemCredential string
 	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER") != "" {
-		binding := runnerauth.NewBinding()
 		base := browserHostedOrganizationBase
 		for _, project := range []string{f.project, f.privateProject} {
 			f.api(t, "owner", http.MethodPut, base+"/members/membership_user_browser_owner/grants", map[string]any{
 				"project_id": project, "write": true, "runner": true, "idempotency_key": "preview-runner-" + project,
 			}, http.StatusOK)
 		}
-		request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 900}
-		response := f.api(t, "owner", http.MethodPost, base+"/runner-enrollments", request, http.StatusCreated)
-		var enrollment runnerauth.Enrollment
-		decodeHubResponse(t, response, &enrollment)
-		credential, err := apikey.GenerateToken()
-		if err != nil {
-			t.Fatal(err)
+		names := []string{"Settings runner"}
+		if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_PROBLEMS") != "" {
+			names = append(names, "Healthy runner")
 		}
-		redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "test-host", DisplayName: "Settings runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "arm64"}
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+		for _, name := range names {
+			binding := runnerauth.NewBinding()
+			request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 900}
+			response := f.api(t, "owner", http.MethodPost, base+"/runner-enrollments", request, http.StatusCreated)
+			var enrollment runnerauth.Enrollment
+			decodeHubResponse(t, response, &enrollment)
+			credential, err := apikey.GenerateToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "test-host", DisplayName: name, Capacity: 2, Version: "test", OS: "linux", Architecture: "arm64"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+			if name == "Settings runner" && os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_PROBLEMS") != "" {
+				problemRunner, problemCredential = binding, credential
+				heartbeat := map[string]any{"display_name": name, "capacity": 2, "version": "test", "backend_isolation": redemption.BackendIsolation, "problems": []runnerauth.Problem{runnerauth.NewProblem("tier_unavailable")}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/projects/"+f.project+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, heartbeat), http.StatusOK)
+			}
+		}
 	}
 	accounts := make(map[string]string, len(f.cookies))
 	for account := range f.cookies {
 		accounts[account] = f.server.URL + "/__preview/account/" + account
 	}
 	fixture := struct {
-		URL            string            `json:"url"`
-		Login          string            `json:"login"`
-		Organization   string            `json:"organization"`
-		Project        string            `json:"project"`
-		PrivateProject string            `json:"private_project"`
-		Chat           string            `json:"chat"`
-		ProjectID      string            `json:"project_id"`
-		Conversation   string            `json:"conversation"`
-		WorkItem       string            `json:"work_item"`
-		OwnerEmail     string            `json:"owner_email"`
-		Accounts       map[string]string `json:"accounts"`
-		Stop           string            `json:"stop"`
-		Expires        time.Time         `json:"expires"`
+		URL               string             `json:"url"`
+		Login             string             `json:"login"`
+		Organization      string             `json:"organization"`
+		Project           string             `json:"project"`
+		PrivateProject    string             `json:"private_project"`
+		Chat              string             `json:"chat"`
+		ProjectID         string             `json:"project_id"`
+		Conversation      string             `json:"conversation"`
+		WorkItem          string             `json:"work_item"`
+		OwnerEmail        string             `json:"owner_email"`
+		Accounts          map[string]string  `json:"accounts"`
+		Stop              string             `json:"stop"`
+		Expires           time.Time          `json:"expires"`
+		ProblemRunner     runnerauth.Binding `json:"problem_runner"`
+		ProblemCredential string             `json:"problem_credential,omitempty"`
 	}{
 		URL: f.server.URL, Login: f.server.URL + "/login", Organization: f.server.URL + "/organization",
 		Project: f.server.URL + "/projects/" + f.project, PrivateProject: f.server.URL + "/projects/" + f.privateProject,
 		Chat: f.server.URL + "/chat", ProjectID: f.project, Conversation: f.conversation, WorkItem: f.workItem,
 		OwnerEmail: browserHostedOwnerEmail, Accounts: accounts, Stop: f.server.URL + "/__preview/stop", Expires: time.Now().Add(browserHostedPreviewLifetime),
+		ProblemRunner: problemRunner, ProblemCredential: problemCredential,
 	}
 	encoded, err := json.MarshalIndent(fixture, "", "  ")
 	if err != nil {

@@ -6,12 +6,14 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 )
 
 const NativeProtocolMajor = 2
 
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
+const NativeCheckoutRepositoryCapability = "runner_checkout_repository"
 
 // NativeWorkspaceCapability is declared by a runner's workspace lane on its
 // claim. It is what separates the lane that holds a workspace session open
@@ -353,6 +355,7 @@ type NativeClaim struct {
 }
 
 type NativeLease struct {
+	IsolationPolicy     *isolation.Policy             `json:"isolation_policy,omitempty"`
 	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
 	ServerTime          time.Time                     `json:"server_time"`
 	PolicyID            string                        `json:"policy_id"`

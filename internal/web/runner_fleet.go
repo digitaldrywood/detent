@@ -29,7 +29,7 @@ func (s *Server) runnerFleetPage(c echo.Context) error {
 	data := s.dashboardFirstPaintData(ctx, s.latestSnapshot(ctx), false)
 	data.Title = instancePageTitle(s.instanceName(), "Runners - Detent")
 	applyDashboardPreferences(c.Request(), &data)
-	view := templates.RunnerFleetData{SelectedRunner: c.QueryParam("runner")}
+	view := templates.RunnerFleetData{SelectedRunner: c.QueryParam("runner"), AttentionOnly: c.QueryParam("health") == "needs_attention"}
 	fleet, err := s.runnerFleet.Fleet(ctx)
 	if err != nil {
 		view.Error = "Runner fleet could not be loaded. Check the Hub connection and credential permissions."

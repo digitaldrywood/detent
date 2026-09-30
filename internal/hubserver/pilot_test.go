@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,7 +23,7 @@ func TestPilotIdleRunnerReconciliation(t *testing.T) {
 	for _, count := range []int{0, 1, 16} {
 		t.Run(fmt.Sprintf("runners_%d", count), func(t *testing.T) {
 			t.Parallel()
-			f := newNativeFixture(t, nil, "", "pilot")
+			f := newDefaultNativeFixture(t, Config{})
 			if err := f.service.stopGitHubReconciliation(); err != nil {
 				t.Fatal(err)
 			}
@@ -45,7 +46,7 @@ func TestPilotIdleRunnerReconciliation(t *testing.T) {
 			for _, mode := range []ReconcileMode{ReconcileIncremental, ReconcileFullRepair} {
 				for range 3 {
 					for _, runner := range runners {
-						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"capacity": 2, "version": "test"}), http.StatusOK)
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity": 2, "version": "test"}), http.StatusOK)
 						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?state=Todo", runner.redemption.Credential, nil), http.StatusOK)
 					}
 					backend.steps = append(backend.steps, reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent", UpdatedAt: time.Now().UTC()}}})
@@ -91,7 +92,7 @@ func pilotHostedRunner(t *testing.T, f *browserHostedFixture, index int) runnera
 	if err != nil {
 		t.Fatal(err)
 	}
-	redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: fmt.Sprintf("pilot-host-%d", index), DisplayName: fmt.Sprintf("Pilot runner %d", index), Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
+	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: fmt.Sprintf("pilot-host-%d", index), DisplayName: fmt.Sprintf("Pilot runner %d", index), Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/runners/"+binding.RunnerID+"/routing", map[string]any{"expected_revision": 1, "display_name": redemption.DisplayName, "tags": []string{"linux", "gpu"}, "state": "active", "capacity_limit": 2, "project_ids": []string{f.project, f.privateProject}}), http.StatusOK)
 	return redemption
@@ -132,7 +133,7 @@ func TestPilotHostedWorkloads(t *testing.T) {
 			for range 10 {
 				for _, runner := range runners {
 					path := base + "/machines/" + string(runner.MachineID) + "/heartbeat"
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, map[string]any{"capacity": 2, "version": "test", "os": "linux", "architecture": "amd64"}), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, map[string]any{"backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity": 2, "version": "test", "os": "linux", "architecture": "amd64"}), http.StatusOK)
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/work-items?state=Todo", runner.Credential, nil), http.StatusOK)
 				}
 				requireNativeStatus(t, f.page(t, "owner", "/organization/plan"), http.StatusOK)

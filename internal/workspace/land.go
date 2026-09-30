@@ -19,6 +19,12 @@ type Lander interface {
 	LandChange(context.Context, Info, Issue, LandOptions) (LandResult, error)
 }
 
+// GitHubPRLander is used only by a project whose approved policy opts in to
+// GitHub pull request landing. The runner supplies its own gh credentials.
+type GitHubPRLander interface {
+	LandChangeViaGitHub(context.Context, Info, Issue, LandOptions) (LandResult, error)
+}
+
 type LandOptions struct {
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
@@ -30,6 +36,7 @@ type LandOptions struct {
 	// TargetBranch is the base branch; empty means the remote's default.
 	TargetBranch string
 	Remote       string
+	Repository   string
 	// PushAttemptBranch also publishes the reviewed head under the worktree
 	// branch's name, so the landed history stays reachable by that name. It
 	// is best effort: a remote that refuses it does not fail the landing.

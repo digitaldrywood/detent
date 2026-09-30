@@ -61,10 +61,10 @@ for (const width of [1280, 390]) {
     await steps.getByRole("button").nth(0).click();
     await help(page, "Use an existing repository", "This saves your setup choice", width === 1280 ? "hover" : tap);
     await expect(page.getByRole("radio", { name: "Use an existing repository" })).toBeChecked();
-    await help(page, "Generate the configuration", "Attach does not generate files", tap);
+    await help(page, "Generate the configuration", "Associate does not generate files", tap);
     await expect(page.getByRole("radio", { name: "Generate the configuration" })).not.toBeChecked();
-    await help(page, "Attach a GitHub repository", "GitHub integration", width === 1280 ? "focus" : tap);
-    await page.getByLabel("Attach a GitHub repository", { exact: true }).fill("owner/repository");
+    await help(page, "Associate the runner checkout", "GitHub API integration is optional", width === 1280 ? "focus" : tap);
+    await page.getByLabel("Associate the runner checkout", { exact: true }).fill("owner/repository");
     await help(page, "Resolved policy descriptor", "policy mismatch prevents claims", tap);
     await help(page, "Approve the resolved policy", "runners must resolve a matching policy", tap);
 

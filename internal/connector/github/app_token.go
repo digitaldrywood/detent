@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const (
@@ -40,16 +42,17 @@ type InstallationTokenConfig struct {
 }
 
 type InstallationTokenSource struct {
-	endpoint       string
-	appID          string
-	installationID string
-	privateKey     string
-	httpClient     HTTPClient
-	now            func() time.Time
-	mu             sync.Mutex
-	cachedToken    string
-	expiresAt      time.Time
-	details        InstallationTokenDetails
+	endpoint          string
+	appID             string
+	installationID    string
+	privateKey        string
+	httpClient        HTTPClient
+	now               func() time.Time
+	mu                sync.Mutex
+	cachedToken       string
+	expiresAt         time.Time
+	details           InstallationTokenDetails
+	unscopedRESTScope *connector.RESTScope
 }
 
 type InstallationTokenDetails struct {
@@ -192,6 +195,11 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
 
 	resp, err := s.httpClient.Do(req)
+	scope := connector.RESTScopeFromContext(ctx)
+	if scope == nil {
+		scope = s.unscopedRESTScope
+	}
+	scope.Record("app installation tokens", classifyRESTScopeOutcome(resp, err))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return InstallationTokenDetails{}, ctxErr

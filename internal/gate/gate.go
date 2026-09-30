@@ -356,6 +356,9 @@ func AutomatedReviewMode(cfg Config) string {
 }
 
 func NormalizeRequiredStatusChecks(checks []string) []string {
+	if checks == nil {
+		return nil
+	}
 	normalized := make([]string, 0, len(checks))
 	seen := make(map[string]struct{}, len(checks))
 	for _, check := range checks {
@@ -562,7 +565,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
-	if !opts.AutomatedReviewWaitExpired && (summary.ReviewPending || (automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState))) {
+	if !opts.AutomatedReviewWaitExpired && automatedReviewWaits(cfg) && (summary.ReviewPending || !automatedReviewSubmitted(summary.ReviewState)) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {

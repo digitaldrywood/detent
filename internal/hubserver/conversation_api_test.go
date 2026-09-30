@@ -27,10 +27,10 @@ func newConversationAPIFixture(t *testing.T, cfg *ConversationConfig) conversati
 	if cfg == nil {
 		cfg = &ConversationConfig{Enabled: true}
 	}
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: cfg})
-	f := newNativeFixture(t, service, "", "chat")
+	f := newDefaultNativeFixture(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: cfg})
+	service := f.service
 	var ownerID string
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", "operator-chat").Scan(&ownerID); err != nil {
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", "operator-native").Scan(&ownerID); err != nil {
 		t.Fatal(err)
 	}
 	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "operator-chat-other", "scope": "operator"})
