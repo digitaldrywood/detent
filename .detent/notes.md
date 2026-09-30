@@ -4,7 +4,7 @@
 - PR #3281 remains open against develop on the assigned isolated branch. Fetched the PR branch at `d2a12be6c4b0ca9dfdf4a6745547dbd744a2edcd` and target develop at `8c7b5bfb3685eac99854cefa52d4af02763f7aec`. Merged that pinned target into the published PR history without rebasing, preserving the remote PR head as an ancestor.
 - Only `.detent/notes.md` conflicted. Preserved both sides' historical handoffs, including incoming #3019 notes, and retained one current Workpad/status block. Incoming changes to `docs/invariants.md`, `internal/cli/boot.go`, `internal/cli/dev_runtime_e2e_test.go`, `internal/orchestrator/completion_transition_test.go`, `internal/runner/prompt.go`, and `internal/runner/prompt_test.go` merged automatically. No manual source changes or out-of-scope findings.
 
-## Codex Workpad
+## Historical Workpad for #3211
 
 Plan: commit the resolved target merge, then return immediately to Detent with a source-clean workspace.
 
@@ -12,7 +12,8 @@ Validation: no tests, vet, builds, local gate, CI checks, or validation waits pe
 
 Open items: Detent owns independent ownership, cleanliness, and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state changes, or tracker lane writes performed.
 
-```detent-status
+Historical status metadata:
+
 schema: 1
 status: complete
 fields:
@@ -20,7 +21,6 @@ fields:
   completion_generation: "23"
 blockers: []
 human_action: null
-```
 
 # Historical handoffs
 
@@ -352,3 +352,20 @@ human_action: null
 - Merged current `origin/develop` without rebasing; retained both independent additions in `docs/invariants.md` and both regressions in `internal/runner/prompt_test.go`. `internal/runner/prompt.go` merged automatically.
 - No local validation or CI run in this fallback session. Prior test results are historical, not evidence for the resolved head.
 - Open items: Detent verifies the clean head and ancestry, validates, publishes with lease protection, and waits for current-head CI. No unrelated work identified.
+
+## Codex Workpad
+
+Plan: #3417 repairs the existing operator-move regression fixture. Reproduced the timeout on fetched develop 9826088a821ba72ecfd033bc60b9ed3138762507. Transition snapshot reuse (#3393) skips reads for already-fetched cards, leaving the untargeted injected failure for dispatch hydration. The fixture now supplies the unrelated Blocked card through the observed feed initially, then omits it from both feeds to force its transition lookup to fail. The existing assertions prove Rework dispatch and preservation of the unrelated block; a failure-consumption assertion prevents passing without the injected failure. Production behavior and invariants are unchanged.
+
+Validation: original focused reproduction failed at orchestrator_test.go:2285 with the dispatch hydration warning. Repaired regression passed (0.616s package time). Related operator-move, blocked-status, and transition-snapshot tests passed five repetitions (0.774s package time; 3.1s command wall time). No source changes followed diagnostics; no generated inputs changed. Configured gate: true, to run on committed head before publication; no full suite, coverage, race suite, or CI wait. Current-head PR review/check evidence belongs in the canonical issue Workpad. Quiet window not configured; no-op gate under 1s; no PR or merge-group CI configured; post-merge validation belongs to Detent.
+
+Open items: publish draft PR against develop with Fixes #3417, inspect actionable feedback, mark ready, and report completion for attempt 7136 / generation 7. No dependency or out-of-scope finding. No tracker lane writes.
+
+Skill draft: no — existing operator-mutation-runtime-reconciliation guidance covers this regression; no new reusable procedure needed.
+
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
