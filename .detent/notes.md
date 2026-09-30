@@ -1,3 +1,28 @@
+# Issue #3401 merge fallback
+
+- PR: https://github.com/digitaldrywood/detent/pull/3420; body already includes `Fixes #3401`.
+- Merge target: fetched `origin/develop` at `cd50f7de8`; published PR head `bba9c169a9574e5b4529e435fe9622513c734ada` is preserved as the first parent of the merge.
+- Resolved `internal/cli/runner_test.go`, `internal/orchestrator/review_head_test.go`, and `internal/orchestrator/startup_observability_test.go` with the overlapping fixture repairs from develop (#3419): SSH runner delegate assertion, optional automated-review deadline behavior, and terminal issues in the cleanup feed.
+- PR changes in `internal/hubserver/workspace_runner_lane_test.go` and `tools/checklock/makefile_test.go` merged without conflicts.
+- Validation: no local gate, tests, or CI checks run in this merge-fallback session. Earlier PR-body validation applies only to its prior head. Detent owns resolved-head validation, current-head checks, and publishing after return.
+- Open items: Detent verification and publication; no out-of-scope findings. The inherited #3252 notes below are historical and are preserved.
+
+## Codex Workpad
+
+Plan: merge fetched develop into the published PR branch, resolve only overlapping fixture conflicts, and commit the resolution.
+
+Validation: deferred to Detent by the merge-fallback instructions; no validation credit claimed for this head. Quiet-window, gate/CI, slow-check, and post-merge CI timings are not measured in this session.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7082"
+  completion_generation: "14"
+blockers: []
+human_action: null
+```
+
 # Issue #3252 handoff
 
 - `internal/runner/session_brake.go` held the separate no-progress ticker that canceled a live gate queue wait. The runner no longer creates that ticker or emits `session_no_progress`; duration and turn limits remain.
