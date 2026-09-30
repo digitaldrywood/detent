@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -49,7 +50,7 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "runner.example.test", DisplayName: "runner.example.test", Capacity: 1, Version: "test", OS: "linux", Architecture: "amd64"}
+			redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "runner.example.test", DisplayName: "runner.example.test", Capacity: 1, Version: "test", OS: "linux", Architecture: "amd64"}
 			pilotStatus(t, "redemption", p.machine(t, http.MethodPost, o.api()+"/runner-enrollments/redeem", issued.Token, redemption), http.StatusCreated)
 
 			descriptor := pilotPolicy()
