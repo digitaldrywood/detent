@@ -853,7 +853,8 @@ func TestEvaluateAutomatedReviewModes(t *testing.T) {
 		{name: "optional present", mode: AutomatedReviewOptional, review: "APPROVED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "optional late review", mode: AutomatedReviewOptional, review: "APPROVED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "off absent", mode: AutomatedReviewOff, want: Decision{Action: ActionPass, Reason: ReasonReady}},
-		{name: "legacy disabled pending", required: new(false), pending: true, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "off pending", mode: AutomatedReviewOff, pending: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "legacy disabled pending", required: new(false), pending: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "legacy disabled pending after deadline", required: new(false), pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "off present", mode: AutomatedReviewOff, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required p1", mode: AutomatedReviewRequired, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
@@ -883,7 +884,7 @@ func TestEvaluatePendingReviewExpiresAfterRepeatedMissingDecisions(t *testing.T)
 	t.Parallel()
 
 	started := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
-	cfg := Config{Kind: KindCommand, RequireAutomatedReview: new(false)}
+	cfg := Config{Kind: KindCommand, AutomatedReview: AutomatedReviewOptional}
 	summary := Summary{
 		PullRequestURL: "https://github.test/pull/3062",
 		CIStatus:       "green",
