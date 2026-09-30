@@ -292,12 +292,16 @@ for (const viewport of [
 
     // Clicking anywhere on a card chooses it, and the choice is visible.
     const local = page.getByRole("radio", { name: "Local history" });
+    const selectedChoice = page.locator("[data-checked]").filter({ has: page.getByRole("radio") });
     await page.getByText("Local history", { exact: true }).click();
     await expect(local).toBeChecked();
-    await expect(page.locator("label[data-checked]")).toContainText("Local history");
+    await expect(selectedChoice).toHaveCount(1);
+    await expect(selectedChoice).toContainText("Local history");
     await page.getByText("Customer service", { exact: true }).click();
     await expect(page.getByRole("radio", { name: "Customer service" })).toBeChecked();
     await expect(local).not.toBeChecked();
+    await expect(selectedChoice).toHaveCount(1);
+    await expect(selectedChoice).toContainText("Customer service");
 
     // Every step stays reachable from the tabs.
     await tabs.nth(0).click();
@@ -385,7 +389,7 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
   // capacity and projects, never for runner or machine IDs.
   await expect(dialog.getByLabel("Runner id")).toHaveCount(0);
   await dialog.getByLabel("Name").fill("Build host");
-  await dialog.getByLabel("Runs at once").fill("2");
+  await dialog.getByLabel("Runs at once", { exact: true }).fill("2");
   await expectNoSeriousAxeViolations(page, "the enrollment dialog");
 
   await dialog.getByRole("button", { name: "Create command" }).click();

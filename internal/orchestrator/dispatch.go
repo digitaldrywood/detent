@@ -257,7 +257,6 @@ func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *Sta
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
 	o.enforceLifetimeLimits(ctx, state, issues, now)
-	o.observePullRequestHydrationRecovery(state, issues, now)
 	return issues
 }
 
