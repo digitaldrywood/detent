@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -161,7 +162,7 @@ func TestNativeArchiveActiveWork(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/archive", f.token, archiveRequest(issue, "after-finish")), http.StatusOK)
 				response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts", f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
-				if !strings.Contains(response.Body.String(), string(start.Data.AttemptID)) {
+				if !strings.Contains(response.Body.String(), start.Data.AttemptID) {
 					t.Fatal("attempt lost")
 				}
 			}
@@ -176,7 +177,7 @@ func TestNativeArchiveActiveWork(t *testing.T) {
 func TestHostedIssueAllowanceBoundaries(t *testing.T) {
 	t.Parallel()
 	for _, count := range []int{199, 200, 201} {
-		t.Run(fmt.Sprint(count), func(t *testing.T) {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			t.Parallel()
 			f := newHostedSecurityFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
@@ -281,7 +282,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 				responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(archived.WorkItemID)+"/restore", archiveRequest(archived, "restore-race"))
 				return
 			}
-			responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprint(index)}, Title: "Contender", State: "Todo"})
+			responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: strconv.Itoa(index)}, Title: "Contender", State: "Todo"})
 		})
 	}
 	group.Wait()
