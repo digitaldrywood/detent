@@ -553,11 +553,14 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 2, 0, 0, time.UTC)
 	for _, tt := range []struct {
 		name        string
+		lane        string
 		ciStatus    string
 		replaceHead bool
 		replacePR   bool
 	}{
-		{name: "CI pending", ciStatus: "pending"},
+		{name: "Todo queued CI", lane: "Todo", ciStatus: "pending"},
+		{name: "Rework queued CI", lane: "Rework", ciStatus: "pending"},
+		{name: "CI pending", lane: "In Progress", ciStatus: "pending"},
 		{name: "CI passed", ciStatus: "pass"},
 		{name: "replacement head with pending CI", ciStatus: "pending", replaceHead: true},
 		{name: "replacement head with passed CI", ciStatus: "pass", replaceHead: true},
@@ -567,7 +570,11 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 			t.Parallel()
 
 			completedAt := now.Add(-25 * time.Minute)
-			issue := completionTransitionIssue("In Progress", "OPEN")
+			lane := tt.lane
+			if lane == "" {
+				lane = "In Progress"
+			}
+			issue := completionTransitionIssue(lane, "OPEN")
 			issue.PullRequest.Number = 3074
 			issue.PullRequest.URL = "https://github.test/digitaldrywood/detent/pull/3074"
 			issue.PullRequest.HeadSHA = "published-head"
@@ -590,7 +597,7 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			state := newState(cfg)
 			state.StrandedActiveThreshold = 10 * time.Minute
-			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeImplement, DispatchSourceState: "In Progress", StartedAt: completedAt.Add(-time.Minute), DiffStats: DiffStats{Status: "clean"}}
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeImplement, DispatchSourceState: lane, StartedAt: completedAt.Add(-time.Minute), DiffStats: DiffStats{Status: "clean"}}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: completedAt.Add(-time.Minute)}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: completedAt,
@@ -602,6 +609,9 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 			}
 			if completed := state.Completed[issue.ID]; !completed.successfulAttemptPersisted {
 				t.Fatalf("completed = %#v, want persisted success", completed)
+			}
+			if _, running := state.Running[issue.ID]; running {
+				t.Fatal("source session remained active after handoff")
 			}
 			state.WorkAttempts = []telemetry.WorkAttempt{{IssueID: issue.ID, Status: "completed", CompletedAt: &completedAt}}
 			if tt.replaceHead || tt.replacePR {
@@ -619,8 +629,10 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 			if got := autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote); got == staleCompletion {
 				t.Fatalf("gate wait = %t, want %t for stale completion = %t", got, !staleCompletion, staleCompletion)
 			}
-			if diagnostics := strandedActiveIssueSnapshots(state, issueSnapshots([]connector.Issue{issue}, 0, 0, now, state.laneEntries), now); len(diagnostics) != 1 || diagnostics[0].DurationSeconds != int64((25*time.Minute)/time.Second) {
-				t.Fatalf("stranded diagnostics = %#v, want the recorded 25-minute completion-to-recovery gap", diagnostics)
+			if lane == "In Progress" {
+				if diagnostics := strandedActiveIssueSnapshots(state, issueSnapshots([]connector.Issue{issue}, 0, 0, now, state.laneEntries), now); len(diagnostics) != 1 || diagnostics[0].DurationSeconds != int64((25*time.Minute)/time.Second) {
+					t.Fatalf("stranded diagnostics = %#v, want the recorded 25-minute completion-to-recovery gap", diagnostics)
+				}
 			}
 			if staleCompletion {
 				if promoted := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now); len(promoted.transitioned) != 0 {
@@ -633,6 +645,11 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 			}
 			if len(baseTracker.updates) != 0 {
 				t.Fatalf("gate wait changed lanes before promotion: %#v", baseTracker.updates)
+			}
+			issue.PullRequest.CIStatus = "in_progress"
+			orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now.Add(30*time.Second))
+			if len(state.Running) != 0 || len(baseTracker.updates) != 0 {
+				t.Fatalf("in-progress CI started a worker or changed lanes: running=%#v updates=%#v", state.Running, baseTracker.updates)
 			}
 			issue.PullRequest.CIStatus = "pass"
 			promoted := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Minute))
