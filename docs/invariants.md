@@ -365,27 +365,16 @@ writes followed by successful persistence and normal turn completion.
 Dispatch Workpad comment-read failures use the existing tracker availability observer
 and tracker-unavailable dispatch reason; they never become issue dependency evidence.
 
-Worker credential classification (#2846) uses the connector's shared GraphQL
-secondary cooldown, including Retry-After, instead of converting throttled probes
-into monitor failures. Cancellation during that wait does not register a monitor.
-Monitor eligibility resolves the issue's queued retry even when the caller supplies
-no retry; at `NextProbeAt` the carrier can reserve the existing single canary.
-An idle hold expires at `NextProbeAt` even when its carrier cannot dispatch;
-an in-flight canary retains ownership. Eligibility checks are read-only and retain
-the condition's attempt history, so a repeated failure after expiry increases
-backoff. Missing candidate batches preserve monitor carrier retries; a
-dispatchable carrier or the next eligible worker after an idle hold expires
-reserves the existing probe and consumes an attempt. Durable attempt recovery restores both the
-condition and its carrier retry, and a successful budget observation clears it.
-Completion without a budget observation settles an in-flight canary and schedules
-the next probe from its existing bounded backoff. A budget observation in the
-completion result can clear the condition before that settlement only when its
-observation is at least as recent as the active failure.
-`TestWorkerGitHubClassificationWaitsForSharedCooldown`,
-`TestWorkerGitHubMonitorCarrierEligibility`, and
-`TestDispatchableWorkerGitHubMonitorCarrier` cover cooldown, expiry, and dispatch
-through restart. This consolidates classification with the existing cooldown and
-uses the existing backend-capacity probe delay; it adds no new recovery loop.
+Worker credential classification uses the connector's shared GraphQL secondary
+cooldown, including Retry-After. A failed `GET /rate_limit` observation now
+logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
+A successful response still enforces the configured worker reserve. The old
+credential-wide monitor condition, canary, retry restoration, and scheduler
+skip reason are retired. Historical monitor attempts remain visible in attempt
+history without restoring a dispatch hold. `TestWorkerGitHubProbeFailureIsInstanceDiagnostic`,
+`TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor`, and
+`TestTimedOutWorkerProbeDoesNotHoldDispatch` cover the timeout and dispatch
+sequence.
 
 Worker GitHub CLI preflight (#2741) checks that `gh auth token` can read the
 selected credential from its private per-attempt `hosts.yml`. Failures reuse
@@ -503,6 +492,12 @@ idle interval; `stranded_active_recovery` is removed from the transition-reason
 allowlist so the deleted lane writer cannot be restored under that reason.
 `TestTickDispatchesPlanApprovedIssueAfterLongRefresh` covers the reported
 approval-to-dispatch sequence.
+
+The worker GitHub REST budget monitor's credential-wide dispatch hold and
+recovery canary are removed (#3248). A failed budget observation is now an
+instance diagnostic; only a successful response can enforce the existing REST
+reserve. This removes a self-protection path that converted a transient probe
+timeout into a project-wide dispatch outage.
 
 Operator rejection (#2943) consolidates promotion eligibility with existing lane
 history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate
