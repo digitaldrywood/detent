@@ -1289,6 +1289,10 @@ scheduled validation. Production release artifacts use validated tags only.
 required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
 checks every workflow for forbidden pull-request and merge-group events.
 `TestWorkflowViolations` rejects trigger and coverage regressions.
+`TestScheduledCIDocumentationMatchesWorkflow` checks the documented no-op gate
+and optional diagnostics. `TestGolangCILintUsesRepositoryPinnedVersion` and
+`TestMakeLintIgnoresAmbientBinary` verify pinned lint execution with concurrent
+runners, including installation and cached-binary paths.
 
 **Change:** Update this invariant and its workflow assertions in the same pull
 request when changing validation or release evidence.
