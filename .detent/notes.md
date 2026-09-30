@@ -1,3 +1,14 @@
+# Issue #3446 implementation handoff
+
+- Reproduced all five scheduled NilAway findings from job 110035612674 / run 36758716559 on starting develop 640b8abc10f0adb4ad580d1835b349796062130e. Build and Vet passed in that run; NilAway was the failing step. Local pinned audit exited 1, with the same primary findings and grouped native-landing dereferences.
+- Key files: internal/hubclient/{scheduler_test.go,native_change_test.go,native_landing_test.go}, internal/runner/activity_profile_test.go, scripts/nilaway-baseline.json. Existing tests now assert nonnil connector/execution/recorder values before dereferencing and exact machine report counts before indexing. Removed the retired native-change suppression; no replacement or new suppression.
+- Pinned diagnostics: Go 1.26.6, GOMAXPROCS=4, NilAway v0.0.0-20260612163715-2d8907f431ca over internal/hubclient and internal/runner passes with zero diagnostics (5.8s). Five affected test names pass with -p 4 -count=1 and DETENT_API_TOKEN cleared (hubclient 1.681s, runner 0.464s; 16.3s command). Focused go vet -p 4 over both packages passes (12.7s). git diff --check passes.
+- No production behavior, invariant enforcement, generated inputs, UI, or mechanism changed. No duplicate tests added: assertions extend existing fixtures; the pinned audit reproduces the recorded failure. No full gates, coverage, race suites, Actions reruns, or CI waiting.
+- Configured gate is true, to run on the final committed head before push. PR publication, current-head feedback/check evidence and completion for attempt 7217 / generation 85 belong to the canonical issue Workpad. Next scheduled validation confirms the integrated repair and closes the issue; lane transitions and merge remain orchestrator-owned.
+- No dependencies or out-of-scope findings. Skill draft: no — existing focused NilAway diagnostics and fixture assertions cover this routine repair.
+
+## Historical handoffs
+
 # Issue #2976 merge fallback handoff (attempt 7212, generation 80)
 
 - PR #3052 is open against `develop` on the assigned isolated branch; its body includes `Fixes #2976`. Fetched published head: `99f99e34cea4fea794c0ddc7a8cea973c24e2957`.
@@ -6,7 +17,7 @@
 - Key issue files remain `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`. Prior resolution retains develop's audit-only Merging path and the PR's In Progress repair-only filter in the non-Merging decision path.
 - Updated handoff notes with one current Workpad/status fence; prior handoffs are historical.
 
-## Codex Workpad
+## Historical Workpad (#2976)
 
 Plan and result: retain the unpublished resolution, finish and commit the current develop merge while preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
 
@@ -14,7 +25,7 @@ Validation: no tests, lint, vet, builds, local gate (including `true`), CI check
 
 Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No push, PR merge, issue-state change or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
