@@ -942,8 +942,19 @@ This covers squash commits, which cannot prove delivery through branch ancestry.
 Later commits, uncommitted files, nonterminal issues, and issues without a
 recorded landing retain the existing protection. The normal reaper removes the
 landed workspace and clears its cleanup failure; no new sweep or retention
-state is introduced (#3234). `TestLocalGitCleanupRecordedLanding` and
-`TestRunnerReapSquashLandedNativeWorkspace` cover this narrower decision.
+state is introduced (#3234).
+GitHub terminal cleanup and the supported `cleanup_workspace` action refresh
+the issue-to-PR association and hydrate the PR again before accepting the exact
+merged head (#3093). A verified repository/PR identity, successful merge time,
+and available current head are required. This proof exists only for that cleanup
+call and shares the native landing checks; it is never persisted as tracker
+state. Deleted branches, cached merged snapshots, and issue closure alone do
+not establish delivery. Both branch and worktree must still match the delivered
+head, and the normal `before_remove` lifecycle rechecks local work.
+`TestVerifyCleanupDelivery` covers unavailable and mismatched verification;
+`TestLocalGitCleanupRecordedLanding` reproduces squash delivery after source
+branch deletion and checks later/dirty/mismatched work and directory absence.
+`TestRunnerReapSquashLandedWorkspace` covers proof propagation through the runner.
 
 The operator-approved September 14 retention scope (#2681, INV-11 approval
 recorded in the issue) extends this same reaper sweep: completed workspaces

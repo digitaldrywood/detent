@@ -407,8 +407,12 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH bool) {
 		t.Fatal("worker never started")
 	}
 	commandMu.Lock()
-	err = lastCommand.Process.Kill()
+	command := lastCommand
 	commandMu.Unlock()
+	if command == nil || command.Process == nil {
+		t.Fatal("host-loss fixture did not capture a running worker command")
+	}
+	err = command.Process.Kill()
 	if err != nil {
 		t.Fatal(err)
 	}
