@@ -1022,3 +1022,5 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 		})
 	}
 }
+
+func (*hostedSecurityProvider) HasUser(context.Context, string) (bool, error) { return true, nil }

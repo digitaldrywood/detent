@@ -220,8 +220,6 @@ func (s *Service) routes() {
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
 	e.GET("/invite", s.startInvitation)
-	e.GET("/invitations/join", s.joinPage)
-	e.POST("/invitations/join", s.joinInvitation)
 	e.Any("/organizations/:organization", s.proxy)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)

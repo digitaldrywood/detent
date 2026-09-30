@@ -1,5 +1,5 @@
 // The shared entry's JSON surface: the organization chooser, self-service
-// creation and its provisioning status, and invitation joins. These live on
+// creation and its provisioning status. These live on
 // the shared origin itself, outside any organization's base path, and use the
 // entry session's CSRF token from the chooser payload.
 import * as Schema from "effect/Schema";
@@ -249,8 +249,6 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
       submit(NextResult, "/organizations", input.csrf, { name: input.name, creation_key: input.key }),
     resume: (input: { organization: string; csrf: string }) =>
       submit(NextResult, `/organizations/${encodeURIComponent(input.organization)}/provisioning/resume`, input.csrf, {}),
-    joinInvitation: (input: { token: string; csrf: string }) =>
-      submit(NextResult, "/invitations/join", input.csrf, { token: input.token }),
     platformOrganizations: () => read(PlatformOrganizations, "/api/cloud/platform/organizations"),
     platformAllowlist: () => read(PlatformAllowlist, "/api/cloud/platform/allowlist"),
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),

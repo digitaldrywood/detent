@@ -28,12 +28,9 @@ templ HostedPage(data HostedPageData) {
 							<h2 class="text-lg font-semibold">Welcome to Detent</h2>
 							<p class="text-sm text-sec">Sign in to create or join your organization and work in the projects shared with you.</p>
 							<a href={ hostedSignInURL(data) } class="inline-flex min-h-11 items-center rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Continue with WorkOS</a>
-							<a href={ hostedJoinURL(data) } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Join with invitation</a>
 						</section>
 					case "chooser":
 						@hostedChooser(data)
-					case "join":
-						@hostedJoin(data)
 					case "create":
 						@hostedCreate(data)
 					case "provisioning":
@@ -166,14 +163,7 @@ templ hostedOnboarding(data HostedPageData) {
 				<button type="submit" class="min-h-11 rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Create organization</button>
 			</form>
 		}
-		if !data.SharedOrigin {
-			<form method="post" action={ hostedURL(data, "/organization/join") } class="space-y-3 border-t border-line pt-5">
-				@hostedCSRF(data.CSRF)
-				<label for="hosted-invitation-token" class="block text-sm font-medium">Invitation token</label>
-				<input id="hosted-invitation-token" name="token" type="password" required autocomplete="off" class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"/>
-				<button type="submit" class="min-h-11 rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Join organization</button>
-			</form>
-		}
+		<p class="text-sm text-sec">Ask an owner to send you an invitation.</p>
 	</section>
 }
 
@@ -354,7 +344,7 @@ templ hostedChooser(data HostedPageData) {
 	<section class="space-y-5 rounded-card border border-line bg-surface p-6" data-organization-chooser>
 		<h2 class="text-lg font-semibold">Choose an organization</h2>
 		if len(data.Organizations) == 0 {
-			<p class="text-sm text-sec">Your account does not belong to an organization on this site yet. Use the invitation sent to you to join one.</p>
+			<p class="text-sm text-sec">Ask an owner to send you an invitation.</p>
 		} else {
 			<ul class="space-y-2">
 				for _, organization := range data.Organizations {
@@ -381,7 +371,6 @@ templ hostedChooser(data HostedPageData) {
 			if data.CanCreate {
 				<a href="/organizations/new" class="inline-flex min-h-11 items-center rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Create organization</a>
 			}
-			<a href="/invitations/join" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Join with invitation</a>
 		</div>
 	</section>
 }
@@ -431,19 +420,5 @@ templ hostedDelete(data HostedPageData) {
 			<input id="delete-confirm" name="confirm" required autocomplete="off" class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"/>
 			<button type="submit" class="min-h-11 rounded-card border border-err/60 px-4 text-sm font-semibold text-err focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Delete organization</button>
 		</form>
-	</section>
-}
-
-templ hostedJoin(data HostedPageData) {
-	<section class="max-w-lg space-y-4 rounded-card border border-line bg-surface p-6">
-		<h2 class="text-lg font-semibold">Join with invitation</h2>
-		<p class="text-sm text-sec">Paste the invitation token sent to your verified email address.</p>
-		<form method="post" action="/invitations/join" class="space-y-3">
-			@hostedCSRF(data.CSRF)
-			<label for="hosted-invitation-token" class="block text-sm font-medium">Invitation token</label>
-			<input id="hosted-invitation-token" name="token" type="password" required autocomplete="off" class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"/>
-			<button type="submit" class="min-h-11 rounded-card bg-accent px-4 text-sm font-semibold text-page focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Join organization</button>
-		</form>
-		<a href="/organizations" class="inline-flex min-h-11 items-center text-sm text-accent">Back to organizations</a>
 	</section>
 }

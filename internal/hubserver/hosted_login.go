@@ -111,6 +111,16 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 	}
 	if c.QueryParam("error") != "" {
 		denial.Reason = "provider_error"
+		if transaction.InvitationToken != "" {
+			invitation, err := s.config.Hosted.Provider.Invitation(c.Request().Context(), transaction.InvitationToken)
+			message := auth.InvitationUnavailable
+			if err == nil {
+				if problem := auth.InvitationProblem(invitation, "", "", s.config.now()); problem != "" {
+					message = problem
+				}
+			}
+			return s.hostedInvitationDenied(c, message, denial)
+		}
 		return s.hostedDenied(c, http.StatusUnauthorized, invalidLink, denial)
 	}
 	if transaction.SupportActor == "" {
@@ -169,7 +179,14 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 		}
 		if invitationErr != nil {
 			denial.Reason, denial.Err = "invitation_invalid", invitationErr
-			return s.hostedDenied(c, http.StatusForbidden, "This invitation is unavailable or was sent to a different account", denial)
+			invitation, lookupErr := s.config.Hosted.Provider.Invitation(c.Request().Context(), transaction.InvitationToken)
+			message := auth.InvitationUnavailable
+			if lookupErr == nil {
+				if problem := auth.InvitationProblem(invitation, identity.Subject, identity.Email, s.config.now()); problem != "" {
+					message = problem
+				}
+			}
+			return s.hostedInvitationDenied(c, message, denial)
 		}
 	}
 	if err := s.hostedAudit(c.Request().Context(), identity.Hosted, "session_started", "/auth/oidc/callback", "", http.StatusOK); err != nil {
@@ -364,13 +381,6 @@ func (s *Service) acceptHostedInvitationToken(c echo.Context, token string) (str
 	return "", denial
 }
 
-func (s *Service) acceptHostedInvitation(c echo.Context) error {
-	if message, denial := s.acceptHostedInvitationToken(c, c.FormValue("token")); message != "" {
-		return s.hostedDenied(c, http.StatusForbidden, message, denial)
-	}
-	return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
-}
-
 func (s *Service) acceptHostedInvitationFor(ctx context.Context, identity auth.Identity, token string) error {
 	if token == "" || len(token) > 512 {
 		return auth.ErrHostedIdentity
@@ -411,35 +421,53 @@ func (s *Service) acceptHostedInvitationFor(ctx context.Context, identity auth.I
 	return nil
 }
 
+func (s *Service) hostedInvitationDenied(c echo.Context, message string, denial auth.HostedDenial) error {
+	denial.Status = http.StatusForbidden
+	auth.LogHostedDenial(s.hostedAuthLogger, c.Response(), c.Request(), denial)
+	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
+	c.Response().WriteHeader(http.StatusForbidden)
+	return templates.InvitationPage(message).Render(c.Request().Context(), c.Response())
+}
+
 func (s *Service) startHostedInvitation(c echo.Context) error {
 	token := c.QueryParam("invitation_token")
+	if token == "" {
+		token = c.QueryParam("token")
+	}
 	denial := auth.HostedDenial{Flow: "invitation_start", Reason: "invitation_invalid"}
 	if token == "" || len(token) > 512 {
-		return s.hostedDenied(c, http.StatusForbidden, "This invitation is unavailable", denial)
+		return s.hostedInvitationDenied(c, auth.InvitationUnavailable, denial)
 	}
-	invitation, err := s.config.Hosted.Provider.Invitation(c.Request().Context(), token)
-	organization, orgErr := s.hostedProviderOrganization(c.Request().Context())
+	ctx := c.Request().Context()
+	invitation, err := s.config.Hosted.Provider.Invitation(ctx, token)
+	organization, orgErr := s.hostedProviderOrganization(ctx)
 	if err != nil || orgErr != nil || invitation.OrganizationID != organization {
 		denial.Err = err
-		if err == nil {
-			denial.Reason = auth.HostedReasonOrganizationMismatch
-		}
-		return s.hostedDenied(c, http.StatusForbidden, "This invitation belongs to a different organization or is no longer available", denial)
+		return s.hostedInvitationDenied(c, auth.InvitationUnavailable, denial)
 	}
-	var count int
-	err = s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM hosted_invitations WHERE id = ? AND organization_id = ? AND email = ? AND accepted_user_id = ''", invitation.ID, s.config.Hosted.OrganizationID, strings.ToLower(invitation.Email)).Scan(&count)
-	if err != nil || count != 1 {
-		return s.hostedDenied(c, http.StatusForbidden, "This invitation is unavailable", denial)
+	if problem := auth.InvitationProblem(invitation, "", "", s.config.now()); problem != "" {
+		return s.hostedInvitationDenied(c, problem, denial)
 	}
-	denial.Reason = "transaction_failed"
+	var accepted string
+	err = s.database.db.QueryRowContext(ctx, "SELECT accepted_user_id FROM hosted_invitations WHERE id = ? AND organization_id = ? AND email = ?", invitation.ID, s.config.Hosted.OrganizationID, strings.ToLower(invitation.Email)).Scan(&accepted)
+	if err != nil {
+		return s.hostedInvitationDenied(c, auth.InvitationUnavailable, denial)
+	}
+	if accepted != "" {
+		return s.hostedInvitationDenied(c, "This invitation has already been used.", denial)
+	}
 	transaction, err := s.newHostedTransaction(c, "", "", "")
 	if err != nil {
-		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "transaction_failed"})
 	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_transactions SET invitation_token = ? WHERE token_hash = ?", token, transaction.TokenHash); err != nil {
-		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
+	if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_transactions SET invitation_token = ? WHERE token_hash = ?", token, transaction.TokenHash); err != nil {
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "transaction_failed"})
 	}
-	return c.Redirect(http.StatusSeeOther, s.config.Hosted.Provider.AuthorizationURL(transaction.State, transaction.State, transaction.Verifier))
+	target, err := auth.InvitationAuthorizationURL(ctx, s.config.Hosted.Provider, invitation, token, transaction.State, transaction.Verifier)
+	if err != nil {
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "authorization_url_invalid", Err: err})
+	}
+	return c.Redirect(http.StatusSeeOther, target)
 }
 
 func (s *Service) hostedSupportPage(c echo.Context) error {

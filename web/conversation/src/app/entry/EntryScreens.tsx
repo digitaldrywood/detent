@@ -1,6 +1,6 @@
 // The shared entry's screens at `https://cloud.detent.build`: sign-in, the
-// organization chooser, creation with its provisioning progress, and joining
-// with an invitation token. They sit outside every organization's base path,
+// organization chooser and creation with its provisioning progress. They sit
+// outside every organization's base path,
 // so links here are plain root paths and opening an organization is a full
 // navigation into that organization's own client.
 import React from "react";
@@ -157,8 +157,7 @@ export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navig
         <div className="flex flex-col gap-5">
           {value.organizations.length === 0 && (value.pending ?? []).length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Your account does not belong to an organization yet. Create one, or use the invitation
-              sent to you.
+              Ask an owner to send you an invitation.
             </p>
           ) : null}
           {value.organizations.length === 0 ? null : (
@@ -209,9 +208,6 @@ export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navig
             {value.can_create === true ? (
               <Button onClick={() => onNavigate("/organizations/new")}>Create organization</Button>
             ) : null}
-            <Button variant="outline" onClick={() => onNavigate("/invitations/join")}>
-              Join with invitation
-            </Button>
             <span className="flex-1" />
             <SignOut csrf={value.csrf} />
           </div>
@@ -370,56 +366,6 @@ export function ProvisioningProgress({
           </div>
         </div>
       )}
-    </EntryCard>
-  );
-}
-
-export function JoinInvitation({ onNavigate }: { readonly onNavigate: Navigate }): React.ReactElement {
-  const api = useEntryApi();
-  const listing = useResource<EntrySession>(() => api.session(), [api]);
-  const [token, setToken] = React.useState("");
-  const staff = useStaffRedirect(listing.value?.staff, onNavigate);
-  const join = useMutation(async (value: string) => {
-    const result = await api.joinInvitation({ token: value, csrf: listing.value?.csrf ?? "" });
-    assign(result.next);
-    return result;
-  });
-  if (signInAgain(listing.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
-  if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
-  return (
-    <EntryCard
-      title="Join with invitation"
-      description="Paste the invitation token sent to your verified email address."
-    >
-      <Problem message={join.error?.message ?? null} />
-      <form
-        className="flex flex-col gap-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const value = token.trim();
-          if (value.length > 0) void join.call(value);
-        }}
-      >
-        <Label htmlFor="entry-invitation-token" className="text-sm font-medium">
-          Invitation token
-        </Label>
-        <Input
-          id="entry-invitation-token"
-          name="token"
-          type="password"
-          autoComplete="off"
-          value={token}
-          onChange={(event) => setToken(event.currentTarget.value)}
-        />
-        <div className="flex flex-wrap gap-2">
-          <Button type="submit" disabled={join.pending || token.trim().length === 0 || listing.value === undefined}>
-            {join.pending ? "Joining…" : "Join organization"}
-          </Button>
-          <Button type="button" variant="outline" onClick={() => onNavigate(CHOOSE_ORGANIZATION)}>
-            Back to organizations
-          </Button>
-        </div>
-      </form>
     </EntryCard>
   );
 }

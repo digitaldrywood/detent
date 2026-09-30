@@ -279,18 +279,6 @@ func TestStaffCannotCreateOrJoinOrganizations(t *testing.T) {
 		}
 		staff := newBrowser(t, f.service.Handler())
 		staff.login("/auth/oidc/start", "user_support:")
-		if response, _ := staff.get("/invitations/join"); response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/platform" {
-			t.Fatalf("staff join page = %d %q", response.StatusCode, response.Header.Get("Location"))
-		}
-		_, body := staff.get("/api/cloud/session")
-		var session struct {
-			CSRF string `json:"csrf"`
-		}
-		decodeJSON(t, body, &session)
-		joined := staff.do(http.MethodPost, "/invitations/join", url.Values{"token": {"inv_support"}, "csrf": {session.CSRF}}, json)
-		if joined.StatusCode != http.StatusForbidden || !strings.Contains(joined.Body, "staff_session") {
-			t.Fatalf("staff join = %d %s", joined.StatusCode, joined.Body)
-		}
 		invited := newBrowser(t, f.service.Handler())
 		start, _ := invited.get("/invite?invitation_token=inv_support")
 		provider, err := url.Parse(start.Header.Get("Location"))
