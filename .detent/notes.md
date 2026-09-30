@@ -1,6 +1,6 @@
 # Issue #3430 implementation handoff
 
-## Codex Workpad
+## Implementation notes
 
 Plan and result: recover and finish the stage-aware Model / Effort row directly under State. Shared worker selection resolves configured plan/build/validate/rework/merge identities. The row attributes current and last attempts, uses the next-stage default after stage changes, and retains the last stage for terminal cards. Removed the buried Configured effort row; Session identity rows and board card rendering remain unchanged.
 
@@ -8,20 +8,13 @@ Recovery: inspected all 14 recovered paths and retained them as issue-owned work
 
 Key files: internal/runner/board_identity.go; internal/web/board_identity.go; internal/web/templates/sheet_data.go and sheet.templ; snapshot draft propagation; tests/visual/sheet-model-effort.spec.js.
 
-Validation: original generated renderer fails the never-attempted-plan regression because the Model / Effort row is missing. Focused runner, web, template, and snapshot table tests pass (14.1s command); focused vet and preview build pass (9.7s combined). make generate passes (22.4s), with frontend CSS/font/sourcemap/chunk warnings and no unrelated generated changes. Six selected Playwright diagnostics pass (5.4s), including both non-running card morph refresh cases and existing Session identity, activity-tab, and density assertions. The first browser run exposed only a whitespace expectation in the new spec; corrected it and reran successfully. Chrome DevTools verified the non-running review card at 1440px and 390px without overflow; isolated preview stopped cleanly. macOS screenshot comparison is skipped by existing configuration, with no baseline changes or screenshot-test credit claimed.
+Validation: original generated renderer fails the never-attempted-plan regression because the Model / Effort row is missing. Focused runner, web, template, and snapshot table tests pass (14.1s original command; 11.0s after rebasing); focused vet and preview build pass (9.7s combined). make generate passes (22.4s), with frontend CSS/font/sourcemap/chunk warnings and no unrelated generated changes. Six selected Playwright diagnostics pass (5.4s), including both non-running card morph refresh cases and existing Session identity, activity-tab, and density assertions. The final spec waits for htmx:afterSettle before checking preserved row identity; both strengthened cases pass (1.9s). The first browser run exposed only a whitespace expectation in the new spec; corrected it and reran successfully. Chrome DevTools verified the non-running review card at 1440px and 390px without overflow; isolated preview stopped cleanly. macOS screenshot comparison is skipped by existing configuration, with no baseline changes or screenshot-test credit claimed.
 
 Rebased onto fetched develop 9f171a33c; only notes conflicted and all source files were unchanged. Preserved incoming historical handoffs.
 
-Open items: publish draft PR against develop, inspect current-head review/check evidence, mark ready, and update the canonical issue Workpad. Configured gate is true and runs on the final committed head before publication; no full gate, coverage, race suite, or CI wait. Orchestrator owns lane transitions and merge.
+Publication: PR #3493 targets develop and includes Fixes #3430. Initial published head f3713ef3e was mergeable, with no reviews, review threads, comments, or status-check rollup. Final-head publication, configured gate, ready promotion, review/check evidence, and completion for attempt 7315 / generation 7 are recorded in the canonical issue Workpad. No implementation items remain. Configured gate is true and runs on the final committed head before publication; no full gate, coverage, race suite, or CI wait. Orchestrator owns lane transitions and merge.
 
 Skill draft: no — existing selection and isolated preview procedures cover this change.
-
-```detent-status
-schema: 1
-status: in_progress
-blockers: []
-human_action: null
-```
 
 # Historical notes from develop
 

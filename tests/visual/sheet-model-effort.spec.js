@@ -30,9 +30,18 @@ for (const title of [
       window.originalSelectionRow = row;
     });
     const refresh = page.waitForResponse(response => response.url().includes("/core") && response.status() === 200);
-    await core.evaluate(core => window.htmx.trigger(core, "detailSheetRefresh"));
+    await core.evaluate(core => new Promise(resolve => {
+      const settled = event => {
+        if (event.target.id === core.id) {
+          document.removeEventListener("htmx:afterSettle", settled);
+          resolve();
+        }
+      };
+      document.addEventListener("htmx:afterSettle", settled);
+      window.htmx.trigger(core, "detailSheetRefresh");
+    }));
     await refresh;
-    await expect.poll(() => row.evaluate(row => row === window.originalSelectionRow)).toBe(true);
+    expect(await row.evaluate(row => row === window.originalSelectionRow)).toBe(true);
     await expect(row.locator("[data-sheet-row-value]")).toHaveText("Build: demo-model · low (configured default)");
   });
 }
