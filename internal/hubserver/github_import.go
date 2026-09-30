@@ -354,13 +354,9 @@ func importGitHubIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, integ
 		if author == "" {
 			author = "unavailable"
 		}
-		created, createErr := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: source.Title, Body: source.Body, State: project.States[0].Name, Labels: source.Labels, Assignees: source.Assignees, Provenance: &tracker.Provenance{Provider: "github", ExternalID: source.NodeID, AuthorID: author, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ObservedAt: now}}, now)
+		issue, createErr := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: source.Title, Body: source.Body, State: project.States[0].Name, Labels: source.Labels, Assignees: source.Assignees, Provenance: &tracker.Provenance{Provider: "github", ExternalID: source.NodeID, AuthorID: author, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ObservedAt: now}}, now)
 		if createErr != nil {
 			return createErr
-		}
-		issue, ok := created.(tracker.NativeIssue)
-		if !ok {
-			return nativeInvalid("Native issue import returned an invalid identity")
 		}
 		current.WorkItemID = string(issue.WorkItemID)
 		if _, err := tx.ExecContext(ctx, "UPDATE github_imports SET intake_pending = 1 WHERE id = ?", current.ID); err != nil {
