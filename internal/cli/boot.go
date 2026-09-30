@@ -261,6 +261,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return fmt.Errorf("publish dashboard listener: %w", err)
 		}
 	}
+	if err := printBootBanner(cfg, displayURL); err != nil {
+		return err
+	}
 
 	runtimeStore, err := openRuntimeStore(runCtx, cfg)
 	if err != nil {
@@ -660,9 +663,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 
 	if useDashboard {
-		if err := printBootBanner(cfg, displayURL); err != nil {
-			return err
-		}
 		listenerOwned = false
 		if cfg.Shutdown == nil {
 			return runStartupAndServe(runCtx, startupLifecycle, startProjects, readiness, func(ctx context.Context) error {
@@ -693,9 +693,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				}, nil)
 			})
 		})
-	}
-	if err := printBootBanner(cfg, displayURL); err != nil {
-		return err
 	}
 	listenerOwned = false
 	if cfg.Shutdown == nil {

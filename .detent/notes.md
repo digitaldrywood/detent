@@ -2,6 +2,30 @@
 
 ## Codex Workpad
 
+Plan: merge freshly fetched develop `8c7b5bfb3685eac99854cefa52d4af02763f7aec` into published PR head `7b98e493a678c2fa82638143f0c52927b2e84fba`, preserving both as ancestors without rebasing, and commit the resolution.
+
+Prior notes verified: the source-clean starting head matches the fetched PR branch and GitHub PR #3354, which is open against develop and includes `Fixes #3244`. Its parents are published head `d8f7538be30a9d001cd54e73a22360fd2397c12d` and prior target `e687a22a5324187fb5a24de3aa5668e8e61f28f5`; the earlier #3244 conflict resolution is already published.
+
+Resolution and key files: only `.detent/notes.md` conflicted. Preserved both historical handoffs and consolidated one current Workpad/status block. All source files merged automatically, including `internal/cli/boot.go`; no manual source changes or generated asset work were required. The earlier runner enrollment, local-checks and migration resolution remains in the published ancestry.
+
+Validation: no tests, builds, typecheck, local gate, CI checks, or waits run in this fallback. Prior diagnostics and asset generation are historical only and do not validate this head. Gate/CI, quiet-window, slow-check, merge-group, and post-merge timings are unmeasured.
+
+Open items: Detent owns resolved-head ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No out-of-scope finding identified. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7151"
+  completion_generation: "22"
+blockers: []
+human_action: null
+```
+
+# Issue #3244 merge fallback — PR #3354
+
+## Historical workpad for #3244
+
 Plan: merge fetched develop `e687a22a5324187fb5a24de3aa5668e8e61f28f5` into published PR head `d8f7538be30a9d001cd54e73a22360fd2397c12d`, preserve both as ancestors, resolve only merge conflicts and required generated/schema blockers, and commit without pushing or rebasing.
 
 Key files: `internal/cli/boot.go` and `hub_client.go` retain context-based local setup reporting and the runner-problem callback. `internal/hubclient/client.go`, `runner.go`, and `internal/hubserver/runner_identity.go` retain local checks together with develop's problems, protocol, isolation, and checkout reports. `web/conversation/src/app/account/Setup.tsx` retains the observed-policy review and integration error; `static/app/conversation/app.js` is regenerated from combined source. Develop owns migrations 45–47; the unlanded local-checks migration is renumbered to 48, with the supported schema and existing regression expectation updated. No new migration recovery mechanism is added.
@@ -10,9 +34,28 @@ Validation: no tests, typecheck, local gate, CI reads, or CI waits run in this f
 
 Open items: Detent verification/validation/publication. No out-of-scope finding identified. PR merge and issue/lane state remain orchestrator-owned. The inherited notes below are preserved as historical records.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
+blockers: []
+human_action: null
+```
+
+## Historical workpad for #3026
+
+- Plan: merge fetched `origin/develop` at `e687a22a5324187fb5a24de3aa5668e8e61f28f5` into PR #3026's published head `bb60dc4e827b413fffa8562ec135b402761e83ff`, preserving both as ancestors without rebasing.
+- Prior notes verified against the clean starting head and fetched PR ref. The historical #3019 notes name an earlier rebased head; the published head for this fallback is `bb60dc4e827b413fffa8562ec135b402761e83ff`. Prior diagnostics are historical only.
+- Resolution: only `.detent/notes.md` conflicted. Preserved historical handoffs from both sides, including #3019 and #3001, and consolidated this current Workpad/status block. All source files merged automatically; no manual source edits or out-of-scope findings.
+- Key issue files: `internal/cli/boot.go`, `internal/cli/dev_runtime_e2e_test.go`; both remain unchanged from the published PR head.
+- Validation: no tests, builds, local gate, CI checks, or waits run in this merge-fallback session. No current-head validation credit claimed; gate/CI and post-merge timings are unmeasured.
+- Open items: Detent owns resolved-head ownership, cleanliness, target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7141"
+  completion_generation: "12"
 blockers: []
 human_action: null
 ```
@@ -190,6 +233,18 @@ Historical status: complete; blockers: []; human_action: null.
 - No generated inputs changed. Configured gate is `true`; no full gates, coverage, race suite, or CI wait. No out-of-scope discovery or reusable skill draft.
 - Source repair and focused diagnostics are complete. PR publication, current-head review, and completion for attempt 7112 / generation 42 are tracked in the canonical issue Workpad.
 
+# Issue #3019 (historical implementation handoff)
+
+- Key files: `internal/cli/boot.go`, `internal/cli/dev_runtime_e2e_test.go`.
+- Existing fix publishes the dashboard address immediately after binding, before runtime store and board snapshot initialization. The blocked snapshot-load regression covers fixture and screenshots modes and checks `/health` after releasing the load.
+- Rework was an old CI failure, with no actionable human or bot review. #2975 and #3009 are closed; their fixes are merged into `origin/main`. Current `develop` has independent platform fixes; prior full-CI failures are historical under the operator's disabled blocking-gate policy.
+- Rebased the single issue commit cleanly onto `origin/develop` at `bccee4c50f86019fd961a4c457a59a2c91e9eb31`. Rebased head: `1cae634d21b925d2ef4570a6061d0888414342ae`.
+- Current-head diagnostics: affected startup tests passed three repetitions (27.313s); four concurrent GOMAXPROCS=1 runs passed (10.056–11.679s); `go test ./internal/cli/... -count=1 -timeout=15m` passed (54.533s); `go vet ./internal/cli/...` passed. DETENT_API_TOKEN was cleared for tests.
+- Prior deterministic regression failed on the old boot order after the unchanged 10-second empty-banner wait. Prior ambient host stress did not reproduce the observed host slowdown; no blanket timeout increase was made.
+- Configured `true` gate passed exactly once immediately before pushing. Rebased head is pushed, ready PR #3026 targets `develop`, and the issue Workpad reports `complete` with no blockers. GitHub recheck confirmed exact head, no review threads/findings, and no current-head check rollup; no skipped checks are credited as tests.
+- Open items: none for implementation/Rework. The orchestrator owns promotion and merging; do not merge during Rework or change tracker lane labels.
+- Skill draft: no; the deterministic startup-order regression needs no new reusable procedure.
+
 # Issue #3001
 
 PR: https://github.com/digitaldrywood/detent/pull/3004 (ready, target develop).
@@ -204,3 +259,10 @@ Dependencies #2975 (PR #2986) and #3009 (PR #3018) are closed/merged to main; th
 Diagnostics: focused startup, classification, manager, doctor and workspace tests passed; go vet ./internal/cli/... ./internal/project/... ./internal/workspace/... passed. First rebased attempt could not compile because of retired SSH sentinel ErrSessionNoProgress; already fixed by merged #3431, incorporated in second clean rebase. Configured gate true is next immediately before push. No full checks or CI polling performed.
 
 Handoff: publish the rebased ready PR with an exact lease and a complete canonical issue Workpad; the configured true gate runs immediately before that push. Orchestrator owns lane transitions and merge dispatch. Skill draft: no — routine rebase and diagnostics added no reusable procedure.
+
+## Issue #3076 merge fallback — 2026-09-30
+
+- Verified remote PR #3296 head `717af073f247280b76bd5e645c8f9d5bd353af38` matches the retained local head; historical publication notes refer to an older head.
+- Merged current `origin/develop` without rebasing; retained both independent additions in `docs/invariants.md` and both regressions in `internal/runner/prompt_test.go`. `internal/runner/prompt.go` merged automatically.
+- No local validation or CI run in this fallback session. Prior test results are historical, not evidence for the resolved head.
+- Open items: Detent verifies the clean head and ancestry, validates, publishes with lease protection, and waits for current-head CI. No unrelated work identified.
