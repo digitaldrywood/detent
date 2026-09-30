@@ -2787,7 +2787,9 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 				blocker := dependencyAutoUnblockIssue("dependency", tt.dependencyState)
 				blocker.Identifier = "digitaldrywood/detent#3134"
 				blocker.Closed = tt.dependencyState == "Done"
+				issue.DependencySource = connector.BlockedRefSourceNative
 				issue.BlockedBy = []connector.BlockedRef{{ID: blocker.ID, Identifier: blocker.Identifier, State: blocker.State, Source: connector.BlockedRefSourceNative}}
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Ref: blocker.Identifier, Identifier: blocker.Identifier, Reason: "prior validation gate awaits dependency"}}}
 				tracker.blockers = []connector.Issue{blocker}
 			}
 			tracker.stateIssues = []connector.Issue{issue}
