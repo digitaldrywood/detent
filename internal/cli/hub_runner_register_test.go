@@ -31,14 +31,16 @@ func TestRunnerHubTarget(t *testing.T) {
 		wantOrg      tracker.OrganizationID
 		wantErr      bool
 	}{
-		{name: "shared entry URL", url: "https://hub.detent.build/organizations/org_abc/", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "shared entry URL", url: "https://cloud.detent.build/organizations/org_abc/", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "legacy hosted URL remains stable", url: "https://hub.detent.build/organizations/org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "staging Cloud URL", url: "https://staging.cloud.detent.build/organizations/org_abc", wantBase: "https://staging.cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
 		{name: "self-hosted with flag", url: "https://hub.example.test", organization: "org_self", wantBase: "https://hub.example.test", wantOrg: "org_self"},
-		{name: "flag agrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
-		{name: "flag disagrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
+		{name: "flag agrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "flag disagrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
 		{name: "no organization", url: "https://hub.example.test", wantErr: true},
 		{name: "not an organization ID", url: "https://hub.example.test/organizations/acme", wantErr: true},
 		{name: "empty", url: " ", wantErr: true},
-		{name: "query string", url: "https://hub.detent.build/organizations/org_abc?x=1", wantErr: true},
+		{name: "query string", url: "https://cloud.detent.build/organizations/org_abc?x=1", wantErr: true},
 		{name: "no host", url: "/organizations/org_abc", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
