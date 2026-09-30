@@ -164,7 +164,7 @@ func (l *LocalGit) checkWorkspaceSessionCommits(ctx context.Context, path string
 }
 
 func issueLandedAtHead(issue Issue) bool {
-	return issue.Terminal && strings.TrimSpace(issue.LandedHeadSHA) != "" && strings.TrimSpace(issue.LandedMergeSHA) != ""
+	return issue.Terminal && strings.TrimSpace(issue.LandedHeadSHA) != ""
 }
 
 func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, session bool, issue Issue) error {

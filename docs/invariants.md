@@ -419,6 +419,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Dispatch ordering (#3298) consolidates urgency into the existing comparator.
+Merging remains first when the project config places it first; other lanes
+compare tracker priority and configured label rank before lane rank, then retain
+unblocker, age, and identifier ties.
+A Todo hotfix can therefore precede ordinary Rework without a separate selector,
+capacity change, configuration key, or new mechanism. `TestSortIssuesForDispatch`
+covers cross-lane urgency, normalized Merging precedence, and equal-priority lane
+ties; the existing safety boundary fuzz seeds remain required.
+
 The stranded-active lane recovery is removed (#3238). In Progress remains an
 active dispatch candidate after a long refresh, and the existing completion
 transition owns finished attempts. The diagnostic snapshot still reports the
@@ -1236,17 +1245,24 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — Local pull-request validation and scheduled release evidence
 
-**Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
-`merge_group`, and no branch ruleset requires a status check. Each pull request
-runs `make check-fast` in its own worktree before merge. The target takes no
-shared validation lock and supports concurrent worktrees. Short tests skip
-shared databases and ports. Focused tests and vet remain available during edits.
-The lint command disables golangci-lint's shared runner lock with
-`--allow-parallel-runners`; analyzers and the existing timeout remain unchanged.
-The client check stops on dependency installation, typecheck, test, or build
-failure before checking bundle drift and attribution, preserving failure status.
+**Scope:** This is the Detent repository's development policy. Managed projects
+choose their own workflow triggers, required checks, validation commands, and
+release policies. Detent honors each project's configuration and branch rules;
+PR CI, merge-group CI, and required status checks remain supported.
 
-GitHub Actions schedules the full suite hourly from the default `main` branch.
+**Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
+`merge_group`, and no branch ruleset requires a status check. Pull requests do
+not wait for CI or local validation gates before push or merge. The self-hosted
+project uses the existing no-op command `true` and publishes no local status.
+
+`make check-fast`, focused tests, and vet remain available for optional
+diagnostics. When invoked, checks preserve failures. The local tools take no
+shared validation lock and support concurrent worktrees: lint uses
+`--allow-parallel-runners`, and each client test command uses at most two workers
+while retaining file isolation and all tests. These tools do not become merge
+requirements.
+
+GitHub Actions schedules the full suite hourly from the repository's default branch.
 Preflight pins the current `develop` SHA and skips when that commit already has
 a validated release tag. Every full-suite job runs on the pinned commit. A green
 run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
@@ -1305,15 +1321,19 @@ changing identity format or duplicate handling.
 
 ## INV-8 — No strict freshness protection
 
-**Statement:** No strict up-to-date branch protection is allowed on branches Detent merges into.
+**Scope:** This is the Detent repository's branch protection policy. Managed
+projects may require strict freshness; Detent honors their branch rules.
+
+**Statement:** This repository does not require strict up-to-date branch protection on branches Detent merges into.
 
 **Why:** Strict freshness invalidated already-tested heads after other merges
 and fed the measured repeated rebase/CI loop.
 
-**Enforcement:** The repository-policy doctor check reads live branch protection
-and fails strict freshness (`TestDoctorInvariantEvidence`). Repository tests
-cannot guarantee live branch settings. The operator must inspect configured
-merged-into branches; do not claim this rule is universally enforced by local CI.
+**Enforcement:** Doctor reports live branch protection as project evidence,
+without treating strict freshness as a failure. `TestDoctorRespectsProjectCIPolicy`
+prevents this repository's CI and protection policy from becoming global advice.
+Repository tests cannot guarantee live branch settings. The operator must inspect
+this repository's merged-into branches; local CI does not enforce live settings.
 
 **Change:** Edit INV-8 in the same PR with the intended protection semantics and
 live verification plan; code changes never imply permission to edit settings.
@@ -1546,7 +1566,9 @@ and read-only diagnostics. All are registered in the invariant manifest.
 Doctor reports native Go cache paths and readable sizes once per host, the last completed
 reaper trim (or “not recorded”), and warns about legacy `.detent/cache` roots in
 the workspace root or workdirs, including former per-attempt cache components
-under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
+under `.detent/worker-tmp` and under each workdir's worker scratch root in the
+OS temp directory (`detent-worker-scratch/`), where attempt scratch lives so
+toolchain churn stays out of file-watched workspace trees. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
 The native build cache defaults to 10% of total cache-volume capacity with the
 existing 48-hour age trim; explicit bounds win, and unavailable capacity falls

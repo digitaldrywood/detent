@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestAgentProviderRunsRestrictedToolTurnAndCollectsReply(t *testing.T) {
@@ -42,11 +43,8 @@ func TestAgentProviderRunsRestrictedToolTurnAndCollectsReply(t *testing.T) {
 	if backend.request.Workspace != workspacePath || backend.request.Prompt != "What is blocked?" || backend.request.ReasoningEffort != "low" || backend.request.Resume.ThreadID != "thread-existing" {
 		t.Fatalf("turn request = %#v", backend.request)
 	}
-	canonicalWorkspace, err := filepath.EvalSymlinks(workspacePath)
-	if err != nil {
-		t.Fatalf("EvalSymlinks() error = %v", err)
-	}
-	if filepath.Dir(backend.request.TempDir) != filepath.Join(canonicalWorkspace, ".detent", "worker-tmp") {
+	t.Cleanup(func() { _ = os.RemoveAll(workspace.WorkerScratchRoot(workspacePath)) })
+	if filepath.Dir(backend.request.TempDir) != workspace.WorkerScratchRoot(workspacePath) {
 		t.Fatalf("TempDir = %q", backend.request.TempDir)
 	}
 	if len(backend.tools) != 1 || backend.tools[0].Name != "board_state" {

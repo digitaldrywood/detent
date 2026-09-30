@@ -352,6 +352,7 @@ export default defineConfig({
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx", "src/**/*.test.ts"],
     setupFiles: ["./tests/setup.tsx"],
     css: false,
+    maxWorkers: 2,
     poolOptions: { forks: { execArgv: ["--no-experimental-webstorage"] } },
     testTimeout: 20_000,
   },

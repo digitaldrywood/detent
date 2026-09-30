@@ -14,6 +14,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 )
@@ -55,6 +56,10 @@ type codexBackendBuilder func(command string, cfg workflowconfig.CodexOptions, w
 // hosted configuration file. enabled is false when the section is absent
 // or disabled.
 func readHostedConversationConfig(path string) (config hubserver.ConversationConfig, enabled bool, resultErr error) {
+	return readHostedConversationConfigWithEnv(path, os.Getenv)
+}
+
+func readHostedConversationConfigWithEnv(path string, lookupEnv func(string) string) (config hubserver.ConversationConfig, enabled bool, resultErr error) {
 	if strings.TrimSpace(path) == "" {
 		return hubserver.ConversationConfig{}, false, nil
 	}
@@ -73,12 +78,12 @@ func readHostedConversationConfig(path string) (config hubserver.ConversationCon
 	if err := decoder.Decode(&section); err != nil {
 		return hubserver.ConversationConfig{}, false, errors.New("hosted configuration is invalid")
 	}
-	return readConversationConfig(section.Conversation, buildCoordinatorCodexBackend, os.Stat)
+	return readConversationConfig(section.Conversation, buildCoordinatorCodexBackend, os.Stat, lookupEnv)
 }
 
 // readConversationConfig converts the file section into the hub's
 // ConversationConfig. enabled is false for a nil or disabled section.
-func readConversationConfig(section *hostedConversationFileConfig, buildCodex codexBackendBuilder, stat func(string) (os.FileInfo, error)) (hubserver.ConversationConfig, bool, error) {
+func readConversationConfig(section *hostedConversationFileConfig, buildCodex codexBackendBuilder, stat func(string) (os.FileInfo, error), lookupEnv func(string) string) (hubserver.ConversationConfig, bool, error) {
 	if section == nil || !section.Enabled {
 		return hubserver.ConversationConfig{}, false, nil
 	}
@@ -106,6 +111,16 @@ func readConversationConfig(section *hostedConversationFileConfig, buildCodex co
 			return hubserver.ConversationConfig{}, false, errors.New("conversation settle_window must be a positive duration")
 		}
 		config.SettleWindow = window
+	}
+	if key := strings.TrimSpace(lookupEnv("OPENAI_API_KEY")); key != "" {
+		backend, err := genkitbackend.NewProvider("openai", key)
+		if err != nil {
+			return hubserver.ConversationConfig{}, false, err
+		}
+		config.Backend = backend
+		config.Model = genkitbackend.Model
+		config.ReasoningEffort = "low"
+		return config, true, nil
 	}
 	if section.Codex == nil {
 		return config, true, nil

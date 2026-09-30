@@ -218,7 +218,7 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 
 	path := base + "/machines/" + string(runner.MachineID) + "/heartbeat"
 	heartbeat := map[string]any{"display_name": "Private checkout host", "capacity": 1, "version": "test", "checkout_repository": "Other/Repository"}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusNoContent)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
 	response := f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
 	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 	if !strings.Contains(response.Body.String(), "matching GitHub origin") {
@@ -232,7 +232,7 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 		t.Fatal("invalid checkout report exposed credentials")
 	}
 	heartbeat["checkout_repository"] = "Acme/Private"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusNoContent)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", formatHubTime(time.Now()), runner.RunnerID); err != nil {
 		t.Fatal(err)
 	}

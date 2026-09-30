@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -128,6 +130,7 @@ type Dependencies struct {
 	AfterRunTimeout        time.Duration
 	MaxAgentRSSBytes       uint64
 	RSSPollInterval        time.Duration
+	GoBudget               gobudget.Budget
 	ProcessRSS             func(context.Context, procgroup.Identity) (uint64, error)
 	WorkerReapGrace        time.Duration
 	ReapWorkerProcess      workerProcessReapFunc
@@ -172,6 +175,7 @@ type Runner struct {
 	progressTicker            sessionProgressTickerFactory
 	admissionLeaks            admissionWorkspaceLeakTracker
 	lookupEnv                 func(string) string
+	goBudget                  gobudget.Budget
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -273,6 +277,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		turnLimit:                 deps.turnLimit,
 		progressTicker:            deps.progressTicker,
 		lookupEnv:                 deps.lookupEnv,
+		goBudget:                  deps.GoBudget,
 	}, nil
 }
 
@@ -1033,6 +1038,9 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 		return AgentTurnResult{}, nil, fmt.Errorf("prepare worker scratch: %w", err)
 	}
 	request.TempDir = tempDir
+	if !request.ReadOnly {
+		request.ExtraWritableRoots = append(slices.Clone(request.ExtraWritableRoots), tempDir)
+	}
 	cleanupScratch := func() error {
 		if cleanupErr := workspace.CleanupWorkerScratch(workspacePath, tempDir); cleanupErr != nil {
 			return fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
@@ -1636,7 +1644,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	runStartedAt := r.now()
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
 	baseModel := effectiveModel("", selection.Model, agentRuntime.defaultModelForRole(role))
-	baseEnvironment := workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue)
+	baseEnvironment := r.withGoBudget(info.Path, workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
 		Environment: baseEnvironment,
@@ -3074,7 +3082,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		selectedModel = override
 	}
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
-	baseEnvironment := workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue)
+	baseEnvironment := r.withGoBudget(info.Path, workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
 		Environment: baseEnvironment,
@@ -4314,9 +4322,15 @@ func effectiveModel(values ...string) string {
 }
 
 func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
+	landedHeadSHA := strings.TrimSpace(issue.Metadata["hub_landed_head_sha"])
 	if issue.PullRequest != nil {
 		switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.State)) {
-		case "CLOSED", "MERGED":
+		case "MERGED":
+			if landedHeadSHA == "" {
+				landedHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+			}
+			issue.PullRequest = nil
+		case "CLOSED":
 			issue.PullRequest = nil
 		}
 	}
@@ -4331,8 +4345,7 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		ID:                    issue.ID,
 		Identifier:            issue.Identifier,
 		Terminal:              issue.Closed,
-		LandedHeadSHA:         issue.Metadata["hub_landed_head_sha"],
-		LandedMergeSHA:        issue.Metadata["hub_landed_merge_sha"],
+		LandedHeadSHA:         landedHeadSHA,
 		BranchName:            issue.BranchName,
 		BaseRef:               baseRef,
 		ProgressBaseRef:       progressBaseRef,
