@@ -550,7 +550,7 @@ func (o *Orchestrator) reworkBreakerAutoPromoteGateReady(
 	issueID := strings.TrimSpace(issue.ID)
 	summary := AutoPromoteSummaryFromIssue(issue)
 	summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
-	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issueID)
+	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
 	summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 	decision := EvaluateAutoPromote(issue, summary, cfg, now)
 	if decision.Reason == AutoPromoteReasonValidatorMissing {

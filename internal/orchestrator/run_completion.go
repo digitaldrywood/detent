@@ -1557,7 +1557,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		issue,
 		o.cfg,
 		true,
-		autoPromoteOperationalCompletionAccepted(state, issue.ID),
+		autoPromoteOperationalCompletionAccepted(state, issue),
 	); revoked &&
 		mergeRevocationRequiresImmediateStop(revocation, event.Result) {
 		o.finishMergeRevocation(ctx, state, event, running, revocation)
