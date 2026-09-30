@@ -8,13 +8,26 @@ permissions:
 
 jobs:
   portability-stress:
-    name: Portability Stress (${{ matrix.os }})
+    name: Portability Stress (${{ matrix.os }}, ${{ matrix.suite.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.suite.minutes }}
+    env:
+      GOMAXPROCS: '4'
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
+        suite:
+          # Windows CLI's ten race repetitions took 82m in run 36678733180.
+          - {name: stress-cli, minutes: 150}
+          - {name: stress-runner, minutes: 60}
+          - {name: stress-checklock, minutes: 60}
+          - {name: hub-a, minutes: 60}
+          - {name: hub-b, minutes: 60}
+          - {name: hub-c, minutes: 60}
+          - {name: orchestrator, minutes: 60}
+          - {name: workspace, minutes: 30}
+          - {name: rest, minutes: 90}
     steps:
       - uses: actions/checkout@v5
 
@@ -26,31 +39,21 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: Stress local SQLite artifact lifecycle
-        if: runner.os == 'Windows'
-        run: go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20
-
-      - name: Stress timing-sensitive packages
-        run: go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m
-
-      - name: Race test
+      - name: Stress suite
         shell: bash
+        env:
+          SUITE: ${{ matrix.suite.name }}
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
         run: |
-          bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence
-          go list ./... > tmp/stress-packages.txt
-          packages=()
-          while IFS= read -r package; do
-            if [ "$package" != github.com/digitaldrywood/detent/internal/workspace ]; then
-              packages+=("$package")
-            fi
-          done < tmp/stress-packages.txt
-          go test -race "${packages[@]}"
+          bash scripts/portability-stress.sh "$SUITE"
 
-      - name: Upload workspace race evidence
+      - name: Upload stress evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: workspace-race-evidence-${{ runner.os }}
-          path: tmp/workspace-race-evidence
-          if-no-files-found: warn
+          name: portability-stress-evidence-${{ runner.os }}-${{ matrix.suite.name }}
+          path: ${{ runner.temp }}/portability-stress-evidence
+          if-no-files-found: error
           retention-days: 14
