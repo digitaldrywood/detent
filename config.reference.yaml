@@ -825,7 +825,7 @@
 #       id: null
 #       # agents.backends[].kind | type: string | default: none | required: Conditional | validation: is required
 #       kind: null
-#       # agents.backends[].protocol | type: string | default: none | required: No | validation: must be app-server for codex; must be headless for claude_code
+#       # agents.backends[].protocol | type: string | default: none | required: No | validation: must be app-server for codex; must be headless for claude_code; must be rpc for pi_agent
 #       protocol: null
 #       # agents.backends[].command | type: string | default: none | required: Conditional | validation: is required
 #       command: null
@@ -833,7 +833,7 @@
 #       provider: null
 #       # agents.backends[].options | type: mapping | default: see child fields | required: No | validation: None
 #       options:
-#         # agents.backends[].options.shell | type: string | default: Codex: platform default shell; Claude Code: none | required: No | validation: None
+#         # agents.backends[].options.shell | type: string | default: platform default shell | required: No | validation: None
 #         shell: null
 #         # agents.backends[].options.model_provider | type: string | default: none for Codex | required: No | validation: must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens
 #         model_provider: null
@@ -854,11 +854,11 @@
 #         thread_sandbox: "workspace-write"
 #         # agents.backends[].options.turn_sandbox_policy | type: mapping<string, value> | default: {} for Codex | required: No | validation: None
 #         turn_sandbox_policy: {}
-#         # agents.backends[].options.turn_timeout_ms | type: integer | default: Codex: 3600000; Claude Code: 0 | required: No | validation: must be greater than or equal to 0
+#         # agents.backends[].options.turn_timeout_ms | type: integer | default: Codex: 3600000; Claude Code: 0; Pi: 0 | required: No | validation: must be greater than or equal to 0
 #         turn_timeout_ms: 3600000
 #         # agents.backends[].options.read_timeout_ms | type: integer | default: 5000 for Codex | required: No | validation: must be greater than or equal to 0
 #         read_timeout_ms: 5000
-#         # agents.backends[].options.stall_timeout_ms | type: integer | default: Codex: 300000; Claude Code: 0 | required: No | validation: must be greater than or equal to 0
+#         # agents.backends[].options.stall_timeout_ms | type: integer | default: Codex: 300000; Claude Code: 0; Pi: 0 | required: No | validation: must be greater than or equal to 0
 #         stall_timeout_ms: 300000
 #         # agents.backends[].options.permission_mode | type: string | default: "bypassPermissions" for Claude Code | required: No | validation: must be one of default, acceptEdits, bypassPermissions; must not be plan for unattended workers
 #         permission_mode: "bypassPermissions"
@@ -872,6 +872,12 @@
 #         include_partial_messages: false
 #         # agents.backends[].options.extra_args | type: list<string> | default: [] for Claude Code | required: No | validation: None
 #         extra_args: []
+#         # agents.backends[].options.thinking_level | type: string | default: none for Pi | required: No | validation: must be one of off, minimal, low, medium, high, xhigh, max
+#         thinking_level: null
+#         # agents.backends[].options.tools | type: list<string> | default: ["read","bash","edit","write","grep","find","ls"] for Pi | required: No | validation: must contain only Pi built-in tools: read, bash, edit, write, grep, find, ls
+#         tools: ["read","bash","edit","write","grep","find","ls"]
+#         # agents.backends[].options.session_dir | type: string | default: none for Pi | required: No | validation: None
+#         session_dir: null
 #   # agents.routes | type: list<object> | default: [] | required: No | validation: None
 #   routes:
 #     -

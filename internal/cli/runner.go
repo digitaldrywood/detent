@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/piagent"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
@@ -352,13 +353,25 @@ func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policie
 	switch backend.Kind {
 	case workflowconfig.AgentBackendCodex:
 		return buildCodexAgentBackend(backend.Command, backend.CodexOptions(), policies...)
+	case workflowconfig.AgentBackendPiAgent:
+		cfg := backend.PiAgentOptions()
+		return piagent.NewAgentBackend(piagent.Options{
+			BackendID:       backend.ID,
+			IsolationPolicy: firstIsolationPolicy(policies),
+			CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
+				return buildClaudeCommandFromConfig(ctx, backend.Command, cfg.Shell, args)
+			},
+			Provider: backend.Provider, ThinkingLevel: cfg.ThinkingLevel, Tools: cfg.Tools, SessionDir: cfg.SessionDir,
+			TurnTimeout: durationFromMillis(cfg.TurnTimeoutMS), StallTimeout: durationFromMillis(cfg.StallTimeoutMS),
+		})
 	case workflowconfig.AgentBackendClaudeCode:
 		return buildClaudeAgentBackend(backend.Command, backend.ClaudeCodeOptions(), policies...)
 	default:
-		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s",
+		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s, %s",
 			backend.Kind,
 			workflowconfig.AgentBackendCodex,
 			workflowconfig.AgentBackendClaudeCode,
+			workflowconfig.AgentBackendPiAgent,
 		)
 	}
 }

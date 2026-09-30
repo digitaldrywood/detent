@@ -544,6 +544,8 @@ func configuredRuntimeIdentity(selection RouteSelection, backend config.AgentBac
 			provider = options.ModelProvider
 		}
 		serviceTier = options.ServiceTier
+	case config.AgentBackendPiAgent:
+		effort = backend.PiAgentOptions().ThinkingLevel
 	case config.AgentBackendClaudeCode:
 		effort = backend.ClaudeCodeOptions().Effort
 	}
@@ -565,6 +567,8 @@ func agentTurnIdentityOptions(backend config.AgentBackend) (modelProvider string
 	case config.AgentBackendCodex:
 		options := backend.CodexOptions()
 		return options.ModelProvider, options.ServiceTier, ""
+	case config.AgentBackendPiAgent:
+		return backend.Provider, "", backend.PiAgentOptions().ThinkingLevel
 	case config.AgentBackendClaudeCode:
 		return "", "", backend.ClaudeCodeOptions().Effort
 	default:
@@ -5700,7 +5704,7 @@ func (r *Runner) logRuntimeIdentity(req RunRequest, detentSessionID int64, updat
 func runtimeIdentityProviderSessionID(backendKind string, threadID string, turnID string) string {
 	threadID = strings.TrimSpace(threadID)
 	turnID = strings.TrimSpace(turnID)
-	if strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendClaudeCode) {
+	if strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendClaudeCode) || strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendPiAgent) {
 		return threadID
 	}
 	if threadID == "" || turnID == "" {

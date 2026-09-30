@@ -90,6 +90,10 @@ func (r *rolloutHistoryReader) Page(ctx context.Context, query HistoryQuery) (Hi
 }
 
 func (r *rolloutHistoryReader) historyLocation(query HistoryQuery) (string, string) {
+	// Pi currently supplies live activity only; never search Codex logs for its IDs.
+	if strings.EqualFold(strings.TrimSpace(query.BackendKind), "pi_agent") {
+		return "", ""
+	}
 	if strings.Contains(strings.ToLower(query.BackendKind), "claude") {
 		return filepath.Join(r.claudeRoot, "projects"), strings.TrimSpace(query.ProviderSessionID)
 	}

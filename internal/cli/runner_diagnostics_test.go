@@ -16,16 +16,18 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name                                   string
+		pi                                     bool
 		checkout                               bool
 		doctor                                 doctorStatus
 		auth                                   bool
 		wantCheckout, wantDoctor, wantProvider string
 	}{
-		{"missing checkout", false, doctorOK, true, "failed", "pending", "pending"},
-		{"failed doctor", true, doctorFail, true, "passed", "failed", "passed"},
-		{"missing provider", true, doctorOK, false, "passed", "passed", "failed"},
-		{"success", true, doctorOK, true, "passed", "passed", "passed"},
-		{"warnings", true, doctorWarn, true, "passed", "warning", "passed"},
+		{"missing checkout", false, false, doctorOK, true, "failed", "pending", "pending"},
+		{"failed doctor", false, true, doctorFail, true, "passed", "failed", "passed"},
+		{"missing provider", false, true, doctorOK, false, "passed", "passed", "failed"},
+		{"success", false, true, doctorOK, true, "passed", "passed", "passed"},
+		{"warnings", false, true, doctorWarn, true, "passed", "warning", "passed"},
+		{"Pi auth unknown", true, true, doctorOK, false, "passed", "passed", "pending"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -43,7 +45,12 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 				if err := os.Mkdir(filepath.Join(root, ".git"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte("---\ntracker:\n  kind: memory\n  repository: acme/orders\n---\nPRIVATE WORKFLOW\n"), 0600); err != nil {
+				body := "---\ntracker:\n  kind: memory\n  repository: acme/orders\n"
+				if tt.pi {
+					body += "agents:\n  backends:\n    - id: pi\n      kind: pi_agent\n  routes:\n    - backend: pi\n      default: true\n"
+				}
+				body += "---\nPRIVATE WORKFLOW\n"
+				if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(body), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -58,7 +65,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 			if checks.Checkout != tt.wantCheckout || checks.Doctor != tt.wantDoctor || checks.Provider != tt.wantProvider {
 				t.Fatalf("checks=%+v", checks)
 			}
-			if tt.checkout && (doctors != 1 || auths == 0) {
+			if tt.checkout && (doctors != 1 || !tt.pi && auths == 0 || tt.pi && auths != 0) {
 				t.Fatalf("probes doctor=%d auth=%d", doctors, auths)
 			}
 			if !tt.checkout && (doctors != 0 || auths != 0) {
