@@ -1236,6 +1236,11 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — Local pull-request validation and scheduled release evidence
 
+**Scope:** This is the Detent repository's development policy. Managed projects
+choose their own workflow triggers, required checks, validation commands, and
+release policies. Detent honors each project's configuration and branch rules;
+PR CI, merge-group CI, and required status checks remain supported.
+
 **Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
 `merge_group`, and no branch ruleset requires a status check. Each pull request
 runs `make check-fast` in its own worktree before merge. The target takes no
@@ -1248,7 +1253,7 @@ failure before checking bundle drift and attribution, preserving failure status.
 Each client test command uses at most two workers while retaining file isolation
 and all tests, so concurrent worktrees do not each allocate a machine-sized pool.
 
-GitHub Actions schedules the full suite hourly from the default `main` branch.
+GitHub Actions schedules the full suite hourly from the repository's default branch.
 Preflight pins the current `develop` SHA and skips when that commit already has
 a validated release tag. Every full-suite job runs on the pinned commit. A green
 run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
@@ -1307,15 +1312,19 @@ changing identity format or duplicate handling.
 
 ## INV-8 — No strict freshness protection
 
-**Statement:** No strict up-to-date branch protection is allowed on branches Detent merges into.
+**Scope:** This is the Detent repository's branch protection policy. Managed
+projects may require strict freshness; Detent honors their branch rules.
+
+**Statement:** This repository does not require strict up-to-date branch protection on branches Detent merges into.
 
 **Why:** Strict freshness invalidated already-tested heads after other merges
 and fed the measured repeated rebase/CI loop.
 
-**Enforcement:** The repository-policy doctor check reads live branch protection
-and fails strict freshness (`TestDoctorInvariantEvidence`). Repository tests
-cannot guarantee live branch settings. The operator must inspect configured
-merged-into branches; do not claim this rule is universally enforced by local CI.
+**Enforcement:** Doctor reports live branch protection as project evidence,
+without treating strict freshness as a failure. `TestDoctorRespectsProjectCIPolicy`
+prevents this repository's CI and protection policy from becoming global advice.
+Repository tests cannot guarantee live branch settings. The operator must inspect
+this repository's merged-into branches; local CI does not enforce live settings.
 
 **Change:** Edit INV-8 in the same PR with the intended protection semantics and
 live verification plan; code changes never imply permission to edit settings.
