@@ -390,3 +390,20 @@ human_action: null
 - Merged current `origin/develop` without rebasing; retained both independent additions in `docs/invariants.md` and both regressions in `internal/runner/prompt_test.go`. `internal/runner/prompt.go` merged automatically.
 - No local validation or CI run in this fallback session. Prior test results are historical, not evidence for the resolved head.
 - Open items: Detent verifies the clean head and ancestry, validates, publishes with lease protection, and waits for current-head CI. No unrelated work identified.
+
+## Codex Workpad
+
+Merge fallback for #3271 / PR #3355, 2026-09-30.
+
+- Plan: merge fetched `origin/develop` (`8c7b5bfb3685eac99854cefa52d4af02763f7aec`) into the published PR branch, retaining remote PR head `f5b842502b7aeffe08d80c37cada0e0419514ac1` as an ancestor. No rebase or publication in this session.
+- Key files: `web/conversation/src/app/account/Setup.tsx` retains develop's runner-checkout association behavior and the PR's contextual help. Updated adjacent help and `tests/visual/onboarding-help.spec.js` references for the renamed control. Regenerated conflicted `static/app/conversation/app.js` with `npm run build`; no other generated files changed.
+- Prior notes: no #3271 handoff was present; notes imported from develop concern other issues and remain historical. PR body already includes `Fixes #3271`.
+- Validation: bundle generation completed successfully; no tests, local gate (including `true`), CI checks, or CI waiting ran. Prior PR test evidence is historical and does not validate this resolved head.
+- Open items: Detent owns clean-head/ancestry verification, bounded validation, lease-protected push, and current-head CI waiting. No unrelated work identified. The PR remains open and tracker state is unchanged.
+
+```detent-status
+schema: 1
+status: complete
+blockers: []
+human_action: null
+```
