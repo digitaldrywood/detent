@@ -345,10 +345,6 @@ Runner credential note: the runner identity renews only while running
 sprite runner that sleeps past a day must be re-enrolled; the Service keeps it
 awake, and the pool deletes rather than pauses idle members above the floor.
 
-Account note: sprites for detent.build's own projects run on a Fly organization
-owned by a dedicated detent.build Fly account with its own billing, not on a
-personal account. The spike ran on a personal organization; its sprite is
-destroyed after the demo and nothing carries over.
 
 ## Dots versus Detent on Sprites
 
@@ -397,8 +393,7 @@ depend on it.
 
 - `spritespike` Go program in the session scratchpad: create, exec, checkpoint,
   restore, idle, wake, delete, with timings. Not kept.
-- Sprite `detent-spike` on a personal Fly organization with the bootstrapped
-  detent tree (its checkpoint store is wedged, see above). Destroy after the
-  demo.
+- Sprite `detent-spike` with the bootstrapped detent tree (its checkpoint
+  store is wedged, see above). Destroyed after the demo.
 - Issues filed from this spike: #3391 (lint on develop), #3407 to #3412 (the
   path above).
