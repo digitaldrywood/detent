@@ -1273,6 +1273,12 @@ shared validation lock and support concurrent worktrees: lint uses
 while retaining file isolation and all tests. These tools do not become merge
 requirements.
 
+`TestMakeCheckFastOverlapsWorktrees` exercises the Make graph with controlled
+tools in two linked worktrees while the legacy common-directory lock is held.
+Both builds must start before either completes, and each writes its evidence
+inside its own worktree. The pinned-linter tests also require the parallel-runner
+flag (#3253).
+
 GitHub Actions schedules the full suite hourly from the repository's default branch.
 Preflight pins the current `develop` SHA and skips when that commit already has
 a validated release tag. Every full-suite job runs on the pinned commit. A green
