@@ -26,6 +26,7 @@ func checkDoctorHubPolicy(ctx context.Context, cfg globalconfig.Config, selected
 		check.Detail = err.Error()
 		return check
 	}
+	workflow.Config = project.MapNativeTracker(workflow.Config, cfg.Client.NativeProjects[selected.ID] != "")
 	descriptor, err := project.ResolvePolicy(selected, workflow)
 	if err != nil {
 		check.Detail = err.Error()

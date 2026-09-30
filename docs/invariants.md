@@ -784,8 +784,11 @@ existing model-selection level (#2597), inheriting omitted limits from the flat
 project values. This consolidates limit resolution into the existing selection
 and guard paths; it adds no guard or escalation mechanism. Running sessions keep
 the resolved limits across turns, checkpoints, and fallbacks; label/configuration
-changes do not reset attempts or lifetime usage. Turn inactivity and no-progress
-behavior remain unchanged. Covered by `TestModelSelectionSessionLimits`,
+changes do not reset attempts or lifetime usage. Turn inactivity remains
+unchanged. The separate session no-progress cancellation was removed (#3252):
+a live local gate wait relies on the gate lock deadline and absolute worker
+session bound, with no issue Rework transition for unchanged work product during
+the wait. Covered by `TestModelSelectionSessionLimits`,
 `TestRunnerSelectedSessionLimits`, and `TestResumedSelectionKeepsSessionLevel`.
 
 Issue-body effort is bounded by the selected complexity level's effective effort
@@ -955,6 +958,9 @@ archives a verified Git bundle, staged and working-tree diffs, and all working
 files. Active issues and live processes remain protected. Content-addressed
 archives prevent identical recovery copies from accumulating after removal
 failures while preserving earlier snapshots after partial deletion.
+Quarantine removal in this existing sweep makes read-only directories writable
+before deletion; persistent failures are warned once per path while later
+sweeps still retry (#3039). This does not add a sweep or recovery path.
 `TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
 `TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
 lossless expiry, and repeated removal failures. See

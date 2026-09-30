@@ -10,6 +10,10 @@ Detent has two configuration layers:
 This page is the single reference for both configuration layers. Project
 configuration is documented below after the host-wide settings.
 
+`agent.no_progress_timeout_ms` remains readable for older project files but is
+ignored. Worker sessions use their absolute duration bound, and local validation
+waits use the gate lock deadline.
+
 For instance backend/route inheritance and the opt-in `sol_first` model-selection
 preset, see [Instance agent defaults](multi-project.md#instance-agent-defaults-and-sol-first-selection).
 
