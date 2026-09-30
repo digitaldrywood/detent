@@ -85,6 +85,10 @@ boundary](cloud-hub-rfc.md#shared-site-control-and-tenant-storage).
 
 ### Conversation coordinator
 
+An enabled hosted conversation uses `OPENAI_API_KEY` from the Hub process environment when it is present. General chat then runs through Genkit and the OpenAI Responses API with `gpt-6-luna` at low reasoning effort by default; the composer offers low and medium. No customer key or model configuration is needed. The key is never stored in hosted YAML. Without the key, an existing `codex` coordinator continues to run as before.
+
+For local development, load the key through the private `.envrc` before starting `detent hub serve`. For staging and production, install the key in each Hub service's private environment through the operator's secret manager. The shared cloud entry passes its `OPENAI_API_KEY` to tenant Hub processes and enables conversations in generated tenant configuration. Rotate the secret in the service environment and restart the entry and tenant processes; keep it out of deployment artifacts, logs and repository files.
+
 The optional `conversation` section enables chat. With a `codex` subsection the
 Hub answers conversations that have no linked issue on its own Codex backend:
 

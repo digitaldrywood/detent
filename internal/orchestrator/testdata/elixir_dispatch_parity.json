@@ -1,5 +1,5 @@
 {
-  "source": "Original Elixir orchestrator dispatch helpers (pre-Go-rewrite parity fixture)",
+  "source": "Original Elixir orchestrator dispatch helpers; source-lane urgency updated by operator-approved #3298",
   "cases": [
     {
       "name": "mixed active candidates honor rank, slots, blocked dependencies, claims, and budget cooldowns",
@@ -168,9 +168,9 @@
         }
       ],
       "want": {
-        "dispatch_order": ["merging-ready", "rework-ready"],
+        "dispatch_order": ["merging-ready", "todo-ready"],
         "blocked": ["blocked-dependency", "blocked-existing"],
-        "claimed": ["claimed-existing", "merging-ready", "rework-ready", "running-todo"],
+        "claimed": ["claimed-existing", "merging-ready", "running-todo", "todo-ready"],
         "refusals": ["budget-active"]
       }
     },

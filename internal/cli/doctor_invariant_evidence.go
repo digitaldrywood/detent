@@ -3,12 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -86,24 +81,23 @@ func doctorInvariantRepositoryChecks(ctx context.Context, id string, project glo
 	if doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) && cfg.Deliverable.Kind == workflowconfig.DeliverablePullRequest {
 		for _, repository := range doctorGitHubRepositories(ctx, project, cfg, deps, projectSourceRoot(project, cfg)) {
 			policy, err := deps.githubBranchPolicy(ctx, cfg, repository)
+			check := doctorCheck{Name: "Project " + id + " branch policy", Status: doctorOK}
 			switch {
 			case err != nil:
-				checks = append(checks, doctorInvariantCheck(id, "INV-8", "no strict protection", doctorWarn, repository+": branch policy could not be read: "+err.Error()))
+				check.Status = doctorWarn
+				check.Detail = repository + ": branch policy could not be read: " + err.Error()
 			case policy.RulesUnavailableOnPlan:
-				checks = append(checks, doctorInvariantCheck(id, "INV-8", "no strict protection", doctorOK, repository+": branch rules are not available on this plan; nothing to enforce"))
+				check.Detail = repository + ": branch rules are not available on this plan"
 			default:
-				if policy.Strict {
-					check := doctorInvariantCheck(id, "INV-8", "no strict protection", doctorFail, repository+" branch "+policy.Branch+" requires branches to be up to date before merging; every merge invalidates every open PR")
-					check.Hint = "Disable strict status checks on " + repository + " (docs/invariants.md INV-8)."
-					checks = append(checks, check)
-				} else {
-					checks = append(checks, doctorInvariantCheck(id, "INV-8", "no strict protection", doctorOK, repository+" branch "+policy.Branch+" does not require up-to-date branches"))
-				}
+				check.Detail = fmt.Sprintf("%s branch %s requires up-to-date branches: %t", repository, policy.Branch, policy.Strict)
+			}
+			checks = append(checks, check)
+			if err == nil && !policy.RulesUnavailableOnPlan {
 				checks = append(checks, doctorInvariantQueueCheck(ctx, id, repository, policy.Branch, policy.MergeQueue, db, since))
 			}
 		}
 	}
-	return append(checks, doctorInvariantWorkflowCheck(id, projectSourceRoot(project, cfg)))
+	return checks
 }
 
 func doctorInvariantQueueCheck(ctx context.Context, id, repository, branch string, queue bool, db doctorTelemetryStore, since string) doctorCheck {
@@ -123,90 +117,4 @@ func doctorInvariantQueueCheck(ctx context.Context, id, repository, branch strin
 		return check
 	}
 	return doctorInvariantCheck(id, "INV-4", "queue is the merge path", doctorOK, repository+": merge queue present on "+branch+"; no programmatic merge attempts in 24h")
-}
-
-// doctorInvariantWorkflowCheck reports whether a project's GitHub Actions
-// workflows still trigger on pull requests or merge groups.
-func doctorInvariantWorkflowCheck(id string, sourceRoot string) doctorCheck {
-	check := doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorOK, "no GitHub Actions workflows in the project checkout; nothing to measure")
-	sourceRoot = strings.TrimSpace(sourceRoot)
-	if sourceRoot == "" {
-		return check
-	}
-	directory := filepath.Join(expandDoctorHomePath(sourceRoot), ".github", "workflows")
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return check
-	}
-	var files []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if extension := filepath.Ext(entry.Name()); extension == ".yml" || extension == ".yaml" {
-			files = append(files, entry.Name())
-		}
-	}
-	if len(files) == 0 {
-		return check
-	}
-	sources := make(map[string][]byte, len(files))
-	for _, file := range files {
-		data, err := os.ReadFile(filepath.Join(directory, file))
-		if err != nil {
-			return doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorWarn, file+" could not be read: "+err.Error())
-		}
-		sources[file] = data
-	}
-	return doctorInvariantWorkflowVerdict(id, sources)
-}
-
-func doctorInvariantWorkflowVerdict(id string, sources map[string][]byte) doctorCheck {
-	var triggered []string
-	for _, file := range sortedStrings(mapKeys(sources)) {
-		var workflow struct {
-			On map[string]any `yaml:"on"`
-		}
-		if err := yaml.Unmarshal(sources[file], &workflow); err != nil {
-			return doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorWarn, file+" could not be parsed: "+err.Error())
-		}
-		for _, event := range []string{"pull_request", "pull_request_target", "merge_group"} {
-			if _, ok := workflow.On[event]; ok {
-				triggered = append(triggered, file+":"+event)
-			}
-		}
-	}
-	if len(triggered) == 0 {
-		return doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorOK, "no workflow has a pull_request or merge_group trigger")
-	}
-	check := doctorInvariantCheck(id, "INV-5", "local PR gate and hourly integration build", doctorWarn, "GitHub Actions triggers on PR or merge group events: "+strings.Join(triggered, ", "))
-	check.Hint = "docs/invariants.md INV-5: remove pull_request and merge_group workflow triggers for zero PR CI."
-	return check
-}
-
-func mapKeys(values map[string][]byte) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	return keys
-}
-
-func sortedStrings(values []string) []string {
-	out := append([]string(nil), values...)
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
-	return out
-}
-
-func expandDoctorHomePath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
 }
