@@ -69,7 +69,7 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 
 func TestRunnerPolicyCompatibility(t *testing.T) {
 	t.Parallel()
-	shared := "tracker:\n  kind: memory\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n"
+	shared := "tracker:\n  kind: memory\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n  github_pull_request: true\n"
 	for _, test := range []struct {
 		name         string
 		split, local bool
@@ -108,7 +108,7 @@ func TestRunnerPolicyCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if descriptor.Gates.AutoPromote || descriptor.Gates.Kind != "human_review" || descriptor.Gates.MergeMethod != "rebase" {
+			if descriptor.Gates.AutoPromote || descriptor.Gates.Kind != "human_review" || descriptor.Gates.MergeMethod != "rebase" || !descriptor.Gates.GitHubPullRequest {
 				t.Fatalf("lost repository gates: %#v", descriptor.Gates)
 			}
 			if test.local && (len(descriptor.Requirements.RequiredTags) != 0 || descriptor.Requirements.MachineID != "") {
