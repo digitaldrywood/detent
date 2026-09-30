@@ -884,26 +884,28 @@ func (o *Orchestrator) refreshTransitionSets(
 	previous tickPreviousState,
 ) tickTransitionRefresh {
 	transitionIssues := cloneIssues(fetched.candidates)
-	pipelineIssues, pipelineRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previous.pipeline)
-	transitionIssues = append(transitionIssues, pipelineIssues...)
-	watchToFetch := previous.epicTransitionWatch
+	fetchedIDs := make(map[string]struct{})
 	if fetched.statusOK {
-		candidateIDs := make(map[string]struct{}, len(fetched.candidates))
-		for _, issue := range fetched.candidates {
+		for _, issue := range mergeIssueSlices(fetched.candidates, fetched.status) {
 			if id := strings.TrimSpace(issue.ID); id != "" {
-				candidateIDs[id] = struct{}{}
-			}
-		}
-		watchToFetch = make([]connector.Issue, 0, len(previous.epicTransitionWatch))
-		for _, issue := range previous.epicTransitionWatch {
-			if _, found := candidateIDs[strings.TrimSpace(issue.ID)]; !found {
-				watchToFetch = append(watchToFetch, issue)
+				fetchedIDs[id] = struct{}{}
 			}
 		}
 	}
-	watchedIssues, watchRefreshOK := o.fetchEpicTransitionIssueStates(ctx, watchToFetch)
+	refreshUnfetched := func(issues []connector.Issue) ([]connector.Issue, bool) {
+		toFetch := make([]connector.Issue, 0, len(issues))
+		for _, issue := range issues {
+			if _, found := fetchedIDs[strings.TrimSpace(issue.ID)]; !found {
+				toFetch = append(toFetch, issue)
+			}
+		}
+		return o.fetchEpicTransitionIssueStates(ctx, toFetch)
+	}
+	pipelineIssues, pipelineRefreshOK := refreshUnfetched(previous.pipeline)
+	transitionIssues = append(transitionIssues, pipelineIssues...)
+	watchedIssues, watchRefreshOK := refreshUnfetched(previous.epicTransitionWatch)
 	transitionIssues = append(transitionIssues, watchedIssues...)
-	blockedIssues, blockedRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previous.blockedStatusIssues)
+	blockedIssues, blockedRefreshOK := refreshUnfetched(previous.blockedStatusIssues)
 	transitionIssues = append(transitionIssues, blockedIssues...)
 	pendingTransitions, pendingParentLookups := o.refreshPendingEpicParentLookups(ctx, previous.pendingEpicParentLookups)
 	transitionIssues = append(transitionIssues, pendingTransitions...)
