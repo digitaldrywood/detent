@@ -419,17 +419,6 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
-Worker scratch cleanup (#3291, #3292) removes attempt data without deleting
-its workspace parent or shared group. Explicit workspace deletion removes only
-that workspace's scratch root. Keeping shared parents stable removes the
-creation-versus-cleanup race and the bounded scratch-creation retry; no lock,
-platform error retry, or new recovery path replaces them. Existing retention
-continues to sweep stale attempts and roots of removed workspaces.
-`TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup` covers concurrent
-attempt cleanup within one workspace and across siblings, plus sibling root
-removal. `TestRemoveWorkerScratchRootKeepsSharedGroup` covers explicit
-root deletion without shared-parent removal.
-
 Home-project spillover (#3170, human-approved) is claim-time eligibility using
 one nullable `home_dry_since` timestamp per runner. Home projects are a subset
 of administrator-authorized projects; spillover never widens grants or selectors.
@@ -906,6 +895,17 @@ Doctor reports it per project. Null means no completed comparison; the count
 retains its last successful value on refresh failure and does not independently
 audit GitHub or include observed-only lanes. No additional polling or dispatch
 gate is introduced.
+
+Worker scratch cleanup (#3291, #3292) removes attempt data without deleting
+its workspace parent or shared group. Explicit workspace deletion removes only
+that workspace's scratch root. Keeping shared parents stable removes the
+creation-versus-cleanup race and the bounded scratch-creation retry; no lock,
+platform error retry, or new recovery path replaces them. Existing retention
+continues to sweep stale attempts and roots of removed workspaces.
+`TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup` covers concurrent
+attempt cleanup within one workspace and across siblings, plus sibling root
+removal. `TestRemoveWorkerScratchRootKeepsSharedGroup` covers explicit
+root deletion without shared-parent removal.
 
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
