@@ -389,6 +389,14 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 		*o.workspaceCleanupRemaining--
 		state.workspaceCleanupCursor = issue.ID
 	}
+	issue.CleanupDeliveredHeadSHA = ""
+	if issue.Closed {
+		head, verificationErr := o.verifyCleanupDelivery(ctx, issue)
+		issue.CleanupDeliveredHeadSHA = head
+		if verificationErr != nil && o.logger != nil {
+			o.logger.Warn("verify workspace PR delivery", "identifier", issue.Identifier, "error", verificationErr)
+		}
+	}
 	result, err := o.reaper.ReapWorkspace(ctx, issue)
 	if errors.Is(err, workspace.ErrWorkspacePreserved) {
 		recordStateEvent(state, telemetry.ActivityEvent{
@@ -496,4 +504,41 @@ func workspaceCleanupFetchFailedMessage(states []string, err error) string {
 
 func workspaceCleanupIssueIDsFetchFailedMessage(issueIDs []string, err error) string {
 	return fmt.Sprintf("workspace cleanup candidate fetch failed for issue_ids=%s: %v", strings.Join(issueIDs, ","), err)
+}
+
+// verifyCleanupDelivery refreshes both association and PR state. Cached PR state,
+// issue closure, and a deleted branch alone never authorize cleanup.
+func (o *Orchestrator) verifyCleanupDelivery(ctx context.Context, issue connector.Issue) (string, error) {
+	validator, ok := o.connector.(connector.PullRequestAssociationRevalidator)
+	if !ok {
+		return "", nil
+	}
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		return "", nil
+	}
+	candidate := cloneIssue(issue)
+	// Revalidation may reuse matching snapshot state. Do not let it reuse the
+	// snapshot head; keep the reference only to support branch associations.
+	candidate.PullRequest = nil
+	fresh, err := validator.RevalidatePullRequestAssociation(ctx, candidate)
+	if err != nil {
+		return "", fmt.Errorf("verify cleanup PR association: %w", err)
+	}
+	if fresh.ID != issue.ID || fresh.Identifier != issue.Identifier || fresh.PRVerifiedAt.IsZero() ||
+		fresh.PRNumber == nil || *fresh.PRNumber <= 0 || strings.TrimSpace(fresh.PRRepository) == "" {
+		return "", nil
+	}
+	verifiedRepository, verifiedNumber := fresh.PRRepository, *fresh.PRNumber
+	fresh, err = hydrator.HydratePullRequest(ctx, fresh)
+	if err != nil {
+		return "", fmt.Errorf("verify cleanup merged PR: %w", err)
+	}
+	pr := fresh.PullRequest
+	if fresh.PRRepository != verifiedRepository || fresh.PRNumber == nil || *fresh.PRNumber != verifiedNumber ||
+		pr == nil || pr.Number != verifiedNumber || normalizePullRequestState(pr.State) != "merged" ||
+		pr.MergedAt == nil || pr.MergedAt.IsZero() || pr.HydrationUnavailableReason != "" || pr.HydrationDegradedReason != "" {
+		return "", nil
+	}
+	return strings.TrimSpace(pr.HeadSHA), nil
 }

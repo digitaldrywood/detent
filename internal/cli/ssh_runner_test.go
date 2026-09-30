@@ -50,7 +50,7 @@ func TestSSHServiceProxyKeepsCentralAuthority(t *testing.T) {
 	defer owner.Close()
 	worker := runnerpkg.NewSSHPeer(t.Context(), right, right, nil)
 	defer worker.Close()
-	address, closeProxy, err := serveSSHService(worker)
+	address, closeProxy, err := serveSSHService(t.Context(), worker)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestSSHHelperProcess(t *testing.T) {
 		if err != nil {
 			os.Exit(1)
 		}
-		cmd := exec.Command(executable, "-test.run=^TestSSHHelperProcess$")
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestSSHHelperProcess$")
 		cmd.Env = append(os.Environ(), "DETENT_SSH_TEST_HELPER=worker")
 		childInput, err := cmd.StdinPipe()
 		if err != nil {
@@ -116,7 +116,7 @@ func TestSSHHelperProcess(t *testing.T) {
 		}
 		fmt.Fprintln(os.Stdout, runnerpkg.SSHProtocolVersion)
 	case "provider":
-		if err := sshTestProvider(); err != nil {
+		if err := sshTestProvider(t.Context()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -134,7 +134,7 @@ func sshGitHubCLIHelper() {
 	os.Exit(0)
 }
 
-func sshTestProvider() error {
+func sshTestProvider(ctx context.Context) error {
 	decoder, encoder := json.NewDecoder(os.Stdin), json.NewEncoder(os.Stdout)
 	for {
 		var message struct {
@@ -179,13 +179,13 @@ func sshTestProvider() error {
 				return err
 			}
 			for _, args := range [][]string{{"add", "feature.txt"}, {"-c", "user.name=SSH fixture", "-c", "user.email=ssh@example.test", "commit", "-m", "remote fixture"}, {"push", "origin", "HEAD"}} {
-				cmd := exec.Command("git", args...)
+				cmd := exec.CommandContext(ctx, "git", args...)
 				cmd.Dir = message.Params.Cwd
 				if data, err := cmd.CombinedOutput(); err != nil {
 					return fmt.Errorf("git fixture: %w: %s", err, data)
 				}
 			}
-			gate := exec.Command("sh", "-c", os.Getenv("DETENT_SSH_TEST_GATE"))
+			gate := exec.CommandContext(ctx, "sh", "-c", os.Getenv("DETENT_SSH_TEST_GATE"))
 			gate.Dir = message.Params.Cwd
 			if err := gate.Run(); err != nil {
 				return fmt.Errorf("remote gate: %w", err)
@@ -437,8 +437,12 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH bool) {
 		t.Fatal("worker never started")
 	}
 	commandMu.Lock()
-	err = lastCommand.Process.Kill()
+	command := lastCommand
 	commandMu.Unlock()
+	if command == nil || command.Process == nil {
+		t.Fatal("host-loss fixture did not capture a running worker command")
+	}
+	err = command.Process.Kill()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +504,7 @@ func localSSHFixture(t *testing.T, root, executable string, environment []string
 		t.Fatal(err)
 	}
 	for _, name := range []string{"host-key", "client-key"} {
-		cmd := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", filepath.Join(root, name))
+		cmd := exec.CommandContext(t.Context(), "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", filepath.Join(root, name))
 		if data, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("ssh-keygen: %v %s", err, data)
 		}
@@ -512,7 +516,8 @@ func localSSHFixture(t *testing.T, root, executable string, environment []string
 	if err := os.WriteFile(filepath.Join(root, "authorized_keys"), public, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +540,7 @@ func localSSHFixture(t *testing.T, root, executable string, environment []string
 	if err != nil {
 		t.Fatal(err)
 	}
-	daemon := exec.Command(sshd, "-D", "-e", "-f", configPath)
+	daemon := exec.CommandContext(t.Context(), sshd, "-D", "-e", "-f", configPath)
 	daemon.Stderr = logFile
 	if err := daemon.Start(); err != nil {
 		t.Fatal(err)
@@ -546,12 +551,16 @@ func localSSHFixture(t *testing.T, root, executable string, environment []string
 		if command == "detent "+SSHProbeArgument {
 			vars = append(vars, "DETENT_SSH_TEST_HELPER=probe")
 		}
-		remote := "env"
+		var remote strings.Builder
+		remote.WriteString("env")
 		for _, variable := range vars {
-			remote += " " + sshQuote(variable)
+			remote.WriteByte(' ')
+			remote.WriteString(sshQuote(variable))
 		}
-		remote += " " + sshQuote(executable) + " -test.run=^TestSSHHelperProcess$"
-		return exec.CommandContext(ctx, "ssh", "-T", "-p", strconv.Itoa(port), "-i", filepath.Join(root, "client-key"), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile="+knownHosts, "-o", "ConnectTimeout=2", account.Username+"@127.0.0.1", remote)
+		remote.WriteByte(' ')
+		remote.WriteString(sshQuote(executable))
+		remote.WriteString(" -test.run=^TestSSHHelperProcess$")
+		return exec.CommandContext(ctx, "ssh", "-T", "-p", strconv.Itoa(port), "-i", filepath.Join(root, "client-key"), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile="+knownHosts, "-o", "ConnectTimeout=2", account.Username+"@127.0.0.1", remote.String())
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()

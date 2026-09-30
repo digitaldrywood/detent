@@ -1,3 +1,36 @@
+# Issue #3400 merge fallback handoff (attempt 7096, generation 27)
+
+- Verified PR #3421 is open, targets `develop`, includes `Fixes #3400`, and has published head `c20d5099bb95e4991cb7def7d55488986b5690ca`. The workspace started source-clean with no rebase in progress; that head already includes the previous fallback merge described below.
+- Merged freshly fetched develop commit `9b6db4547e39220a30d4d989c69526904687fe4f` into the published PR head, preserving published history without rebasing.
+- Only conflict: `internal/cli/ssh_runner_test.go`. Kept the PR's native `sshGitHubCLIHelper` and develop's `sshTestProvider(ctx context.Context)` signature, matching the incoming context-aware call site and subprocess commands. Other target changes merged automatically; no production edits were added by conflict resolution.
+- Validation: no tests, builds, local gate, or CI checks run in this fallback. Earlier macOS tests and Windows cross-compilation are historical and do not validate this head. Detent owns ancestry/cleanliness verification, bounded validation, lease-protected publishing, and current-head CI after return.
+- Open items: Detent validation/publication of the resolved head and native Windows scheduled validation. No out-of-scope repair identified. No push, PR merge, or issue/lane mutation performed.
+
+## Codex Workpad
+
+Plan: merge the fetched develop commit into the published PR branch, preserve both overlapping SSH fixture changes, and commit the resolution.
+
+Validation: deferred to Detent by the merge-fallback instructions; no current-head gate or CI evidence claimed. Quiet-window, gate/CI, slow-check, and post-merge CI timings are not measured in this session.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7096"
+  completion_generation: "27"
+blockers: []
+human_action: null
+```
+
+# Issue #3401 merge fallback (historical target notes)
+
+- PR: https://github.com/digitaldrywood/detent/pull/3420; body already includes `Fixes #3401`.
+- Merge target: fetched `origin/develop` at `cd50f7de8`; published PR head `bba9c169a9574e5b4529e435fe9622513c734ada` is preserved as the first parent of the merge.
+- Resolved `internal/cli/runner_test.go`, `internal/orchestrator/review_head_test.go`, and `internal/orchestrator/startup_observability_test.go` with the overlapping fixture repairs from develop (#3419): SSH runner delegate assertion, optional automated-review deadline behavior, and terminal issues in the cleanup feed.
+- PR changes in `internal/hubserver/workspace_runner_lane_test.go` and `tools/checklock/makefile_test.go` merged without conflicts.
+- Validation: no local gate, tests, or CI checks run in this merge-fallback session. Earlier PR-body validation applies only to its prior head. Detent owns resolved-head validation, current-head checks, and publishing after return.
+- Open items: Detent verification and publication; no out-of-scope findings. The inherited #3252 notes below are historical and are preserved.
+
 # Issue #3252 handoff
 
 - `internal/runner/session_brake.go` held the separate no-progress ticker that canceled a live gate queue wait. The runner no longer creates that ticker or emits `session_no_progress`; duration and turn limits remain.

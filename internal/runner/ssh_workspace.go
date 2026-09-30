@@ -59,7 +59,7 @@ func PrepareSSHSource(ctx context.Context, cfg config.Config, workdir, repositor
 	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "git", "clone", "--", strings.TrimRight(repository, "/")+".git", source)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--", strings.TrimRight(repository, "/")+".git", source) // #nosec G204 -- fixed executable/subcommand; validated HTTPS origin and source follow -- as separate arguments.
 	cmd.WaitDelay = time.Second
 	procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: turn.Environment.Variables})
 	// Clone diagnostics are intentionally omitted: transport URLs and credential
