@@ -1,3 +1,15 @@
+# Issue #3445 handoff
+
+- Reproduced all seven findings from scheduled Lint job 110035612634 / run 36758716559 against clean develop 640b8abc10f0adb4ad580d1835b349796062130e using golangci-lint v2.9.0 built with Go 1.26.6. Focused runner/hubserver lint exited 1 with the same two contextcheck, two errcheck, one nilnil, and two staticcheck findings.
+- Key files: `internal/runner/activity_profile.go` accepts the run context and checkpoints through a two-second `context.WithoutCancel` timeout; implementation/validation callers and fixtures supply their contexts. The validation-phase switch and delayed span pointer remove staticcheck findings. Read-only file cleanup has a scoped errcheck explanation.
+- `internal/hubserver/native_issues.go` and `linked_issue_sources.go` return typed native issues, removing unchecked and redundant assertions in linked creation, conversation linking, GitHub import, workspace dispatch, and the existing archive fixture. The absent linked-source result remains valid and has a scoped nilnil explanation. No invariant or enforcement change.
+- Extended `TestActivityRecorderDoesNotWaitForPersistence` to catch lost context attribution, canceled initial/final persistence after run cancellation, and an unbounded persistence deadline. The regression fails twice on the old background-context implementation (exit 1), then passes with the inherited, detached context. No sibling test added.
+- Diagnostics passed: identical focused pinned lint reports zero issues; activity, linked creation/intake, native archive, conversation linking, workspace dispatch/items, and GitHub-import tests pass (runner 0.417s, hubserver 0.874s). Native issue mutation/history and field clearing also pass (hubserver 0.582s). Whitespace inspection passes. Lint includes govet. No generated inputs changed.
+- Publication and current-head review/gate evidence belong to the canonical issue Workpad. Configured gate is `true`; no full suite, coverage, race suite, make check/check-fast, Actions rerun, or CI wait. The next scheduled run confirms integrated develop; lane transitions and merging remain orchestrator-owned. No out-of-scope discovery or live-instance mutation.
+- Skill draft: no — existing Go and toolchain-alignment guidance covers this focused lint repair.
+
+# Historical notes from develop
+
 # Issue #2976 merge fallback handoff (attempt 7212, generation 80)
 
 - PR #3052 is open against `develop` on the assigned isolated branch; its body includes `Fixes #2976`. Fetched published head: `99f99e34cea4fea794c0ddc7a8cea973c24e2957`.
@@ -6,7 +18,7 @@
 - Key issue files remain `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`. Prior resolution retains develop's audit-only Merging path and the PR's In Progress repair-only filter in the non-Merging decision path.
 - Updated handoff notes with one current Workpad/status fence; prior handoffs are historical.
 
-## Codex Workpad
+## Historical Workpad (#2976 merge fallback)
 
 Plan and result: retain the unpublished resolution, finish and commit the current develop merge while preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
 
@@ -14,7 +26,7 @@ Validation: no tests, lint, vet, builds, local gate (including `true`), CI check
 
 Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No push, PR merge, issue-state change or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:

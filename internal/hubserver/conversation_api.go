@@ -1171,13 +1171,9 @@ func (s *Service) linkConversation(c echo.Context) error {
 		// the first revision, so the first runner to claim it already reads
 		// them (decisions section 14).
 		body = conversationAgentOverrideBody(body, record.Preferences)
-		created, err := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: request.Key}, Title: strings.TrimSpace(request.Issue.Title), Body: body, State: next.State, Labels: request.Issue.Labels, Priority: next.Priority}, now)
+		issue, err := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: request.Key}, Title: strings.TrimSpace(request.Issue.Title), Body: body, State: next.State, Labels: request.Issue.Labels, Priority: next.Priority}, now)
 		if err != nil {
 			return nil, err
-		}
-		issue, ok := created.(tracker.NativeIssue)
-		if !ok {
-			return nil, fmt.Errorf("unexpected issue result %T", created)
 		}
 		record.WorkItemID = string(issue.WorkItemID)
 		linkedAt := now
