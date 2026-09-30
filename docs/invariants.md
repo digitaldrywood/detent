@@ -409,6 +409,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Runner credential expiry (#3382) no longer rejects the existing renewal
+operation for the same enrolled runner and organization. The host keeps its
+credential and machine binding across stops longer than 24 hours. Ordinary
+API calls and rotation still enforce expiry; renewal keeps timestamp validity,
+token-hash and revocation checks, including the existing transactional authority
+recheck. Revocation remains final. This removes renewal's expiry rule and its
+duplicate authority check without adding a recovery path or configuration.
+`TestRunnerCredentialExpiryBoundaries` and `TestRunnerRenewRotateRevokeRestart`
+cover expiry boundaries, extended stops and the recorded production sequence.
+
 Runner isolation (#3168) replaces the undeliverable default `container` declaration
 with `sandbox` and extends existing claim compatibility to backend-probed tiers.
 Missing or withdrawn tier reports use the existing no-compatible-work result;
