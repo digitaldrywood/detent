@@ -1550,6 +1550,14 @@ artifact or coordination mechanism is added. Existing notes files remain intact.
 prior-attempt findings, retained output and durable failed-session outcomes without
 reading, creating or changing repository notes.
 
+Workflow timeline reads consolidate identity matching through the existing
+issue ID, project/identifier, and project/URL indexes. The indexed identity
+union retains every matching durable event once, in timestamp/ID order, without
+adding a cache, table, index, or history limit. This prevents repeated project
+history scans during dispatch and lane observation.
+`TestIssueWorkflowTimelineIndexedIdentityUnion` covers aliases, overlap,
+complete history, ordering, and project isolation.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.

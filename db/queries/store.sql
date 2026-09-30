@@ -767,15 +767,22 @@ WHERE event.finished_at IS NOT NULL
 ORDER BY event.project_id, event.phase_type, event.phase_name, event.finished_at, event.id;
 
 -- name: IssueWorkflowTimelineRows :many
-SELECT *
-FROM workflow_phase_events
-WHERE project_id = sqlc.arg(project_id)
-  AND (
-    issue_id = sqlc.arg(issue_id)
-    OR identifier = sqlc.arg(identifier)
-    OR issue_url = sqlc.arg(issue_url)
-  )
-ORDER BY started_at, id;
+SELECT event.*
+FROM workflow_phase_events AS event
+WHERE event.id IN (
+  SELECT by_id.id
+  FROM workflow_phase_events AS by_id INDEXED BY workflow_phase_events_issue_idx
+  WHERE by_id.project_id = sqlc.arg(project_id) AND by_id.issue_id = sqlc.arg(issue_id)
+  UNION ALL
+  SELECT by_identifier.id
+  FROM workflow_phase_events AS by_identifier
+  WHERE by_identifier.project_id = sqlc.arg(project_id) AND by_identifier.identifier = sqlc.arg(identifier)
+  UNION ALL
+  SELECT by_url.id
+  FROM workflow_phase_events AS by_url
+  WHERE by_url.project_id = sqlc.arg(project_id) AND by_url.issue_url = sqlc.arg(issue_url)
+)
+ORDER BY event.started_at, event.id;
 
 -- name: CreateWorkAttempt :one
 INSERT INTO work_attempts (

@@ -2378,15 +2378,22 @@ func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams
 }
 
 const issueWorkflowTimelineRows = `-- name: IssueWorkflowTimelineRows :many
-SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
-FROM workflow_phase_events
-WHERE project_id = ?1
-  AND (
-    issue_id = ?2
-    OR identifier = ?3
-    OR issue_url = ?4
-  )
-ORDER BY started_at, id
+SELECT event.id, event.project_id, event.run_id, event.session_id, event.issue_id, event.identifier, event.issue_url, event.pr_number, event.phase_type, event.phase_name, event.previous_phase_name, event.reason, event.status, event.started_at, event.finished_at, event.duration_seconds, event.event_day, event.command_name, event.exit_code, event.turns, event.input_tokens, event.output_tokens, event.total_tokens, event.endpoint_family, event.metadata_json, event.cached_input_tokens, event.reasoning_output_tokens, event.model_context_window
+FROM workflow_phase_events AS event
+WHERE event.id IN (
+  SELECT by_id.id
+  FROM workflow_phase_events AS by_id INDEXED BY workflow_phase_events_issue_idx
+  WHERE by_id.project_id = ?1 AND by_id.issue_id = ?2
+  UNION ALL
+  SELECT by_identifier.id
+  FROM workflow_phase_events AS by_identifier
+  WHERE by_identifier.project_id = ?1 AND by_identifier.identifier = ?3
+  UNION ALL
+  SELECT by_url.id
+  FROM workflow_phase_events AS by_url
+  WHERE by_url.project_id = ?1 AND by_url.issue_url = ?4
+)
+ORDER BY event.started_at, event.id
 `
 
 type IssueWorkflowTimelineRowsParams struct {
