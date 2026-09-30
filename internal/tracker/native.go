@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 )
 
@@ -57,6 +58,7 @@ type NativeIssue struct {
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	State              string              `json:"state"`
+	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`
 	Priority           *int                `json:"priority,omitempty"`
 	Labels             []string            `json:"labels"`
@@ -353,6 +355,7 @@ type NativeClaim struct {
 }
 
 type NativeLease struct {
+	IsolationPolicy     *isolation.Policy             `json:"isolation_policy,omitempty"`
 	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
 	ServerTime          time.Time                     `json:"server_time"`
 	PolicyID            string                        `json:"policy_id"`

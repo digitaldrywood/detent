@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -394,7 +395,9 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	t.Helper()
 	path := filepath.Join(t.TempDir(), id+".db")
 	hosted := func(shared bool) *hubserver.HostedConfig {
-		config := &hubserver.HostedConfig{OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
+		plans := pilotPlans()
+		plans.Plans[0].Allowances["projects"] = 10
+		config := &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
 		if shared {
 			config.PublicURL = testPublicURL
 			config.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
@@ -449,7 +452,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 	provider.member("user_bob", "porg_beta", "member")
 	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project")
 	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project")
-	tenants := map[string]http.Handler{"unix:/tenants/alpha.sock": alphaHandler, "unix:/tenants/beta.sock": betaHandler}
+	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
 	service, err := Open(t.Context(), Config{
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
 		Logger: logger, clientFS: fstest.MapFS{},
@@ -465,7 +468,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 		fixture  tenantFixture
 		endpoint string
 		name     string
-	}{{alpha, "unix:/tenants/alpha.sock", "Alpha"}, {beta, "unix:/tenants/beta.sock", "Beta"}} {
+	}{{alpha, testSocketEndpoint("alpha.sock"), "Alpha"}, {beta, testSocketEndpoint("beta.sock"), "Beta"}} {
 		if _, err := service.Registry().Register(t.Context(), Organization{ID: tenant.fixture.id, ProviderID: tenant.fixture.provider, Name: tenant.name, Endpoint: tenant.endpoint, Generation: 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -706,7 +709,7 @@ func TestRegistryRegister(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = registry.Close() })
-	base := Organization{ID: "org_a", ProviderID: "porg_a", Name: "A", Endpoint: "unix:/run/a.sock", Generation: 1}
+	base := Organization{ID: "org_a", ProviderID: "porg_a", Name: "A", Endpoint: testSocketEndpoint("a.sock"), Generation: 1}
 	tests := []struct {
 		name    string
 		mutate  func(*Organization)
@@ -718,8 +721,12 @@ func TestRegistryRegister(t *testing.T) {
 		{"rename", func(o *Organization) { o.Name = "A renamed" }, true, false},
 		{"other provider", func(o *Organization) { o.ProviderID = "porg_other" }, false, true},
 		{"provider reuse", func(o *Organization) { o.ID = "org_b" }, false, true},
-		{"same generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = "unix:/run/b.sock" }, false, true},
-		{"generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = "unix:/run/b.sock"; o.Generation = 2 }, true, false},
+		{"same generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = testSocketEndpoint("b.sock") }, false, true},
+		{"generation move", func(o *Organization) {
+			o.Name = "A renamed"
+			o.Endpoint = testSocketEndpoint("b.sock")
+			o.Generation = 2
+		}, true, false},
 		{"generation rollback", func(o *Organization) { o.Name = "A renamed"; o.Generation = 1 }, false, true},
 		{"public endpoint", func(o *Organization) { o.Endpoint = "http://10.0.0.1:80"; o.Generation = 3 }, false, true},
 		{"loopback tcp", func(o *Organization) { o.Endpoint = "http://127.0.0.1:7777"; o.Generation = 3 }, false, true},
@@ -839,5 +846,52 @@ func TestSharedEntrySupportAccess(t *testing.T) {
 				t.Fatalf("status = %d", response.StatusCode)
 			}
 		})
+	}
+}
+
+func TestStoreDSN(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ path, want string }{
+		{"/tmp/registry.db", "/tmp/registry.db"},
+		{"C:/entry/registry.db", "/C:/entry/registry.db"},
+		{"c:/entry/a #?.db", "/c:/entry/a #?.db"},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			parsed, err := url.Parse(storeDSN(tt.path))
+			if err != nil || parsed.Host != "" || parsed.Path != tt.want {
+				t.Fatalf("store URI = %v, %v; want local path %q", parsed, err, tt.want)
+			}
+			if len(parsed.Query()["_pragma"]) != 4 {
+				t.Fatalf("pragmas = %v", parsed.Query())
+			}
+		})
+	}
+}
+
+func testSocketEndpoint(name string) string {
+	root := string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		root = `C:\`
+	}
+	return "unix:" + filepath.Join(root, "tenants", name)
+}
+
+func pilotPlans() *hubserver.HostedPlansConfig {
+	free := map[string]int64{
+		"members": 10, "projects": 1, "repositories": 10, "registered_runners": 4, "connected_runners": 4, "concurrent_work": 2,
+		"api_mutations": 10000, "ingested_events": 10000, "collaboration_bytes": 64 << 20, "history_records": 10000,
+	}
+	plus := make(map[string]int64, len(free))
+	for name, limit := range free {
+		plus[name] = limit
+	}
+	plus["projects"] = 5
+	features := []string{"collaboration", "native_execution"}
+	return &hubserver.HostedPlansConfig{
+		Base: hubserver.PlanReference{ID: "pilot_free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400,
+		Plans: []hubserver.HostedPlan{
+			{PlanReference: hubserver.PlanReference{ID: "pilot_free", Version: 1}, Features: features, Allowances: free},
+			{PlanReference: hubserver.PlanReference{ID: "pilot_plus", Version: 1}, Features: features, Allowances: plus},
+		},
 	}
 }

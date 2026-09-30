@@ -128,6 +128,7 @@ export const NativeIssue = Schema.Struct({
   body: Schema.String,
   state: Schema.String,
   terminal: Schema.Boolean,
+  archived: Schema.optional(Schema.Boolean),
   /** 0 Urgent, 1 High, 2 Normal, 3 Low. Absent when the issue has none. */
   priority: Schema.optional(Schema.Number),
   labels: Schema.Array(Schema.String),

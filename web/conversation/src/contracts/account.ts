@@ -14,6 +14,8 @@
 // are recorded in README.md ("Contract ambiguities resolved").
 import * as Schema from "effect/Schema";
 
+import { ChatUsage } from "./usage.ts";
+
 import { ApiError } from "./conversation.ts";
 
 // --- Roles and grants -------------------------------------------------------
@@ -520,6 +522,12 @@ export const FleetRunner = Schema.Struct({
   display_name: Schema.String,
   hostname: Schema.String,
   health: Schema.String,
+  problems: Schema.optional(Schema.Array(Schema.Struct({
+    code: Schema.String,
+    message: Schema.String,
+    fix_hint: Schema.String,
+    first_seen: Schema.String,
+  }))),
   state: Schema.String,
   os: Schema.String,
   architecture: Schema.String,
@@ -616,6 +624,8 @@ export type PlanGrant = typeof PlanGrant.Type;
 
 /** `GET /plan`: `hubserver.HostedEntitlement`, verbatim. */
 export const PlanReport = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
   organization_id: Schema.String,
   base: PlanReference,
   effective_base: PlanReference,
@@ -676,6 +686,7 @@ export type BillingPrice = typeof BillingPrice.Type;
  * "checkout buttons per configured price" needs the list on the payload.
  */
 export const BillingReport = Schema.Struct({
+  chat_usage: Schema.optional(ChatUsage),
   organization_id: Schema.String,
   state: BillingState,
   entitlement: PlanReport,

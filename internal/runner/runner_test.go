@@ -2870,10 +2870,10 @@ func TestSessionTokenUsageNormalizesFreshAndResumedThreads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			usage := newSessionTokenUsage(tt.resumed)
+			normalize := NewTokenUsageNormalizer(tt.resumed)
 			var got AgentTokenUsage
 			for _, update := range tt.updates {
-				got = usage.normalize(update)
+				got = normalize(update)
 			}
 			gotCounts := AgentTokenCounts{
 				InputTokens:           got.InputTokens,
@@ -4741,8 +4741,10 @@ func TestRunnerRunReportsGitMetadataFailuresByWorkspaceKind(t *testing.T) {
 				t.Fatalf("Run() error = %v", err)
 			}
 
-			if len(agentBackend.request.ExtraWritableRoots) != 0 {
-				t.Fatalf("ExtraWritableRoots = %#v, want none", agentBackend.request.ExtraWritableRoots)
+			roots := agentBackend.request.ExtraWritableRoots
+			scratch := agentBackend.request.TempDir
+			if len(roots) != 1 || roots[0] != scratch || filepath.Dir(scratch) != workspace.WorkerScratchRoot(workspacePath) {
+				t.Fatalf("ExtraWritableRoots = %#v, want only owned scratch %q", roots, scratch)
 			}
 			gotWarning := strings.Contains(logs.String(), "workspace git metadata writable roots unavailable")
 			if gotWarning != tt.wantWarning {

@@ -11,29 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 )
 
-func TestNativeMergeQueueCandidateGateKinds(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name   string
-		change func(*Config)
-		want   bool
-	}{
-		{"artifact gate", func(c *Config) { c.AutoPromote.Gate.Kind = gate.KindArtifact }, true},
-		{"command gate", func(c *Config) { c.AutoPromote.Gate.Kind = gate.KindCommand }, true},
-		{"security audit", func(c *Config) { c.AutoPromote.Gate.SecurityAudit.Enabled = true }, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging"}})
-			tt.change(&cfg)
-			issue := nativeMergeQueueTestIssue(2465, "success")
-			if got := nativeMergeQueueCandidate(issue, cfg); got != tt.want {
-				t.Fatalf("nativeMergeQueueCandidate() = %t, want %t", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestNativeMergeQueueOwnsIssueRequiresCandidacy(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {

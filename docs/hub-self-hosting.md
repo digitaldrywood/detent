@@ -8,7 +8,7 @@ automatic failover, or high availability guarantee. Never share a live SQLite
 file over NFS/SMB, mount it into runners, or run a second owner against it.
 
 Self-hosted Detent is free. No WorkOS, Stripe, Detent Cloud account,
-`hub.detent.build` callback, Detent subscription or purchased infrastructure is
+`cloud.detent.build` callback, Detent subscription or purchased infrastructure is
 required. Operators choose authentication, including WorkOS/custom/generic/local
 options; selecting WorkOS must never enable Detent billing. An external auth
 provider may have its own connectivity/account requirements. The currently
@@ -31,7 +31,7 @@ install the executable at that path or adjust the example unit. Do not use an
 unversioned download URL for an upgrade. The release includes this runbook and
 the [Hub unit](examples/hub/detent-hub.service) and
 [Caddy example](examples/hub/Caddyfile). These examples deploy a customer-operated
-Hub, not the shared hub.detent.build entry/registry. See the
+Hub, not the shared cloud.detent.build entry/registry. See the
 [deployment boundary](examples/hub/README.md); equivalent files are in the same tagged
 source checkout. Native package documentation lives under `/usr/share/doc/detent/docs`.
 

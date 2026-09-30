@@ -88,6 +88,7 @@ func (d *database) ListCandidateRecords(ctx context.Context, query tracker.Candi
 		"lower(trim(i.github_state)) = 'open'",
 		"ws.id IS NOT NULL",
 		"ws.terminal = 0",
+		"i.archived = 0",
 		"lower(trim(ws.detent_state)) <> 'cancelled'",
 		"ws.dispatchable = 1",
 	}

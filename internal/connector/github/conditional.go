@@ -6,13 +6,15 @@ import (
 	"time"
 )
 
-const restConditionalCacheMaxEntries = 1024
+// A full label-status refresh can read more than 1,300 distinct per-issue paths.
+// Leave room for other REST reads without letting the response cache grow forever.
+const restConditionalCacheMaxEntries = 2048
 
 type restCacheEntry struct {
-	etag     string
-	body     []byte
-	headers  http.Header
-	cachedAt time.Time
+	etag       string
+	body       []byte
+	headers    http.Header
+	lastUsedAt time.Time
 }
 
 func (c *Client) restConditionalEntry(method string, path string) (restCacheEntry, bool) {
@@ -38,10 +40,10 @@ func (c *Client) storeRESTConditionalEntry(method string, path string, headers h
 		return
 	}
 	entry := restCacheEntry{
-		etag:     etag,
-		body:     append([]byte(nil), body...),
-		headers:  headers.Clone(),
-		cachedAt: time.Now(),
+		etag:       etag,
+		body:       append([]byte(nil), body...),
+		headers:    headers.Clone(),
+		lastUsedAt: time.Now(),
 	}
 	key := restCacheKey(method, path)
 	c.mu.Lock()
@@ -72,13 +74,23 @@ func (c *Client) deleteRESTConditionalEntriesForEndpoint(method string, path str
 	c.mu.Unlock()
 }
 
+func (c *Client) touchRESTConditionalEntry(method string, path string, etag string) {
+	key := restCacheKey(method, path)
+	c.mu.Lock()
+	if entry, ok := c.restCache[key]; ok && entry.etag == etag {
+		entry.lastUsedAt = time.Now()
+		c.restCache[key] = entry
+	}
+	c.mu.Unlock()
+}
+
 func (c *Client) evictOldestRESTConditionalEntryLocked() {
 	oldestKey := ""
 	oldestAt := time.Time{}
 	for key, entry := range c.restCache {
-		if oldestKey == "" || entry.cachedAt.Before(oldestAt) {
+		if oldestKey == "" || entry.lastUsedAt.Before(oldestAt) {
 			oldestKey = key
-			oldestAt = entry.cachedAt
+			oldestAt = entry.lastUsedAt
 		}
 	}
 	if oldestKey != "" {
@@ -92,10 +104,10 @@ func restCacheKey(method string, path string) string {
 
 func cloneRESTCacheEntry(entry restCacheEntry) restCacheEntry {
 	return restCacheEntry{
-		etag:     entry.etag,
-		body:     append([]byte(nil), entry.body...),
-		headers:  entry.headers.Clone(),
-		cachedAt: entry.cachedAt,
+		etag:       entry.etag,
+		body:       append([]byte(nil), entry.body...),
+		headers:    entry.headers.Clone(),
+		lastUsedAt: entry.lastUsedAt,
 	}
 }
 

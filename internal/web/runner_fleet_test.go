@@ -236,3 +236,27 @@ func TestRunnerFleetFormAuthorizationAndConflict(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerFleetAttentionFilter(t *testing.T) {
+	probe := runnerFleetTestProbe()
+	healthy := probe.fleet.Runners[0]
+	healthy.RunnerID = "runner_healthy"
+	healthy.DisplayName = "Healthy runner"
+	probe.fleet.Runners = append(probe.fleet.Runners, healthy)
+	probe.fleet.Runners[0].Health = "needs_attention"
+	probe.fleet.Runners[0].Problems = []runnerauth.Problem{runnerauth.NewProblem("backend_missing")}
+	server := newRunnerFleetTestServer(t, probe)
+	request := httptest.NewRequest(http.MethodGet, "/fleet/runners?health=needs_attention", nil)
+	request.RemoteAddr = "127.0.0.1:4444"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	body := response.Body.String()
+	for _, want := range []string{"1 runner needs attention", "Needs attention", "A configured agent backend is unavailable.", "Install the configured backend"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	if response.Code != http.StatusOK || strings.Contains(body, "Healthy runner") {
+		t.Fatalf("attention filter: status=%d", response.Code)
+	}
+}

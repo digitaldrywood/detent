@@ -145,6 +145,7 @@ func (o *Orchestrator) markMergeStarted(state *State, issue connector.Issue, now
 		return MergeTiming{}
 	}
 	timing := o.markMergeWorkerSlotAcquired(state, issue, now)
+	timing = timing.finishObservedCIWait(now)
 	timing.MergeStartedAt = now.UTC()
 	baseRefreshStarted := issue.PullRequest != nil &&
 		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "behind") &&
@@ -152,6 +153,10 @@ func (o *Orchestrator) markMergeStarted(state *State, issue connector.Issue, now
 	if baseRefreshStarted {
 		timing.BaseRefreshStartedAt = timing.MergeStartedAt
 		timing.BaseRefreshFinishedAt = time.Time{}
+		if timing.BaseSyncActiveAt.IsZero() {
+			timing.BaseSyncActiveAt = now.UTC()
+		}
+		timing.BaseSyncObserved = true
 	}
 	timing = timing.withCurrentHeadCIWait(issue, timing.MergeStartedAt)
 	timing.CIWaitFinishedAt = time.Time{}
@@ -176,8 +181,36 @@ func reconcileMergeWorkerCurrentHeadCIWait(state *State, issue connector.Issue, 
 		state.MergeTimings = map[string]MergeTiming{}
 	}
 	timing := state.MergeTimings[issueID].withCurrentHeadCIWait(issue, now)
+	if timing.CIWaitActiveAt.IsZero() {
+		timing.CIWaitActiveAt = now.UTC()
+	}
 	state.MergeTimings[issueID] = timing
 	return timing
+}
+
+func finishMergeWorkerCurrentHeadCIWait(state *State, issue connector.Issue, now time.Time) {
+	issueID := strings.TrimSpace(issue.ID)
+	if state == nil || issueID == "" {
+		return
+	}
+	state.MergeTimings[issueID] = state.MergeTimings[issueID].finishObservedCIWait(now)
+}
+
+func (t MergeTiming) finishObservedCIWait(now time.Time) MergeTiming {
+	if !t.CIWaitActiveAt.IsZero() {
+		beforeSlotStart := t.CIWaitActiveAt
+		if !t.EnteredMergingAt.IsZero() && beforeSlotStart.Before(t.EnteredMergingAt) {
+			beforeSlotStart = t.EnteredMergingAt
+		}
+		beforeSlotEnd := now.UTC()
+		if !t.MergeWorkerSlotAcquiredAt.IsZero() && beforeSlotEnd.After(t.MergeWorkerSlotAcquiredAt) {
+			beforeSlotEnd = t.MergeWorkerSlotAcquiredAt
+		}
+		t.CIWaitBeforeSlotSeconds += durationSeconds(beforeSlotStart, beforeSlotEnd)
+		t.CIWaitSeconds += durationSeconds(t.CIWaitActiveAt, now)
+		t.CIWaitActiveAt = time.Time{}
+	}
+	return t
 }
 
 func (t MergeTiming) withCurrentHeadCIWait(issue connector.Issue, now time.Time) MergeTiming {
@@ -186,6 +219,13 @@ func (t MergeTiming) withCurrentHeadCIWait(issue connector.Issue, now time.Time)
 		headSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
 	}
 	headChanged := headSHA != "" && t.CIWaitHeadSHA != "" && headSHA != t.CIWaitHeadSHA
+	if headChanged && !t.BaseSyncActiveAt.IsZero() {
+		t.BaseSyncSeconds += durationSeconds(t.BaseSyncActiveAt, now)
+		t.BaseSyncActiveAt = time.Time{}
+	}
+	if headChanged {
+		t = t.finishObservedCIWait(now)
+	}
 	if t.CIWaitStartedAt.IsZero() || headChanged {
 		t.CIWaitStartedAt = now.UTC()
 		t.CIWaitFinishedAt = time.Time{}
@@ -206,7 +246,9 @@ func (o *Orchestrator) recordMergeCompleted(state *State, issue connector.Issue,
 		o.logMergeTimingInfo("merge_base_refresh_finished", issue, timing, "final_state", strings.TrimSpace(finalState))
 	}
 	o.logMergeTimingInfo("merge_ci_wait_finished", issue, timing, "final_state", strings.TrimSpace(finalState))
-	o.logMergeTimingInfo("merge_completed", issue, timing, "final_state", strings.TrimSpace(finalState))
+	completionAttrs := []any{"final_state", strings.TrimSpace(finalState)}
+	completionAttrs = append(completionAttrs, mergeCompletionTimingAttrs(timing)...)
+	o.logMergeTimingInfo("merge_completed", issue, timing, completionAttrs...)
 	return timing
 }
 
@@ -282,6 +324,11 @@ func (o *Orchestrator) completeMergeTiming(state *State, issue connector.Issue, 
 	if !timing.BaseRefreshStartedAt.IsZero() && timing.BaseRefreshFinishedAt.IsZero() {
 		timing.BaseRefreshFinishedAt = completedAt
 	}
+	if !timing.BaseSyncActiveAt.IsZero() {
+		timing.BaseSyncSeconds += durationSeconds(timing.BaseSyncActiveAt, completedAt)
+		timing.BaseSyncActiveAt = time.Time{}
+	}
+	timing = timing.finishObservedCIWait(completedAt)
 	if !timing.CIWaitStartedAt.IsZero() && timing.CIWaitFinishedAt.IsZero() {
 		timing.CIWaitFinishedAt = completedAt
 	}
@@ -377,6 +424,15 @@ func mergeTimingAttrs(timing MergeTiming) []any {
 		out = append(out, "merge_failure_reason", timing.MergeFailureReason)
 	}
 	return out
+}
+
+func mergeCompletionTimingAttrs(timing MergeTiming) []any {
+	return []any{
+		"slot_wait_seconds", max(0, timing.QueueWaitSeconds-timing.CIWaitBeforeSlotSeconds),
+		"base_sync_seconds", timing.BaseSyncSeconds,
+		"ci_wait_seconds", timing.CIWaitSeconds,
+		"direct_merge", !timing.BaseSyncObserved,
+	}
 }
 
 func appendTimeAttr(attrs []any, key string, value time.Time) []any {

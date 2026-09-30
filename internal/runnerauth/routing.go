@@ -60,6 +60,7 @@ type HostChange struct {
 }
 
 type Runner struct {
+	Problems         []Problem               `json:"problems"`
 	HomeDrySince     *time.Time              `json:"home_dry_since"`
 	HomeStatus       string                  `json:"home_status"`
 	ProviderCapacity []providercapacity.View `json:"provider_capacity,omitempty"`
@@ -77,6 +78,7 @@ type Runner struct {
 	OS               string                 `json:"os"`
 	Architecture     string                 `json:"architecture"`
 	Health           string                 `json:"health"`
+	ConnectionHealth string                 `json:"connection_health"`
 	LastHeartbeatAt  time.Time              `json:"last_heartbeat_at"`
 	Operations       []string               `json:"operations"`
 	Leases           []RunnerLease          `json:"leases"`
@@ -242,7 +244,7 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 	if r.Health == "revoked" || r.Health == "expired" {
 		add("runner_"+r.Health, "Runner credential is "+r.Health)
 	}
-	if !activeLease && r.Health == "offline" {
+	if !activeLease && (r.Health == "offline" || r.ConnectionHealth == "offline") {
 		add("runner_offline", "Runner heartbeat is stale; work stays queued for this target")
 	}
 	if err := requirements.Match(r.RunnerID, string(r.MachineID), r.Tags); err != nil {
@@ -281,4 +283,55 @@ func (r Runner) HomeWorkStatus(now time.Time) string {
 	}
 	minutes := max(0, int(now.Sub(*r.HomeDrySince).Minutes()))
 	return fmt.Sprintf("Waiting for home work (%dm)", minutes)
+}
+
+func (a Availability) Evaluate(now time.Time) (activehours.Status, error) {
+	return activehours.Evaluate(activehours.Config{Timezone: a.Timezone, Windows: a.Windows}, now, time.Time{})
+}
+
+func (a Availability) Deadline(started time.Time) (time.Time, error) {
+	if a.HardDeadline == "" {
+		return time.Time{}, nil
+	}
+	delay, err := time.ParseDuration(a.HardDeadline)
+	if err != nil || delay <= 0 {
+		return time.Time{}, errors.New("availability hard deadline must be a positive duration")
+	}
+	status, err := a.Evaluate(started)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if status.NextClose.IsZero() {
+		return time.Time{}, nil
+	}
+	if !status.Open {
+		cursor := started.AddDate(0, 0, -8)
+		var closeTime time.Time
+		for cursor.Before(started) {
+			previous, err := a.Evaluate(cursor)
+			if err != nil {
+				return time.Time{}, err
+			}
+			if previous.NextClose.IsZero() || previous.NextClose.After(started) {
+				break
+			}
+			closeTime = previous.NextClose
+			cursor = closeTime
+		}
+		if closeTime.IsZero() {
+			return time.Time{}, nil
+		}
+		return closeTime.Add(delay), nil
+	}
+	return status.NextClose.Add(delay), nil
+}
+
+func (r Runner) Status(now time.Time) string {
+	if r.Health == "online" {
+		status, err := r.Availability.Evaluate(now)
+		if err == nil && !status.Open {
+			return "outside_hours"
+		}
+	}
+	return r.Health
 }

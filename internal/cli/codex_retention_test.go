@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -261,6 +262,9 @@ func (c *rolloutSwapContext) Err() error {
 func TestDetentRolloutsTraversalBoundaries(t *testing.T) {
 	for _, replacement := range []bool{false, true} {
 		t.Run(fmt.Sprintf("replace root=%t", replacement), func(t *testing.T) {
+			if replacement && runtime.GOOS == "windows" {
+				t.Skip("Windows prevents replacing a directory held open by os.Root")
+			}
 			home := t.TempDir()
 			root := filepath.Join(home, "sessions")
 			outside := filepath.Join(home, "outside")

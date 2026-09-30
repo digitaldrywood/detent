@@ -740,3 +740,34 @@ func TestServiceExplainsRetryWithoutNumberDuringDegradedRefresh(t *testing.T) {
 		})
 	}
 }
+
+func TestExplanationReasonsMissingCIProducer(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		pr   telemetry.PullRequest
+		want int
+	}{
+		{name: "no producer", want: 1},
+		{name: "native policy evaluated", pr: telemetry.PullRequest{CIStatus: "success"}},
+		{name: "pending producer", pr: telemetry.PullRequest{CIStatus: "pending", CheckRunCount: 1}},
+		{name: "failed producer", pr: telemetry.PullRequest{CIStatus: "failure"}},
+		{name: "unavailable", pr: telemetry.PullRequest{HydrationUnavailableReason: "unavailable"}},
+		{name: "degraded", pr: telemetry.PullRequest{HydrationDegradedReason: "degraded"}},
+		{name: "required check missing", pr: telemetry.PullRequest{RequiredCheckFailures: []telemetry.PullRequestCheck{{Name: "build", Status: "missing"}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "issue-1", ProjectID: "alpha", State: "In Progress", PullRequest: &tt.pr}}}
+			got := explanationReasons(Identity{ProjectID: "alpha", IssueID: "issue-1"}, snapshot)
+			if len(got) != tt.want {
+				t.Fatalf("reasons = %#v, want %d", got, tt.want)
+			}
+			if tt.want > 0 && (got[0].Code != "ci_not_green" || !strings.Contains(got[0].Detail, "No CI producer") || !strings.Contains(got[0].Action, "required_status_checks: []")) {
+				t.Fatalf("reason = %#v", got[0])
+			}
+			if other := explanationReasons(Identity{ProjectID: "other", IssueID: "issue-1"}, snapshot); len(other) != 0 {
+				t.Fatalf("cross-project reasons = %#v", other)
+			}
+		})
+	}
+}

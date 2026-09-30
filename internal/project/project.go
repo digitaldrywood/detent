@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/routine"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -544,6 +545,16 @@ func (p *Project) ID() ID {
 		return ""
 	}
 	return p.id
+}
+
+func (p *Project) RunnerProblems() []runnerauth.Problem {
+	p.mu.Lock()
+	value := p.runner
+	p.mu.Unlock()
+	if reporter, ok := value.(interface{ Problems() []runnerauth.Problem }); ok {
+		return reporter.Problems()
+	}
+	return nil
 }
 
 func (p *Project) Config() globalconfig.Project {

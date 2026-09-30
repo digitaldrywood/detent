@@ -13,10 +13,25 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cli"
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/shadow"
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == cli.SSHProbeArgument {
+		if !cli.SSHWorkerReady() {
+			os.Exit(cli.ExitGeneral)
+		}
+		fmt.Fprintln(os.Stdout, runnerpkg.SSHProtocolVersion)
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == cli.SSHWorkerArgument {
+		logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+		if err := cli.RunSSHWorker(context.Background(), os.Stdin, os.Stdout, logger); err != nil {
+			os.Exit(cli.ExitGeneral)
+		}
+		return
+	}
 	if gobudget.IsWrapperInvocation(os.Args[0]) {
 		os.Exit(gobudget.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}

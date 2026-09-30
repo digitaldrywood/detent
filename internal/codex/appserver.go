@@ -180,6 +180,9 @@ type ClientInfo struct {
 }
 
 type RunTurnRequest struct {
+	Permissions           string
+	RuntimeWorkspaceRoots []string
+	Config                map[string]any
 	// ConversationControl, when set, wraps the transport so live conversation
 	// commands and provider questions are multiplexed into the turn.
 	ConversationControl *runner.AgentConversationControl
@@ -845,10 +848,8 @@ func (s *AppServer) startThread(
 		"cwd": req.Workspace,
 	}
 	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
-	if req.TerminalWaitTimeout > 0 {
-		params["config"] = map[string]any{
-			"background_terminal_max_timeout": req.TerminalWaitTimeout.Milliseconds(),
-		}
+	if settings := threadConfig(req); len(settings) > 0 {
+		params["config"] = settings
 	}
 	if req.DeveloperInstructions != "" {
 		params["developerInstructions"] = req.DeveloperInstructions
@@ -859,6 +860,7 @@ func (s *AppServer) startThread(
 	if req.ThreadSandbox != "" {
 		params["sandbox"] = req.ThreadSandbox
 	}
+	setIsolationProfile(params, req)
 	if req.Model != "" {
 		params["model"] = req.Model
 	}
@@ -918,10 +920,8 @@ func (s *AppServer) resumeThread(
 		"cwd":      req.Workspace,
 	}
 	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
-	if req.TerminalWaitTimeout > 0 {
-		params["config"] = map[string]any{
-			"background_terminal_max_timeout": req.TerminalWaitTimeout.Milliseconds(),
-		}
+	if settings := threadConfig(req); len(settings) > 0 {
+		params["config"] = settings
 	}
 	if req.DeveloperInstructions != "" {
 		params["developerInstructions"] = req.DeveloperInstructions
@@ -929,6 +929,7 @@ func (s *AppServer) resumeThread(
 	if req.ThreadSandbox != "" {
 		params["sandbox"] = req.ThreadSandbox
 	}
+	setIsolationProfile(params, req)
 	if req.Model != "" {
 		params["model"] = req.Model
 	}
@@ -998,6 +999,7 @@ func (s *AppServer) startTurn(
 	}
 	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
 	setOptional(params, "sandboxPolicy", req.TurnSandboxPolicy)
+	setIsolationProfile(params, req)
 	if req.Model != "" {
 		params["model"] = req.Model
 	}

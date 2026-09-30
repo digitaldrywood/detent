@@ -94,3 +94,70 @@ func TestCandidateMergingRulesetStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitEmptyRequiredStatusChecksUsesBranchPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		lane       string
+		ci         string
+		required   []string
+		checks     []connector.PullRequestCheck
+		wantCI     string
+		wantFailed int
+	}{
+		{name: "no CI producer", lane: "In Progress", wantCI: "success"},
+		{name: "reported failed optional CI", lane: "Rework", ci: "failure", checks: []connector.PullRequestCheck{{Name: "Old CI", Status: "completed", Conclusion: "failure"}}, wantCI: "failure"},
+		{name: "optional CI still running", lane: "Human Review", ci: "pending", wantCI: "success"},
+		{name: "native check missing before merging", lane: "Human Review", required: []string{"Required"}, wantCI: "pending", wantFailed: 1},
+		{name: "native check failed", lane: "Merging", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "completed", Conclusion: "failure"}}, wantCI: "failure", wantFailed: 1},
+		{name: "native check running", lane: "In Progress", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "in_progress"}}, wantCI: "pending", wantFailed: 1},
+		{name: "native check passes but reported failure remains", lane: "Merging", ci: "failure", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "completed", Conclusion: "success"}, {Name: "Optional", Status: "completed", Conclusion: "failure"}}, wantCI: "failure"},
+		{name: "native legacy status failed", lane: "Merging", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "failure", Conclusion: "failure"}}, wantCI: "failure", wantFailed: 1},
+		{name: "native legacy status passed", lane: "Merging", required: []string{"Required"}, checks: []connector.PullRequestCheck{{Name: "Required", Status: "success", Conclusion: "success"}}, wantCI: "success"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newGitHubTestConnector(t, newGraphQLTestServer(t, nil), Config{RequiredStatusChecks: []string{}})
+			c.cacheBranchMergePolicy("example/repo", BranchMergePolicy{Branch: "main", RequiredStatusChecks: tt.required})
+			original := &connector.PullRequest{Number: 42, State: "open", BaseRef: "main", HeadSHA: "head", CIStatus: tt.ci, Checks: tt.checks}
+			issue := connector.Issue{Identifier: "example/repo#1", State: tt.lane, PullRequest: original}
+			if err := c.attachRequiredBranchChecks(t.Context(), &issue); err != nil {
+				t.Fatal(err)
+			}
+			if issue.PullRequest.CIStatus != tt.wantCI || len(issue.PullRequest.RequiredCheckFailures) != tt.wantFailed {
+				t.Fatalf("CI=%q failures=%+v, want CI=%q failures=%d", issue.PullRequest.CIStatus, issue.PullRequest.RequiredCheckFailures, tt.wantCI, tt.wantFailed)
+			}
+			if original.CIStatus != tt.ci || len(original.RequiredCheckFailures) != 0 {
+				t.Fatal("mutated shared PR observation")
+			}
+		})
+	}
+}
+
+func TestExplicitEmptyRequiredChecksCandidateObservation(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		checks []string
+		want   string
+	}{
+		{name: "omitted keeps aggregate wait"},
+		{name: "explicit empty advances", checks: []string{}, want: "success"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newGitHubTestConnector(t, newGraphQLTestServer(t, nil), Config{RequiredStatusChecks: tt.checks})
+			c.cacheBranchMergePolicy("example/repo", BranchMergePolicy{Branch: "main"})
+			pr := &pullRequestNode{Number: 42, State: "open", HeadSHA: "head", BaseRefName: "main", CI: pullRequestCI{State: ""}}
+			node := githubIssueNode{CandidatePR: &candidatePullRequestEvidence{complete: true, repo: pullRequestRepo{Owner: "example", Name: "repo"}, pullRequest: pr}}
+			issue := connector.Issue{ID: "issue", Identifier: "example/repo#1", State: "Human Review"}
+			got, err := c.hydratePullRequestWithEvidence(t.Context(), issue, node, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.PullRequest == nil || got.PullRequest.CIStatus != tt.want {
+				t.Fatalf("PR=%+v, want CI %q", got.PullRequest, tt.want)
+			}
+			if pr.CI.State != "" {
+				t.Fatal("mutated cached candidate")
+			}
+		})
+	}
+}
