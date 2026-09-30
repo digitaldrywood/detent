@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +159,10 @@ func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(target, filepath.Join(quarantine, "link")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
@@ -165,7 +170,7 @@ func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(target)
-	if err != nil || info.Mode().Perm() != 0o500 {
+	if err != nil || info.Mode().Perm() != before.Mode().Perm() {
 		t.Fatalf("symlink target mode changed: info=%v err=%v", info, err)
 	}
 	if _, err := os.Stat(filepath.Join(target, "keep")); err != nil {
@@ -175,6 +180,9 @@ func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
 
 func TestRetentionQuarantineUnremovablePath(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod on Windows does not deny directory removal; this fixture requires POSIX permissions")
+	}
 	backend := retentionBackend(t)
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	parent := filepath.Join(backend.root, ".detent/quarantine")
