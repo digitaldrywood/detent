@@ -116,7 +116,7 @@ func activityBenchmarkWorkload(b *testing.B, attempts, commands int, command str
 		workers.Go(func() {
 			var recorder *activityRecorder
 			if enabled {
-				recorder = r.startActivityProfile(RunRequest{Issue: connector.Issue{ID: "fixture-issue"}, WorkAttemptID: int64(attempt + 1), Generation: 1}, int64(attempt+1), dir, config.Workflow{Prompt: "Run focused tools"}, "implementation")
+				recorder = r.startActivityProfile(ctx, RunRequest{Issue: connector.Issue{ID: "fixture-issue"}, WorkAttemptID: int64(attempt + 1), Generation: 1}, int64(attempt+1), dir, config.Workflow{Prompt: "Run focused tools"}, "implementation")
 			}
 			progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: 4096}, "", "", 0, "", 0)
 			emit := func(update AgentUpdate) {
