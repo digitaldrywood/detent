@@ -249,12 +249,15 @@ func TestCompletionDiffFingerprint(t *testing.T) {
 func TestCompletionRebaseAfterRestart(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, status, mergeAfter string
-		want                     store.WorkAttemptTerminalState
+		name, lane, status, mergeAfter string
+		want                           store.WorkAttemptTerminalState
 	}{
-		{"unfinished unchanged", "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"stale completion", "complete", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"conflict cleared", "in_progress", "clean", store.WorkAttemptTerminalSuccess},
+		{"unfinished unchanged", "In Progress", "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"stale completion", "In Progress", "complete", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"conflict cleared", "In Progress", "in_progress", "clean", store.WorkAttemptTerminalSuccess},
+		{"unfinished Rework", "Rework", "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"stale Rework completion", "Rework", "complete", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"Rework conflict cleared", "Rework", "in_progress", "clean", store.WorkAttemptTerminalSuccess},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -264,7 +267,7 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := implementProgressIssue("before")
-			before.State = "Rework"
+			before.State = tt.lane
 			before.PullRequest.MergeableState = "dirty"
 			before.PullRequest.DiffFingerprint = "same-diff"
 			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}})
@@ -272,8 +275,12 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, workAttempts: db}
 			state := newState(cfg)
 			mode := orch.dispatchMode(t.Context(), &state, before)
-			if mode != runpkg.RunModeMerge {
-				t.Fatalf("conflict repair mode = %s", mode)
+			wantMode := runpkg.RunModeMerge
+			if tt.lane == "Rework" {
+				wantMode = runpkg.RunModeImplement
+			}
+			if mode != wantMode {
+				t.Fatalf("conflict repair mode = %s, want %s", mode, wantMode)
 			}
 			start := newDispatchLoopStartRecord(before, mode)
 			start.PRDiffFingerprint = before.PullRequest.DiffFingerprint
@@ -309,7 +316,7 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			orch = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: db}
 			state = newState(cfg)
 			// No in-memory dispatch baseline survives. Even the issue snapshot is current.
-			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: mode, DispatchSourceState: "Rework", StartedAt: time.Now().Add(-time.Minute)}
+			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: mode, DispatchSourceState: tt.lane, StartedAt: time.Now().Add(-time.Minute)}
 			state.Claimed[after.ID] = Claimed{Issue: after}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: after.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: mode}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased"}}})
 			attempt, err := db.WorkAttempt(t.Context(), id)
