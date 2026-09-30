@@ -21,9 +21,7 @@ import (
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
 	e.GET("/", s.hostedLanding)
-	e.GET("/login", func(c echo.Context) error {
-		return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "login", Title: "Sign in"})
-	})
+	e.GET("/login", s.appShell)
 	e.GET("/auth/oidc/start", s.startHostedLogin)
 	e.GET("/auth/oidc/callback", s.completeHostedLogin)
 	e.GET("/invite", s.startHostedInvitation)

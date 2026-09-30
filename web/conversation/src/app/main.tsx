@@ -63,6 +63,20 @@ if (isEntrySurface()) {
 }
 
 function startOrganizationClient(): void {
+  const pathname = withoutBasePath(globalThis.location?.pathname ?? "");
+  const search = globalThis.location?.search ?? "";
+  if (isLoginPath(pathname)) {
+    document.title = formatPageTitle("Sign in");
+    mount(
+      <React.StrictMode>
+        <div className="flex h-full flex-col">
+          <LoginCard error={new URLSearchParams(search).get("error")} />
+        </div>
+      </React.StrictMode>,
+    );
+    return;
+  }
+
   void loadBootstrap()
     .then((bootstrap) => {
       const client = makeClient({ bootstrap });
@@ -80,21 +94,8 @@ function startOrganizationClient(): void {
     .catch((cause: unknown) => {
       const pathname = withoutBasePath(globalThis.location?.pathname ?? "");
       const search = globalThis.location?.search ?? "";
-      // `/login` and `/support` are the two paths the hub serves without
-      // organization access (decisions.md §12, "Serving"), so a refused
-      // bootstrap on either is the expected state rather than a failure. Every
-      // other path needs one and says so.
-      if (isLoginPath(pathname)) {
-        document.title = formatPageTitle("Sign in");
-        mount(
-          <React.StrictMode>
-            <div className="flex h-full flex-col">
-              <LoginCard error={new URLSearchParams(search).get("error")} />
-            </div>
-          </React.StrictMode>,
-        );
-        return;
-      }
+      // Support can be opened without organization access. A refused
+      // bootstrap there is expected; other routes need one and say so.
       if (isSupportPath(pathname)) {
         document.title = formatPageTitle("Support");
         mount(

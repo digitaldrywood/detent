@@ -412,7 +412,7 @@ func TestHostedBrowserHTTPPages(t *testing.T) {
 		name, account, path, contains, excludes string
 		status                                  int
 	}{
-		{name: "login", path: "/login", status: http.StatusOK, contains: "Continue with WorkOS"},
+		{name: "login", path: "/login", status: http.StatusOK, contains: "<div id=\"root\"></div>"},
 		{name: "owner organization", account: "owner", path: "/organization", status: http.StatusOK, contains: "Members and invitations"},
 		{name: "viewer organization", account: "viewer", path: "/organization", status: http.StatusOK, contains: "Browser collaboration", excludes: "Owner private project"},
 		{name: "ordinary staff", account: "staff", path: "/organization", status: http.StatusOK, contains: "Staff access is limited", excludes: "Browser collaboration"},
@@ -436,7 +436,11 @@ func TestHostedBrowserHTTPPages(t *testing.T) {
 					t.Errorf("hosted response includes %q", forbidden)
 				}
 			}
-			if response.Header().Get("Cache-Control") != "no-store" {
+			wantCache := "no-store"
+			if tt.name == "login" {
+				wantCache = "no-cache"
+			}
+			if response.Header().Get("Cache-Control") != wantCache {
 				t.Error("hosted page is cacheable")
 			}
 		})

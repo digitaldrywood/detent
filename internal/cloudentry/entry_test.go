@@ -630,6 +630,28 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	alice := newBrowser(t, f.service.Handler())
+	for _, tt := range []struct{ name, query, organization, screenHint string }{
+		{name: "sign in"},
+		{name: "create account", query: "screen_hint=sign-up", screenHint: "sign-up"},
+		{name: "organization create account", query: "organization=org_alpha&screen_hint=sign-up", organization: "porg_alpha", screenHint: "sign-up"},
+		{name: "unknown hint", query: "screen_hint=unexpected"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response, _ := alice.get("/auth/oidc/start?" + tt.query)
+			location, err := url.Parse(response.Header.Get("Location"))
+			if response.StatusCode != http.StatusSeeOther || err != nil {
+				t.Fatalf("authorization redirect = %d %q: %v", response.StatusCode, response.Header.Get("Location"), err)
+			}
+			query := location.Query()
+			if query.Get("organization_id") != tt.organization || query.Get("screen_hint") != tt.screenHint || query.Has("screen_hint") != (tt.screenHint != "") {
+				t.Fatalf("authorization query = %v", query)
+			}
+			if query.Get("state") == "" || query.Get("verifier") == "" {
+				t.Fatal("authorization lost state or PKCE")
+			}
+		})
+	}
+
 	first, _ := alice.get("/auth/oidc/start?organization=org_alpha")
 	second, _ := alice.get("/auth/oidc/start?organization=org_beta")
 	firstState := stateOf(t, first)

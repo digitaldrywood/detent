@@ -1018,3 +1018,17 @@ fields:
   completion_cleanliness_resolution: committed
 blockers: []
 human_action: null
+
+
+# Issue #3440 handoff — Hub sign-in
+
+- Both public sign-in surfaces share the detent.build mark, seven absolute site navigation links, and a 400px card with only Sign in and Create account. Removed invitation token controls and vendor wording from LoginCard; other account screens retain their existing layout.
+- Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css. Public /login renders before bootstrap, including for an already signed-in browser. internal/hubserver/hosted_ui.go now routes /login to the existing application shell instead of the legacy vendor-branded server page; browser verification reproduced that bypass before its repair.
+- internal/hubserver/hosted_login.go and internal/cloudentry/login.go forward only screen_hint=sign-up through existing authorization URLs. Organization scoping, state, cookies and PKCE remain intact; invitation email flows pass no sign-up hint.
+- Extended existing component and Go tables. The new hint cases fail against original handlers using a scratch Go overlay and pass against the implementation. No invariant or enforcement changes, mechanism, product configuration or CLI additions.
+- Passed: 99 account/entry component tests; TypeScript checking; focused Hub shell, shared-entry shell, hosted HTTP, OIDC callback, transaction and invitation diagnostics; vet for internal/hubserver and internal/cloudentry; make generate. Generated app.js and app.css are included.
+- Browser: Chrome DevTools verified both public pages and error rendering on isolated ephemeral previews. Linux/arm64 Chromium in mcr.microsoft.com/playwright:v1.61.0-noble passed four focused Playwright cases (6.4s): both sign-in surfaces, actual provider hint/absence, error card, mobile viewport/overflow, authenticated /login, keyboard and accessibility. Four new desktop baselines under hub-login.spec.js were generated and then compared with updates disabled. All pre-existing desktop baselines are unchanged.
+- Preview helpers keep fixture output in provided scratch and accept cross-compiled preview test binaries for Linux browser diagnostics. No live process or port-4000 mutation. No full validation gate, coverage, race suite or CI wait; configured gate is true and gives no test credit.
+- Rebased onto develop a80b71009 after PR publication. Only shared notes and generated app.js conflicted; preserved incoming handoffs and rebuilt the combined client. Focused Go diagnostics, vet, 99 component tests, TypeScript checking and four strict Linux Playwright cases passed again on the rebased source.
+- PR #3455 targets develop and references Fixes #3440. No implementation open items; final gate, publication and current-head review evidence are in the canonical issue Workpad. Orchestrator owns lane transitions and merging.
+- Skill draft: no — existing preview guidance covers this routine UI and OIDC change.

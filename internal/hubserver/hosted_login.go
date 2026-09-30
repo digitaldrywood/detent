@@ -81,6 +81,9 @@ func (s *Service) startHostedLogin(c echo.Context) error {
 	if organization != "" {
 		query.Set("organization_id", organization)
 	}
+	if c.QueryParam("screen_hint") == "sign-up" {
+		query.Set("screen_hint", "sign-up")
+	}
 	u.RawQuery = query.Encode()
 	return c.Redirect(http.StatusSeeOther, u.String())
 }

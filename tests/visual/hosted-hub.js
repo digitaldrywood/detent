@@ -50,15 +50,19 @@ async function terminate(child) {
  * @returns {Promise<{fixture: object, output: () => string, stop: () => Promise<void>}>}
  */
 async function startHostedHub(name = "conversation", options = {}) {
-  const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", name);
+  const scratch = process.env.TMPDIR || process.env.TMP || process.env.TEMP;
+  if (!scratch) throw new Error("The hosted preview requires a scratch directory");
+  const evidenceDir = path.join(scratch, "playwright-evidence", name);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const logPath = path.join(evidenceDir, "hosted-hub.log");
   fs.writeFileSync(logPath, "");
 
   const child = spawn(
-    "go",
-    [
+    process.env.DETENT_HOSTED_PREVIEW_BINARY || "go",
+    process.env.DETENT_HOSTED_PREVIEW_BINARY ? ["-test.run=^TestHostedBrowserPreview$", "-test.v", "-test.timeout=25m"] : [
       "test",
+      "-p",
+      "4",
       "./internal/hubserver",
       "-run",
       "TestHostedBrowserPreview",
