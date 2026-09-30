@@ -10,9 +10,22 @@ Validation: make generate passed (17.5s), focused settingsHelp/fleet/settings/ac
 
 Target refresh: develop advanced during publication to 9d1ef11cf04e04db0babeab159b989abac01a5aa (#3061). Merged it into the published repair 0f8c0ed3096f6913103474828a854da6ead075ea; only notes conflicted. No UI source or generated inputs changed, so the successful UI diagnostics still cover the delivered implementation.
 
-Handoff: publish this final notes resolution with an exact lease against 0f8c0ed3096f6913103474828a854da6ead075ea. PR #3361 is already ready against develop and references Fixes #3272. Canonical issue Workpad records final published-head checks and review evidence. Orchestrator owns promotion and merging; no tracker lane changes. No dependencies or out-of-scope findings.
+Publication: resolved merge pushed; exact-head GitHub inspection confirmed MERGEABLE/CLEAN, ready, targeting develop, referencing Fixes #3272, with no reviews, threads or current-head checks. Final notes-only correction separates incoming historical completion fields from the current Workpad; implementation and diagnostics are unchanged. Configured true passed before each publication (<1s). PR #3361 is already ready against develop and references Fixes #3272. Canonical issue Workpad records final published-head checks and review evidence. Orchestrator owns promotion and merging; no tracker lane changes. No dependencies or out-of-scope findings.
 
 Skill draft: no — routine conflict repair and diagnostics added no reusable method.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7175"
+  completion_generation: "46"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical incoming #3061 handoff
 
 Plan: merged fetched develop `73859c96fa25b6351c9e9ef77e372077c4b2fa44` into source-clean published PR #3061 head `78cb53ad273c059c5bf97afe6d962110713b192d`, preserving published history without rebasing. Verified the starting head's parents against the preceding #3060 handoff.
 
@@ -22,14 +35,10 @@ Validation: no tests, builds, local gate, CI checks, or validation waits run. Hi
 
 Open items: Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane mutation performed.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
-  completion_work_attempt_id: "7175"
-  completion_generation: "46"
-  completion_cleanliness_resolution: committed
-
   completion_work_attempt_id: "7171"
   completion_generation: "42"
 blockers: []
