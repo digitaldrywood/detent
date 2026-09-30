@@ -63,6 +63,14 @@ Every `make` test, lint, vet, and build target is still capped by `TEST_PROCS`
 (default 4) so worktrees that do run gates share the host (see
 [docs/development.md](docs/development.md)).
 
+Add a test only when it asserts a behavior no existing test asserts. Before
+writing one, name the failure it would catch; if you cannot, do not write it.
+Extend an existing table or fixture with a case instead of adding a sibling
+function that rebuilds the same setup. Do not add tests for generated code,
+for the text of documentation or configuration, or to move a coverage number.
+A test that only re-executes a path another test already asserts is removed in
+review (see [docs/test-suite-audit.md](docs/test-suite-audit.md)).
+
 Focused `go test ./<touched-package>/...`, `go vet`, and targeted regressions
 are available for diagnostics during edits; they do not become completion
 gates. The scheduled full suite validates pinned `develop` commits and tags
