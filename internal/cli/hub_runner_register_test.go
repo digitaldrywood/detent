@@ -241,6 +241,69 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	}
 }
 
+func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		ready         bool
+		workspaceRoot bool
+	}{
+		{name: "kept checkout with default root", ready: true},
+		{name: "kept checkout overrides supplied root", ready: true, workspaceRoot: true},
+		{name: "missing kept checkout ignores supplied checkout", workspaceRoot: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build"})
+			root := t.TempDir()
+			configPath := filepath.Join(root, "config", "global.yaml")
+			workdir := filepath.Join(root, "actual-checkout")
+			paths := runnerPaths{config: configPath, identity: filepath.Join(root, "config", "identity.json"), workspaces: filepath.Join(root, "unused-root")}
+			kept := runnerConfig(hub.server.URL+"/organizations/org_example", "org_example", "Build host", 2, paths, []runnerRegisteredCheck{{Name: "local-project", ID: "prj_site", Workdir: workdir}})
+			if _, err := writeRunnerConfig(configPath, kept); err != nil {
+				t.Fatal(err)
+			}
+			kept.ServiceName = "" // Runner configs predating service_name remain supported.
+			body, err := yaml.Marshal(kept)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			checkout(t, workdir)
+			if !test.ready {
+				if err := os.Remove(filepath.Join(workdir, ".git")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--service"}
+			if test.workspaceRoot {
+				checkout(t, filepath.Join(paths.workspaces, "detent.build"))
+				args = append(args, "--workspace-root", paths.workspaces)
+			}
+			started := false
+			output, err := runRegisterInTestWorkspace(t, nil, func(_ *cobra.Command, path string) error { started = true; return nil }, args...)
+			if err != nil {
+				t.Fatalf("register: %v\n%s", err, output)
+			}
+			var result runnerRegistration
+			if err := json.Unmarshal([]byte(output), &result); err != nil {
+				t.Fatal(err)
+			}
+			if started != test.ready || result.ServiceRun != test.ready || len(result.Projects) != 1 || result.Projects[0].Workdir != workdir || result.Projects[0].Checkout != test.ready {
+				t.Fatalf("started %v, registration %+v", started, result)
+			}
+			if !test.ready && !strings.Contains(strings.Join(result.NextSteps, "\n"), "detent start --config "+shellQuote(configPath)+" --yes") {
+				t.Fatalf("next steps = %v", result.NextSteps)
+			}
+			if mustRead(t, configPath) != string(body) {
+				t.Fatal("kept config was rewritten")
+			}
+		})
+	}
+}
+
 func checkout(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o700); err != nil {

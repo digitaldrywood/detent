@@ -1580,7 +1580,11 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.blockPersistentlyMissingRequiredChecks(ctx, state, event, running, issue, persistent)
 		return true
 	}
-	if event.Result.PullRequestHeadPushed {
+	requiredChecks := gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks
+	branchPolicyOnly := requiredChecks != nil && len(requiredChecks) == 0
+	headWithoutCI := mergeWorkerCheckedPullRequest(issue) && strings.TrimSpace(issue.PullRequest.BaseRef) != "" &&
+		len(issue.PullRequest.Checks) == 0 && issue.PullRequest.CheckRunCount == 0 && issue.PullRequest.StatusContextCount == 0
+	if event.Result.PullRequestHeadPushed && (!branchPolicyOnly || !headWithoutCI) {
 		o.recordMergeReservationWait(state, issue, event.CompletedAt)
 		triggerPending := false
 		if !event.Result.CITriggerLabelReapplied {

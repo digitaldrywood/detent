@@ -118,6 +118,17 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 				if err := existingRunnerConfigMatches(paths.config, config, true); err != nil {
 					return err
 				}
+				configuration, err = globalconfig.Read(paths.config)
+				if err != nil {
+					return err
+				}
+				result.Projects = nil
+				for _, project := range configuration.Projects {
+					result.Projects = append(result.Projects, runnerRegisteredCheck{
+						Name: project.ID, ID: tracker.ProjectID(configuration.Client.NativeProjects[project.ID]),
+						Workdir: project.Workdir, Checkout: runnerCheckoutReady(project.Workdir),
+					})
+				}
 			}
 			missing := false
 			for _, project := range result.Projects {
@@ -133,7 +144,10 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 					return err
 				}
 				result.ServiceRun = true
-				result.Service = runnerServiceName
+				result.Service = serviceNameForConfig(configuration)
+				if result.Created {
+					result.Service = runnerServiceName
+				}
 			case service:
 				result.NextSteps = append(result.NextSteps, "Then start the runner service: "+start)
 			default:

@@ -188,4 +188,63 @@ func TestRefreshTransitionSetsReadsOnlyWatchedIssuesOutsideScan(t *testing.T) {
 	}
 }
 
+func TestRefreshTransitionSetsReusesStatusSnapshots(t *testing.T) {
+	t.Parallel()
+
+	for _, statusOK := range []bool{true, false} {
+		name := "successful status scan"
+		if !statusOK {
+			name = "failed status scan"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			pipeline := epicTestIssue("pipeline-1", "Human Review", false, "Pipeline", nil, "")
+			watched := epicTestIssue("watched-1", "In Progress", false, "Watched", nil, "")
+			blocked := epicTestIssue("blocked-1", "Blocked", false, "Blocked", nil, "")
+			missing := epicTestIssue("missing-1", "Blocked", false, "Missing", nil, "")
+			current := cloneIssues([]connector.Issue{pipeline, watched, blocked})
+			for index := range current {
+				current[index].State = "Done"
+				current[index].Closed = true
+			}
+			currentMissing := cloneIssue(missing)
+			currentMissing.State = "Done"
+			tracker := &transitionWatchConnector{epicConnector: &epicConnector{
+				stateIssues: append(cloneIssues(current), currentMissing),
+			}}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			fetched := tickFetchedIssues{statusOK: statusOK}
+			if statusOK {
+				fetched.status = current
+			}
+			transitions := orch.refreshTransitionSets(t.Context(), &state, fetched, tickPreviousState{
+				pipeline:            []connector.Issue{pipeline},
+				epicTransitionWatch: []connector.Issue{watched},
+				blockedStatusIssues: []connector.Issue{blocked, missing},
+			})
+			wantReads := [][]string{{"missing-1"}}
+			if !statusOK {
+				wantReads = [][]string{{"pipeline-1"}, {"watched-1"}, {"blocked-1", "missing-1"}}
+			}
+			if !reflect.DeepEqual(tracker.reads, wantReads) {
+				t.Fatalf("direct ID reads = %v, want %v", tracker.reads, wantReads)
+			}
+			if !transitions.blockedRefreshOK {
+				t.Fatal("blocked refresh failed")
+			}
+			if len(transitions.issues) != 4 {
+				t.Fatalf("transition snapshots = %d, want four", len(transitions.issues))
+			}
+			for _, issue := range transitions.issues {
+				if issue.State != "Done" || issue.ID != missing.ID && !issue.Closed {
+					t.Fatalf("stale transition snapshot = %+v", issue)
+				}
+			}
+		})
+	}
+}
+
 func issuePtr(issue connector.Issue) *connector.Issue { return &issue }
