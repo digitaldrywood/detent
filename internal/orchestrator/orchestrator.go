@@ -493,7 +493,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		runner = FakeRunner{}
 	}
 	reaper := deps.WorkspaceReaper
-	workerHostChecker, _ := runner.(runpkg.WorkerHostChecker)
+	var workerHostChecker runpkg.WorkerHostChecker
+	if candidate, ok := runner.(runpkg.WorkerHostChecker); ok {
+		workerHostChecker = candidate
+	}
 	if reaper == nil {
 		if candidate, ok := runner.(WorkspaceReaper); ok {
 			reaper = candidate

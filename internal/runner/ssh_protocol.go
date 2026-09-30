@@ -25,7 +25,7 @@ const SSHProtocolVersion = 1
 // SSHPeer multiplexes worker callbacks and their replies over the authenticated
 // SSH channel. Neither endpoint needs a listening socket or an on-disk request.
 type SSHPeer struct {
-	ctx      context.Context
+	ctx      context.Context //nolint:containedctx // The peer owns the SSH channel lifetime across concurrent calls and callbacks.
 	cancel   context.CancelFunc
 	decoder  *json.Decoder
 	encoder  *json.Encoder
@@ -172,12 +172,16 @@ func invokeSSHMethod(ctx context.Context, target any, method string, args []json
 	if len(outputs) > 0 && typ.Out(len(outputs)-1) == reflect.TypeFor[error]() {
 		last := outputs[len(outputs)-1]
 		if !last.IsNil() {
-			return nil, last.Interface().(error)
+			callbackErr, ok := last.Interface().(error)
+			if !ok {
+				return nil, errors.New("invalid SSH callback error")
+			}
+			return nil, callbackErr
 		}
 		outputs = outputs[:len(outputs)-1]
 	}
 	if len(outputs) == 0 {
-		return nil, nil
+		return nil, nil //nolint:nilnil // A successful callback with no result is encoded as JSON null.
 	}
 	if len(outputs) != 1 {
 		return nil, errors.New("invalid SSH callback result")
@@ -215,7 +219,7 @@ func encodeSSHError(err error) *sshError {
 	}
 	wire := &sshError{Message: err.Error()}
 	for _, sentinel := range sshSentinels() {
-		if err == sentinel {
+		if err == sentinel { //nolint:errorlint // Only exact sentinels use this encoding; wrappers retain their message and children below.
 			wire.Kind = "sentinel"
 			return wire
 		}
@@ -230,7 +234,14 @@ func encodeSSHError(err error) *sshError {
 		if field := copy.Elem().FieldByName("Err"); field.IsValid() && field.CanSet() {
 			field.SetZero()
 		}
-		wire.Data, _ = json.Marshal(copy.Interface())
+		data, marshalErr := json.Marshal(copy.Interface())
+		if marshalErr != nil {
+			// Retain the message and error chain when structured fields cannot
+			// be encoded, rather than publishing an undecodable typed error.
+			wire.Kind = ""
+		} else {
+			wire.Data = data
+		}
 		break
 	}
 	if multi, ok := err.(interface{ Unwrap() []error }); ok {
@@ -269,7 +280,9 @@ func (wire *sshError) err() error {
 		if field := copy.Elem().FieldByName("Err"); field.IsValid() && field.CanSet() && len(children) > 0 {
 			field.Set(reflect.ValueOf(errors.Join(children...)))
 		}
-		return copy.Interface().(error)
+		if decoded, ok := copy.Interface().(error); ok {
+			return decoded
+		}
 	}
 	return &sshWrappedError{message: wire.Message, children: children}
 }
