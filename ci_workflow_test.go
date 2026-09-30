@@ -347,12 +347,12 @@ func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
 	stressWorkflow := readNormalizedFile(t, ".github/workflows/portability-stress.yml")
 	for _, want := range []string{
 		"workflow_dispatch:",
-		"timeout-minutes: 45",
+		"timeout-minutes: 120",
 		"os: [macos-latest, windows-latest]",
 		"go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20",
-		"go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m",
+		"go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=90m",
 		"bash scripts/test-workspace.sh -race",
-		`go test -race "${packages[@]}"`,
+		`go test -race -timeout=30m "${packages[@]}"`,
 	} {
 		if !strings.Contains(stressWorkflow, want) {
 			t.Fatalf("portability stress workflow missing %q", want)
