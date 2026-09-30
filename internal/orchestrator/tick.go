@@ -1122,6 +1122,7 @@ func (o *Orchestrator) dispatchTickIssues(
 ) {
 	timing.step("prepare_candidates")
 	issues := filterCompletedEpicCandidates(fetched.candidates, completedEpics)
+	o.lastDispatchCandidates = cloneIssues(issues)
 	planner := o.dispatchPlanner()
 	planner.pruneInactiveIssueBudgetRefusals(state, fetched.candidates)
 	o.pruneBudgetRefusals(ctx, state, now)

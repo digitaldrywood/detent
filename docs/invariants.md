@@ -1293,6 +1293,13 @@ from Merging, but withdrawal failure does not block the lane write (#2826). Its 
 without altering reason forwarding; operator destinations and reasons remain
 intact, covered by `TestNativeMergeQueueReviewReworkAfterEnqueue`.
 
+Slot refill reuses ordinary dispatch eligibility and releases deferred Hub claims
+through the existing claim writer. Fresh Hub scheduling results are already
+claimed and remain eligible even when absent from the previous refresh; excluded
+or ineligible claims are released. Ordinary tracker candidates retain the previous
+refresh bound. `TestHubRefillRetainsNewClaims` and
+`TestEventAndTickDispatchEligibilityParity` cover these boundaries (#3219).
+
 Native issue archive (#3267) preserves workflow state and all issue, comment,
 attempt, change, version, and audit records. Archive refuses live ownership
 using the existing lease lifecycle (expired or released attempts are interrupted), and archived issues are
@@ -1555,6 +1562,10 @@ Owners consume grants in acquisition order and revalidate current candidates;
 refreshes retain standing requests and update their actions and slot requirements
 in place. Refreshed eligibility decisions remove obsolete requests; shutdown and
 explicit pause/configuration invalidation discard requests and release unused grants.
+Project run completion, lease release, and increased project capacity recheck
+candidates from the last refresh on the orchestrator event loop. The pass reads
+current tracker evidence and uses the tick's eligibility planner before claiming,
+so a stale higher-ranked candidate cannot keep a free project slot idle.
 All modes use the same lifecycle; strict priority is
 only an ordering rule. Authorization, dependencies, retry readiness, and local
 lane ceilings are checked by the callers before acquisition. Admission reads
@@ -1564,6 +1575,8 @@ and filters candidates before acquiring local or global capacity for evaluation.
 `TestQueuedDispatchRanksIndependentRequests`, `TestQueuedDispatchPreservesProjectCeilings`,
 `TestRunDispatchesQueuedRequestsWithoutPolling`,
 `TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`,
+`TestCompletionRefillsProjectSlotWithoutRefresh`, `TestCapacityIncreaseRefillsWithoutRefresh`,
+`TestEventAndTickDispatchEligibilityParity`, `TestQueuedDispatchUsesCurrentWorkpad`,
 `TestQueuedDispatchChoosesAvailableHost`,
 `TestStandingDispatchSurvivesProjectRefresh`, `TestStandingDispatchRequestUpdates`, and
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
