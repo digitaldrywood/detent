@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -96,13 +95,11 @@ type cleanupFailureBackend struct {
 func (b *cleanupFailureBackend) ListModels(_ context.Context, process AgentProcessRequest) ([]AgentModel, error) {
 	b.catalogCalled = true
 	if b.failCleanup {
-		// Replace the attempt's scratch parent with a file to force a cleanup
-		// error without permission assumptions, sleeps, or production test hooks.
-		parent := filepath.Dir(process.TempDir)
-		if err := os.RemoveAll(parent); err != nil {
+		if err := os.RemoveAll(process.TempDir); err != nil {
 			b.t.Fatal(err)
 		}
-		if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
+		outside := b.t.TempDir()
+		if err := os.Symlink(outside, process.TempDir); err != nil {
 			b.t.Fatal(err)
 		}
 	}

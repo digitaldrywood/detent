@@ -587,6 +587,7 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
   AND ((? = '' AND p.profile = 'github_compatible') OR (i.organization_id = ? AND (i.project_id = ? AND ? = 0 OR i.project_id IN (SELECT value FROM json_each(?))) AND p.profile = 'native'))
   AND ws.id IS NOT NULL
   AND ws.terminal = 0
+  AND i.archived = 0
   AND lower(trim(ws.detent_state)) <> 'cancelled'
   AND ws.dispatchable = 1
   AND (? = 1 OR `+notWorkspaceItemClause+`)
