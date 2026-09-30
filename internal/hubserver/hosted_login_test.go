@@ -644,9 +644,19 @@ func TestHostedLoginLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 					t.Fatal("expired session reopened organization access")
 				}
 			}
-			recorder := hostedLoginRequest(s, http.MethodPost, "/logout", token, nil, true)
+			recorder := hostedLoginRequest(s, http.MethodPost, "/logout?return=https%3A%2F%2Fattacker.example.test", token, url.Values{"redirect": {"https://attacker.example.test"}}, true)
 			if recorder.Code != tt.wantStatus || len(p.revoked) != 1 || p.revoked[0] != identity.Hosted.SessionID {
 				t.Fatalf("logout status = %d, revoked = %#v", recorder.Code, p.revoked)
+			}
+			wantLocation := "https://detent.build"
+			if tt.wantStatus == http.StatusServiceUnavailable {
+				wantLocation = ""
+				if !strings.Contains(recorder.Body.String(), "Provider sign-out could not be confirmed") {
+					t.Fatal("provider failure did not retain the sign-out error page")
+				}
+			}
+			if location := recorder.Header().Get("Location"); location != wantLocation {
+				t.Fatalf("logout location = %q, want %q", location, wantLocation)
 			}
 			cookie := hostedLoginCookie(t, recorder, hostedCookie)
 			if cookie.Value != "" || cookie.MaxAge != -1 {

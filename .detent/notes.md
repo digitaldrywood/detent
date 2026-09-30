@@ -1,5 +1,30 @@
 ## Codex Workpad
 
+Plan and result: Rework attempt 7340 / generation 28 retains published PR #3455 head 7b7e60d2b364bf30a880b7f936d574bcfa6d6fb5 and merges fetched develop 962f52c6abe8642ba3c95044bb66c9e0bc267d37 without rebasing. Only handoff notes conflicted; both histories are retained below. Source merged automatically, preserving this issue's sign-up hint alongside develop's logout changes. Frontend, generated assets, visual fixtures and screenshots match the published head exactly.
+
+Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
+
+Validation: focused Hub shell/HTTP/login and shared-entry transaction/invitation/boundary/logout diagnostics passed on the combined source (6.87s command; Hub 1.713s, shared entry 2.880s). Affected-package vet passed (1.20s). Full issue diff and merge resolution reviewed; staged and non-generated whitespace checks passed. Frontend, generated assets, visual fixtures and screenshots exactly match the prior published head, so prior attempt 7329 generation, TypeScript checking, 99 component tests and four strict Linux Chromium Playwright cases are retained without repetition. Only four new hub-login baselines differ from develop; all existing desktop baselines are unchanged. No generated inputs or issue-owned invariant changes; invariants match develop. Configured true gate runs on the final committed head immediately before publication and provides no test credit. No full suite, coverage, race suite or CI wait.
+
+Handoff: commit and publish with an explicit expected-head lease, then record exact-head ancestry, review and check evidence in the canonical issue Workpad. PR #3455 is open, non-draft, targets develop and references Fixes #3440. No actionable reviews or threads; only the review bot usage-limit notice. Orchestrator owns lane transitions, squash merge and integrated-develop validation. No dependencies or out-of-scope discovery. Scratch stays under supplied TMPDIR; port 4000 is untouched.
+
+Skill draft: no — routine target merge and notes conflict resolution need no reusable procedure.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7340"
+  completion_generation: "28"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both sides
+
+## Historical Workpad
+
 Plan and result: Rework attempt 7334 / generation 22 retains published PR #3455 head aa657230e3072a70c0b29b56642fa80db2818cf4 and merges fetched develop ad7ab10857ba845495bc9ace4bf57fd362fb946a without rebasing. Only handoff notes conflicted; both histories are preserved. Source files, generated assets, visual fixtures and baselines merged automatically. All issue-owned source, tests, generated assets and screenshots exactly match the prior published head.
 
 Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
@@ -10,7 +35,7 @@ Handoff: commit the resolution, run configured true on the exact committed head 
 
 Skill draft: no — routine notes conflict resolution and target refresh need no new reusable procedure.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
@@ -119,6 +144,31 @@ human_action: null
 # Issue #3258 merge fallback handoff — 2026-09-30
 
 ## Historical Workpad
+
+# Incoming develop handoff history
+
+# Issue #3441 implementation handoff — 2026-09-30
+
+- Key files: internal/hubserver/hosted_login.go and internal/cloudentry/login.go redirect successful logout to the fixed https://detent.build URL. Request query/form destinations are ignored. Existing provider-failure pages and CSRF validation are retained.
+- internal/cloudentry/sessions.go separates stored-session reading from ordinary expiry validation. Logout uses the same unrevoked identity/CSRF data to revoke expired local sessions, linked tenant authorizations, and provider sessions. Ordinary authentication continues to reject expired sessions. No new recovery mechanism, configuration, invariant enforcement, or generated input is added.
+- Extended the existing Hub logout table and reused the shared-entry browser/provider fixture for customer, support, expired local session, and provider failure. Both tables failed with the original /login and / destinations, then passed after the change (5.5s command; Hub 1.114s, entry 1.467s). The tests assert fixed destination, local/provider revocation, cookie clearing, and unchanged sanitized failure pages.
+- Affected-package diagnostics: shared-entry package passed (12.678s); Hub package failed only TestHostedAccountClientRoutesMounted for GET/PUT/DELETE project-secret fly_sprites_token routes (50.014s). The same three failures reproduce on original develop 9f171a33c (3.3s command); filed independent Backlog follow-up #3491. Both affected packages pass go vet (2.3s). Full diff and whitespace reviewed. No full suite, coverage, race suite, or Actions wait.
+- Configured true gate, published head, PR readiness, and current-head reviews/checks belong in the canonical issue Workpad. No PR CI or merge-group workflow applies; absent checks receive no test credit. Orchestrator owns lane transitions and squash merge. Live port 4000 untouched. No dependencies; no template/query/CSS changes, so generation is unnecessary.
+- Skill draft: no — existing Go handler-testing and PR workflows cover this change.
+
+- Publication refresh: rebased onto develop f5f3d56e7 after the draft reported a conflict. Only notes conflicted; preserved incoming historical handoffs. Both affected packages and Go dependencies are unchanged from the tested source, so diagnostics are not repeated. Run true on the rebased committed head before the lease-protected push.
+
+
+- Rework attempt 7332 / generation 20: verified source-clean local and published PR #3492 head 4d539785338f17c3356e93b179036fcafbcd0e35. Feedback was merge conflicts only; no actionable reviews or threads. Rebased onto fetched develop c445e109e0e71200167611ec824e03369ea288de. Only notes conflicted; preserved historical handoffs from both sides. Logout source/tests and Go dependencies exactly match the previously published implementation; no manual source or generated-input changes.
+- Resolved-source diagnostics: env -u DETENT_API_TOKEN GOMAXPROCS=4 go test -p 4 ./internal/hubserver/... ./internal/cloudentry/... -run '^(TestHostedLoginLogoutRevokesLocalAndProviderSessions|TestSharedEntryLogoutRevokesLocalAndProviderSessions)$' -count=1 passed (8.7s command; Hub 1.010s, entry 1.358s). Both affected packages passed go vet -p 4 (1.1s). Full source diff and whitespace reviewed. Earlier broad Hub diagnostic failure is historical and tracked separately in #3491; no full suite or CI waiting ran here.
+- Final publication: run configured true on the final committed head immediately before lease-protected push. Canonical issue Workpad records exact head, gate timing and current-head PR feedback/check eligibility. Ready PR #3492 targets develop and references Fixes #3441. Orchestrator owns lane changes and squash merge; no dependencies, new discoveries, or remaining source work. Live port 4000 untouched.
+
+- Publication target refresh: develop advanced again before push; rebased onto ad7ab10857ba845495bc9ace4bf57fd362fb946a. Only notes conflicted again. Preserved incoming historical handoffs; tested logout source and Go dependencies remain identical. No diagnostic repeat is needed for this notes-only resolution.
+
+# Historical handoffs
+
+Earlier records concern other issues and do not apply to #3441.
+
 # Issue #3430 implementation handoff
 
 ## Implementation notes

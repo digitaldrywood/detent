@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -39,6 +40,7 @@ type fakeProvider struct {
 	sessions        map[string]auth.HostedIdentity
 	memberships     map[string]auth.Membership
 	invitations     map[string]auth.Invitation
+	revokeErr       error
 	revoked         []string
 	sequence        int
 	authorizeBase   string
@@ -268,8 +270,11 @@ func (p *fakeProvider) AcceptInvitation(_ context.Context, token, user string) e
 func (p *fakeProvider) RevokeSession(_ context.Context, id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.sessions, id)
 	p.revoked = append(p.revoked, id)
+	if p.revokeErr != nil {
+		return p.revokeErr
+	}
+	delete(p.sessions, id)
 	return nil
 }
 
@@ -583,6 +588,101 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 	}
 	if len(f.provider.revoked) < 2 {
 		t.Fatalf("provider revoked sessions = %v", f.provider.revoked)
+	}
+}
+
+func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		wantStatus int
+	}{
+		{name: "customer", wantStatus: http.StatusSeeOther},
+		{name: "support", wantStatus: http.StatusSeeOther},
+		{name: "expired local session", wantStatus: http.StatusSeeOther},
+		{name: "provider failure", wantStatus: http.StatusServiceUnavailable},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			client := newBrowser(t, f.service.Handler())
+			if tt.name == "support" {
+				client.login("/organizations", "user_support:")
+				_, page := client.get("/support")
+				client.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "reason": {"customer-request"}, "csrf": {csrfFrom(t, page)}}, nil)
+				callback, _ := client.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|customer-request"))
+				if callback.StatusCode != http.StatusSeeOther {
+					t.Fatalf("support callback = %d %s", callback.StatusCode, callback.Body)
+				}
+			} else {
+				client.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			}
+			_, page := client.get("/organizations/org_alpha/organization")
+			var hash string
+			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT token_hash FROM sessions WHERE revoked_at IS NULL").Scan(&hash); err != nil {
+				t.Fatal(err)
+			}
+			session, err := f.service.auth.session(t.Context(), hash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authorization, err := f.service.auth.authorization(t.Context(), session, "org_alpha")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.name == "expired local session" {
+				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET expires_at = ? WHERE token_hash = ?", formatTime(time.Now().Add(-time.Minute)), hash); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.auth.session(t.Context(), hash); !errors.Is(err, errNoSession) {
+					t.Fatalf("expired session authenticated before logout: %v", err)
+				}
+			}
+			if tt.name == "provider failure" {
+				f.provider.revokeErr = errors.New("private provider credential")
+			}
+			response := client.do(http.MethodPost, "/organizations/org_alpha/logout?return=https%3A%2F%2Fattacker.example.test", url.Values{"csrf": {csrfFrom(t, page)}, "redirect": {"https://attacker.example.test"}}, nil)
+			if response.StatusCode != tt.wantStatus {
+				t.Fatalf("logout status = %d, want %d", response.StatusCode, tt.wantStatus)
+			}
+			wantLocation := "https://detent.build"
+			if tt.wantStatus == http.StatusServiceUnavailable {
+				wantLocation = ""
+				if !strings.Contains(response.Body, "Provider sign-out could not be confirmed") {
+					t.Fatal("provider failure did not retain the sign-out error page")
+				}
+			}
+			if location := response.Header.Get("Location"); location != wantLocation {
+				t.Fatalf("logout location = %q, want %q", location, wantLocation)
+			}
+			if strings.Contains(response.Body, "private provider credential") {
+				t.Fatal("logout exposed provider error")
+			}
+			cleared := false
+			for _, cookie := range (&http.Response{Header: response.Header}).Cookies() {
+				if cookie.Name == f.service.cookieName("session") && cookie.Value == "" && cookie.MaxAge == -1 {
+					cleared = true
+				}
+			}
+			if !cleared {
+				t.Fatal("logout did not clear browser session")
+			}
+			var revoked bool
+			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT revoked_at IS NOT NULL FROM sessions WHERE token_hash = ?", hash).Scan(&revoked); err != nil || !revoked {
+				t.Fatalf("local session not revoked: %v", err)
+			}
+			if _, err := f.service.auth.authorization(t.Context(), session, "org_alpha"); !errors.Is(err, errNoSession) {
+				t.Fatalf("logged-out organization authorization remains active: %v", err)
+			}
+			for _, id := range []string{session.Identity.SessionID, authorization.Identity.SessionID} {
+				found := false
+				for _, revokedID := range f.provider.revoked {
+					found = found || revokedID == id
+				}
+				if !found {
+					t.Fatalf("provider session %q was not revoked: %v", id, f.provider.revoked)
+				}
+			}
+		})
 	}
 }
 
