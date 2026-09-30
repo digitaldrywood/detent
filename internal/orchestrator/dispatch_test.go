@@ -2355,9 +2355,9 @@ func TestDispatchModeMergingFastPathFlag(t *testing.T) {
 	}{
 		{"merging disabled", "Merging", "clean", runpkg.RunModeImplement, false, false},
 		{"merging enabled", "Merging", "clean", runpkg.RunModeMerge, true, false},
-		{"dirty rework", "Rework", "dirty", runpkg.RunModeMerge, true, false},
+		{"dirty rework", "Rework", "dirty", runpkg.RunModeImplement, true, false},
 		{"dirty in progress", "In Progress", "dirty", runpkg.RunModeMerge, true, false},
-		{"dirty rework disabled", "Rework", "dirty", runpkg.RunModeMerge, false, false},
+		{"dirty rework disabled", "Rework", "dirty", runpkg.RunModeImplement, false, false},
 		{"dirty in progress disabled", "In Progress", "dirty", runpkg.RunModeMerge, false, false},
 		{"clean rework", "Rework", "clean", runpkg.RunModeImplement, true, false},
 		{"clean in progress", "In Progress", "clean", runpkg.RunModeImplement, true, false},
