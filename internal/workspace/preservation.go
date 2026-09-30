@@ -119,12 +119,12 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 	if changed {
 		return fmt.Errorf("%w at %s: uncommitted files remain", ErrWorkspacePreserved, info.Path)
 	}
-	if issueLandedAtHead(issue) {
+	if deliveredCleanupHead(issue) != "" {
 		head, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
 		if err != nil {
 			return fmt.Errorf("%w at %s: inspect landed workspace head: %w", ErrWorkspacePreserved, info.Path, err)
 		}
-		if strings.TrimSpace(head) == issue.LandedHeadSHA {
+		if strings.TrimSpace(head) == deliveredCleanupHead(issue) {
 			return nil
 		}
 	}
@@ -166,6 +166,18 @@ func (l *LocalGit) checkWorkspaceSessionCommits(ctx context.Context, path string
 	return nil
 }
 
+// deliveredCleanupHead consolidates recorded native landings and freshly
+// verified merged PR delivery. Only the exact delivered head is disposable.
+func deliveredCleanupHead(issue Issue) string {
+	if issue.Terminal && strings.TrimSpace(issue.CleanupDeliveredHeadSHA) != "" {
+		return strings.TrimSpace(issue.CleanupDeliveredHeadSHA)
+	}
+	if issueLandedAtHead(issue) {
+		return strings.TrimSpace(issue.LandedHeadSHA)
+	}
+	return ""
+}
+
 func issueLandedAtHead(issue Issue) bool {
 	return issue.Terminal && strings.TrimSpace(issue.LandedHeadSHA) != ""
 }
@@ -193,12 +205,12 @@ func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, sessio
 		}
 		return nil
 	}
-	if issueLandedAtHead(issue) {
+	if deliveredCleanupHead(issue) != "" {
 		head, err := l.runGit(ctx, "rev-parse", "refs/heads/"+branch)
 		if err != nil {
 			return fmt.Errorf("inspect landed cleanup branch: %w", err)
 		}
-		if strings.TrimSpace(head) == issue.LandedHeadSHA {
+		if strings.TrimSpace(head) == deliveredCleanupHead(issue) {
 			return nil
 		}
 	}
