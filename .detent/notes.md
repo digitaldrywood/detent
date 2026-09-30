@@ -1,3 +1,22 @@
+# Issue #3448 handoff
+
+- Key files: `internal/invariants/source_policy.json`, INV-3 in `docs/invariants.md`. Refreshed one reviewed dynamic-reason fingerprint; production code, approved reasons, scanner behavior, and generated inputs are unchanged.
+- Recorded failure: scheduled run 36758716559 / Invariant Gate job 110035612795 on develop 3844f54e75edc8df931d7221c7f62dcb3d71b37e rejected `transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads` with hash `13f7c086bb3eeaa53ca70bcb5a404e96f7bf871f9371b0697d235ea21be710d9`; make exited 2.
+- Reproduced at clean starting/fetched develop 640b8abc10f0adb4ad580d1835b349796062130e: `env -u DETENT_API_TOKEN GOMAXPROCS=4 go test -p 4 ./internal/invariants -run '^TestRepositorySources$' -count=1` failed with the identical function/hash (exit 1, 16.7s command wall time).
+- Review evidence: formatting and hashing the merged function reproduces the reported hash. Removing only #3429's operational-receipt check reproduces the old approved hash `0163d1dac68ac92b9605cb98b44f3cde7e64439592383a717b4d6473fb79e59e`. The check rejects changed evidence before #3281's review routing; existing reason selection is preserved.
+- Passed: all `internal/invariants` tests (5.591s package / 5.9s command); six focused orchestrator regressions for operational restart receipts, opted-out review routing, unfinished work, human-required review, unresolved threads, and running workers (0.864s package / 9.0s command); `git diff --check`.
+- Existing tests assert the recorded failure and affected behavior. No duplicate test or new mechanism added. No full gate, coverage, race suite, Actions rerun, or live-instance mutation.
+
+Publication and completion: the canonical GitHub Workpad on issue #3448 records the PR, final published head, configured `true` gate, and current-head feedback/check observation. It is authoritative for readiness and attempt 7229 / generation 97; these local notes record the tested source.
+
+Open items: orchestrator promotion and merge, followed by the next scheduled full validation to confirm the integrated repair and close the issue. No dependency or out-of-scope discovery. Quiet window is not configured; the no-op gate takes under 1s. Slow checks, merge-group CI, and post-merge CI are not applicable to this In Progress delivery.
+
+Skill draft: no — existing source-scan and fingerprint-review procedures cover this repair.
+
+Retry verification: starting local HEAD and ready PR #3464 both matched `e467f8fd79830803279b0fe025f4969975398c06`. Rebased onto fetched develop `0721153854edcd0bd1fecd81edc90edbfc1853ba`; only these notes conflicted. Preserved both handoffs. The fingerprint repair and completion-transition source are unchanged; current-head invariant diagnostics and final publication evidence are recorded in the canonical Workpad. Automated review reported its usage limit, with no findings or review threads.
+
+## Historical incoming develop handoff
+
 # Issue #3446 implementation handoff
 
 - Reproduced all five scheduled NilAway findings from job 110035612674 / run 36758716559 on starting develop 640b8abc10f0adb4ad580d1835b349796062130e. Build and Vet passed in that run; NilAway was the failing step. Local pinned audit exited 1, with the same primary findings and grouped native-landing dereferences.

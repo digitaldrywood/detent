@@ -478,6 +478,14 @@ completed-run transition reason, merge-revocation destination, and the central
 lane writer. These changes consolidate Human Review routing under the project
 setting; they add no reason code or recovery mechanism.
 
+The completed-run transition fingerprint also includes the operational-receipt
+check merged from #3429 (#3448). It rejects changed completion evidence before
+review routing and preserves the existing reason selection. Removing only that
+check recreates the prior approved fingerprint; the refresh retains both fixes
+without changing the scanner or adding an approved reason.
+`TestRepositorySources` and `TestOperationalBodyCompletionSurvivesRestart`
+cover the source fingerprint and refusal of changed receipts.
+
 Runner credential expiry (#3382) no longer rejects the existing renewal
 operation for the same enrolled runner and organization. The host keeps its
 credential and machine binding across stops longer than 24 hours. Ordinary
