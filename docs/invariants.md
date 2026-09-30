@@ -21,6 +21,17 @@ SSH worker callbacks keep session persistence, Workpad tools, lane decisions, an
 
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
+Merging promotion reads only the trusted audit verdict for the tick's hydrated
+PR head and base (#3436). Passing and running audits do not repeat PR, check,
+review, or thread hydration; merge preparation remains the owner of live merge
+eligibility. A lane-changing audit verdict still refreshes the live PR identity
+before routing to Rework, and degraded/unavailable snapshots cannot route it.
+`TestMergingPromotionUsesFetchedAuditIdentity` covers these ownership boundaries.
+Tick entry publishes the existing runtime overlay before blocking tracker reads;
+`TestPromotionReadKeepsRecoveredWorkersObservable` replays nine active attempts
+behind an empty prior snapshot and verifies fresh progress during slow promotion.
+
+
 Validator reviews now refresh the PR head before dispatch, seed a clean review
 workspace at that commit, and compare the current PR head again before storing
 the verdict. A changed head produces the existing wait verdict under the head

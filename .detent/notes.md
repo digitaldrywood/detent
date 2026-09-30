@@ -1,3 +1,21 @@
+## Codex Workpad
+
+- Issue #3436: remove Merging's repeated PR/check/review/thread hydration and full gate evaluation when its trusted head/base audit leaves the lane unchanged. A lane-changing audit verdict retains the existing live refresh; merge preparation keeps live eligibility ownership. No mechanism, projection, config, or lane writer added.
+- Key files: `internal/orchestrator/autopromote_tick.go`, `orchestrator.go`, existing audit/snapshot tests; INV-1 ownership notes updated. Recorded profile and replay harness: `docs/diagnostics/promotion-3436.md`.
+- Reproduced before editing: one repeated PR/thread hydration in Merging; nine active attempts behind an empty published snapshot returned zero during slow promotion.
+- Measurements: Mac Detent same-head cold/warm 2.267041s/1.979825s -> 208.750µs/14.250µs; Prometheus Pyro 2.218932s/1.628063s -> 119.461µs/20.428µs. Counted requests 7 REST + 1 GraphQL cold, 5 REST + 1 GraphQL warm -> zero for passing Merging audits on both hosts. Controlled isolated promotion, not deployed fleet throughput.
+- Validation: focused promotion/audit/merge-worker/required-policy/snapshot diagnostics passed across orchestrator and GitHub connector; orchestrator vet passed. No full suite or CI gate; configured gate `true` runs immediately before publication.
+- Rebased onto current develop `e109b2f8e8eaa40633f597769859c1ee4fa1f1ce`; only historical notes conflicted. Repeated focused diagnostics passed (orchestrator 2.711s; GitHub connector 0.269s), and orchestrator vet passed.
+- Open items: draft PR publication, review, ready mark, final canonical issue Workpad. Orchestrator owns lanes and merge. Remaining applicable Human Review/Rework reads can still occupy the actor; background worker snapshots remain observable. Live post-deployment refresh/throughput unmeasured.
+- Skill draft: no — request instrumentation uses existing constructor DI and the established worker scratch/isolation contract.
+
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
+
 # Issue #3433 merge fallback handoff
 
 - Verified PR #3434 is open, targets `develop`, includes `Fixes #3433`, and has published head `1ffd4361802762ac780bcdfe725eac84b63ef98c`, matching the clean starting local branch. No rebase or merge was in progress. The prior #3433 handoff matches that commit's notes and scoped PTY annotation change; its validation is historical only.
@@ -5,7 +23,7 @@
 - Only conflict: `.detent/notes.md`. Preserved both sides' historical handoffs and consolidated one current Workpad/status block. All source files merged automatically; no manual source edits or generated-input changes were required.
 - Key issue file: `internal/workspaceterminal/pty_unix.go`; the four best-effort cleanup annotations remain unchanged from the published PR head.
 
-## Codex Workpad
+## Historical workpad before #3436
 
 Plan: finish and commit the resolved target merge, then return immediately to Detent with a source-clean workspace.
 
@@ -13,7 +31,7 @@ Validation: no tests, lint, vet, builds, local gate, CI checks, or waits run in 
 
 Open items: Detent owns independent ownership, cleanliness, and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No out-of-scope findings. No push, PR merge, issue-state change, or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
@@ -391,7 +409,7 @@ human_action: null
 - No local validation or CI run in this fallback session. Prior test results are historical, not evidence for the resolved head.
 - Open items: Detent verifies the clean head and ancestry, validates, publishes with lease protection, and waits for current-head CI. No unrelated work identified.
 
-## Codex Workpad
+## Historical workpad before #3436
 
 Merge fallback for #3271 / PR #3355, 2026-09-30.
 
@@ -401,7 +419,7 @@ Merge fallback for #3271 / PR #3355, 2026-09-30.
 - Validation: bundle generation completed successfully; no tests, local gate (including `true`), CI checks, or CI waiting ran. Prior PR test evidence is historical and does not validate this resolved head.
 - Open items: Detent owns clean-head/ancestry verification, bounded validation, lease-protected push, and current-head CI waiting. No unrelated work identified. The PR remains open and tracker state is unchanged.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 blockers: []
