@@ -46,6 +46,10 @@ type hostedFleetRunner struct {
 	ProviderCapacity []providercapacity.View `json:"provider_capacity"`
 	LastHeartbeatAt  time.Time               `json:"last_heartbeat_at"`
 	Leases           []hostedFleetLease      `json:"leases"`
+	IsolationTier    string                  `json:"isolation_tier"`
+	Availability     runnerauth.Availability `json:"availability"`
+	Routing          *runnerauth.Routing     `json:"routing,omitempty"`
+	Revision         int64                   `json:"revision,omitempty"`
 
 	machine string
 }
@@ -83,9 +87,10 @@ type hostedSpend struct {
 }
 
 type hostedFleetResponse struct {
-	Runners []hostedFleetRunner `json:"runners"`
-	Usage   hostedFleetUsage    `json:"usage"`
-	Spend   *hostedSpend        `json:"spend"`
+	Runners  []hostedFleetRunner `json:"runners"`
+	Editable bool                `json:"editable"`
+	Usage    hostedFleetUsage    `json:"usage"`
+	Spend    *hostedSpend        `json:"spend"`
 	// Current is the Detent build this hub runs, which is the version a runner
 	// is expected to be on: the hub and the runner are the same binary, and an
 	// operator upgrades a host to match the hub it enrolled against.
@@ -107,7 +112,8 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	for _, project := range readable {
 		visible[tracker.ProjectID(project.ID)] = true
 	}
-	runners, err := s.hostedFleetRunners(ctx, visible)
+	editable := credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(ctx, credential)
+	runners, err := s.hostedFleetRunners(ctx, visible, editable)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -130,10 +136,10 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, hostedFleetResponse{Runners: runners, Usage: usage, Current: detentVersion(s.config.Version)})
+	return c.JSON(http.StatusOK, hostedFleetResponse{Runners: runners, Editable: editable, Usage: usage, Current: detentVersion(s.config.Version)})
 }
 
-func (s *Service) hostedFleetRunners(ctx context.Context, visible map[tracker.ProjectID]bool) ([]hostedFleetRunner, error) {
+func (s *Service) hostedFleetRunners(ctx context.Context, visible map[tracker.ProjectID]bool, editable bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
 	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, '') FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
@@ -160,7 +166,12 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
-		fleet = append(fleet, hostedFleetRunnerView(runner, entry.version, visible))
+		view := hostedFleetRunnerView(runner, entry.version, visible)
+		if editable {
+			view.Routing = &runner.Routing
+			view.Revision = runner.Revision
+		}
+		fleet = append(fleet, view)
 		machines = append(machines, string(runner.MachineID))
 	}
 	for index := range fleet {
@@ -188,6 +199,7 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},
+		IsolationTier: runner.IsolationTier, Availability: runner.Availability,
 	}
 	if view.ProviderCapacity == nil {
 		view.ProviderCapacity = []providercapacity.View{}

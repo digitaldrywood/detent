@@ -482,6 +482,32 @@ export const RunnerLease = Schema.Struct({
 });
 export type RunnerLease = typeof RunnerLease.Type;
 
+export const RunnerAvailability = Schema.Struct({
+  timezone: Schema.String,
+  windows: Schema.Array(Schema.String),
+  hard_deadline: Schema.String,
+});
+export type RunnerAvailability = typeof RunnerAvailability.Type;
+
+export const RunnerSpillover = Schema.Struct({
+  mode: Schema.String,
+  after_minutes: Schema.Number,
+});
+export type RunnerSpillover = typeof RunnerSpillover.Type;
+
+export const RunnerRouting = Schema.Struct({
+  display_name: Schema.String,
+  tags: Schema.Array(Schema.String),
+  state: Schema.String,
+  capacity_limit: Schema.Number,
+  project_ids: Schema.Array(Schema.String),
+  isolation_tier: Schema.String,
+  host_services: Schema.Array(Schema.String),
+  availability: RunnerAvailability,
+  spillover: RunnerSpillover,
+});
+export type RunnerRouting = typeof RunnerRouting.Type;
+
 /**
  * One row of `GET /fleet`. `host_capacity`/`host_used` are the shared machine's
  * numbers and `capacity_limit`/`reported_capacity` the runner's own, which is
@@ -508,6 +534,10 @@ export const FleetRunner = Schema.Struct({
   provider_capacity: Schema.Array(ProviderCapacity),
   last_heartbeat_at: Schema.String,
   leases: Schema.Array(RunnerLease),
+  isolation_tier: Schema.optional(Schema.String),
+  availability: Schema.optional(RunnerAvailability),
+  routing: Schema.optional(RunnerRouting),
+  revision: Schema.optional(Schema.Number),
 });
 export type FleetRunner = typeof FleetRunner.Type;
 
@@ -549,6 +579,7 @@ export type Spend = typeof Spend.Type;
 
 export const FleetResponse = Schema.Struct({
   runners: Schema.Array(FleetRunner),
+  editable: Schema.optional(Schema.Boolean),
   usage: FleetUsage,
   spend: Schema.NullOr(Spend),
   /**

@@ -2,7 +2,7 @@ import { BotIcon, ServerIcon } from "lucide-react";
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
-import type { FleetResponse, FleetRunner, ProviderCapacity } from "../../contracts/account.ts";
+import type { FleetResponse, FleetRunner, ProviderCapacity, RunnerRouting } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useResource } from "../account/useResource.ts";
@@ -109,11 +109,83 @@ export function ProviderSummary({
 
 // --- Section ----------------------------------------------------------------
 
+function RunnerSettingsForm({
+  runner,
+  onSave,
+}: {
+  readonly runner: FleetRunner;
+  readonly onSave: (runner: FleetRunner, routing: RunnerRouting) => Promise<void>;
+}): React.ReactElement | null {
+  const routing = runner.routing;
+  const [error, setError] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  if (routing === undefined) return null;
+  const field = (data: FormData, name: string): string => String(data.get(name) ?? "").trim();
+  const lines = (value: string): string[] => value.split(/[\n,]/).map((part) => part.trim()).filter(Boolean);
+
+  async function submit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (routing === undefined) return;
+    const data = new FormData(event.currentTarget);
+    const next: RunnerRouting = {
+      display_name: field(data, "display_name"),
+      tags: lines(field(data, "tags")),
+      state: field(data, "state"),
+      capacity_limit: Number(field(data, "capacity_limit")),
+      project_ids: lines(field(data, "project_ids")),
+      isolation_tier: field(data, "isolation_tier"),
+      host_services: field(data, "host_services").split("\n").map((part) => part.trim()).filter(Boolean),
+      availability: {
+        timezone: field(data, "timezone"),
+        windows: lines(field(data, "windows")),
+        hard_deadline: field(data, "hard_deadline"),
+      },
+      spillover: {
+        mode: field(data, "spillover_mode"),
+        after_minutes: field(data, "spillover_mode") === "never" ? 0 : Number(field(data, "after_minutes")),
+      },
+    };
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(runner, next);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Runner settings could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <details className="border-t border-border/60 pt-2 text-xs">
+      <summary className="cursor-pointer font-medium">Edit runner settings</summary>
+      <form className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2" onSubmit={(event) => void submit(event)}>
+        <p className="text-muted-foreground sm:col-span-2">Isolation, availability, and spillover settings are saved but not yet enforced.</p>
+        <label>Runner name<input className="mt-1 w-full rounded border p-2" name="display_name" defaultValue={routing.display_name} required /></label>
+        <label>Tags<input className="mt-1 w-full rounded border p-2" name="tags" defaultValue={routing.tags.join(", ")} /></label>
+        <label>State<select className="mt-1 w-full rounded border p-2" name="state" defaultValue={routing.state}><option value="active">Active</option><option value="draining">Draining</option><option value="disabled">Disabled</option></select></label>
+        <label>Runner capacity limit<input className="mt-1 w-full rounded border p-2" name="capacity_limit" type="number" min="0" max="10000" defaultValue={routing.capacity_limit} required /></label>
+        <label>Home project IDs<input className="mt-1 w-full rounded border p-2" name="project_ids" defaultValue={routing.project_ids.join(", ")} /></label>
+        <label>Isolation tier<select className="mt-1 w-full rounded border p-2" name="isolation_tier" defaultValue={routing.isolation_tier}><option value="sandbox">Sandbox</option><option value="native-trusted">Trusted only: full host access</option></select></label>
+        <label className="sm:col-span-2">Host services, one per line<textarea className="mt-1 w-full rounded border p-2" name="host_services" rows={2} defaultValue={routing.host_services.join("\n")} placeholder="tcp:127.0.0.1:8080" /></label>
+        <label>Availability timezone<input className="mt-1 w-full rounded border p-2" name="timezone" defaultValue={routing.availability.timezone} placeholder="America/Chicago" /></label>
+        <label>Hard deadline after window closes<input className="mt-1 w-full rounded border p-2" name="hard_deadline" defaultValue={routing.availability.hard_deadline} placeholder="30m" /></label>
+        <label className="sm:col-span-2">Weekly windows, one per line<textarea className="mt-1 w-full rounded border p-2" name="windows" rows={2} defaultValue={routing.availability.windows.join("\n")} placeholder="Mon-Fri 09:00-17:00" /></label>
+        <div><label htmlFor={`spillover-${runner.id}`}>Spillover</label><select id={`spillover-${runner.id}`} className="mt-1 w-full rounded border p-2" name="spillover_mode" defaultValue={routing.spillover.mode}><option value="never">Never</option><option value="after">After waiting</option></select></div>
+        <label>Spillover wait in minutes<input className="mt-1 w-full rounded border p-2" name="after_minutes" type="number" min="0" defaultValue={routing.spillover.after_minutes} /></label>
+        {error === "" ? null : <p role="alert" className="text-destructive sm:col-span-2">{error}</p>}
+        <div className="sm:col-span-2"><Button type="submit" size="sm" disabled={saving}>{saving ? "Saving…" : "Save runner"}</Button></div>
+      </form>
+    </details>
+  );
+}
+
 export function RunnersSectionView({
   fleet,
   now,
   onEnroll,
   enrollments = [],
+  onSaveRouting,
 }: {
   readonly fleet: FleetResponse;
   readonly now?: number;
@@ -126,6 +198,7 @@ export function RunnersSectionView({
   readonly onEnroll?: () => void;
   /** Enrollments this screen created, newest first. */
   readonly enrollments?: readonly PendingEnrollment[];
+  readonly onSaveRouting?: (runner: FleetRunner, routing: RunnerRouting) => Promise<void>;
 }): React.ReactElement {
   const leases = fleet.runners.reduce((count, runner) => count + runner.leases.length, 0);
   return (
@@ -176,6 +249,7 @@ export function RunnersSectionView({
                 runner={runner}
                 now={now}
                 current={fleet.current ?? ""}
+                settings={onSaveRouting === undefined || runner.routing === undefined ? undefined : <RunnerSettingsForm key={runner.revision} runner={runner} onSave={onSaveRouting} />}
               />
             ))}
           </div>
@@ -242,6 +316,13 @@ export function RunnersSettings(): React.ReactElement {
           fleet={fleet.value}
           enrollments={enrollments}
           {...(canEnroll ? { onEnroll: () => setOpen(true) } : {})}
+          {...(canEnroll && fleet.value.editable ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {
+            await api.setRunnerRouting({ runner: runner.id, revision: runner.revision ?? 0, displayName: routing.display_name,
+              tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids,
+              isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability,
+              spillover: routing.spillover });
+            await fleet.refresh();
+          } } : {})}
         />
       )}
       {canEnroll ? (

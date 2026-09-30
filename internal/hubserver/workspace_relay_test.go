@@ -205,7 +205,7 @@ func (f *relayFixture) reportCapabilities(t *testing.T, capabilities workspacese
 			"provider_reports": []providercapacity.Report{report}, "workspace_capabilities": capabilities,
 			"workspace_isolation": workspacesession.IsolationContainer,
 		})
-	requireNativeStatus(t, response, http.StatusNoContent)
+	requireNativeStatus(t, response, http.StatusOK)
 }
 
 func (f *relayFixture) at() time.Time {
