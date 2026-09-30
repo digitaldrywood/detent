@@ -337,6 +337,22 @@ describe("the project settings save", () => {
 });
 
 describe("the first-run wizard", () => {
+  it("associates a private runner checkout without enabling GitHub API integration", async () => {
+    await reset();
+    const project = bootstrap.projects.find((entry) => entry.id === "proj_beta")!;
+    const before = await api.integration(project.id);
+    const missing = await api.bindRepository({ projectId: project.id, repository: "mockorg/other", revision: before.revision, key: "missing-checkout" }).catch((cause: unknown) => cause);
+    expect(missing).toBeInstanceOf(AccountError);
+    expect((missing as AccountError).code).toBe("checkout_unavailable");
+    expect((missing as AccountError).message).toContain("Start an enrolled runner");
+
+    const associated = await api.bindRepository({ projectId: project.id, repository: "mockorg/private", revision: before.revision, key: "private-checkout" });
+    expect(associated.checkout_repository).toBe("mockorg/private");
+    expect(associated.repository_enabled).toBe(false);
+    expect(associated.repository).toBeUndefined();
+    expect(await api.integration(project.id)).toEqual(associated);
+  });
+
   it("walks the four steps and the hub recomputes readiness from what was saved", async () => {
     await reset();
     const project = bootstrap.projects[0]!;

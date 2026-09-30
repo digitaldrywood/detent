@@ -157,7 +157,7 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 	if err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
-	credential.runnerRenewal = credential.Runner.Binding.Valid() && c.Request().Method == http.MethodPost && c.Path() == runnerBase+"/:runner/renew" &&
+	credential.runnerRenewal = credential.Runner.Valid() && c.Request().Method == http.MethodPost && c.Path() == runnerBase+"/:runner/renew" &&
 		credential.Runner.RunnerID == c.Param("runner") && string(credential.Runner.OrganizationID) == c.Param("organization")
 	if !credential.timeValid(now, createdAt, expiresAt) {
 		return apiCredential{}, http.StatusUnauthorized, errors.New("token is outside its validity interval")

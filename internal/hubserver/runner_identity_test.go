@@ -51,7 +51,7 @@ func (r runnerFixture) identityPath() string { return r.base + "/runners/" + r.b
 
 func TestRunnerEnrollmentSingleRedemption(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "enrollment")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	start := make(chan struct{})
 	statuses := make(chan int, 8)
@@ -90,7 +90,7 @@ func TestRunnerEnrollmentSingleRedemption(t *testing.T) {
 
 func TestRunnerUnboundEnrollment(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "unbound")
+	f := newDefaultNativeFixture(t, Config{})
 	base := "/api/v2/organizations/" + string(f.project.OrganizationID)
 	create := func(t *testing.T, request runnerauth.EnrollmentRequest) runnerauth.Enrollment {
 		t.Helper()
@@ -174,7 +174,7 @@ func TestRunnerUnboundEnrollment(t *testing.T) {
 
 func TestRunnerConcurrentRotationHasOneWinner(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "rotations")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read)
 	r.enroll(t)
 	start := make(chan struct{})
@@ -314,7 +314,7 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 
 func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "binding")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	r.enroll(t)
 	other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)

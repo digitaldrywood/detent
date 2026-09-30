@@ -225,6 +225,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 	if err != nil {
 		return nil, err
 	}
+	client.unscopedRESTScope.ProjectID = strings.TrimSpace(cfg.ProjectSlug)
 
 	statusField := strings.TrimSpace(cfg.StatusField)
 	if statusField == "" {

@@ -3,9 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
-	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,20 +118,23 @@ func TestRunnerNormalizesProviderTurnLimitBreach(t *testing.T) {
 	}
 }
 
-func TestRunnerStopsSessionAfterNoProgressBeforeCompletion(t *testing.T) {
+func TestRunnerGateWaitOutlivesFormerNoProgressLimit(t *testing.T) {
 	t.Parallel()
 
-	startedAt := time.Date(2026, 7, 30, 15, 0, 0, 0, time.UTC)
-	timeout := 25 * time.Second
-	tickerFactory := newControlledSessionTickerFactory()
-	probeCalls := make(chan struct{}, 4)
+	startedAt := time.Now()
+	timeout := time.Second
+	releaseGate := make(chan struct{})
+	gateStarted := make(chan struct{})
 	backend := &sessionBlockingAgentBackend{
-		started: make(chan struct{}),
-		stopped: make(chan struct{}),
+		started:     make(chan struct{}),
+		stopped:     make(chan struct{}),
+		release:     releaseGate,
+		gateStarted: gateStarted,
 	}
 	sessionStore := &fakeSessionStore{sessionID: 1573}
 	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: t.TempDir(), Key: "issue-no-progress"},
+		info:           workspace.Info{Path: t.TempDir(), Key: "issue-no-progress"},
+		recoveryStates: []workspace.RecoveryState{{HeadSHA: "f834f32450227c1b693eadcf92bdccccb6066e4a"}},
 	}
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
@@ -143,11 +144,10 @@ func TestRunnerStopsSessionAfterNoProgressBeforeCompletion(t *testing.T) {
 			}},
 			Prompt: "Work",
 		},
-		Workspace:      workspaceBackend,
-		AgentBackend:   backend,
-		Store:          sessionStore,
-		Now:            func() time.Time { return startedAt },
-		progressTicker: tickerFactory.New,
+		Workspace:    workspaceBackend,
+		AgentBackend: backend,
+		Store:        sessionStore,
+		Now:          time.Now,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -157,44 +157,37 @@ func TestRunnerStopsSessionAfterNoProgressBeforeCompletion(t *testing.T) {
 	go func() {
 		result, runErr := runner.Run(t.Context(), RunRequest{
 			Issue: connector.Issue{
-				ID:         "issue-no-progress",
-				Identifier: "digitaldrywood/detent#1572",
+				ID:          "issue-no-progress",
+				Identifier:  "digitaldrywood/detent#2976",
+				PullRequest: &connector.PullRequest{Number: 3052, HeadSHA: "f834f32450227c1b693eadcf92bdccccb6066e4a"},
 			},
-			StartedAt: startedAt,
-			ProgressProbe: func(context.Context) (string, error) {
-				probeCalls <- struct{}{}
-				return "unchanged-workpad", nil
-			},
+			StartedAt:     startedAt,
+			ProgressProbe: func(context.Context) (string, error) { return "unchanged-workpad", nil },
 		})
 		completionCh <- sessionRunCompletion{result: result, err: runErr}
 	}()
 
-	waitSessionSignal(t, probeCalls, "initial progress probe")
 	waitSessionSignal(t, backend.started, "agent backend start")
-	ticker := tickerFactory.Wait(t)
-	ticker.Tick(startedAt.Add(timeout))
-	waitSessionSignal(t, probeCalls, "expiration progress probe")
-	waitSessionSignal(t, backend.stopped, "agent backend cancellation")
+	// The gate holder keeps this committed-head worker first in line beyond the
+	// former inactivity threshold. It may start validation when the holder exits.
+	time.Sleep(3 * timeout)
+	select {
+	case <-backend.stopped:
+		t.Fatal("live gate wait was canceled")
+	default:
+	}
+	close(releaseGate)
+	waitSessionSignal(t, gateStarted, "validation gate start")
 
 	var completion sessionRunCompletion
 	select {
 	case completion = <-completionCh:
 	case <-time.After(sessionBrakeCompletionGuardTimeout):
-		t.Fatal("timed out waiting for no-progress completion")
+		t.Fatal("timed out waiting for gate completion")
 	}
 	result, runErr := completion.result, completion.err
-	if !errors.Is(runErr, ErrSessionNoProgress) {
-		t.Fatalf("Run() error = %v, want ErrSessionNoProgress", runErr)
-	}
-	var brake *SessionBrakeError
-	if !errors.As(runErr, &brake) {
-		t.Fatalf("Run() error = %T, want SessionBrakeError", runErr)
-	}
-	if brake.Elapsed != timeout || brake.Turns != 1 || brake.Reason != SessionBrakeReasonNoProgress {
-		t.Fatalf("session brake = %#v, want %s no-progress breach with one turn", brake, timeout)
-	}
-	if result.FinalState != FinalStateNoProgress {
-		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateNoProgress)
+	if runErr != nil || result.FinalState != FinalStateCompleted {
+		t.Fatalf("gate completion = (%q, %v), want completed without error", result.FinalState, runErr)
 	}
 	if sessionStore.finishCalls != 1 {
 		t.Fatalf("FinishSession() calls = %d, want 1", sessionStore.finishCalls)
@@ -204,79 +197,44 @@ func TestRunnerStopsSessionAfterNoProgressBeforeCompletion(t *testing.T) {
 	}
 }
 
+func TestRunnerGateFailureReportsCommand(t *testing.T) {
+	t.Parallel()
+	releaseGate := make(chan struct{})
+	backend := &sessionBlockingAgentBackend{
+		started:   make(chan struct{}),
+		stopped:   make(chan struct{}),
+		release:   releaseGate,
+		resultErr: errors.New("make check-fast: exit status 17"),
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: 20}}, Prompt: "Work"},
+		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "gate-failure"}},
+		AgentBackend: backend,
+		Store:        &fakeSessionStore{sessionID: 1574},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "gate-failure", Identifier: "digitaldrywood/detent#2976"}})
+		completion <- runErr
+	}()
+	waitSessionSignal(t, backend.started, "gate queue entry")
+	close(releaseGate)
+	select {
+	case runErr := <-completion:
+		if runErr == nil || !strings.Contains(runErr.Error(), "make check-fast: exit status 17") {
+			t.Fatalf("gate failure = %v, want failing command", runErr)
+		}
+	case <-time.After(sessionBrakeTestWaitTimeout):
+		t.Fatal("timed out waiting for gate failure")
+	}
+}
+
 type sessionRunCompletion struct {
 	result RunResult
 	err    error
-}
-
-func TestRunnerWorkpadProgressResetsNoProgressHeartbeat(t *testing.T) {
-	t.Parallel()
-
-	startedAt := time.Date(2026, 7, 30, 16, 0, 0, 0, time.UTC)
-	timeout := 25 * time.Second
-	tickerFactory := newControlledSessionTickerFactory()
-	probeCalls := make(chan struct{}, 4)
-	release := make(chan struct{})
-	backend := &sessionBlockingAgentBackend{
-		started: make(chan struct{}),
-		stopped: make(chan struct{}),
-		release: release,
-	}
-	var workpad atomic.Value
-	workpad.Store("initial-workpad")
-	runner, err := NewRunner(Dependencies{
-		Workflow: config.Workflow{
-			Config: config.Config{Agent: config.Agent{
-				MaxTurns:            20,
-				NoProgressTimeoutMS: int(timeout / time.Millisecond),
-			}},
-			Prompt: "Work",
-		},
-		Workspace: &fakeWorkspaceBackend{
-			info: workspace.Info{Path: t.TempDir(), Key: "issue-workpad-progress"},
-		},
-		AgentBackend:   backend,
-		Store:          &fakeSessionStore{sessionID: 1574},
-		Now:            func() time.Time { return startedAt },
-		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		progressTicker: tickerFactory.New,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		_, runErr := runner.Run(t.Context(), RunRequest{
-			Issue: connector.Issue{
-				ID:         "issue-workpad-progress",
-				Identifier: "digitaldrywood/detent#1572",
-			},
-			StartedAt: startedAt,
-			ProgressProbe: func(context.Context) (string, error) {
-				probeCalls <- struct{}{}
-				return workpad.Load().(string), nil
-			},
-		})
-		errCh <- runErr
-	}()
-
-	waitSessionSignal(t, probeCalls, "initial progress probe")
-	waitSessionSignal(t, backend.started, "agent backend start")
-	ticker := tickerFactory.Wait(t)
-	workpad.Store("updated-workpad")
-	ticker.Tick(startedAt.Add(timeout))
-	waitSessionSignal(t, probeCalls, "updated progress probe")
-	close(release)
-
-	select {
-	case runErr := <-errCh:
-		if runErr != nil {
-			t.Fatalf("Run() error = %v, want normal completion", runErr)
-		}
-	case <-time.After(sessionBrakeTestWaitTimeout):
-		t.Fatal("timed out waiting for normal completion")
-	}
 }
 
 type turnCountingAgentBackend struct {
@@ -296,9 +254,11 @@ func (b *turnCountingAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest
 }
 
 type sessionBlockingAgentBackend struct {
-	started chan struct{}
-	stopped chan struct{}
-	release <-chan struct{}
+	started     chan struct{}
+	stopped     chan struct{}
+	release     <-chan struct{}
+	gateStarted chan struct{}
+	resultErr   error
 }
 
 func (b *sessionBlockingAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
@@ -310,13 +270,22 @@ func (b *sessionBlockingAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRe
 		return AgentTurnResult{}, err
 	}
 	close(b.started)
+	if err := onUpdate(AgentUpdate{Type: AgentUpdateToolOutput, ItemID: "gate", Delta: "validation gate waiting: position=1\n"}); err != nil {
+		return AgentTurnResult{}, err
+	}
 	if b.release != nil {
 		select {
 		case <-ctx.Done():
 			close(b.stopped)
 			return AgentTurnResult{}, ctx.Err()
 		case <-b.release:
-			return AgentTurnResult{ThreadID: "thread-1572", TurnID: "turn-1", SessionID: "thread-1572-turn-1"}, nil
+			if b.gateStarted != nil {
+				close(b.gateStarted)
+			}
+			if err := onUpdate(AgentUpdate{Type: AgentUpdateToolOutput, ItemID: "gate", Delta: "validation gate running: owner_pid=10\n"}); err != nil {
+				return AgentTurnResult{}, err
+			}
+			return AgentTurnResult{ThreadID: "thread-1572", TurnID: "turn-1", SessionID: "thread-1572-turn-1"}, b.resultErr
 		}
 	}
 	<-ctx.Done()
@@ -342,45 +311,6 @@ func (providerTurnLimitAgentBackend) RunTurn(_ context.Context, req AgentTurnReq
 		TurnID:    "turn-provider-limit",
 		SessionID: "thread-provider-limit-turn-provider-limit",
 	}, ErrSessionTurnLimitExceeded
-}
-
-type controlledSessionTickerFactory struct {
-	created chan *controlledSessionTicker
-}
-
-func newControlledSessionTickerFactory() *controlledSessionTickerFactory {
-	return &controlledSessionTickerFactory{created: make(chan *controlledSessionTicker, 1)}
-}
-
-func (f *controlledSessionTickerFactory) New(time.Duration) sessionProgressTicker {
-	ticker := &controlledSessionTicker{ticks: make(chan time.Time, 4)}
-	f.created <- ticker
-	return ticker
-}
-
-func (f *controlledSessionTickerFactory) Wait(t *testing.T) *controlledSessionTicker {
-	t.Helper()
-	select {
-	case ticker := <-f.created:
-		return ticker
-	case <-time.After(sessionBrakeTestWaitTimeout):
-		t.Fatal("timed out waiting for progress ticker")
-		return nil
-	}
-}
-
-type controlledSessionTicker struct {
-	ticks chan time.Time
-}
-
-func (t *controlledSessionTicker) Channel() <-chan time.Time {
-	return t.ticks
-}
-
-func (t *controlledSessionTicker) Stop() {}
-
-func (t *controlledSessionTicker) Tick(at time.Time) {
-	t.ticks <- at
 }
 
 func waitSessionSignal(t *testing.T, signal <-chan struct{}, name string) {

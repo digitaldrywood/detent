@@ -23,7 +23,9 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 		sentinel error
 		check    func(error) bool
 	}{
-		{"workspace", fmt.Errorf("setup: %w", ErrWorkspacePreparation), ErrWorkspacePreparation, nil},
+		{"workspace", fmt.Errorf("setup: %w", ErrWorkspacePreparation), ErrWorkspacePreparation, func(err error) bool {
+			return err.Error() == "setup: "+ErrWorkspacePreparation.Error()
+		}},
 		{"not found", store.ErrNotFound, store.ErrNotFound, nil},
 		{"cancelled", context.Canceled, context.Canceled, nil},
 		{"joined", errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded), context.DeadlineExceeded, nil},

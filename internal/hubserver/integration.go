@@ -12,14 +12,15 @@ import (
 )
 
 type ProjectIntegration struct {
-	Profile           string            `json:"profile"`
-	Revision          tracker.Revision  `json:"revision,string"`
-	Intake            string            `json:"intake"`
-	Projection        string            `json:"projection"`
-	RepositoryEnabled bool              `json:"repository_enabled"`
-	Repository        string            `json:"repository,omitempty"`
-	Authority         map[string]string `json:"authority"`
-	RepositoryID      int64             `json:"-"`
+	Profile            string            `json:"profile"`
+	Revision           tracker.Revision  `json:"revision,string"`
+	Intake             string            `json:"intake"`
+	Projection         string            `json:"projection"`
+	RepositoryEnabled  bool              `json:"repository_enabled"`
+	Repository         string            `json:"repository,omitempty"`
+	CheckoutRepository string            `json:"checkout_repository,omitempty"`
+	Authority          map[string]string `json:"authority"`
+	RepositoryID       int64             `json:"-"`
 }
 
 type GitHubRequestCount struct {
@@ -41,9 +42,9 @@ func (s *Service) githubRequestCounts(c echo.Context) error {
 func readProjectIntegration(ctx context.Context, query nativeQueryer, scope nativeScope) (ProjectIntegration, error) {
 	var result ProjectIntegration
 	err := query.QueryRowContext(ctx, `SELECT p.profile, p.integration_revision, p.github_intake, p.github_projection,
-p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0)
+p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository
 FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(
-		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID)
+		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository)
 	owner := "detent"
 	if result.Profile == "github_compatible" {
 		owner = "github"

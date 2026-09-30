@@ -68,6 +68,7 @@ type Machine struct {
 	// through workspaceReport instead.
 	WorkspaceCapabilities workspacesession.Capabilities `json:"-"`
 	WorkspaceIsolation    string                        `json:"-"`
+	CheckoutRepository    *string                       `json:"-"`
 }
 
 // workspaceReport is what the native machine endpoints send for the workspace

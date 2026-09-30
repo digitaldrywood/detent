@@ -255,8 +255,13 @@ Git-index and hook failures, and `TestBoardAndHealthShowHostDiskExhaustionRetry`
 checks the operator signal. Other preparation failures remain instance-owned; their breaker
 uses `agent.failure_breaker.cooldown_seconds` rather than the separate
 blocked-recovery cooldown. A checked clean merge that needs no new workspace
-uses the no-workspace merge-control path under that breaker, even when worker
-capacity is free. The same checked merge may continue
+always uses the existing no-workspace merge-control path, including when worker
+capacity is free and no breaker or forge condition exists. Fresh hydration must
+preserve the checked head and a non-strict base policy; advancement of a
+non-strict base does not require workspace synchronization or a CI retry.
+`TestReadyMergeAllowsNonStrictBaseAdvancement` covers the native merge of the
+unchanged checked head; the safety matrix retains changed-head, strict-policy,
+CI, draft, thread, and operator-withdrawal controls. The same checked merge may continue
 when the matching forge condition came from a Git read; forge write and
 credential conditions retain their existing merge hold.
 `TestClassifyWorkspaceForgeReadFailure`,
@@ -779,8 +784,11 @@ existing model-selection level (#2597), inheriting omitted limits from the flat
 project values. This consolidates limit resolution into the existing selection
 and guard paths; it adds no guard or escalation mechanism. Running sessions keep
 the resolved limits across turns, checkpoints, and fallbacks; label/configuration
-changes do not reset attempts or lifetime usage. Turn inactivity and no-progress
-behavior remain unchanged. Covered by `TestModelSelectionSessionLimits`,
+changes do not reset attempts or lifetime usage. Turn inactivity remains
+unchanged. The separate session no-progress cancellation was removed (#3252):
+a live local gate wait relies on the gate lock deadline and absolute worker
+session bound, with no issue Rework transition for unchanged work product during
+the wait. Covered by `TestModelSelectionSessionLimits`,
 `TestRunnerSelectedSessionLimits`, and `TestResumedSelectionKeepsSessionLevel`.
 
 Issue-body effort is bounded by the selected complexity level's effective effort
@@ -950,6 +958,9 @@ archives a verified Git bundle, staged and working-tree diffs, and all working
 files. Active issues and live processes remain protected. Content-addressed
 archives prevent identical recovery copies from accumulating after removal
 failures while preserving earlier snapshots after partial deletion.
+Quarantine removal in this existing sweep makes read-only directories writable
+before deletion; persistent failures are warned once per path while later
+sweeps still retry (#3039). This does not add a sweep or recovery path.
 `TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
 `TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
 lossless expiry, and repeated removal failures. See
@@ -1293,6 +1304,13 @@ from Merging, but withdrawal failure does not block the lane write (#2826). Its 
 without altering reason forwarding; operator destinations and reasons remain
 intact, covered by `TestNativeMergeQueueReviewReworkAfterEnqueue`.
 
+Slot refill reuses ordinary dispatch eligibility and releases deferred Hub claims
+through the existing claim writer. Fresh Hub scheduling results are already
+claimed and remain eligible even when absent from the previous refresh; excluded
+or ineligible claims are released. Ordinary tracker candidates retain the previous
+refresh bound. `TestHubRefillRetainsNewClaims` and
+`TestEventAndTickDispatchEligibilityParity` cover these boundaries (#3219).
+
 Native issue archive (#3267) preserves workflow state and all issue, comment,
 attempt, change, version, and audit records. Archive refuses live ownership
 using the existing lease lifecycle (expired or released attempts are interrupted), and archived issues are
@@ -1555,6 +1573,10 @@ Owners consume grants in acquisition order and revalidate current candidates;
 refreshes retain standing requests and update their actions and slot requirements
 in place. Refreshed eligibility decisions remove obsolete requests; shutdown and
 explicit pause/configuration invalidation discard requests and release unused grants.
+Project run completion, lease release, and increased project capacity recheck
+candidates from the last refresh on the orchestrator event loop. The pass reads
+current tracker evidence and uses the tick's eligibility planner before claiming,
+so a stale higher-ranked candidate cannot keep a free project slot idle.
 All modes use the same lifecycle; strict priority is
 only an ordering rule. Authorization, dependencies, retry readiness, and local
 lane ceilings are checked by the callers before acquisition. Admission reads
@@ -1564,6 +1586,8 @@ and filters candidates before acquiring local or global capacity for evaluation.
 `TestQueuedDispatchRanksIndependentRequests`, `TestQueuedDispatchPreservesProjectCeilings`,
 `TestRunDispatchesQueuedRequestsWithoutPolling`,
 `TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`,
+`TestCompletionRefillsProjectSlotWithoutRefresh`, `TestCapacityIncreaseRefillsWithoutRefresh`,
+`TestEventAndTickDispatchEligibilityParity`, `TestQueuedDispatchUsesCurrentWorkpad`,
 `TestQueuedDispatchChoosesAvailableHost`,
 `TestStandingDispatchSurvivesProjectRefresh`, `TestStandingDispatchRequestUpdates`, and
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the

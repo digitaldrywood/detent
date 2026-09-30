@@ -15,11 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/update"
-	"github.com/spf13/cobra"
 )
 
 func TestStartCommandOffersAndInstallsService(t *testing.T) {
