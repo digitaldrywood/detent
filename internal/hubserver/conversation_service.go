@@ -25,7 +25,8 @@ type ConversationConfig struct {
 	// Backend runs coordinator turns for conversations without a linked
 	// issue. When nil ordinary chat reports the coordinator as unavailable
 	// and messages in unlinked conversations are saved until a link.
-	Backend runner.AgentBackend
+	Backend   runner.AgentBackend
+	UsageSink ConversationUsageSink
 	// Workspace is the directory coordinator turns run in. It must exist
 	// when Backend is set.
 	Workspace string
@@ -45,6 +46,22 @@ type ConversationConfig struct {
 	// never started may sit without activity before it settles. Zero selects
 	// defaultConversationSettleWindow (decisions section 14).
 	SettleWindow time.Duration
+}
+
+type ConversationUsage struct {
+	OccurredAt     time.Time
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ConversationID string
+	TurnID         string
+	Provider       string
+	Model          string
+	Tokens         runner.AgentTokenCounts
+	Outcome        conversation.Delivery
+}
+
+type ConversationUsageSink interface {
+	RecordConversationUsage(context.Context, ConversationUsage) error
 }
 
 const (
@@ -124,6 +141,9 @@ type conversationControlRouter interface {
 }
 
 func newConversationService(server *Service, cfg ConversationConfig) *conversationService {
+	if cfg.UsageSink == nil {
+		cfg.UsageSink = server.database
+	}
 	service := &conversationService{
 		server: server,
 		store:  newConversationStore(server.database.db),

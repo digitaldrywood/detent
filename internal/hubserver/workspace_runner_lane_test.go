@@ -84,7 +84,7 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	}
 	f.source = laneSourceRepository(t)
 	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
-		Root: filepath.Join(t.TempDir(), "worktrees"), SourceRoot: f.source, AutoBranch: true, Logger: discardLogger(),
+		Root: filepath.Join(laneShortTempDir(t), "worktrees"), SourceRoot: f.source, AutoBranch: true, Logger: discardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -115,10 +115,21 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	return f
 }
 
+func laneShortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "lane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func laneSourceRepository(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := laneShortTempDir(t)
 	laneGit(t, root, "init", "-q", ".")
+	laneGit(t, root, "config", "core.longpaths", "true")
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Lane\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

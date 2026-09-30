@@ -140,8 +140,9 @@ func TestWorkflowViolations(t *testing.T) {
 		{"malformed", "name: CI", "name: ["},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			changed := strings.Replace(string(data), tt.old, tt.replacement, 1)
-			if changed == string(data) {
+			original := strings.ReplaceAll(string(data), "\r\n", "\n")
+			changed := strings.Replace(original, tt.old, tt.replacement, 1)
+			if changed == original {
 				t.Fatal("fixture replacement did not match")
 			}
 			if err := checkWorkflow([]byte(changed)); err == nil {

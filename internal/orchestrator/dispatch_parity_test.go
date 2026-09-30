@@ -37,15 +37,16 @@ func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
 				MaxConcurrentAgentsPerHost: tt.Config.MaxConcurrentAgentsPerHost,
 				BudgetRefusalCooldown:      time.Duration(tt.Config.BudgetRefusalCooldownSeconds) * time.Second,
 			})
+			candidates := parityIssues(t, tt.Candidates)
 			orch := Orchestrator{
 				cfg:        cfg,
+				connector:  newSoakConnector(candidates...),
 				supervisor: newTestSupervisor(t, parityBlockingRunner{}, cfg),
 				runResults: make(chan runpkg.Completion),
 			}
 			state := newState(cfg)
 			applyParityInitialState(t, &state, tt.InitialState, now)
 
-			candidates := parityIssues(t, tt.Candidates)
 			sortIssuesForDispatch(candidates, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel, cfg.PrioritizeUnblockers)
 			orch.pruneBudgetRefusals(context.Background(), &state, now)
 			orch.trackBlockedCandidates(&state, candidates, now)

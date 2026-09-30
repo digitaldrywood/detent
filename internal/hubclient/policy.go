@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -75,12 +76,16 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 	var apiErr *APIError
 	switch {
 	case err == nil:
+		if err := approval.Policy.Validate(); err != nil {
+			return fmt.Errorf("check approved repository policy: %w", err)
+		}
 		err = descriptor.Match(approval.Policy)
 		if err == nil {
 			return nil
 		}
+		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), err)
 	case errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch":
-		err = fmt.Errorf("check approved repository policy: %w", err)
+		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), fmt.Errorf("check approved repository policy: %w", err))
 	default:
 		return fmt.Errorf("check approved repository policy: %w", err)
 	}

@@ -14,6 +14,8 @@
 // are recorded in README.md ("Contract ambiguities resolved").
 import * as Schema from "effect/Schema";
 
+import { ChatUsage } from "./usage.ts";
+
 import { ApiError } from "./conversation.ts";
 
 // --- Roles and grants -------------------------------------------------------
@@ -482,6 +484,33 @@ export const RunnerLease = Schema.Struct({
 });
 export type RunnerLease = typeof RunnerLease.Type;
 
+export const RunnerAvailability = Schema.Struct({
+  timezone: Schema.String,
+  windows: Schema.Array(Schema.String),
+  hard_deadline: Schema.String,
+});
+export type RunnerAvailability = typeof RunnerAvailability.Type;
+
+export const RunnerSpillover = Schema.Struct({
+  mode: Schema.String,
+  after_minutes: Schema.Number,
+});
+export type RunnerSpillover = typeof RunnerSpillover.Type;
+
+export const RunnerRouting = Schema.Struct({
+  display_name: Schema.String,
+  tags: Schema.Array(Schema.String),
+  state: Schema.String,
+  capacity_limit: Schema.Number,
+  project_ids: Schema.Array(Schema.String),
+  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
+  isolation_tier: Schema.String,
+  host_services: Schema.Array(Schema.String),
+  availability: RunnerAvailability,
+  spillover: RunnerSpillover,
+});
+export type RunnerRouting = typeof RunnerRouting.Type;
+
 /**
  * One row of `GET /fleet`. `host_capacity`/`host_used` are the shared machine's
  * numbers and `capacity_limit`/`reported_capacity` the runner's own, which is
@@ -492,6 +521,12 @@ export const FleetRunner = Schema.Struct({
   display_name: Schema.String,
   hostname: Schema.String,
   health: Schema.String,
+  problems: Schema.optional(Schema.Array(Schema.Struct({
+    code: Schema.String,
+    message: Schema.String,
+    fix_hint: Schema.String,
+    first_seen: Schema.String,
+  }))),
   state: Schema.String,
   os: Schema.String,
   architecture: Schema.String,
@@ -508,6 +543,13 @@ export const FleetRunner = Schema.Struct({
   provider_capacity: Schema.Array(ProviderCapacity),
   last_heartbeat_at: Schema.String,
   leases: Schema.Array(RunnerLease),
+  isolation_tier: Schema.optional(Schema.String),
+  availability: Schema.optional(RunnerAvailability),
+  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
+  home_status: Schema.optional(Schema.String),
+  home_dry_since: Schema.optional(Schema.NullOr(Schema.String)),
+  routing: Schema.optional(RunnerRouting),
+  revision: Schema.optional(Schema.Number),
 });
 export type FleetRunner = typeof FleetRunner.Type;
 
@@ -549,6 +591,7 @@ export type Spend = typeof Spend.Type;
 
 export const FleetResponse = Schema.Struct({
   runners: Schema.Array(FleetRunner),
+  editable: Schema.optional(Schema.Boolean),
   usage: FleetUsage,
   spend: Schema.NullOr(Spend),
   /**
@@ -580,6 +623,8 @@ export type PlanGrant = typeof PlanGrant.Type;
 
 /** `GET /plan`: `hubserver.HostedEntitlement`, verbatim. */
 export const PlanReport = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
   organization_id: Schema.String,
   base: PlanReference,
   effective_base: PlanReference,
@@ -640,6 +685,7 @@ export type BillingPrice = typeof BillingPrice.Type;
  * "checkout buttons per configured price" needs the list on the payload.
  */
 export const BillingReport = Schema.Struct({
+  chat_usage: Schema.optional(ChatUsage),
   organization_id: Schema.String,
   state: BillingState,
   entitlement: PlanReport,

@@ -751,7 +751,10 @@ export function createWorkMock(options: {
         const target = String(body.state ?? "");
         const current = STATES.find((candidate) => candidate.name === issue.state);
         if (current === undefined || !current.transitions.includes(target)) {
-          invalid(response, "Workflow transition is not allowed");
+          json(response, 422, {
+            code: "transition_not_allowed",
+            message: "The requested operation is unavailable",
+          });
           return true;
         }
         if (conflictOn !== null && (conflictOn === "*" || conflictOn === issue.work_item_id)) {

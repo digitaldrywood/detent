@@ -140,6 +140,8 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"conversation_starts",
 		"conversation_audience_events",
 		"conversation_turn_batches",
+		"conversation_prices",
+		"conversation_usage",
 		"conversation_attachments",
 		"conversation_attachment_blobs",
 		"message_references",

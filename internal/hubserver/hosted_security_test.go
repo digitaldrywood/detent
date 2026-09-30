@@ -256,10 +256,12 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 func newHostedSecurityFixture(t *testing.T) hostedSecurityFixture {
 	t.Helper()
 	provider := newHostedSecurityProvider()
+	legacyPlans := pilotHostedPlans()
 	service := openTestService(t, Config{
 		DatabasePath:   hostedTestDatabasePath(t),
 		GitHubDisabled: true,
 		Hosted: &HostedConfig{
+			Plans:                &legacyPlans,
 			OrganizationID:       "org_security",
 			WorkOSOrganizationID: "org_provider",
 			BootstrapSubject:     "user_owner",

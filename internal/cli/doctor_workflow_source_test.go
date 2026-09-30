@@ -398,12 +398,7 @@ func TestCheckDoctorWorkflowSourcePolicySkipsNonGitHubMutableProject(t *testing.
 func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	t.Helper()
 
-	return initDoctorWorkflowSourceRepositoryAt(t, t.TempDir())
-}
-
-func initDoctorWorkflowSourceRepositoryAt(t *testing.T, root string) (string, string) {
-	t.Helper()
-
+	root := t.TempDir()
 	t.Cleanup(func() { cleanupDoctorWorkflowSourceRepository(t, root) })
 	remote := filepath.Join(root, "remote.git")
 	seed := filepath.Join(root, "seed")

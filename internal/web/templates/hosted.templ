@@ -319,7 +319,8 @@ templ hostedSupport(data HostedPageData) {
 templ hostedPlanUsage(data HostedPageData) {
 	<section class="space-y-4 rounded-card border border-line bg-surface p-4 md:p-6" aria-label="Organization plan and usage">
 		<h2 class="break-words text-lg font-semibold">{ data.PlanName }</h2>
-		<p class="text-sm text-sec">Access source: { data.PlanSource }. Pilot allowances are configurable and are not permanent public pricing.</p>
+		<p class="text-sm">{ data.PlanPrice }</p>
+		<p class="text-sm text-sec">Access source: { data.PlanSource }.</p>
 		<p class="text-sm text-sec">Detent hosted resource usage is separate from charges by your model providers. Free access requires no card or subscription.</p>
 		for _, grant := range data.PlanGrants {
 			<p class="break-words text-sm" data-complimentary-access>{ grant }</p>
@@ -332,7 +333,7 @@ templ hostedPlanUsage(data HostedPageData) {
 					if row.LimitOnly {
 						<dd class="break-words font-mono text-sm">Maximum: { row.Allowance }</dd>
 					} else {
-						<dd class="break-words font-mono text-sm">{ row.Consumption } used / { row.Allowance } allowed</dd>
+						<dd class="break-words font-mono text-sm">{ row.Consumption } used / { row.Allowance } allowed · { row.Remaining } remaining</dd>
 					}
 					if row.OverLimit {
 						<dd class="text-sm text-warn">Above allowance. New excess allocations are paused.</dd>

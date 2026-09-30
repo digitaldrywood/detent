@@ -18,6 +18,7 @@ import { PlusIcon } from "lucide-react";
 import { Button } from "../../components/ui/button.tsx";
 import { useAccountBootstrap } from "../account/context.ts";
 import { useClient } from "../client.ts";
+import { usePageTitle } from "../pageTitle.ts";
 import { boardScopeMeta } from "./lib/format.ts";
 import { transitionsFrom } from "./lib/fromWire.ts";
 import { boardStats, searchItems, sortItems, type Lane, type WorkItemView } from "./lib/model.ts";
@@ -63,6 +64,7 @@ function applyFilters(
 
 function narrowed(view: WorkViewState): boolean {
   return (
+    view.archived === true ||
     view.q.trim().length > 0 ||
     view.state.length > 0 ||
     view.priority.length > 0 ||
@@ -75,6 +77,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const navigate = useNavigate();
   const shell = useShell();
   const client = useClient();
+  const project = client.bootstrap.projects.find((candidate) => candidate.id === projectId);
+  usePageTitle("Work", project?.name);
   const http = useWorkHttp();
   const now = useNow();
   const [view, setView] = useViewState(projectId);
@@ -206,7 +210,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
 
   const movesFor = React.useCallback(
     (item: WorkItemView): readonly string[] =>
-      transitions.get(item.projectId)?.get(item.state) ?? [],
+      item.archived ? [] : transitions.get(item.projectId)?.get(item.state) ?? [],
     [transitions],
   );
 

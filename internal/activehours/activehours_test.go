@@ -163,6 +163,14 @@ func TestEvaluateAlwaysOpenScheduleHasNoArtificialBoundary(t *testing.T) {
 	}
 }
 
+func TestValidateNonOverlappingNormalizesBlankWindows(t *testing.T) {
+	t.Parallel()
+	config := Config{Timezone: "UTC", Windows: []string{"", "Mon-Fri 09:00-17:00", "  "}}
+	if problems := config.ValidateNonOverlapping("availability"); len(problems) != 0 {
+		t.Fatalf("blank windows should be ignored: %v", problems)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

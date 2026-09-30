@@ -86,6 +86,10 @@ export function WorkToolbar({
 
   return (
     <div data-testid="work-toolbar" className="flex flex-wrap items-center gap-2 px-5 pt-1.5 pb-3">
+      <Button size="xs" variant="outline" aria-pressed={view.archived === true}
+        data-testid="work-archived" onClick={() => onChange({ ...view, archived: view.archived !== true })}>
+        {view.archived === true ? "Archived issues" : "Archived"}
+      </Button>
       <div className="flex h-7 w-full min-w-0 items-center gap-2 rounded-[var(--control-radius)] border border-input bg-popover px-2 text-muted-foreground text-xs shadow-xs/5 sm:h-6 sm:w-80 dark:bg-input/32">
         <SearchIcon className="size-3.5 shrink-0" />
         <input

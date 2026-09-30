@@ -20,6 +20,15 @@ func (c *CancellationCause) Unwrap() error {
 	return c.err
 }
 
+func (c *CancellationCause) IsAvailabilityInterruption() bool {
+	return c != nil && c.Reason == "context_cancelled" && c.Source == "runner.availability"
+}
+
+func IsAvailabilityInterruption(err error) bool {
+	var cause *CancellationCause
+	return errors.Is(err, context.Canceled) && errors.As(err, &cause) && cause.IsAvailabilityInterruption()
+}
+
 func NewCancellationCause(cause error, source string) *CancellationCause {
 	var first *CancellationCause
 	if errors.As(cause, &first) {

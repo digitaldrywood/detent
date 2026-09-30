@@ -1538,3 +1538,37 @@ func TestGateBlockSeparatesHumanApproval(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildPromptGoTestScopeFollowsGoModule(t *testing.T) {
+	t.Parallel()
+
+	goModule := t.TempDir()
+	if err := os.WriteFile(filepath.Join(goModule, "go.mod"), []byte("module example.com/x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		workspace string
+		want      bool
+	}{
+		{name: "go module", workspace: goModule, want: true},
+		{name: "non-go workspace", workspace: t.TempDir()},
+		{name: "no workspace"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{Identifier: "digitaldrywood/detent#3310"}, PromptOptions{WorkspacePath: tt.workspace})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+			if got := strings.Contains(prompt, "## Go test scope"); got != tt.want {
+				t.Fatalf("Go test scope block present = %v, want %v:\n%s", got, tt.want, prompt)
+			}
+			if tt.want && !strings.Contains(prompt, "instead of `go test ./...` sweeps") {
+				t.Fatalf("Go test scope block missing targeted-package guidance:\n%s", prompt)
+			}
+		})
+	}
+}
