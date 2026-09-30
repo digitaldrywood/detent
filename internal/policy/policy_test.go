@@ -47,6 +47,11 @@ func TestDescriptorValidation(t *testing.T) {
 func TestLegacyDescriptorWithoutHumanReview(t *testing.T) {
 	t.Parallel()
 	descriptor := testDescriptor()
+	// Computed by the descriptor implementation before HumanReview existed.
+	const legacyID = "policy_04c9b13714beb9260ef3a36518f2646dc6d4525e51f2cef8202ff89bf34510f3"
+	if descriptor.ID != legacyID {
+		t.Fatalf("descriptor ID = %q, want pre-upgrade ID %q", descriptor.ID, legacyID)
+	}
 	raw, err := json.Marshal(descriptor)
 	if err != nil {
 		t.Fatal(err)
