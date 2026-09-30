@@ -62,6 +62,7 @@ function report(overrides: Partial<BillingReport["state"]> = {}, extra: Partial<
 describe("billing state text", () => {
   it.each([
     [report(), "Free plan"],
+    [report({}, { entitlement: { ...report().entitlement, name: "Starter", monthly_usd_cents: 4900, effective_base: { id: "starter", version: 1 } } }), "Complimentary access"],
     [report({}, { entitlement: { ...report().entitlement, source: "grant" } }), "Complimentary access"],
     [report({ status: "active", plan: { id: "team", version: 1 }, paid_through: "2026-10-26T00:00:00Z" }), "Subscribed"],
     [report({ status: "grace", grace_until: "2026-10-01T00:00:00Z" }), "Payment needed"],
@@ -127,12 +128,22 @@ describe("billing screen", () => {
     expect(screen.getByText(/2026-09-01 – 2026-10-01 · 2 turns · 1 turn awaiting pricing/)).toBeTruthy();
   });
 
+  it("shows capacity, remaining space and contextual downgrade limits", async () => {
+    const base = report();
+    renderBilling(fakeApi(report({}, { entitlement: { ...base.entitlement, name: "Free", monthly_usd_cents: 0, allowances: { projects: 1, unarchived_issues: 200 }, usage: { projects: 2, unarchived_issues: 190 } } })));
+    expect(await screen.findByText("$0 per organization/month · no card required")).toBeTruthy();
+    expect(screen.getByText("over limit")).toBeTruthy();
+    expect(screen.getByText("0 remaining")).toBeTruthy();
+    expect(screen.getByText("10 remaining")).toBeTruthy();
+    expect(screen.getByText(/no AI-dollar allowance is included/)).toBeTruthy();
+  });
+
   it("opens Checkout for a price and keeps the portal closed without a customer", async () => {
     const api = fakeApi(report());
     renderBilling(api);
     expect(await screen.findByText("Free plan")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Billing portal" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Subscribe" }));
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/c/pay/test"));
     const checkout = api.calls.find((call) => call.url.endsWith("/billing/checkout"));
     expect((checkout?.body as { price: string }).price).toBe("price_team");
@@ -142,7 +153,7 @@ describe("billing screen", () => {
     const api = fakeApi(report({ status: "active", plan: { id: "team", version: 1 } }, { can_manage: true, can_checkout: false, checkout_pending: true }));
     renderBilling(api);
     expect(await screen.findByText("Checkout in progress")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Subscribe" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Upgrade" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Billing portal" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://billing.stripe.com/p/session/test"));
   });

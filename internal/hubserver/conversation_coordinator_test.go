@@ -1442,3 +1442,25 @@ func TestConversationCoordinatorRefusesWritesOnceLinked(t *testing.T) {
 		})
 	}
 }
+
+func TestCoordinatorFreeRefusesLuna(t *testing.T) {
+	f := newCoordinatorFixture(t, "free-chat")
+	f.service.database.hostedOrganization = f.organization
+	if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	f.conversations.config.Model = "gpt-6-luna"
+	record := f.seed(t, "Free chat", nil)
+	f.say(t, &record, "Can you explain this project?")
+	waitUntil(t, "Free refusal", func() bool {
+		reply, ok := lastReply(f.messages(t, record.ID))
+		return ok && reply.Delivery != conversation.DeliveryResponding
+	})
+	if f.backend.turns() != 0 {
+		t.Fatalf("Free invoked Luna %d times", f.backend.turns())
+	}
+	reply, _ := lastReply(f.messages(t, record.ID))
+	if !strings.Contains(reply.Text, "Free") || !strings.Contains(reply.Text, "Upgrade") {
+		t.Fatalf("refusal = %#v", reply)
+	}
+}
