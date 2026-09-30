@@ -3,8 +3,11 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -39,43 +42,18 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				previous := strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Previous attempt"))
 				runGit(t, fixture.source, "push", "origin", previous+":refs/heads/"+fixture.info.Branch)
 			}
-			bin := t.TempDir()
-			script := `#!/bin/sh
-printf '%s\n' "$*" >> "$TEST_GH_CALLS"
-case "$*" in
-  *'--method GET'*)
-    case "$TEST_PULL_STATE" in
-      open) printf '[{"number":7,"state":"open","head":{"sha":"%s"},"base":{"ref":"main"}}]\n' "$TEST_REVIEWED_HEAD" ;;
-      merged)
-        git --git-dir "$TEST_BARE_REPOSITORY" update-ref refs/heads/main "$TEST_REVIEWED_HEAD" || exit
-        printf '[{"number":7,"state":"closed","merged_at":"2026-09-29T00:00:00Z","merge_commit_sha":"%s","head":{"sha":"%s"},"base":{"ref":"main"}}]\n' "$TEST_REVIEWED_HEAD" "$TEST_REVIEWED_HEAD" ;;
-      older) printf '[{"number":6,"state":"closed","merged_at":"2026-09-28T00:00:00Z","merge_commit_sha":"%s","head":{"sha":"%s"},"base":{"ref":"main"}}]\n' "$TEST_OLD_HEAD" "$TEST_OLD_HEAD" ;;
-      *) printf '[]\n' ;;
-    esac ;;
-  *'--method POST'*) printf '{"number":7,"state":"open","head":{"sha":"%s"},"base":{"ref":"main"}}\n' "$TEST_REVIEWED_HEAD" ;;
-  *'--method PUT'*)
-    if [ "$TEST_MERGE_REFUSED" = 1 ]; then
-      printf 'HTTP 405: Branch protection requires reviews\n' >&2
-      exit 1
-    fi
-    git --git-dir "$TEST_BARE_REPOSITORY" update-ref refs/heads/main "$TEST_REVIEWED_HEAD" || exit
-    printf '{"merged":true,"sha":"%s"}\n' "$TEST_REVIEWED_HEAD" ;;
-  *) printf 'unexpected gh command: %s\n' "$*" >&2; exit 1 ;;
-esac
-`
-			if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			bin := installLandingGitHubCLI(t)
 			t.Setenv("TEST_BARE_REPOSITORY", fixture.remote)
 			t.Setenv("TEST_REVIEWED_HEAD", fixture.head)
 			t.Setenv("TEST_OLD_HEAD", base)
 			t.Setenv("TEST_PULL_STATE", test.pullState)
 			callsPath := filepath.Join(bin, "calls")
 			t.Setenv("TEST_GH_CALLS", callsPath)
+			mergeRefusal := ""
 			if test.mergeError {
-				t.Setenv("TEST_MERGE_REFUSED", "1")
+				mergeRefusal = "HTTP 405: Branch protection requires reviews"
 			}
+			t.Setenv("TEST_MERGE_REFUSED", mergeRefusal)
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), fixture.info, fixture.issue, LandOptions{
 				HeadSHA: fixture.head, Method: test.method, Repository: repository,
 				Message: "Review this change\n\nNative Change Request", PushAttemptBranch: true,
@@ -138,15 +116,113 @@ func TestGitHubLandingRepository(t *testing.T) {
 }
 
 func TestGitHubLandingAPIRefusal(t *testing.T) {
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho 'HTTP 405: Required status checks have not passed' >&2\nexit 1\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installLandingGitHubCLI(t)
+	t.Setenv("TEST_MERGE_REFUSED", "HTTP 405: Required status checks have not passed")
 	var response githubLandingMerge
 	err := githubLandingAPI(t.Context(), &response, "PUT", "repos/example/repo/pulls/1/merge")
 	var refusal *LandRefusal
 	if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected || !strings.Contains(refusal.Reason, "status checks") {
 		t.Fatalf("refusal = %v", err)
 	}
+}
+
+// Run a copy of this test executable as gh so the fixture works without a
+// shell interpreter, including on Windows hosts with a real gh on PATH.
+func installLandingGitHubCLI(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "GitHub CLI fixture")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "gh"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	fixture := filepath.Join(bin, name)
+	if err := os.WriteFile(fixture, contents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TEST_LANDING_GH_HELPER", "1")
+	t.Setenv("TEST_GH_CALLS", "")
+	resolved, err := exec.LookPath("gh")
+	if err != nil || resolved != fixture {
+		t.Fatalf("gh fixture resolved to %q, want %q: %v", resolved, fixture, err)
+	}
+	return bin
+}
+
+func landingGitHubCLIHelper() int {
+	args := os.Args[1:]
+	if len(args) < 4 || args[0] != "api" || args[1] != "--method" {
+		fmt.Fprintf(os.Stderr, "unexpected gh arguments: %q\n", args)
+		return 1
+	}
+	if callsPath := os.Getenv("TEST_GH_CALLS"); callsPath != "" {
+		calls, err := os.OpenFile(callsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		_, writeErr := fmt.Fprintln(calls, strings.Join(args, " "))
+		closeErr := calls.Close()
+		if err := errors.Join(writeErr, closeErr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	head := os.Getenv("TEST_REVIEWED_HEAD")
+	updateBase := func() error {
+		cmd := exec.Command("git", "--git-dir", os.Getenv("TEST_BARE_REPOSITORY"), "update-ref", "refs/heads/main", head)
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	pull := fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s"},"base":{"ref":"main"}}`, head)
+	var response string
+	switch args[2] {
+	case "GET":
+		switch os.Getenv("TEST_PULL_STATE") {
+		case "open":
+			response = "[" + pull + "]"
+		case "merged":
+			if err := updateBase(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			response = fmt.Sprintf(`[{"number":7,"state":"closed","merged_at":"2026-09-29T00:00:00Z","merge_commit_sha":"%s","head":{"sha":"%s"},"base":{"ref":"main"}}]`, head, head)
+		case "older":
+			oldHead := os.Getenv("TEST_OLD_HEAD")
+			response = fmt.Sprintf(`[{"number":6,"state":"closed","merged_at":"2026-09-28T00:00:00Z","merge_commit_sha":"%s","head":{"sha":"%s"},"base":{"ref":"main"}}]`, oldHead, oldHead)
+		default:
+			response = "[]"
+		}
+	case "POST":
+		response = pull
+	case "PUT":
+		if refusal := os.Getenv("TEST_MERGE_REFUSED"); refusal != "" {
+			fmt.Fprintln(os.Stderr, refusal)
+			return 1
+		}
+		if err := updateBase(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		response = fmt.Sprintf(`{"merged":true,"sha":"%s"}`, head)
+	default:
+		fmt.Fprintf(os.Stderr, "unexpected gh method: %s\n", args[2])
+		return 1
+	}
+	if _, err := fmt.Fprintln(os.Stdout, response); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
 }
