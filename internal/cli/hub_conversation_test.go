@@ -9,6 +9,7 @@ import (
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 )
@@ -75,7 +76,7 @@ func TestReadConversationConfig(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			config, enabled, err := readConversationConfig(test.section, builder, os.Stat)
+			config, enabled, err := readConversationConfig(test.section, builder, os.Stat, func(string) string { return "" })
 			if test.wantErr {
 				if err == nil {
 					t.Fatal("expected an error")
@@ -111,9 +112,23 @@ func TestReadConversationConfigBackendFailure(t *testing.T) {
 	t.Parallel()
 	section := &hostedConversationFileConfig{Enabled: true, Workspace: t.TempDir(), Codex: &hostedConversationCodexFileConfig{}}
 	want := errors.New("boom")
-	_, _, err := readConversationConfig(section, func(string, workflowconfig.CodexOptions, string) (runnerpkg.AgentBackend, error) { return nil, want }, os.Stat)
+	_, _, err := readConversationConfig(section, func(string, workflowconfig.CodexOptions, string) (runnerpkg.AgentBackend, error) { return nil, want }, os.Stat, func(string) string { return "" })
 	if !errors.Is(err, want) {
 		t.Fatalf("error = %v, want %v", err, want)
+	}
+}
+
+func TestReadConversationConfigSelectsOpenAIFromEnvironment(t *testing.T) {
+	section := &hostedConversationFileConfig{Enabled: true, Codex: &hostedConversationCodexFileConfig{}, Workspace: "missing"}
+	config, enabled, err := readConversationConfig(section, func(string, workflowconfig.CodexOptions, string) (runnerpkg.AgentBackend, error) {
+		t.Fatal("Codex backend must not start with an OpenAI key")
+		return nil, errors.New("unexpected Codex backend")
+	}, os.Stat, func(string) string { return "test-key" })
+	if err != nil || !enabled {
+		t.Fatalf("config enabled=%t error=%v", enabled, err)
+	}
+	if _, ok := config.Backend.(*genkitbackend.Backend); !ok || config.Model != genkitbackend.Model || config.ReasoningEffort != "low" {
+		t.Fatalf("OpenAI config = %+v", config)
 	}
 }
 
@@ -124,17 +139,17 @@ func TestReadHostedConversationConfigFromFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	config, enabled, err := readHostedConversationConfig(path)
+	config, enabled, err := readHostedConversationConfigWithEnv(path, func(string) string { return "" })
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !enabled || !config.Enabled || config.QuestionTimeout != time.Hour || config.SettleWindow != 12*time.Hour || config.Backend != nil {
 		t.Fatalf("config = %+v enabled = %v", config, enabled)
 	}
-	if _, enabled, err := readHostedConversationConfig(""); err != nil || enabled {
+	if _, enabled, err := readHostedConversationConfigWithEnv("", func(string) string { return "" }); err != nil || enabled {
 		t.Fatalf("empty path: enabled = %v err = %v", enabled, err)
 	}
-	if _, _, err := readHostedConversationConfig(filepath.Join(t.TempDir(), "absent")); err == nil {
+	if _, _, err := readHostedConversationConfigWithEnv(filepath.Join(t.TempDir(), "absent"), func(string) string { return "" }); err == nil {
 		t.Fatal("expected an error for a missing file")
 	}
 }

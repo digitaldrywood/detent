@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"slices"
 	"sort"
@@ -19,7 +20,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -53,6 +56,10 @@ type autoUpdateStatusSource interface {
 	Status() detentupdate.AutoStatus
 }
 
+type runnerHeartbeatSource interface {
+	Heartbeat(context.Context) error
+}
+
 type agentPoolSnapshotSource interface {
 	PoolSnapshots() []scheduler.PoolSnapshot
 }
@@ -80,6 +87,18 @@ func withRunnerFactory(
 	serviceTokenSource func(string) string,
 	githubTokenSource ...func() string,
 ) project.Factory {
+	return withRunnerFactoryWithIsolation(deps, sessionStore, load, serviceConnection, serviceTokenSource, nil, githubTokenSource...)
+}
+
+func withRunnerFactoryWithIsolation(
+	deps project.Dependencies,
+	sessionStore runnerpkg.SessionStore,
+	load func(project.Dependencies) (*project.Project, error),
+	serviceConnection serviceapi.Connection,
+	serviceTokenSource func(string) string,
+	isolationPolicy func() (isolation.Policy, error),
+	githubTokenSource ...func() string,
+) project.Factory {
 	var hostCache atomic.Pointer[toolcache.Report]
 	return func(cfg globalconfig.Project) (*project.Project, error) {
 		workflow, err := project.LoadWorkflow(cfg)
@@ -101,7 +120,7 @@ func withRunnerFactory(
 		if run == nil {
 			projectServiceConnection := serviceConnectionForProject(serviceConnection, cfg.ID, serviceTokenSource)
 			var err error
-			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), sessionStore, deps.Logger, projectServiceConnection)
+			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, isolationPolicy)
 			if err != nil {
 				return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
 			}
@@ -156,19 +175,30 @@ func buildRunner(
 	projectID string,
 	projectWorkdir string,
 	memory globalconfig.Memory,
+	goBudget gobudget.Budget,
 	sessionStore runnerpkg.SessionStore,
 	logger *slog.Logger,
 	serviceConnection serviceapi.Connection,
+	isolationPolicies ...func() (isolation.Policy, error),
 ) (orchestrator.Runner, error) {
-	deps, err := buildRunnerDependencies(workflow, projectID, projectWorkdir, memory, sessionStore, logger, serviceConnection)
+	deps, err := buildRunnerDependencies(workflow, projectID, projectWorkdir, memory, sessionStore, logger, serviceConnection, isolationPolicies...)
 	if err != nil {
 		return nil, err
 	}
+	deps.GoBudget = goBudget
 	run, err := runnerpkg.NewRunner(deps)
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
 	return run, nil
+}
+
+func hostGoBudget(slots int) gobudget.Budget {
+	executable, err := os.Executable()
+	if err != nil {
+		executable = ""
+	}
+	return gobudget.New(slots, gobudget.HostDir(), executable)
 }
 
 // buildRunnerDependencies assembles production wiring independently of runner
@@ -181,6 +211,7 @@ func buildRunnerDependencies(
 	sessionStore runnerpkg.SessionStore,
 	logger *slog.Logger,
 	serviceConnection serviceapi.Connection,
+	isolationPolicies ...func() (isolation.Policy, error),
 ) (runnerpkg.Dependencies, error) {
 	cfg := workflow.Config
 
@@ -200,17 +231,19 @@ func buildRunnerDependencies(
 	}
 
 	return runnerpkg.Dependencies{
-		ProjectID:           projectID,
-		Workflow:            workflow,
-		Workspace:           backend,
-		AgentBackendFactory: runnerpkg.AgentBackendFactoryFunc(buildAgentBackend),
-		Store:               sessionStore,
-		Pricing:             pricing,
-		BudgetGuardBuilder:  budgetGuardBuilder,
-		MaxAgentRSSBytes:    uint64(memory.MaxAgentRSSBytes),
-		RSSPollInterval:     time.Duration(memory.PollIntervalMS) * time.Millisecond,
-		Logger:              logger,
-		ServiceConnection:   serviceConnection,
+		ProjectID: projectID,
+		Workflow:  workflow,
+		Workspace: backend,
+		AgentBackendFactory: runnerpkg.AgentBackendFactoryFunc(func(backend workflowconfig.AgentBackend) (runnerpkg.AgentBackend, error) {
+			return buildAgentBackendWithIsolation(backend, isolationPolicies...)
+		}),
+		Store:              sessionStore,
+		Pricing:            pricing,
+		BudgetGuardBuilder: budgetGuardBuilder,
+		MaxAgentRSSBytes:   uint64(memory.MaxAgentRSSBytes),
+		RSSPollInterval:    time.Duration(memory.PollIntervalMS) * time.Millisecond,
+		Logger:             logger,
+		ServiceConnection:  serviceConnection,
 	}, nil
 }
 
@@ -297,11 +330,15 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 }
 
 func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBackend, error) {
+	return buildAgentBackendWithIsolation(backend)
+}
+
+func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policies ...func() (isolation.Policy, error)) (runnerpkg.AgentBackend, error) {
 	switch backend.Kind {
 	case workflowconfig.AgentBackendCodex:
-		return buildCodexAgentBackend(backend.Command, backend.CodexOptions())
+		return buildCodexAgentBackend(backend.Command, backend.CodexOptions(), policies...)
 	case workflowconfig.AgentBackendClaudeCode:
-		return buildClaudeAgentBackend(backend.Command, backend.ClaudeCodeOptions())
+		return buildClaudeAgentBackend(backend.Command, backend.ClaudeCodeOptions(), policies...)
 	default:
 		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s",
 			backend.Kind,
@@ -311,13 +348,14 @@ func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBack
 	}
 }
 
-func buildClaudeAgentBackend(command string, cfg workflowconfig.ClaudeCodeOptions) (runnerpkg.AgentBackend, error) {
+func buildClaudeAgentBackend(command string, cfg workflowconfig.ClaudeCodeOptions, policies ...func() (isolation.Policy, error)) (runnerpkg.AgentBackend, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil, errors.New("claude command is required")
 	}
 
 	backend, err := claudecode.NewAgentBackend(claudecode.Options{
+		IsolationPolicy: firstIsolationPolicy(policies),
 		CommandFactoryWithArgs: func(ctx context.Context, args []string) *exec.Cmd {
 			return buildClaudeCommandFromConfig(ctx, command, cfg.Shell, args)
 		},
@@ -336,7 +374,7 @@ func buildClaudeAgentBackend(command string, cfg workflowconfig.ClaudeCodeOption
 	return backend, nil
 }
 
-func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions) (runnerpkg.AgentBackend, error) {
+func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions, policies ...func() (isolation.Policy, error)) (runnerpkg.AgentBackend, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil, errors.New("codex command is required")
@@ -374,7 +412,9 @@ func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions) (ru
 	if err != nil {
 		return nil, fmt.Errorf("create codex app-server: %w", err)
 	}
-	backend, err := codex.NewAgentBackend(client, codex.OptionsFromConfig(cfg))
+	backendOptions := codex.OptionsFromConfig(cfg)
+	backendOptions.IsolationPolicy = firstIsolationPolicy(policies)
+	backend, err := codex.NewAgentBackend(client, backendOptions)
 	if err != nil {
 		return nil, fmt.Errorf("create codex backend: %w", err)
 	}
@@ -431,6 +471,7 @@ func publishSnapshots(
 	providerStatus providerStatusEnricher,
 	interval time.Duration,
 	now func() time.Time,
+	runnerHeartbeat runnerHeartbeatSource,
 	updateSources ...autoUpdateStatusSource,
 ) {
 	if registry == nil || snapshotPublisher == nil {
@@ -449,10 +490,32 @@ func publishSnapshots(
 	trend := newTokenTrendRecorder(defaultTokenTrendWindowSize)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var heartbeatDone chan error
+	defer func() {
+		if heartbeatDone != nil {
+			<-heartbeatDone
+		}
+	}()
 
 	for {
 		if err := publishSnapshotOnce(ctx, registry, poolSource, snapshotPublisher, seq, shutdown, now(), trend, lifetimeSource, dashboardURL, providerStatus, updateSources...); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
+		}
+		if heartbeatDone != nil {
+			select {
+			case err := <-heartbeatDone:
+				if err != nil && ctx.Err() == nil {
+					slog.Default().Warn("report runner heartbeat failed", "error", err)
+				}
+				heartbeatDone = nil
+			default:
+			}
+		}
+		if runnerHeartbeat != nil && heartbeatDone == nil && ctx.Err() == nil {
+			heartbeatDone = make(chan error, 1)
+			go func(result chan<- error) {
+				result <- runnerHeartbeat.Heartbeat(ctx)
+			}(heartbeatDone)
 		}
 		select {
 		case <-ctx.Done():

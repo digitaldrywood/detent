@@ -257,6 +257,7 @@ func checkDoctorWorkflowSourceDrift(ctx context.Context, id string, project glob
 		check.Detail = err.Error()
 		return check
 	}
+	working = doctorNormalizedWorkflowPolicy(working)
 	ref := strings.TrimSpace(project.WorkflowRef)
 	if ref == "" {
 		if deps.githubRepositoryInfo == nil || !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
@@ -299,6 +300,7 @@ func checkDoctorWorkflowSourceDrift(ctx context.Context, id string, project glob
 		check.Detail += " size unavailable: " + err.Error()
 		return check
 	}
+	reference = string(doctorNormalizedWorkflowPolicy([]byte(reference)))
 	check.Detail += fmt.Sprintf(" %d bytes", len(reference))
 	if project.WorkflowRef != "" && string(working) != reference {
 		check.Status = doctorWarn

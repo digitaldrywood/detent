@@ -38,6 +38,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/staleness"
@@ -339,8 +340,17 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		RampStarts:         startupDispatchRampStarts(globalDispatchGate),
 	})
 	var hubScheduling orchestrator.SchedulingSource
+	var manager *project.Manager
 	if cfg.Global.Client.Configured() {
-		hubScheduling, err = newHubScheduling(cfg.Global, cfg.Version)
+		hubScheduling, err = newHubScheduling(cfg.Global, cfg.Version, func() []runnerauth.Problem {
+			var problems []runnerauth.Problem
+			if manager != nil {
+				for _, runtimeProject := range manager.Registry().List() {
+					problems = append(problems, runtimeProject.RunnerProblems()...)
+				}
+			}
+			return problems
+		})
 		if err != nil {
 			return err
 		}
@@ -356,7 +366,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	serviceConnection := serviceapi.Connection{
 		Address: serviceAddress,
 	}
-	projectFactory := withRunnerFactory(project.Dependencies{
+	projectFactory := withRunnerFactoryWithIsolation(project.Dependencies{
 		Events:             events,
 		Scheduling:         hubScheduling,
 		Logger:             logger,
@@ -379,12 +389,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		ScheduleOwner:      cfg.Global.InstanceName,
 		ConnectorFactory:   cfg.ConnectorFactory,
 		Runner:             cfg.Runner,
-	}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runtimeGitHubToken.get)
+	}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), runtimeGitHubToken.get)
 	managerDependencies := deps.managerDependencies
 	managerDependencies.ProjectFactory = projectFactory
 	managerDependencies.Events = events
 	managerDependencies.Logger = logger
-	manager, err := project.NewManager(managerConfig, managerDependencies)
+	manager, err = project.NewManager(managerConfig, managerDependencies)
 	if err != nil {
 		return err
 	}
@@ -500,7 +510,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}, time.Now)
 	})
 	resourceWorkers.Go(func() {
-		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, updateScheduler)
+		var runnerHeartbeat runnerHeartbeatSource
+		if reporter, ok := hubScheduling.(runnerHeartbeatSource); ok {
+			runnerHeartbeat = reporter
+		}
+		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, runnerHeartbeat, updateScheduler)
 	})
 	if healthNotifications.Enabled() {
 		resourceWorkers.Go(func() {

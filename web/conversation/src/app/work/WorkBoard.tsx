@@ -64,6 +64,7 @@ function applyFilters(
 
 function narrowed(view: WorkViewState): boolean {
   return (
+    view.archived === true ||
     view.q.trim().length > 0 ||
     view.state.length > 0 ||
     view.priority.length > 0 ||
@@ -209,7 +210,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
 
   const movesFor = React.useCallback(
     (item: WorkItemView): readonly string[] =>
-      transitions.get(item.projectId)?.get(item.state) ?? [],
+      item.archived ? [] : transitions.get(item.projectId)?.get(item.state) ?? [],
     [transitions],
   );
 

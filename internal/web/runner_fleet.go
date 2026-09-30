@@ -29,7 +29,7 @@ func (s *Server) runnerFleetPage(c echo.Context) error {
 	data := s.dashboardFirstPaintData(ctx, s.latestSnapshot(ctx), false)
 	data.Title = instancePageTitle(s.instanceName(), "Runners - Detent")
 	applyDashboardPreferences(c.Request(), &data)
-	view := templates.RunnerFleetData{SelectedRunner: c.QueryParam("runner")}
+	view := templates.RunnerFleetData{SelectedRunner: c.QueryParam("runner"), AttentionOnly: c.QueryParam("health") == "needs_attention"}
 	fleet, err := s.runnerFleet.Fleet(ctx)
 	if err != nil {
 		view.Error = "Runner fleet could not be loaded. Check the Hub connection and credential permissions."
@@ -78,6 +78,12 @@ func (s *Server) updateFleetRunner(c echo.Context) error {
 	}}
 	for _, id := range splitRunnerValues(c.FormValue("project_ids")) {
 		change.ProjectIDs = append(change.ProjectIDs, tracker.ProjectID(id))
+	}
+	for _, id := range splitRunnerValues(c.FormValue("home_project_ids")) {
+		change.HomeProjectIDs = append(change.HomeProjectIDs, tracker.ProjectID(id))
+	}
+	if change.HomeProjectIDs == nil {
+		change.HomeProjectIDs = []tracker.ProjectID{}
 	}
 	change.Routing = change.Normalized()
 	if err := change.Validate(); err != nil {

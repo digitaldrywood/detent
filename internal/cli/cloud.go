@@ -83,6 +83,9 @@ type cloudAllocationFileConfig struct {
 
 func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []string {
 	names := []string{config.WorkOS.APIKeyEnv}
+	if lookupEnv("OPENAI_API_KEY") != "" {
+		names = append(names, "OPENAI_API_KEY")
+	}
 	if tenantBilling := config.Allocation.Billing; tenantBilling != nil {
 		names = append(names, tenantBilling.APIKeyEnv, tenantBilling.WebhookSecretEnv)
 	}
@@ -106,6 +109,7 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 		tenant := hostedFileConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL,
 			StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Plans: config.Allocation.Entitlements, Billing: config.Allocation.Billing,
+			Conversation:             &hostedConversationFileConfig{Enabled: true},
 			EntitlementAdministrator: config.Allocation.EntitlementAdministrator, EntitlementAdminTokenEnv: config.Allocation.EntitlementAdminTokenEnv,
 			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
 		}

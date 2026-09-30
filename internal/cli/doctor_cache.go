@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // checkDoctorNativeCaches reports the host cache once without modifying it.
@@ -84,17 +85,19 @@ func checkDoctorLegacyCaches(projectID, root string) doctorCheck {
 	for _, workdir := range roots {
 		legacyRoots := []string{filepath.Join(workdir, ".detent", "cache")}
 		// Former isolated caches were components directly inside attempt scratch.
-		attempts, readErr := os.ReadDir(filepath.Join(workdir, ".detent", "worker-tmp"))
-		if readErr != nil && !os.IsNotExist(readErr) {
-			check.Status = doctorWarn
-			check.Detail += "; inspect attempt scratch: " + readErr.Error()
-		}
-		for _, attempt := range attempts {
-			if !attempt.IsDir() {
-				continue
+		for _, scratchRoot := range []string{filepath.Join(workdir, ".detent", "worker-tmp"), workspace.WorkerScratchRoot(workdir)} {
+			attempts, readErr := os.ReadDir(scratchRoot)
+			if readErr != nil && !os.IsNotExist(readErr) {
+				check.Status = doctorWarn
+				check.Detail += "; inspect attempt scratch: " + readErr.Error()
 			}
-			for _, component := range []string{"go-build", "go-mod", "go-bin", "golangci-lint"} {
-				legacyRoots = append(legacyRoots, filepath.Join(workdir, ".detent", "worker-tmp", attempt.Name(), component))
+			for _, attempt := range attempts {
+				if !attempt.IsDir() {
+					continue
+				}
+				for _, component := range []string{"go-build", "go-mod", "go-bin", "golangci-lint"} {
+					legacyRoots = append(legacyRoots, filepath.Join(scratchRoot, attempt.Name(), component))
+				}
 			}
 		}
 		for _, legacy := range legacyRoots {

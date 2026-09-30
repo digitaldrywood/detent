@@ -239,7 +239,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 func TestScheduledCIDocumentationMatchesWorkflow(t *testing.T) {
 	t.Parallel()
 	docs := readNormalizedFile(t, "docs/execution-seams.md")
-	section := workflowBetween(t, docs, "### Main Branch Protection\n", "\n## Still Git/PR Coupled")
+	section := workflowBetween(t, docs, "### Detent Repository Branch Protection\n", "\n## Still Git/PR Coupled")
 	for _, want := range []string{"`make check-fast`", "scheduled", "`develop`", "tag", "staging"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("CI documentation missing %q", want)

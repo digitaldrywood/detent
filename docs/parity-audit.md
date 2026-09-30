@@ -4,6 +4,11 @@ This checklist tracks the standing parity audit against the archived Elixir
 Detent. Revisit it each milestone and link gap issues instead of expanding
 audit work into feature implementation.
 
+Source-lane urgency intentionally differs from the archived Elixir order
+(#3298): configured first-tier Merging stays first, then tracker priority and
+configured labels precede source-lane rank. The recorded candidate fixture retains its original capacity,
+dependency, claim, and budget scenarios with that authorized ordering update.
+
 ## Baseline
 
 - Audit issue: digitaldrywood/detent#145

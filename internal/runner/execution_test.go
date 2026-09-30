@@ -254,3 +254,187 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 		})
 	}
 }
+
+type wipExecutionWorkspace struct {
+	retainedExecutionWorkspace
+	published      bool
+	publishErr     error
+	publishedState *workspace.RecoveryState
+}
+
+func (w *wipExecutionWorkspace) PublishWorkInProgress(ctx context.Context, _ workspace.Issue, validate func(context.Context) error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err := validate(ctx); err != nil {
+		return err
+	}
+	w.published = true
+	if w.publishErr == nil && w.publishedState != nil {
+		w.recoveryStates = []workspace.RecoveryState{*w.publishedState}
+	}
+	return w.publishErr
+}
+
+func TestAvailabilityDeadlinePublishesBeforeFinish(t *testing.T) {
+	t.Parallel()
+	for _, failed := range []bool{false, true} {
+		t.Run(strconv.FormatBool(failed), func(t *testing.T) {
+			backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}, publishedState: &workspace.RecoveryState{HeadSHA: "published-head", WorkspaceFingerprint: "published-digest"}}
+			if failed {
+				backend.publishErr = errors.New("push unavailable")
+			}
+			execution := &availabilityTestExecution{deadline: time.Now().Add(-time.Second)}
+			ctx, cancel := context.WithCancelCause(t.Context())
+			cancel(context.Canceled)
+			defer cancel(context.Canceled)
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+			err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{})
+			if !backend.published || backend.afterRun {
+				t.Fatalf("published=%t cleaned=%t", backend.published, backend.afterRun)
+			}
+			if failed && !errors.Is(err, backend.publishErr) {
+				t.Fatalf("publish error lost: %v", err)
+			}
+			if execution.checkpoint == nil || !failed && (execution.checkpoint.WorktreeState != "clean" || execution.checkpoint.HeadSHA != "published-head" || execution.checkpoint.WorkspaceDigest != "published-digest") {
+				t.Fatalf("final checkpoint = %#v", execution.checkpoint)
+			}
+		})
+	}
+}
+
+type availabilityTestExecution struct {
+	testExecution
+	deadline time.Time
+}
+
+func (e *availabilityTestExecution) AvailabilityDeadline() time.Time { return e.deadline }
+
+func (e *availabilityTestExecution) Validate(ctx context.Context) error { return ctx.Err() }
+
+func (e *availabilityTestExecution) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return e.testExecution.Checkpoint(ctx, checkpoint)
+}
+
+type deadlineRunExecution struct {
+	availabilityTestExecution
+	cancel    context.CancelCauseFunc
+	published *bool
+}
+
+func (e *deadlineRunExecution) Guard(ctx context.Context) (context.Context, func(), error) {
+	guarded, cancel := context.WithCancelCause(ctx)
+	e.cancel = cancel
+	return guarded, func() { cancel(context.Canceled) }, nil
+}
+
+func (e *deadlineRunExecution) Validate(ctx context.Context) error { return ctx.Err() }
+
+func (e *deadlineRunExecution) Finish(ctx context.Context, outcome string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !*e.published {
+		return errors.New("finish preceded WIP publication")
+	}
+	e.finish = outcome
+	return nil
+}
+
+type availabilityStoppingBackend struct {
+	fakeCodexClient
+	stop func()
+	err  error
+}
+
+func (b *availabilityStoppingBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	b.stop()
+	<-ctx.Done()
+	return AgentTurnResult{}, errors.Join(ctx.Err(), b.err)
+}
+
+func TestRunnerAvailabilityInterruptionFinishesAfterWIP(t *testing.T) {
+	t.Parallel()
+	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
+	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, released := false, false
+	r.sleepInhibitor = func(context.Context, func()) (func(), error) { held = true; return func() { released = true }, nil }
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("run error = %v", err)
+	}
+	if execution.finish != "interrupted" || !backend.published || !backend.retained || backend.afterRun {
+		t.Fatalf("finish=%s published=%t retained=%t cleaned=%t", execution.finish, backend.published, backend.retained, backend.afterRun)
+	}
+	if !held || !released {
+		t.Fatalf("sleep held=%t released=%t", held, released)
+	}
+}
+
+type availabilityCancelledBackend struct{}
+
+func (availabilityCancelledBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, context.Canceled
+}
+
+func TestAvailabilityStopPreservesRetryBudget(t *testing.T) {
+	t.Parallel()
+	for _, expired := range []bool{false, true} {
+		t.Run(strconv.FormatBool(expired), func(t *testing.T) {
+			deadline := time.Now().Add(time.Hour)
+			if expired {
+				deadline = time.Now().Add(-time.Second)
+			}
+			execution := &availabilityTestExecution{deadline: deadline}
+			supervisor, err := NewSupervisor(availabilityCancelledBackend{}, SupervisorConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			completion := supervisor.Run(t.Context(), RunRequest{Attempt: 4, Execution: execution})
+			want := 5
+			if expired {
+				want = 4
+			}
+			if !completion.Retryable || completion.RetryAttempt != want {
+				t.Fatalf("retry = %t/%d, want attempt %d", completion.Retryable, completion.RetryAttempt, want)
+			}
+		})
+	}
+}
+
+func TestAvailabilityStopRetainsUnreapedWorkspace(t *testing.T) {
+	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.retained}
+	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }, err: ErrWorkerProcessReap}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+	if !errors.Is(err, ErrWorkerProcessReap) || backend.published || !backend.retained || backend.afterRun {
+		t.Fatalf("error=%v published=%t retained=%t cleaned=%t", err, backend.published, backend.retained, backend.afterRun)
+	}
+}
+
+func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
+	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}, publishErr: errors.New("push unavailable")}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
+	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
+	sessionStore := &fakeSessionStore{sessionID: 3169}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, Store: sessionStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+	if !errors.Is(err, backend.publishErr) || sessionStore.finishCalls != 1 || sessionStore.usageCalls != 1 || execution.finish != "interrupted" {
+		t.Fatalf("error=%v session finishes=%d usage=%d outcome=%s", err, sessionStore.finishCalls, sessionStore.usageCalls, execution.finish)
+	}
+}

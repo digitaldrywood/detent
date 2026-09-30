@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentoverride"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -124,6 +126,44 @@ func TestConversationModelChoicesFallBackToTheDefault(t *testing.T) {
 	updated := conversationPatch(t, f, f.token, record.ID, map[string]any{"preferences": map[string]any{"model": conversationPreferencesModel}})
 	if updated.Preferences.Model != conversationPreferencesModel {
 		t.Fatalf("preferences = %#v", updated.Preferences)
+	}
+}
+
+func TestConversationModelChoicesOfferLunaEfforts(t *testing.T) {
+	t.Parallel()
+	backend, err := genkitbackend.NewOpenAI("test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, Backend: backend, Model: genkitbackend.Model, ReasoningEffort: "low"})
+	reportConversationModels(t, f, "gpt-6-astra")
+	now, err := f.service.database.currentTime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := f.service.conversationModelChoices(t.Context(), f.service.database.db, f.project.OrganizationID, []string{string(f.project.ID)}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 || models[0].ID != "gpt-6-astra" || models[1].ID != genkitbackend.Model || models[1].Provider != "openai" ||
+		models[1].DefaultEffort != "low" || !slices.Equal(models[1].Efforts, []string{"low", "medium"}) {
+		t.Fatalf("models = %+v", models)
+	}
+	record := f.create(t, f.token, map[string]any{"title": "General chat"}).Conversation
+	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"model": "gpt-6-astra"}})
+	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"reasoning_effort": "high"}})
+	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{
+		"key": "link-luna-choices", "share_history": true,
+		"issue": map[string]any{"title": "Linked runner work", "description": "Keep runner choices"},
+	})
+	requireNativeStatus(t, response, http.StatusOK)
+	response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"model": genkitbackend.Model}})
+	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	updated := conversationPatch(t, f, f.token, record.ID, map[string]any{"preferences": map[string]any{"model": "gpt-6-astra"}})
+	if updated.Preferences.Model != "gpt-6-astra" {
+		t.Fatalf("linked preferences = %#v", updated.Preferences)
 	}
 }
 

@@ -12,10 +12,12 @@ import type {
   IssueProposal,
   IssueResult,
   Message,
+  PreferenceChoices,
   Question,
   TurnPreferences,
 } from "../contracts/index.ts";
 import {
+  AUTO_PREFERENCE,
   DEFAULT_TURN_PREFERENCES,
   HUB_ENVIRONMENT_ID,
   projectCoordinatorAvailable,
@@ -79,6 +81,35 @@ import { conversationDestination } from "./lib/conversationDestination.ts";
 import { shouldSearchServer } from "./lib/sidebarLogic.ts";
 import { hubPath } from "../runtime/basePath.ts";
 import { usePageTitle } from "./pageTitle.ts";
+
+function hasLunaCoordinator(choices: PreferenceChoices | undefined): boolean {
+  return choices?.models.some((choice) => choice.id === "gpt-6-luna" && choice.provider === "openai") ?? false;
+}
+
+function generalChatChoices(choices: PreferenceChoices | undefined): PreferenceChoices | undefined {
+  if (choices === undefined || !hasLunaCoordinator(choices)) return choices;
+  return {
+    ...choices,
+    models: choices.models.filter((choice) => choice.id === AUTO_PREFERENCE || choice.id === "gpt-6-luna"),
+    efforts: choices.efforts.filter((choice) => [AUTO_PREFERENCE, "low", "medium"].includes(choice.id)),
+  };
+}
+
+function linkedChatChoices(choices: PreferenceChoices | undefined): PreferenceChoices | undefined {
+  if (choices === undefined || !hasLunaCoordinator(choices)) return choices;
+  return { ...choices, models: choices.models.filter((choice) => choice.id !== "gpt-6-luna") };
+}
+
+function generalChatPreferences(preferences: TurnPreferences, choices: PreferenceChoices | undefined): TurnPreferences {
+  if (!hasLunaCoordinator(choices)) return preferences;
+  return {
+    ...preferences,
+    model: [AUTO_PREFERENCE, "gpt-6-luna"].includes(preferences.model) ? preferences.model : AUTO_PREFERENCE,
+    reasoning_effort: [AUTO_PREFERENCE, "low", "medium"].includes(preferences.reasoning_effort)
+      ? preferences.reasoning_effort
+      : AUTO_PREFERENCE,
+  };
+}
 
 export interface ConnectionChip {
   readonly tone: "dc-ok" | "dc-warn" | "dc-err" | "";
@@ -533,7 +564,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             blockedReason={project?.can_write === false ? "Read-only project" : null}
             attachments={attachments}
             preferences={preferences}
-            preferenceChoices={client.bootstrap.preferences}
+            preferenceChoices={generalChatChoices(client.bootstrap.preferences)}
             onPreferencesChange={setPreferences}
             // There is no conversation to hand off yet, so `/issue` and
             // `/handoff` are not on offer here; the draft's pickers, paperclip
@@ -1216,8 +1247,8 @@ export function ConversationView({
               label="Message"
               blockedReason={composerBlockedReason}
               disabled={closed}
-              preferences={turnPreferences(detail.conversation)}
-              preferenceChoices={client.bootstrap.preferences}
+              preferences={linked ? turnPreferences(detail.conversation) : generalChatPreferences(turnPreferences(detail.conversation), client.bootstrap.preferences)}
+              preferenceChoices={linked ? linkedChatChoices(client.bootstrap.preferences) : generalChatChoices(client.bootstrap.preferences)}
               onPreferencesChange={(next) =>
                 void setPreferences({ projectId, conversationId, preferences: next })
               }
