@@ -83,7 +83,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if err != nil {
 			return handoff(fmt.Errorf("read native workflow states: %w", err))
 		}
-		review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
+		review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
 		lane, ok := connector.CompletionLane(states, issue.State, review, true)
 		if !ok {
 			return handoff(fmt.Errorf("native workflow allows no move from %s back to the review lane %s", strings.TrimSpace(issue.State), review))

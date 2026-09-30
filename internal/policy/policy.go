@@ -23,6 +23,7 @@ type Requirements struct {
 
 type Gates struct {
 	Kind              string `json:"kind"`
+	HumanReview       bool   `json:"human_review,omitempty"`
 	PlanEnabled       bool   `json:"plan_enabled"`
 	PlanReview        string `json:"plan_review"`
 	PlanStopDigest    string `json:"plan_stop_digest"`
