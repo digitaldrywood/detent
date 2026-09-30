@@ -419,6 +419,17 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Worker scratch cleanup (#3291, #3292) removes attempt data without deleting
+its workspace parent or shared group. Explicit workspace deletion removes only
+that workspace's scratch root. Keeping shared parents stable removes the
+creation-versus-cleanup race and the bounded scratch-creation retry; no lock,
+platform error retry, or new recovery path replaces them. Existing retention
+continues to sweep stale attempts and roots of removed workspaces.
+`TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup` covers concurrent
+attempt cleanup within one workspace and across siblings, plus sibling root
+removal. `TestRemoveWorkerScratchRootPreservesSharedGroup` covers explicit
+root deletion without shared-parent removal.
+
 Home-project spillover (#3170, human-approved) is claim-time eligibility using
 one nullable `home_dry_since` timestamp per runner. Home projects are a subset
 of administrator-authorized projects; spillover never widens grants or selectors.

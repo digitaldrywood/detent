@@ -3560,8 +3560,12 @@ func TestPrepareWorkerScratchIsOutsideWorkspace(t *testing.T) {
 			if filepath.Dir(scratchPath) != WorkerScratchRoot(workspacePath) || !strings.HasPrefix(filepath.Base(scratchPath), "attempt-") {
 				t.Fatalf("scratch path %q is not an attempt of %q", scratchPath, WorkerScratchRoot(workspacePath))
 			}
-			if info, err := os.Stat(scratchPath); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			info, err := os.Stat(scratchPath)
+			if err != nil || !info.IsDir() {
 				t.Fatalf("scratch stat = %v, %v", info, err)
+			}
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+				t.Fatalf("scratch permissions = %v, want 0700", info.Mode().Perm())
 			}
 			if err := CleanupWorkerScratch(workspacePath, scratchPath); err != nil {
 				t.Fatalf("CleanupWorkerScratch() error = %v", err)
@@ -3614,8 +3618,8 @@ func TestCleanupOwnedPathRemovesExternalWorkerScratch(t *testing.T) {
 		wantScratchGone  bool
 		wantParentExists bool
 	}{
-		{name: "workspace present", wantScratchGone: true},
-		{name: "workspace removed", removeWorkspace: true, wantScratchGone: true},
+		{name: "workspace present", wantScratchGone: true, wantParentExists: true},
+		{name: "workspace removed", removeWorkspace: true, wantScratchGone: true, wantParentExists: true},
 		{name: "other workspace scratch", otherWorkspace: true, wantErr: true, wantParentExists: true},
 	}
 	for _, tt := range tests {
@@ -3657,15 +3661,14 @@ func TestCleanupOwnedPathRemovesExternalWorkerScratch(t *testing.T) {
 	}
 }
 
-func TestRemoveWorkerScratchRootRemovesAttemptsAndEmptyGroup(t *testing.T) {
+func TestRemoveWorkerScratchRootPreservesSharedGroup(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		sibling       bool
-		wantGroupGone bool
+		name    string
+		sibling bool
 	}{
-		{name: "only workspace", wantGroupGone: true},
+		{name: "only workspace"},
 		{name: "sibling scratch remains", sibling: true},
 	}
 	for _, tt := range tests {
@@ -3697,8 +3700,13 @@ func TestRemoveWorkerScratchRootRemovesAttemptsAndEmptyGroup(t *testing.T) {
 			if _, err := os.Stat(WorkerScratchRoot(workspacePath)); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("scratch root remains: %v", err)
 			}
-			if _, err := os.Stat(workerScratchGroup(parent)); errors.Is(err, os.ErrNotExist) != tt.wantGroupGone {
-				t.Fatalf("group removed = %v, want %v", err, tt.wantGroupGone)
+			if info, err := os.Stat(workerScratchGroup(parent)); err != nil || !info.IsDir() {
+				t.Fatalf("shared scratch group stat = %v, %v", info, err)
+			}
+			if tt.sibling {
+				if entries, err := os.ReadDir(WorkerScratchRoot(siblingPath)); err != nil || len(entries) != 1 {
+					t.Fatalf("sibling attempts = %v, %v", entries, err)
+				}
 			}
 		})
 	}
@@ -3707,31 +3715,53 @@ func TestRemoveWorkerScratchRootRemovesAttemptsAndEmptyGroup(t *testing.T) {
 func TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup(t *testing.T) {
 	t.Parallel()
 
-	parent := t.TempDir()
-	t.Cleanup(func() { _ = os.RemoveAll(workerScratchGroup(parent)) })
-	var wg sync.WaitGroup
-	errs := make(chan error, 8)
-	for i := range 8 {
-		workspacePath := filepath.Join(parent, strconv.Itoa(i))
-		if err := os.Mkdir(workspacePath, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		wg.Go(func() {
-			for range 50 {
-				scratch, err := PrepareWorkerScratch(t.Context(), workspacePath)
-				if err == nil {
-					err = CleanupWorkerScratch(workspacePath, scratch)
+	tests := []struct {
+		name          string
+		sameWorkspace bool
+		removeRoot    bool
+	}{
+		{name: "sibling attempts"},
+		{name: "same workspace attempts", sameWorkspace: true},
+		{name: "sibling workspace roots", removeRoot: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parent := t.TempDir()
+			t.Cleanup(func() { _ = os.RemoveAll(workerScratchGroup(parent)) })
+			var wg sync.WaitGroup
+			errs := make(chan error, 8)
+			for i := range 8 {
+				name := strconv.Itoa(i)
+				if tt.sameWorkspace {
+					name = "workspace"
 				}
-				if err != nil {
-					errs <- err
-					return
+				workspacePath := filepath.Join(parent, name)
+				if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+					t.Fatal(err)
 				}
+				wg.Go(func() {
+					for range 50 {
+						scratch, err := PrepareWorkerScratch(t.Context(), workspacePath)
+						if err == nil {
+							if tt.removeRoot {
+								err = RemoveWorkerScratchRoot(workspacePath)
+							} else {
+								err = CleanupWorkerScratch(workspacePath, scratch)
+							}
+						}
+						if err != nil {
+							errs <- err
+							return
+						}
+					}
+				})
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				t.Errorf("concurrent scratch lifecycle: %v", err)
 			}
 		})
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Errorf("concurrent scratch lifecycle: %v", err)
 	}
 }
