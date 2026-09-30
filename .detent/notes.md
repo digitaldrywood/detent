@@ -1,20 +1,21 @@
 # Issue #3257 merge fallback
 
 - PR: https://github.com/digitaldrywood/detent/pull/3362; verified its body already includes `Fixes #3257`.
-- Published PR head: `2675c3705982d7eb2b615a17fe442cfa4e9c9036`.
-- Fetched target: `origin/develop` at `d14138a37c7597542c30e19616271a971b62fc8f`.
-- Merge preserves the published head and fetched target as parents; no rebase or push performed.
-- Key files: `internal/cli/boot.go` and `internal/cli/hub_client.go` combine the runner intake credential source with develop's runner-problem reporting and checkout repository callback. `internal/hubclient/scheduler.go` retains both branches' fields and initialization.
+- Published PR head verified for this retry: `c41f2476072d35767bde248137ff2cc13f25ea63`; PR #3362 remains open against `develop`.
+- Fetched target for this retry: `origin/develop` at `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c`.
+- Prior merge `c41f2476072d35767bde248137ff2cc13f25ea63` preserves original published head `2675c3705982d7eb2b615a17fe442cfa4e9c9036` and prior target `d14138a37c7597542c30e19616271a971b62fc8f` as parents. The retry merges the latest target into that published resolution; no rebase or push performed.
+- Retry conflict: only `.detent/notes.md` conflicted. Retained the incoming #3273 handoff as historical prose and one current Workpad/status fence. Develop source and invariant changes merged automatically.
+- Prior resolution key files: `internal/cli/boot.go` and `internal/cli/hub_client.go` combine the runner intake credential source with develop's runner-problem reporting and checkout repository callback. `internal/hubclient/scheduler.go` retains both branches' fields and initialization.
 - Migration blocker: develop already owns versions 46 (runner problems) and 47 (checkout repository). Renamed the PR's linked-source migration from 46 to `internal/hubserver/migrations/00048_linked_issue_sources.sql` without changing its SQL; `internal/hubserver/migrate.go` now supports version 48. The published PR had a version-45 support constant despite containing migration 46; that head could not initialize a version-46 database through `runMigrations`.
-- Generated conflict: regenerated `static/app/conversation/app.js` from merged source using `npm run build`. Asset generation succeeded; this is not gate or test credit. Build warnings concerned CSS highlight selectors, font resolution, component sourcemaps, and chunk sizes.
-- Prior notes verified: the inherited #3401, #3252, and #3403 notes below describe other work and do not establish validation for #3257 or the resolved head. Historical status fences are removed so this file contains one current Workpad status.
+- Prior generated conflict: regenerated `static/app/conversation/app.js` from merged source using `npm run build`. Asset generation succeeded; this is not gate or test credit. Build warnings concerned CSS highlight selectors, font resolution, component sourcemaps, and chunk sizes.
+- Prior notes verified: the inherited #3401, #3252, #3403, and #3273 notes below describe other work and do not establish validation for #3257 or the resolved head. Historical status fences are removed so this file contains one current Workpad status.
 - Open items: Detent's ancestry/cleanliness verification, bounded validation, current-head checks, and lease-protected publishing. No out-of-scope finding identified; no issue-state changes or PR merge performed.
 
 ## Codex Workpad
 
-Plan: merge fetched develop into the published PR branch, resolve overlapping Go and generated-bundle conflicts plus the migration collision, and commit the resolution.
+Plan: preserve the committed prior source resolution, merge freshly fetched develop into the published PR head, resolve the handoff-notes conflict, and commit the merge.
 
-Validation: no tests, local gate (including `true`), or CI checks run in this fallback session. Prior PR-body diagnostics apply only to their recorded head. Quiet-window, gate/CI, slow-check, and post-merge CI timings are not measured here. Detent owns validation and publishing after return.
+Validation: no tests, asset generation, local gate (including `true`), or CI checks run during this retry. Prior source and migration resolution verified from the existing merge commit and its parents. Prior PR-body diagnostics apply only to their recorded head. Quiet-window, gate/CI, slow-check, and post-merge CI timings are not measured here. Detent owns validation and publishing after return.
 
 ```detent-status
 schema: 1
@@ -61,3 +62,11 @@ Validation: deferred to Detent by the merge-fallback instructions; no validation
 - Validation: no local gate, tests, or CI checks run during this fallback, as instructed. Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI waiting.
 - Open items: Detent's verification and validation; no out-of-scope findings identified. No push, PR merge, or issue-state changes performed.
 
+# Issue #3273 historical handoff
+
+- Historical-source probe using v0.117.1 config/gate files found exactly three JSON differences versus develop: absent Worker.HostSelection -> "least_loaded", absent Worker.HostCaps -> null, and Gate.RequiredStatusChecks [] -> null. The live definition is not attached; its exact reported digest pair was not independently reproduced.
+- `internal/config/runner_policy.go` normalizes a copy for the digest, collapsing least_loaded/absent host selection and preserving historical [] for empty required checks. Worker JSON omits empty host selection/caps, matching the existing LocalStatus omission. Runtime defaults, source matching, explicit policy inputs, approval, and runner grants are preserved.
+- `TestRunnerPolicyUpgradeKeepsApprovedID` now pins an approval captured with historical sources and an explicit workspace root, reproducing the unchanged-source upgrade mismatch before the fix. Cases preserve absent/default equivalence and reject preference, caps, local status, required checks, command, workspace root, and prompt changes. It also passes with a second nested worker TMPDIR.
+- Passed: `go test -p 4 ./internal/config/... ./internal/policy -count=1`; `go vet -p 4 ./internal/config/... ./internal/policy`; `git diff --check`. Configured gate is `true`; no full gates or CI were run. No generated inputs changed.
+- Downstream approval/authorization diagnostics could not compile: `internal/runner/ssh_protocol.go:210:85: undefined: ErrSessionNoProgress`, already tracked by #3427. Added evidence under its existing fingerprint, without expanding this fix.
+- INV-3 documents the policy normalization consolidation. Do not claim live Mac Cloud recovery before a repaired release is deployed and verified.
