@@ -5,7 +5,7 @@
 // exactly that descriptor with one click, through the route the hosted Hub
 // serves.
 import { RegistryProvider } from "@effect/atom-react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -18,9 +18,19 @@ import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
 
 let hub: MockHub | undefined;
 let client: ConversationClient | undefined;
+let releaseRead: (() => void) | undefined;
+
+// These assertions span routing, real HTTP reads, and React updates. The
+// default one-second DOM wait is not a latency contract for that sequence.
+const httpWait = { timeout: 10_000 };
 
 afterEach(async () => {
   cleanup();
+  // A failed assertion must not leave a held request or a fetch spy for the
+  // next test to capture as its "real" fetch.
+  releaseRead?.();
+  releaseRead = undefined;
+  vi.restoreAllMocks();
   client?.handles.clear();
   client = undefined;
   await hub?.close();
@@ -43,19 +53,22 @@ async function mount(): Promise<{ base: string; approvedId: string }> {
 
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
 
-function renderSettings(): void {
+async function renderSettings(): Promise<void> {
   const router = makeRouter(createMemoryHistory({ initialEntries: ["/settings/integrations?project=proj_alpha"] }));
-  render(
-    <RegistryProvider>
-      <ClientContext.Provider value={client!}>
-        <RouterProvider router={router} />
-      </ClientContext.Provider>
-    </RegistryProvider>,
-  );
+  await router.load();
+  await act(async () => {
+    render(
+      <RegistryProvider>
+        <ClientContext.Provider value={client!}>
+          <RouterProvider router={router} />
+        </ClientContext.Provider>
+      </RegistryProvider>,
+    );
+  });
 }
 
 describe("repository policy after setup", () => {
-  it("approves the policy a runner reported with one click", async () => {
+  it.each(["immediate", "deferred"] as const)("approves the policy a runner reported with one click (%s onboarding)", async (delivery) => {
     const { base, approvedId } = await mount();
     const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
     const reported = { ...current.policy, policy_id: "pol_changed", source_revision: "b".repeat(40) };
@@ -66,21 +79,41 @@ describe("repository policy after setup", () => {
     });
     expect(posted.status).toBe(204);
 
-    const requests = vi.spyOn(globalThis, "fetch");
-    renderSettings();
-    expect(await screen.findByText("A runner is waiting for a new policy.")).toBeTruthy();
+    const realFetch = globalThis.fetch;
+    let receivedOnboarding: () => void = () => undefined;
+    const onboardingRequested = new Promise<void>((resolve) => {
+      receivedOnboarding = resolve;
+    });
+    const onboardingHeld = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const requests = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (delivery === "deferred" && (init?.method ?? "GET") === "GET" && String(input).endsWith("/projects/proj_alpha/onboarding")) {
+        receivedOnboarding();
+        await onboardingHeld;
+      }
+      return realFetch(input, init);
+    });
+    await renderSettings();
+    if (delivery === "deferred") {
+      await onboardingRequested;
+      expect(screen.queryByText("A runner is waiting for a new policy.")).toBeNull();
+      releaseRead!();
+    }
+    expect(await screen.findByText("A runner is waiting for a new policy.", {}, httpWait)).toBeTruthy();
+    expect(screen.getByText(/runner upgrade changed the resolved policy/)).toBeTruthy();
     expect(screen.getByText("pol_changed")).toBeTruthy();
-    expect(screen.getAllByText(approvedId).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(approvedId, {}, httpWait)).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Approve reported policy" })[0]!);
-    await waitFor(() => expect(screen.queryByText("A runner is waiting for a new policy.")).toBeNull());
+    fireEvent.click(screen.getAllByRole("button", { name: "Approve updated policy" })[0]!);
+    await waitFor(() => expect(screen.queryByText("A runner is waiting for a new policy.")).toBeNull(), httpWait);
     const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
     expect(after.policy.policy_id).toBe("pol_changed");
     const puts = requests.mock.calls.filter(([, init]) => init?.method === "PUT").map(([url]) => String(url));
     expect(puts.some((url) => url.endsWith("/projects/proj_alpha/onboarding/policy"))).toBe(true);
     expect(puts.some((url) => url.endsWith("/projects/proj_alpha/policy"))).toBe(false);
     requests.mockRestore();
-    expect(screen.queryByRole("button", { name: "Approve reported policy" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve updated policy" })).toBeNull();
   });
 
   it("names the current approval even while the policy read is still loading", async () => {
@@ -92,23 +125,22 @@ describe("repository policy after setup", () => {
       body: JSON.stringify({ ...current.policy, policy_id: "pol_slow" }),
     });
     const realFetch = globalThis.fetch;
-    let releasePolicy: () => void = () => undefined;
     const policyHeld = new Promise<void>((resolve) => {
-      releasePolicy = resolve;
+      releaseRead = resolve;
     });
     const requests = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       if ((init?.method ?? "GET") === "GET" && String(input).endsWith("/projects/proj_alpha/policy")) await policyHeld;
       return realFetch(input, init);
     });
-    renderSettings();
-    fireEvent.click(await screen.findByRole("button", { name: "Approve reported policy pol_slow" }));
+    await renderSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Approve updated policy pol_slow" }, httpWait));
     await waitFor(async () => {
       const after = (await (await realFetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
       expect(after.policy.policy_id).toBe("pol_slow");
-    });
+    }, httpWait);
     const put = requests.mock.calls.find(([, init]) => init?.method === "PUT");
     expect(JSON.parse(String(put?.[1]?.body)).expected_policy_id).toBe(current.policy.policy_id);
-    releasePolicy();
+    releaseRead!();
     requests.mockRestore();
   });
 
@@ -122,9 +154,9 @@ describe("repository policy after setup", () => {
         body: JSON.stringify({ ...current.policy, policy_id: id }),
       });
     }
-    renderSettings();
-    expect(await screen.findByRole("button", { name: "Approve reported policy pol_a" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Approve reported policy pol_b" })).toBeTruthy();
+    await renderSettings();
+    expect(await screen.findByRole("button", { name: "Approve updated policy pol_a" }, httpWait)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve updated policy pol_b" })).toBeTruthy();
 
     // Another owner approves pol_b while this page is open.
     await fetch(`${base}/onboarding/policy`, {
@@ -132,31 +164,31 @@ describe("repository policy after setup", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ expected_policy_id: current.policy.policy_id, policy: { ...current.policy, policy_id: "pol_b" } }),
     });
-    fireEvent.click(screen.getByRole("button", { name: "Approve reported policy pol_a" }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Approve reported policy pol_b" })).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "Approve reported policy pol_a" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve updated policy pol_a" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Approve updated policy pol_b" })).toBeNull(), httpWait);
+    fireEvent.click(screen.getByRole("button", { name: "Approve updated policy pol_a" }));
     await waitFor(async () => {
       const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
       expect(after.policy.policy_id).toBe("pol_a");
-    });
+    }, httpWait);
   });
 
   it("approves a pasted descriptor and refuses one that is not JSON", async () => {
     const { base } = await mount();
     const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-    renderSettings();
-    fireEvent.click(await screen.findByRole("button", { name: "Paste a descriptor" }));
+    await renderSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Paste a descriptor" }, httpWait));
     const box = screen.getByLabelText("Policy descriptor");
     fireEvent.change(box, { target: { value: "not json" } });
     fireEvent.click(screen.getByRole("button", { name: "Approve pasted descriptor" }));
-    expect(await screen.findByText(/The pasted descriptor is not JSON/)).toBeTruthy();
+    expect(await screen.findByText(/The pasted descriptor is not JSON/, {}, httpWait)).toBeTruthy();
 
     fireEvent.change(box, { target: { value: JSON.stringify({ ...current.policy, policy_id: "pol_pasted" }) } });
     fireEvent.click(screen.getByRole("button", { name: "Approve pasted descriptor" }));
     await waitFor(async () => {
       const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
       expect(after.policy.policy_id).toBe("pol_pasted");
-    });
+    }, httpWait);
   });
 });
 

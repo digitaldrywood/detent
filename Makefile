@@ -34,9 +34,16 @@ GOSEC_VERSION ?= v2.28.0
 GOSEC_BINARY ?= tmp/gosec-$(GOSEC_VERSION)-deterministic
 GOSEC_PATCH ?= scripts/gosec-v2.28.0-deterministic.patch
 GOSEC_DETERMINISM_RUNS ?= 8
+# Several worktrees run gates on the same host at once. TEST_PROCS bounds how
+# many packages build or test concurrently, the Go scheduler threads each test
+# binary uses, lint workers, and vitest workers, so one invocation cannot take
+# the whole machine. Raise it per invocation: TEST_PROCS=8 make test.
+TEST_PROCS ?= 4
+GOMAXPROCS ?= $(TEST_PROCS)
+export GOMAXPROCS
 # Filesystem diagnostics can record millions of cache inputs (#2735).
 # Run gate tests afresh; -count=1 preserves native build and module caches.
-GO_TEST := env -u DETENT_API_TOKEN go test -count=1
+GO_TEST := env -u DETENT_API_TOKEN go test -count=1 -p $(TEST_PROCS)
 HUB_RACE_TIMEOUT ?= 15m
 HUB_RACE_PARALLEL ?= 2
 HUB_RACE_PARTITION := ^Test[A-GI-O]
@@ -57,10 +64,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-CHECK_LOCK_WAIT ?= 15m
-CHECK_LOCK_MAX_WAIT ?= 4h
-
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit nilaway-changed release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -119,9 +123,9 @@ app-dev:
 # The build is deterministic (fixed output names, no hashes, no timestamps),
 # which is what makes the diff check meaningful.
 check-app:
-	@if [ -f "$(APP_DIR)/package.json" ]; then \
+	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
 		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
-		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run && npm run build); \
+		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run --maxWorkers=$(TEST_PROCS) && npm run build); \
 		git diff --exit-code -- static/app/conversation || { \
 			echo "static/app/conversation is out of date; run make app and commit the result."; \
 			exit 1; \
@@ -171,6 +175,9 @@ test:
 	# Measure the 500ms request budget without competing package tests or builds.
 	$(GO_TEST) ./internal/web
 
+test-fast:
+	$(GO_TEST) -short ./internal/config/... ./internal/gate/... ./internal/invariants/... ./internal/issueorigin/... ./internal/release/... ./internal/releaseprovenance/... ./tools/...
+
 test-race: test-race-hub test-race-orchestrator
 	bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence
 	@packages="$$(go list ./...)" && \
@@ -192,7 +199,7 @@ test-race-orchestrator:
 	env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(ORCHESTRATOR_RACE_PARALLEL) -timeout $(ORCHESTRATOR_RACE_TIMEOUT) -output tmp/orchestrator-race-evidence ./internal/orchestrator
 
 test-race-cover:
-	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_COVER_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)"
+	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_COVER_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)" '$(HUB_RACE_PARTITION)' '$(HUB_RACE_PARTITION_B)'
 	@$(MAKE) coverage-check
 	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
 
@@ -233,7 +240,7 @@ visual-e2e-update: build
 	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test --update-snapshots
 
 lint: $(GOLANGCI_LINT)
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=15m
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m
 
 $(GOLANGCI_LINT):
 	@mkdir -p "$(GOLANGCI_LINT_DIR)"
@@ -255,18 +262,15 @@ security: security-gosec-determinism
 nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
 
-check check-fast: check-migrations check-generated
-	@mkdir -p tmp
-	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
-	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -max-wait-timeout "$(CHECK_LOCK_MAX_WAIT)" -events "$$common_dir/detent-validation-events.jsonl" -- $(MAKE) $@-unlocked
+nilaway-changed:
+	python3 scripts/nilaway-changed.py $(NILAWAY_VERSION) $(NILAWAY_INCLUDE_PKGS)
 
-check-unlocked: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race-cover
+check: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."
 
-.PHONY: check-fast check-fast-unlocked
-check-fast-unlocked: check-invariants check-migrations check-generated build lint vet
-	$(MAKE) test
-	@echo "Fast checks passed (race, coverage, and NilAway are excluded; run make check for full local validation)."
+check-fast: check-invariants check-migrations check-generated check-app lint vet test-fast
+	go build ./...
+	@echo "Fast checks passed."
 
 .PHONY: check-invariants
 check-invariants:

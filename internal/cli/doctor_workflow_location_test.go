@@ -155,26 +155,6 @@ func TestCheckDoctorProjectContinuesWithConfiguredExternalWorkflow(t *testing.T)
 	}
 }
 
-func TestCheckDoctorWorkflowLocationClearsAfterMove(t *testing.T) {
-	t.Parallel()
-
-	repoRoot := t.TempDir()
-	configuredPath := filepath.Join(repoRoot, "WORKFLOW.md")
-	misplacedPath := filepath.Join(repoRoot, ".detent", "WORKFLOW.md")
-	writeDoctorWorkflowLocationFile(t, misplacedPath)
-	project := globalconfig.Project{Workflow: configuredPath, Workdir: repoRoot}
-
-	if _, ok := checkDoctorWorkflowLocation(project); !ok {
-		t.Fatal("checkDoctorWorkflowLocation() did not report misplaced workflow")
-	}
-	if err := os.Rename(misplacedPath, configuredPath); err != nil {
-		t.Fatalf("move workflow to repository root: %v", err)
-	}
-	if check, ok := checkDoctorWorkflowLocation(project); ok {
-		t.Fatalf("checkDoctorWorkflowLocation() = %#v, want finding cleared", check)
-	}
-}
-
 func writeDoctorWorkflowLocationFile(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

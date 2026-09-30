@@ -49,7 +49,7 @@ async function terminate(child) {
  *
  * @returns {Promise<{fixture: object, output: () => string, stop: () => Promise<void>}>}
  */
-async function startHostedHub(name = "conversation") {
+async function startHostedHub(name = "conversation", options = {}) {
   const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", name);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const logPath = path.join(evidenceDir, "hosted-hub.log");
@@ -69,7 +69,7 @@ async function startHostedHub(name = "conversation") {
     ],
     {
       cwd: process.cwd(),
-      env: { ...process.env, DETENT_HOSTED_BROWSER_PREVIEW: "1", NO_COLOR: "1" },
+      env: { ...process.env, DETENT_HOSTED_BROWSER_PREVIEW: "1", NO_COLOR: "1", ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

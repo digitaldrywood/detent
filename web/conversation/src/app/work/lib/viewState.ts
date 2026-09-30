@@ -26,6 +26,7 @@ export const SORT_LABELS: Readonly<Record<WorkSort, string>> = {
 
 export interface WorkViewState {
   readonly view: WorkViewMode;
+  readonly archived?: boolean;
   readonly q: string;
   readonly state: readonly string[];
   readonly label: readonly string[];
@@ -91,6 +92,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
   const lanes = params.get("lanes");
   return {
     view: WORK_VIEWS.includes(view as WorkViewMode) ? (view as WorkViewMode) : DEFAULT_VIEW_STATE.view,
+    ...(params.get("archived") === "true" ? { archived: true } : {}),
     q: params.get("q") ?? "",
     state: readList(params.get("state")),
     label: readList(params.get("label")),
@@ -109,6 +111,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
  */
 export function serializeViewState(state: WorkViewState): string {
   const params = new URLSearchParams();
+  if (state.archived === true) params.set("archived", "true");
   if (state.view !== DEFAULT_VIEW_STATE.view) params.set("view", state.view);
   if (state.q.trim().length > 0) params.set("q", state.q.trim());
   for (const key of FILTER_KEYS) {

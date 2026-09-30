@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -27,6 +28,7 @@ type CommandFactory func(context.Context) *exec.Cmd
 type CommandFactoryWithArgs func(context.Context, []string) *exec.Cmd
 
 type Options struct {
+	IsolationPolicy        func() (isolation.Policy, error)
 	CommandFactory         CommandFactory
 	CommandFactoryWithArgs CommandFactoryWithArgs
 	PermissionMode         string

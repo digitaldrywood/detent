@@ -5,9 +5,9 @@ supported **customer-operated, free self-hosting** examples. They serve a single
 Hub at the customer's chosen origin with scoped bearer auth. Follow the
 [self-hosting runbook](../../hub-self-hosting.md) for installation, credentials,
 backup and recovery. They require no Detent subscription or billing connectivity.
-Changing their hostname to hub.detent.build does not create the shared product.
+Changing their hostname to cloud.detent.build does not create the shared product.
 
-The operator-hosted product has one public site at `https://hub.detent.build`,
+The operator-hosted product has one public site at `https://cloud.detent.build`,
 a shared identity/provisioning entry and metadata registry, and dedicated private
 tenant Hub processes with separate databases. All use the Detent binary; the
 entry role is additional work in #2341/#2342. The public reverse proxy forwards
@@ -15,6 +15,9 @@ to that entry service, never chooses a tenant with a URL rewrite. The entry uses
 [authenticated private routing](../../cloud-hub-rfc.md#shared-site-control-and-tenant-storage)
 and each tenant verifies its own immutable binding. This directory installs no
 shared-site service and authorizes no deployment, DNS/account change or purchase.
+
+The hosted hostname migration is tracked in the [Cloud domain runbook](../../cloud-domain-migration.md).
+Its provisioning results and pending browser cutover are recorded there.
 
 ## Configuration availability
 
@@ -34,11 +37,11 @@ allocation and billing blocks arrive with #2342/#2343.
 ## Shared entry
 
 `detent cloud serve` runs the shared entry on a loopback port behind the public
-TLS proxy (nginx or Caddy forwards `hub.detent.build` to it unchanged; it never
+TLS proxy (nginx or Caddy forwards `cloud.detent.build` to it unchanged; it never
 rewrites paths to choose a tenant). Its configuration:
 
 ```yaml
-public_url: https://hub.detent.build
+public_url: https://cloud.detent.build
 listen: 127.0.0.1:8017
 state_directory: /var/lib/detent/cloud
 staff_emails: []
@@ -108,7 +111,8 @@ empty lists admit any verified account. `entitlements` is the tenant's
 [versioned plan catalog](../../hosted-allowances.md); its `base` plan is the free
 plan every new organization starts on, and no Stripe customer or card is created.
 Left empty (`entitlements: {}`, an empty block, or no key at all), tenants use the
-default catalog: `pilot_free` as the base and `comp_team` for complimentary grants.
+capacity catalog: `free` as the base, with `starter`, `growth`, and `scale` paid
+versions. Legacy `pilot_free` and `comp_team` remain for existing assignments and grants.
 An explicit catalog replaces both, so include a plan to grant alongside the base.
 Any key set inside the section makes it an explicit catalog that must be complete
 (`base`, `plans` and the window settings). `detent cloud serve` generates the tenant
@@ -176,7 +180,7 @@ placeholder strings deliberately prevent treating this as a working deployment.
 schema: 1
 deployment:
   mode: operator_hosted
-public_url: https://hub.detent.build
+public_url: https://cloud.detent.build
 auth:
   provider: workos
   workos:
@@ -240,8 +244,8 @@ or Stripe key. Never place secrets in the registry, command arguments or reports
 ## WorkOS and Stripe wiring
 
 The common WorkOS callback is exactly
-`https://hub.detent.build/auth/oidc/callback`, with User invitation URL
-`https://hub.detent.build/invite`. Every organization uses these values. Configure
+`https://cloud.detent.build/auth/oidc/callback`, with User invitation URL
+`https://cloud.detent.build/invite`. Every organization uses these values. Configure
 client ID, API key and issuer from the same provider environment. See
 [identity setup](../../hosted-identity.md#workos-application-setup) for invitation
 verification and staging separation. Existing-origin migration must use the
@@ -268,10 +272,10 @@ billing:
 ```
 
 `test` is the billing default, never inferred from auth. Its exact webhook is
-`https://hub.detent.build/webhooks/stripe/test`. Explicit separately authorized
+`https://cloud.detent.build/webhooks/stripe/test`. Explicit separately authorized
 `live` activation instead uses `DETENT_STRIPE_LIVE_KEY`,
 `DETENT_STRIPE_LIVE_WEBHOOK_SECRET`, matching live account/price/customer/portal
-bindings and `https://hub.detent.build/webhooks/stripe/live`. Each environment's
+bindings and `https://cloud.detent.build/webhooks/stripe/live`. Each environment's
 webhook secret, event livemode and account must agree; there is no fallback
 between environments. Staging substitutes its separately configured origin.
 See [billing lifecycle and rollback](../../hosted-billing.md#environment-separation-and-shared-webhooks).

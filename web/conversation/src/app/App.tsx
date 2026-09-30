@@ -12,10 +12,12 @@ import type {
   IssueProposal,
   IssueResult,
   Message,
+  PreferenceChoices,
   Question,
   TurnPreferences,
 } from "../contracts/index.ts";
 import {
+  AUTO_PREFERENCE,
   DEFAULT_TURN_PREFERENCES,
   HUB_ENVIRONMENT_ID,
   projectCoordinatorAvailable,
@@ -78,6 +80,36 @@ import { dialogOpen, shortcutFor } from "./lib/shortcuts.ts";
 import { conversationDestination } from "./lib/conversationDestination.ts";
 import { shouldSearchServer } from "./lib/sidebarLogic.ts";
 import { hubPath } from "../runtime/basePath.ts";
+import { usePageTitle } from "./pageTitle.ts";
+
+function hasLunaCoordinator(choices: PreferenceChoices | undefined): boolean {
+  return choices?.models.some((choice) => choice.id === "gpt-6-luna" && choice.provider === "openai") ?? false;
+}
+
+function generalChatChoices(choices: PreferenceChoices | undefined): PreferenceChoices | undefined {
+  if (choices === undefined || !hasLunaCoordinator(choices)) return choices;
+  return {
+    ...choices,
+    models: choices.models.filter((choice) => choice.id === AUTO_PREFERENCE || choice.id === "gpt-6-luna"),
+    efforts: choices.efforts.filter((choice) => [AUTO_PREFERENCE, "low", "medium"].includes(choice.id)),
+  };
+}
+
+function linkedChatChoices(choices: PreferenceChoices | undefined): PreferenceChoices | undefined {
+  if (choices === undefined || !hasLunaCoordinator(choices)) return choices;
+  return { ...choices, models: choices.models.filter((choice) => choice.id !== "gpt-6-luna") };
+}
+
+function generalChatPreferences(preferences: TurnPreferences, choices: PreferenceChoices | undefined): TurnPreferences {
+  if (!hasLunaCoordinator(choices)) return preferences;
+  return {
+    ...preferences,
+    model: [AUTO_PREFERENCE, "gpt-6-luna"].includes(preferences.model) ? preferences.model : AUTO_PREFERENCE,
+    reasoning_effort: [AUTO_PREFERENCE, "low", "medium"].includes(preferences.reasoning_effort)
+      ? preferences.reasoning_effort
+      : AUTO_PREFERENCE,
+  };
+}
 
 export interface ConnectionChip {
   readonly tone: "dc-ok" | "dc-warn" | "dc-err" | "";
@@ -375,6 +407,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   const sendFirst = useAtomSet(client.sendMessage, { mode: "promise" });
   const active = projectId ?? shell.projectId;
   const project = client.bootstrap.projects.find((candidate) => candidate.id === active);
+  usePageTitle("Chat", projectId === undefined ? undefined : project?.name);
   // No runner able to take coordinator turns is enrolled here. The message is
   // still accepted and still queues (decisions.md §9.1), so the send stays
   // available and the note says what will happen instead of what is forbidden.
@@ -531,7 +564,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             blockedReason={project?.can_write === false ? "Read-only project" : null}
             attachments={attachments}
             preferences={preferences}
-            preferenceChoices={client.bootstrap.preferences}
+            preferenceChoices={generalChatChoices(client.bootstrap.preferences)}
             onPreferencesChange={setPreferences}
             // There is no conversation to hand off yet, so `/issue` and
             // `/handoff` are not on offer here; the draft's pickers, paperclip
@@ -612,11 +645,26 @@ export function ConversationRoute(): React.ReactElement {
   const navigate = useNavigate();
   const known = shell.conversations.find((candidate) => candidate.id === conversationId);
   const projectId = known?.project_id ?? shell.projectId;
+  const client = useClient();
+  const state = useAtomValue(
+    client.conversations.stateAtom({
+      environmentId: HUB_ENVIRONMENT_ID,
+      projectId,
+      conversationId,
+    }),
+  );
+  const value = Option.getOrUndefined(AsyncResult.value(state));
+  const detail = value === undefined ? undefined : Option.getOrUndefined(value.data);
+  const conversation = detail?.conversation ?? known;
+  const project = client.bootstrap.projects.find(
+    (candidate) => candidate.id === (conversation?.project_id ?? projectId),
+  );
+  usePageTitle(conversation?.title ? `Chat: ${conversation.title}` : "Chat", project?.name);
   // A linked conversation is not a page of its own any more: the issue is the
   // page and the conversation is a surface on it (decisions.md §19.4). The
   // redirect carries `?panel=conversation`, so the reader lands on the issue
   // with the chat already open beside it. An unlinked chat keeps this page.
-  const linkedWorkItem = known?.work_item_id ?? null;
+  const linkedWorkItem = conversation?.work_item_id ?? null;
   React.useEffect(() => {
     if (linkedWorkItem === null) return;
     void navigate({
@@ -1199,8 +1247,8 @@ export function ConversationView({
               label="Message"
               blockedReason={composerBlockedReason}
               disabled={closed}
-              preferences={turnPreferences(detail.conversation)}
-              preferenceChoices={client.bootstrap.preferences}
+              preferences={linked ? turnPreferences(detail.conversation) : generalChatPreferences(turnPreferences(detail.conversation), client.bootstrap.preferences)}
+              preferenceChoices={linked ? linkedChatChoices(client.bootstrap.preferences) : generalChatChoices(client.bootstrap.preferences)}
               onPreferencesChange={(next) =>
                 void setPreferences({ projectId, conversationId, preferences: next })
               }

@@ -187,7 +187,7 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if !workspacesession.ValidIsolation(request.Isolation) {
-		return s.nativeAPIError(c, nativeInvalid("isolation must be user or container"))
+		return s.nativeAPIError(c, nativeInvalid("isolation must be sandbox, container or user"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -321,7 +321,7 @@ func (s *Service) heartbeatWorkspaceWorker(c echo.Context) error {
 		return s.nativeAPIError(c, nativeInvalid("state names no workspace state"))
 	}
 	if !workspacesession.ValidIsolation(request.Isolation) {
-		return s.nativeAPIError(c, nativeInvalid("isolation must be user or container"))
+		return s.nativeAPIError(c, nativeInvalid("isolation must be sandbox, container or user"))
 	}
 	if !workspacesession.ValidWorktree(request.Worktree) {
 		return s.nativeAPIError(c, nativeInvalid("worktree must be retained or fresh"))

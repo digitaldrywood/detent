@@ -260,12 +260,60 @@ func (l *LocalGit) sweepAttempts(ctx context.Context, root *os.Root, request Ret
 	if err != nil {
 		return err
 	}
-	var failures []error
+	var parents []string
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == ".detent" {
+		if entry.IsDir() && entry.Name() != ".detent" {
+			parents = append(parents, filepath.Join(entry.Name(), workerScratchRelativePath))
+		}
+	}
+	failures := []error{l.sweepScratchParents(ctx, root, l.root, parents, request, total)}
+	failures = append(failures, l.sweepExternalScratch(ctx, request, total))
+	return errors.Join(failures...)
+}
+
+// sweepExternalScratch sweeps the OS temp scratch of every workspace under
+// this root, including workspaces that no longer exist.
+func (l *LocalGit) sweepExternalScratch(ctx context.Context, request RetentionRequest, total *RemovalTotal) error {
+	group := workerScratchGroup(l.root)
+	if _, err := os.Lstat(group); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err := ensurePrivateDirectories(workerScratchBase(), group); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(group)
+	if err != nil {
+		return err
+	}
+	defer l.closeRetentionRoot(root)
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return err
+	}
+	var parents []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			parents = append(parents, entry.Name())
+		}
+	}
+	err = l.sweepScratchParents(ctx, root, group, parents, request, total)
+	for _, parent := range parents {
+		if _, statErr := os.Lstat(filepath.Join(l.root, parent)); !errors.Is(statErr, fs.ErrNotExist) {
 			continue
 		}
-		parent := filepath.Join(entry.Name(), workerScratchRelativePath)
+		if remaining, readErr := fs.ReadDir(root.FS(), parent); readErr != nil || len(remaining) > 0 {
+			continue
+		}
+		if removeErr := root.Remove(parent); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			err = errors.Join(err, removeErr)
+		}
+	}
+	return err
+}
+
+func (l *LocalGit) sweepScratchParents(ctx context.Context, root *os.Root, base string, parents []string, request RetentionRequest, total *RemovalTotal) error {
+	var failures []error
+	for _, parent := range parents {
 		if err := retentionDirectory(root, parent); err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
 				failures = append(failures, err)
@@ -285,7 +333,7 @@ func (l *LocalGit) sweepAttempts(ctx context.Context, root *os.Root, request Ret
 				continue
 			}
 			path := filepath.Join(parent, attempt.Name())
-			registered, terminal, err := request.ScratchState(ctx, filepath.Join(l.root, path))
+			registered, terminal, err := request.ScratchState(ctx, filepath.Join(base, path))
 			if err != nil {
 				failures = append(failures, err)
 				continue
@@ -298,7 +346,7 @@ func (l *LocalGit) sweepAttempts(ctx context.Context, root *os.Root, request Ret
 			if !terminal && (registered || request.Now.Before(info.ModTime().Add(time.Hour))) {
 				continue
 			}
-			pids, err := scanOwnedWorkspaceProcessIDs(ctx, filepath.Join(l.root, path), l.scanWorkspacePaths)
+			pids, err := scanOwnedWorkspaceProcessIDs(ctx, filepath.Join(base, path), l.scanWorkspacePaths)
 			if err != nil {
 				failures = append(failures, err)
 				continue

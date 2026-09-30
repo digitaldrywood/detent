@@ -321,12 +321,15 @@ func (l *LocalGit) unrecordedWorkspaces(ctx context.Context, recorded map[string
 				branch = value
 			}
 		}
-		if path == "" || recorded[path] || filepath.Dir(path) != l.root {
+		if path == "" {
 			continue
 		}
 		path, err := validateWorkspacePath(l.root, path)
 		if err != nil {
 			return nil, err
+		}
+		if recorded[path] || filepath.Dir(path) != l.root {
+			continue
 		}
 		exists, _, err := pathExists(path)
 		if err != nil {

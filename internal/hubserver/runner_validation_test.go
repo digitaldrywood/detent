@@ -22,11 +22,24 @@ import (
 func TestRunnerCredentialExpiryBoundaries(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name   string
-		offset time.Duration
-		want   int
+		name      string
+		offset    time.Duration
+		statement string
+		want      int
+		wantRenew int
 	}{
-		{"before expiry", -time.Nanosecond, http.StatusOK}, {"at expiry", 0, http.StatusUnauthorized}, {"after expiry", time.Second, http.StatusUnauthorized},
+		{"before expiry", -time.Nanosecond, "", http.StatusOK, http.StatusOK},
+		{"at expiry", 0, "", http.StatusUnauthorized, http.StatusOK},
+		{"after expiry", time.Second, "", http.StatusUnauthorized, http.StatusOK},
+		{"weekend", 3 * 24 * time.Hour, "", http.StatusUnauthorized, http.StatusOK},
+		{"vacation", 30 * 24 * time.Hour, "", http.StatusUnauthorized, http.StatusOK},
+		{"before creation", -25 * time.Hour, "", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"invalid creation", 0, "UPDATE api_tokens SET created_at = 'invalid' WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"invalid expiry", 0, "UPDATE api_tokens SET expires_at = 'invalid' WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"empty interval", 0, "UPDATE api_tokens SET expires_at = created_at WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"missing expiry", 0, "UPDATE api_tokens SET expires_at = NULL WHERE id = ?", http.StatusOK, http.StatusUnauthorized},
+		{"revoked and expired", 0, "UPDATE api_tokens SET revoked_at = created_at WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"rotated and expired", 0, "UPDATE api_tokens SET token_hash = '1111111111111111111111111111111111111111111111111111111111111111' WHERE id = ?", http.StatusUnauthorized, http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -35,8 +48,25 @@ func TestRunnerCredentialExpiryBoundaries(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read)
 			r.enroll(t)
 			now = r.identity.ExpiresAt.Add(test.offset)
+			if test.statement != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), test.statement, r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), test.want)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/renew", r.redemption.Credential, struct{}{}), test.want)
+			if test.statement == "" && test.offset >= 0 {
+				for _, path := range []string{
+					r.identityPath() + "/rotate",
+					r.base + "/runners/" + runnerauth.NewBinding().RunnerID + "/renew",
+					"/api/v2/organizations/other/runners/" + r.binding.RunnerID + "/renew",
+				} {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, struct{}{}), http.StatusUnauthorized)
+				}
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/renew", r.redemption.Credential, struct{}{}), test.wantRenew)
+			if test.wantRenew == http.StatusOK {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), http.StatusOK)
+			}
 		})
 	}
 }

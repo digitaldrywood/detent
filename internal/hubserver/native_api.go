@@ -123,6 +123,8 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items", s.createNativeIssue, write)
 	e.GET(nativeBase+"/work-items/:item", s.getNativeIssue, read)
 	e.PATCH(nativeBase+"/work-items/:item", s.updateNativeIssue, write)
+	e.POST(nativeBase+"/work-items/:item/archive", s.archiveNativeIssue, write)
+	e.POST(nativeBase+"/work-items/:item/restore", s.restoreNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/workflow", s.transitionNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/dependencies", s.changeNativeDependency, write)
 	e.GET(nativeBase+"/work-items/:item/comments", s.listNativeComments, read)
@@ -200,12 +202,19 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-			write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
-			if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, write); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
-				return s.nativeAPIError(c, err)
+			runnerHeartbeat := c.Path() == nativeBase+"/machines/:machine/heartbeat" && credential.Runner.RunnerID != ""
+			if runnerHeartbeat {
+				if credential.Runner.OrganizationID != scope.organization {
+					return s.nativeAPIError(c, nativeNotFound())
+				}
+			} else {
+				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
+				if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, write); err != nil {
+					return s.nativeAPIError(c, err)
+				}
+				if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
+					return s.nativeAPIError(c, err)
+				}
 			}
 			c.Set("native_scope", scope)
 			c.Response().Header().Set("Cache-Control", "no-store")

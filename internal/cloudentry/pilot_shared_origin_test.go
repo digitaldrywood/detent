@@ -30,32 +30,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const pilotOperatorToken = "detent_pilot_entitlement_operator_0123456789abcdef"
-
-func pilotPlans() *hubserver.HostedPlansConfig {
-	free := map[string]int64{
-		"members": 10, "projects": 1, "repositories": 10, "registered_runners": 4, "connected_runners": 4, "concurrent_work": 2,
-		"api_mutations": 10000, "ingested_events": 10000, "collaboration_bytes": 64 << 20, "history_records": 10000,
-	}
-	plus := make(map[string]int64, len(free))
-	for name, limit := range free {
-		plus[name] = limit
-	}
-	plus["projects"] = 5
-	features := []string{"collaboration", "native_execution"}
-	return &hubserver.HostedPlansConfig{
-		Base: hubserver.PlanReference{ID: "pilot_free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400,
-		Plans: []hubserver.HostedPlan{
-			{PlanReference: hubserver.PlanReference{ID: "pilot_free", Version: 1}, Features: features, Allowances: free},
-			{PlanReference: hubserver.PlanReference{ID: "pilot_plus", Version: 1}, Features: features, Allowances: plus},
-		},
-	}
-}
 
 type pilotTenantLauncher struct {
 	provider   *fakeProvider
@@ -423,7 +404,7 @@ func (p *sharedOriginPilot) enrollRunner(t *testing.T, o, other pilotOrganizatio
 	if err != nil {
 		t.Fatal(err)
 	}
-	redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: hostname, DisplayName: hostname, Capacity: 1, Version: "test", OS: "linux", Architecture: "amd64"}
+	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: hostname, DisplayName: hostname, Capacity: 1, Version: "test", OS: "linux", Architecture: "amd64"}
 	machine := p.browser(t)
 	wrong := machine.request(http.MethodPost, other.api()+"/runner-enrollments/redeem", jsonBody(t, redemption), map[string]string{"Authorization": "Bearer " + enrollment.Token, "Content-Type": "application/json"})
 	pilotStatus(t, "redeem enrollment at another organization", wrong, http.StatusUnauthorized)

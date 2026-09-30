@@ -14,7 +14,9 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -436,6 +438,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, nil, "")
 			return false
 		}
+		if o.reconcileAttemptTriagePark(ctx, state, issue, now) {
+			return true
+		}
 		recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
 		reasonCode, reasonFound := o.latestWorkflowLaneReason(ctx, issue, issue.State)
 		if recoveryCfg.Enabled && reasonFound && blockedRecoveryReasonAllowed(recoveryCfg, reasonCode) {
@@ -558,6 +563,69 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	}
 	delete(state.Blocked, issue.ID)
 	o.logBlockedRecoveryDecision(issue, "transition", "recovery_predicate_satisfied", &park, currentFingerprint)
+	return true
+}
+
+// A historical allowance park has no blocked-cause metadata. Its lane entry
+// still records the triage reason and PR head, so use the existing promotion
+// gate to reconcile it once Detent-owned waits have cleared.
+func (o *Orchestrator) reconcileAttemptTriagePark(ctx context.Context, state *State, issue connector.Issue, now time.Time) bool {
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok || entry.Event.Reason != attemptAllowanceExhaustedReason ||
+		!workflowLaneEntryMatchesCurrent(issue, entry.Event) || entry.Metadata.PullRequest == nil ||
+		strings.TrimSpace(entry.Metadata.PullRequest.HeadSHA) == "" || o.mergeLaneUnavailableReason() != "" {
+		return false
+	}
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		return false
+	}
+	live, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil || live.PullRequest == nil || pullRequestHydrationBlocksProgress(live.PullRequest) {
+		return false
+	}
+	live, ok = o.hydrateAutoPromoteReviewThreads(ctx, live)
+	if !ok || !mergeWorkerProgrammaticMergeReady(live, o.cfg) || !reworkBreakerCIGreen(live.PullRequest) ||
+		len(live.PullRequest.StaleSuccessfulChecks) > 0 ||
+		entry.Metadata.PullRequest.Number != int64(pullRequestNumber(live)) ||
+		entry.Metadata.PullRequest.Repository != pullRequestRepository(live) {
+		return false
+	}
+	if entry.Metadata.PullRequest.HeadSHA != strings.TrimSpace(live.PullRequest.HeadSHA) &&
+		!pullRequestHeadAfter(live, workflowLaneTransitionAt(entry.Event)) {
+		return false
+	}
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	if !cfg.Enabled || autoPromoteHumanReviewRequired(live, cfg, cfg.Gate) {
+		return false
+	}
+	candidate := cloneIssue(live)
+	candidate.State = cfg.ReworkState
+	summary := AutoPromoteSummaryFromIssue(candidate)
+	summary.SecurityAudit = o.securityAuditEvaluation(ctx, candidate)
+	summary.CompletedFinalState = autoPromoteCompletedFinalState(state, live.ID)
+	summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, live.ID, cfg, now)
+	if gate.Effective(cfg.Gate).SecurityAudit.Enabled && !summary.SecurityAudit.Allowed &&
+		summary.SecurityAudit.Reason != securityaudit.ReasonMissing {
+		return false
+	}
+	candidate, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, candidate, summary, cfg, now)
+	var validatorReady bool
+	decision, validatorReady = o.applyValidatorStage(ctx, state, candidate, &summary, decision, cfg, now)
+	if !validatorReady || decision.Action != AutoPromoteActionPromote {
+		return false
+	}
+	signature := blockedReadyPullRequestSignature(live, workflowLaneBlockedRecoveryMetadata{Cause: attemptAllowanceExhaustedReason})
+	if _, consumed := o.workflowTimelineActionSignature(ctx, live, workflowActionBlockedReadyPRReconciliation, signature); consumed {
+		return false
+	}
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedReadyPRReconciliation, signature)
+	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, live.ID, live, autoPromoteMergingState, now, workflowActionBlockedReadyPRReconciliation, metadata); err != nil {
+		return false
+	}
+	delete(state.Blocked, live.ID)
+	o.clearAutoPromotedIssueDispatchMemory(state, live.ID)
+	o.recordMergeQueueEntered(state, promotedIssue(live, autoPromoteMergingState, now), now, workflowActionBlockedReadyPRReconciliation)
 	return true
 }
 

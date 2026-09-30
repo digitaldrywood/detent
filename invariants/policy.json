@@ -71,14 +71,18 @@
       "TestAttemptAllowanceNoteFormat",
       "TestAttemptAllowanceMergeTimeAndRunningOwnership",
       "TestAttemptAllowancePreservesOperatorCompletionLane",
-      "TestTransitionAlreadyMergedCompletion"
+      "TestTransitionAlreadyMergedCompletion",
+      "TestSSHHostLossUsesInstanceRetry",
+      "TestSSHHostLossClearsResumeOnSpillover",
+      "TestSSHQueuedPreferenceAndHostCaps"
     ],
     "./internal/runner": [
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
       "TestWorkerCredentialBlockerError",
       "TestRunnerTriageIsReadOnly",
       "TestINV12WorkerInheritsToolchainEnvironment",
-      "TestINV12BackendToolchainEnvironment"
+      "TestINV12BackendToolchainEnvironment",
+      "TestSSHCallbackDoesNotPublishRemotePID"
     ],
     "./internal/store": [
       "TestLegacyHumanQuestionReceiptsReadable",
@@ -98,7 +102,7 @@
     "./internal/invariants": [
       "TestRepositorySources",
       "TestRepositoryWorkflow",
-      "TestRepositoryPullRequestActionsOnlyForMain",
+      "TestRepositoryHasNoPullRequestActions",
       "TestPortabilityStressIsManualOnly",
       "TestSourceViolations",
       "TestWorkflowViolations",
@@ -113,7 +117,7 @@
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
       "TestPrepareWorkerCodexHomeExistingInstructions",
       "TestDoctorInvariantEvidence",
-      "TestDoctorInvariantWorkflowVerdict",
+      "TestDoctorRespectsProjectCIPolicy",
       "TestDoctorLocalGateCommitStatusProducer",
       "TestDoctorInvariantAdmission",
       "TestDoctorInvariantAdmissionBatches",
@@ -122,7 +126,10 @@
       "TestDoctorInvariantAdmissionUnavailableEvidence",
       "TestINV12DoctorNativeCaches",
       "TestINV12DoctorWorkspaceKinds",
-      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns"
+      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns",
+      "TestSSHLocalTargetIntegration",
+      "TestSSHServiceProxyKeepsCentralAuthority",
+      "TestSSHProbeRequiresProvidedScratch"
     ],
     "./internal/connector/github": [
       "TestRefreshBoardFilterCost",

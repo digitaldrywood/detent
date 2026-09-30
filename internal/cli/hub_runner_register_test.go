@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,14 +31,16 @@ func TestRunnerHubTarget(t *testing.T) {
 		wantOrg      tracker.OrganizationID
 		wantErr      bool
 	}{
-		{name: "shared entry URL", url: "https://hub.detent.build/organizations/org_abc/", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "shared entry URL", url: "https://cloud.detent.build/organizations/org_abc/", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "legacy hosted URL remains stable", url: "https://hub.detent.build/organizations/org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "staging Cloud URL", url: "https://staging.cloud.detent.build/organizations/org_abc", wantBase: "https://staging.cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
 		{name: "self-hosted with flag", url: "https://hub.example.test", organization: "org_self", wantBase: "https://hub.example.test", wantOrg: "org_self"},
-		{name: "flag agrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
-		{name: "flag disagrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
+		{name: "flag agrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "flag disagrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
 		{name: "no organization", url: "https://hub.example.test", wantErr: true},
 		{name: "not an organization ID", url: "https://hub.example.test/organizations/acme", wantErr: true},
 		{name: "empty", url: " ", wantErr: true},
-		{name: "query string", url: "https://hub.detent.build/organizations/org_abc?x=1", wantErr: true},
+		{name: "query string", url: "https://cloud.detent.build/organizations/org_abc?x=1", wantErr: true},
 		{name: "no host", url: "/organizations/org_abc", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -137,7 +140,17 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 
 func runRegister(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	command := newHubRunnerRegisterCommand("test", func(name string) string { return env[name] }, starter)
+	return executeRegister(t, newHubRunnerRegisterCommand("test", func(name string) string { return env[name] }, starter), args...)
+}
+
+// Registration fixtures stay under t.TempDir even when worker TMPDIR is inside this repository.
+func runRegisterInTestWorkspace(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
+	t.Helper()
+	return executeRegister(t, newHubRunnerRegisterCommandWithPrivateLocation("test", func(name string) string { return env[name] }, starter, func(string) error { return nil }), args...)
+}
+
+func executeRegister(t *testing.T, command *cobra.Command, args ...string) (string, error) {
+	t.Helper()
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetErr(&output)
@@ -159,14 +172,19 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 		return nil
 	}
 	args := []string{"--url", hub.server.URL + "/organizations/org_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaces, "--service"}
-	output, err := runRegister(t, map[string]string{"DETENT_RUNNER_ENROLLMENT_TOKEN": "det_enroll_example"}, starter, args...)
+	output, err := runRegisterInTestWorkspace(t, map[string]string{"DETENT_RUNNER_ENROLLMENT_TOKEN": "det_enroll_example"}, starter, args...)
 	if err != nil {
 		t.Fatalf("register: %v\n%s", err, output)
 	}
 	if strings.Contains(output, "det_enroll_example") {
 		t.Fatal("register output echoed the enrollment token")
 	}
-	if len(started) != 0 || !strings.Contains(output, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(output, "detent start --config") {
+	var registration runnerRegistration
+	if err := json.Unmarshal([]byte(output), &registration); err != nil {
+		t.Fatal(err)
+	}
+	steps := strings.Join(registration.NextSteps, "\n")
+	if len(started) != 0 || !strings.Contains(steps, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(steps, "detent start --config") {
 		t.Fatalf("service started before every checkout exists (%v):\n%s", started, output)
 	}
 
@@ -175,7 +193,7 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 		t.Fatalf("written config = %+v, %v", written, err)
 	}
 	info, err := os.Stat(configPath)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %v, %v", info, err)
 	}
 
@@ -183,7 +201,7 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("# edited by the operator\n"+mustRead(t, configPath)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	output, err = runRegister(t, map[string]string{}, starter, append(args, "--token", "det_enroll_example")...)
+	output, err = runRegisterInTestWorkspace(t, map[string]string{}, starter, append(args, "--token", "det_enroll_example")...)
 	if err != nil {
 		t.Fatalf("rerun: %v\n%s", err, output)
 	}
@@ -220,6 +238,69 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	}
 	if file.Identity.OrganizationID != "org_example" || !strings.Contains(output, file.Identity.RunnerID) {
 		t.Fatalf("identity = %+v", file.Identity)
+	}
+}
+
+func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		ready         bool
+		workspaceRoot bool
+	}{
+		{name: "kept checkout with default root", ready: true},
+		{name: "kept checkout overrides supplied root", ready: true, workspaceRoot: true},
+		{name: "missing kept checkout ignores supplied checkout", workspaceRoot: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build"})
+			root := t.TempDir()
+			configPath := filepath.Join(root, "config", "global.yaml")
+			workdir := filepath.Join(root, "actual-checkout")
+			paths := runnerPaths{config: configPath, identity: filepath.Join(root, "config", "identity.json"), workspaces: filepath.Join(root, "unused-root")}
+			kept := runnerConfig(hub.server.URL+"/organizations/org_example", "org_example", "Build host", 2, paths, []runnerRegisteredCheck{{Name: "local-project", ID: "prj_site", Workdir: workdir}})
+			if _, err := writeRunnerConfig(configPath, kept); err != nil {
+				t.Fatal(err)
+			}
+			kept.ServiceName = "" // Runner configs predating service_name remain supported.
+			body, err := yaml.Marshal(kept)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			checkout(t, workdir)
+			if !test.ready {
+				if err := os.Remove(filepath.Join(workdir, ".git")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--service"}
+			if test.workspaceRoot {
+				checkout(t, filepath.Join(paths.workspaces, "detent.build"))
+				args = append(args, "--workspace-root", paths.workspaces)
+			}
+			started := false
+			output, err := runRegisterInTestWorkspace(t, nil, func(_ *cobra.Command, path string) error { started = true; return nil }, args...)
+			if err != nil {
+				t.Fatalf("register: %v\n%s", err, output)
+			}
+			var result runnerRegistration
+			if err := json.Unmarshal([]byte(output), &result); err != nil {
+				t.Fatal(err)
+			}
+			if started != test.ready || result.ServiceRun != test.ready || len(result.Projects) != 1 || result.Projects[0].Workdir != workdir || result.Projects[0].Checkout != test.ready {
+				t.Fatalf("started %v, registration %+v", started, result)
+			}
+			if !test.ready && !strings.Contains(strings.Join(result.NextSteps, "\n"), "detent start --config "+shellQuote(configPath)+" --yes") {
+				t.Fatalf("next steps = %v", result.NextSteps)
+			}
+			if mustRead(t, configPath) != string(body) {
+				t.Fatal("kept config was rewritten")
+			}
+		})
 	}
 }
 
@@ -279,7 +360,7 @@ func TestHubRunnerRegisterRefusesAnotherRunnersFiles(t *testing.T) {
 		if _, err := runnerauth.Initialize(filepath.Join(filepath.Dir(configPath), "identity.json"), "https://other-hub.example.test"); err != nil {
 			t.Fatal(err)
 		}
-		_, err := runRegister(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
+		_, err := runRegisterInTestWorkspace(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
 		if err == nil || !strings.Contains(err.Error(), "other-hub.example.test") {
 			t.Fatalf("err = %v, want a refusal naming the other hub", err)
 		}
@@ -295,7 +376,7 @@ func TestHubRunnerRegisterRefusesAnotherRunnersFiles(t *testing.T) {
 		if err := os.WriteFile(configPath, []byte(existing), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, err := runRegister(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
+		_, err := runRegisterInTestWorkspace(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
 		if err == nil || !strings.Contains(err.Error(), "client.organization_id") {
 			t.Fatalf("err = %v, want a refusal naming the mismatched key", err)
 		}

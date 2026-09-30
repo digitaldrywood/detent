@@ -45,6 +45,10 @@ type runnerRegisteredCheck struct {
 }
 
 func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, startService runnerServiceStarter) *cobra.Command {
+	return newHubRunnerRegisterCommandWithPrivateLocation(version, lookupEnv, startService, runnerPrivateLocation)
+}
+
+func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot string
 	var capacity int
 	var service bool
@@ -53,7 +57,7 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 		Short: "Register this host as a runner with one command from the Enroll dialog",
 		Long: "Generates this host's runner identity locally, redeems the one-time enrollment token, writes the runner configuration, and with --service installs and starts it as a background service. " +
 			"The token is single-use and expires within 15 minutes; the credential the host generates is sent once and stored only as a hash by the Hub.",
-		Example:      `detent hub runner register --url https://hub.detent.build/organizations/org_example --token det_enroll_example --name "Build host" --service`,
+		Example:      `detent hub runner register --url https://cloud.detent.build/organizations/org_example --token det_enroll_example --name "Build host" --service`,
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -68,7 +72,7 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 			if capacity < 1 {
 				return errors.New("--capacity must be at least 1")
 			}
-			paths, err := resolveRunnerPaths(configPath, workspaceRoot)
+			paths, err := resolveRunnerPaths(configPath, workspaceRoot, privateLocation)
 			if err != nil {
 				return err
 			}
@@ -85,7 +89,14 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 			if err := prepareRunnerIdentity(paths.identity, base, org); err != nil {
 				return err
 			}
-			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev")})
+			configuration := globalconfig.Config{}
+			if _, err := os.Lstat(paths.config); err == nil {
+				configuration, err = globalconfig.Read(paths.config)
+				if err != nil {
+					return err
+				}
+			}
+			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev"), BackendIsolation: probeRunnerIsolation(cmd.Context(), configuration)})
 			if err != nil {
 				return err
 			}
@@ -107,6 +118,17 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 				if err := existingRunnerConfigMatches(paths.config, config, true); err != nil {
 					return err
 				}
+				configuration, err = globalconfig.Read(paths.config)
+				if err != nil {
+					return err
+				}
+				result.Projects = nil
+				for _, project := range configuration.Projects {
+					result.Projects = append(result.Projects, runnerRegisteredCheck{
+						Name: project.ID, ID: tracker.ProjectID(configuration.Client.NativeProjects[project.ID]),
+						Workdir: project.Workdir, Checkout: runnerCheckoutReady(project.Workdir),
+					})
+				}
 			}
 			missing := false
 			for _, project := range result.Projects {
@@ -122,7 +144,10 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 					return err
 				}
 				result.ServiceRun = true
-				result.Service = runnerServiceName
+				result.Service = serviceNameForConfig(configuration)
+				if result.Created {
+					result.Service = runnerServiceName
+				}
 			case service:
 				result.NextSteps = append(result.NextSteps, "Then start the runner service: "+start)
 			default:
@@ -215,7 +240,7 @@ func runnerHubTarget(raw, organization string) (string, tracker.OrganizationID, 
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", "", errors.New("--url must be the organization's Hub URL, for example https://hub.detent.build/organizations/org_example")
+		return "", "", errors.New("--url must be the organization's Hub URL, for example https://cloud.detent.build/organizations/org_example")
 	}
 	org := strings.TrimSpace(organization)
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
@@ -239,7 +264,7 @@ type runnerPaths struct {
 	workspaces string
 }
 
-func resolveRunnerPaths(configPath, workspaceRoot string) (runnerPaths, error) {
+func resolveRunnerPaths(configPath, workspaceRoot string, privateLocation func(string) error) (runnerPaths, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return runnerPaths{}, err
@@ -254,7 +279,7 @@ func resolveRunnerPaths(configPath, workspaceRoot string) (runnerPaths, error) {
 		return runnerPaths{}, errors.New("--config and --workspace-root must be absolute paths")
 	}
 	identity := filepath.Join(filepath.Dir(configPath), "identity.json")
-	if err := runnerPrivateLocation(identity); err != nil {
+	if err := privateLocation(identity); err != nil {
 		return runnerPaths{}, err
 	}
 	return runnerPaths{config: filepath.Clean(configPath), identity: identity, workspaces: filepath.Clean(workspaceRoot)}, nil

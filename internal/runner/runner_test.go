@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1685,6 +1686,7 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
 					t.Errorf("fixture scratch cleanup: %v", err)
 				}
+				_ = os.RemoveAll(workspace.WorkerScratchRoot(workspacePath))
 			})
 			reaped := false
 			r := &Runner{
@@ -1735,12 +1737,8 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 			if execution.cleanupErr != nil {
 				t.Fatalf("scratch removal error: %v (turn error: %v)", execution.cleanupErr, execution.err)
 			}
-			canonicalWorkspace, err := filepath.EvalSymlinks(workspacePath)
-			if err != nil {
-				t.Fatalf("EvalSymlinks() error = %v", err)
-			}
-			if backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, canonicalWorkspace+string(filepath.Separator)) {
-				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, canonicalWorkspace)
+			if scratchRoot := workspace.WorkerScratchRoot(workspacePath); backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, scratchRoot+string(filepath.Separator)) {
+				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, scratchRoot)
 			}
 			_, statErr := os.Stat(backend.tempDir)
 			if tt.wantScratch {
@@ -1860,6 +1858,7 @@ func TestRunAgentTurnRecreatesWorkerScratchForEveryAttempt(t *testing.T) {
 	t.Parallel()
 
 	workspacePath := t.TempDir()
+	t.Cleanup(func() { _ = os.RemoveAll(workspace.WorkerScratchRoot(workspacePath)) })
 	backend := &scratchWritingAgentBackend{}
 	r := &Runner{
 		now:    time.Now,
@@ -1898,6 +1897,12 @@ func TestRunAgentTurnRecreatesWorkerScratchForEveryAttempt(t *testing.T) {
 			}
 			if !backend.scratchReady[len(backend.scratchReady)-1] {
 				t.Fatal("worker scratch did not exist when backend turn started")
+			}
+			if filepath.Dir(backend.tempDir) != workspace.WorkerScratchRoot(workspacePath) {
+				t.Fatalf("worker scratch = %q, want attempt under %q", backend.tempDir, workspace.WorkerScratchRoot(workspacePath))
+			}
+			if !slices.Contains(backend.writableRoots, backend.tempDir) {
+				t.Fatalf("sandbox writable roots = %q, want worker scratch %q", backend.writableRoots, backend.tempDir)
 			}
 			if _, err := os.Stat(backend.tempDir); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("worker scratch stat error after turn = %v, want not exist", err)
@@ -2541,6 +2546,7 @@ func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				if backend.request.Workspace != "" {
+					_ = os.RemoveAll(workspace.WorkerScratchRoot(backend.request.Workspace))
 					if _, err := os.Stat(backend.request.Workspace); errors.Is(err, os.ErrNotExist) {
 						return
 					}
@@ -2864,10 +2870,10 @@ func TestSessionTokenUsageNormalizesFreshAndResumedThreads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			usage := newSessionTokenUsage(tt.resumed)
+			normalize := NewTokenUsageNormalizer(tt.resumed)
 			var got AgentTokenUsage
 			for _, update := range tt.updates {
-				got = usage.normalize(update)
+				got = normalize(update)
 			}
 			gotCounts := AgentTokenCounts{
 				InputTokens:           got.InputTokens,
@@ -4735,8 +4741,10 @@ func TestRunnerRunReportsGitMetadataFailuresByWorkspaceKind(t *testing.T) {
 				t.Fatalf("Run() error = %v", err)
 			}
 
-			if len(agentBackend.request.ExtraWritableRoots) != 0 {
-				t.Fatalf("ExtraWritableRoots = %#v, want none", agentBackend.request.ExtraWritableRoots)
+			roots := agentBackend.request.ExtraWritableRoots
+			scratch := agentBackend.request.TempDir
+			if len(roots) != 1 || roots[0] != scratch || filepath.Dir(scratch) != workspace.WorkerScratchRoot(workspacePath) {
+				t.Fatalf("ExtraWritableRoots = %#v, want only owned scratch %q", roots, scratch)
 			}
 			gotWarning := strings.Contains(logs.String(), "workspace git metadata writable roots unavailable")
 			if gotWarning != tt.wantWarning {
@@ -7633,12 +7641,14 @@ type deliverableRecoveryAgentBackend struct {
 type scratchWritingAgentBackend struct {
 	runErr        error
 	tempDir       string
+	writableRoots []string
 	workerProcess procgroup.Identity
 	scratchReady  []bool
 }
 
 func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.tempDir = req.TempDir
+	b.writableRoots = req.ExtraWritableRoots
 	_, scratchErr := os.Stat(req.TempDir)
 	b.scratchReady = append(b.scratchReady, scratchErr == nil)
 	if b.workerProcess.PID > 0 {
@@ -8048,47 +8058,90 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 			} else if got.PullRequestHeadSHA != "" || got.BaseRef != "" || got.ProgressBaseRef != "" {
 				t.Fatalf("terminal PR must use default base only: %+v", got)
 			}
+			wantLanded := ""
+			if state == "MERGED" {
+				wantLanded = "old-head"
+			}
+			if got.LandedHeadSHA != wantLanded {
+				t.Fatalf("landed head = %q, want %q", got.LandedHeadSHA, wantLanded)
+			}
 		})
 	}
 }
 
-func TestRunnerReapSquashLandedNativeWorkspace(t *testing.T) {
+func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 	t.Parallel()
-	source := initRunnerSourceRepo(t)
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	runRunnerGit(t, source, "init", "--bare", remote)
-	runRunnerGit(t, source, "remote", "add", "origin", remote)
-	runRunnerGit(t, source, "push", "-u", "origin", "main")
-	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name          string
+		evidence      string
+		pullState     string
+		laterCommit   bool
+		wantPreserved bool
+	}{
+		{name: "hub landed metadata", evidence: "hub"},
+		{name: "merged pull request with deleted branch", evidence: "pull", pullState: "MERGED"},
+		{name: "closed unmerged pull request", evidence: "pull", pullState: "CLOSED", wantPreserved: true},
+		{name: "work after merged pull request", evidence: "pull", pullState: "MERGED", laterCommit: true, wantPreserved: true},
+		{name: "no landing evidence", wantPreserved: true},
 	}
-	issue := connector.Issue{ID: "wi_1", Identifier: "native#1", State: "Done", Closed: true}
-	info, err := backend.Create(t.Context(), workspaceIssue("native", issue))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(info.Path, "native.txt"), []byte("delivered work\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runRunnerGit(t, info.Path, "add", "native.txt")
-	runRunnerGit(t, info.Path, "commit", "-m", "native work")
-	landedHead := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
-	runRunnerGit(t, source, "merge", "--squash", info.Branch)
-	runRunnerGit(t, source, "commit", "-m", "squash native work")
-	runRunnerGit(t, source, "push", "origin", "main")
-	issue.Metadata = map[string]string{
-		"hub_landed_head_sha":  landedHead,
-		"hub_landed_merge_sha": strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD")),
-	}
-	runner := &Runner{projectID: "native", workspace: backend}
-	result, err := runner.ReapWorkspace(t.Context(), issue)
-	if err != nil || result.Worktrees != 1 || result.Branches != 1 {
-		t.Fatalf("ReapWorkspace() = %+v, %v", result, err)
-	}
-	reconciled, err := runner.ReconcileWorkspaces(t.Context(), nil)
-	if err != nil || reconciled.Removed != 0 || len(reconciled.Failures) != 0 {
-		t.Fatalf("ReconcileWorkspaces() = %+v, %v; want no cleanup failures", reconciled, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "remote.git")
+			runRunnerGit(t, source, "init", "--bare", remote)
+			runRunnerGit(t, source, "remote", "add", "origin", remote)
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			runRunnerGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "wi_1", Identifier: "repo#1", State: "Done", Closed: true}
+			info, err := backend.Create(t.Context(), workspaceIssue("project", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "delivered.txt"), []byte("delivered work\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runRunnerGit(t, info.Path, "add", "delivered.txt")
+			runRunnerGit(t, info.Path, "commit", "-m", "delivered work")
+			landedHead := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			runRunnerGit(t, info.Path, "push", "origin", "HEAD:refs/heads/"+info.Branch)
+			runRunnerGit(t, source, "fetch", "origin")
+			runRunnerGit(t, source, "merge", "--squash", info.Branch)
+			runRunnerGit(t, source, "commit", "-m", "squash delivered work")
+			runRunnerGit(t, source, "push", "origin", "main")
+			runRunnerGit(t, source, "push", "origin", "--delete", info.Branch)
+			switch tt.evidence {
+			case "hub":
+				issue.Metadata = map[string]string{"hub_landed_head_sha": landedHead}
+			case "pull":
+				issue.PullRequest = &connector.PullRequest{Number: 7, State: tt.pullState, HeadSHA: landedHead}
+			}
+			if tt.laterCommit {
+				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "later work")
+			}
+			runner := &Runner{projectID: "project", workspace: backend}
+			result, err := runner.ReapWorkspace(t.Context(), issue)
+			if got := errors.Is(err, workspace.ErrWorkspacePreserved); got != tt.wantPreserved {
+				t.Fatalf("ReapWorkspace() = %+v, %v; want preserved %t", result, err, tt.wantPreserved)
+			}
+			if tt.wantPreserved {
+				if _, statErr := os.Stat(info.Path); statErr != nil {
+					t.Fatalf("preserved workspace missing: %v", statErr)
+				}
+				return
+			}
+			if err != nil || result.Worktrees != 1 || result.Branches != 1 {
+				t.Fatalf("ReapWorkspace() = %+v, %v", result, err)
+			}
+			reconciled, err := runner.ReconcileWorkspaces(t.Context(), nil)
+			if err != nil || reconciled.Removed != 0 || len(reconciled.Failures) != 0 {
+				t.Fatalf("ReconcileWorkspaces() = %+v, %v; want no cleanup failures", reconciled, err)
+			}
+		})
 	}
 }
 

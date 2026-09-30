@@ -110,31 +110,30 @@ artifact workflows. GitHub PR delivery remains the default.
 - `GoReleaser Snapshot` validates integration on pushes to `main` and manual
   workflow dispatch; it is not a PR-required check.
 
-### Main Branch Protection
+### Detent Repository Branch Protection
 
-`develop` requires a pull request and a successful `local-gate` commit status
-on the exact pushed head after `make check-fast` passes. Pull requests run no
-GitHub Actions workflows. An hourly operator-host build runs `make check` on
-`develop` and promotes a green head to `main` by merge commit. A failed hourly
-build files one hotfix issue. The operator changes the `main` ruleset from
-merge-group checks to `local-gate` when the workflow change lands.
+This section describes development of the Detent repository. Managed projects
+choose their own CI and branch protection policies, including PR-triggered CI,
+merge-group CI, required checks, and strict freshness. The orchestrator honors
+each project's configured gate and repository rules.
 
-`main` push CI remains release evidence during this transition. Its release
-check names are `Lint`, `Verify (ubuntu-latest)`, `Test Coverage`, and
-`Browser Visual`. The release workflow also accepts an authenticated, newest
-successful `local-gate` commit status on the tagged commit. The signed
-provenance manifest identifies the immutable check-run or status ID.
+Pull requests run `make check-fast` in their own worktree before merge. The
+command has no shared validation lock. No GitHub Actions workflow starts on a
+pull request and no branch ruleset requires a status check. Every `develop`
+push deploys to staging even when the scheduled full suite later fails.
 
-The following integration jobs run on main push or manual dispatch:
+GitHub Actions runs the complete suite hourly on one pinned `develop` SHA when
+new commits exist since the last validated tag. A green run posts
+`scheduled-full-ci` status and cuts an annotated patch version tag. The release
+workflow verifies that status and publishes artifacts from the tag. It does
+not merge to `main` or deploy production. A failing job opens or updates one
+fingerprinted Todo hotfix issue; a later green run closes it. Manual dispatch
+can force one job failure to verify that path.
 
-- `Portability Verify (macos-latest)` - budget: `8m`
-- `Portability Verify (windows-latest)` - budget: `45m`
-- `Windows Core` - budget: `4m`
-- `Installer Smoke (ubuntu-latest)` - budget: `6m`
-- `Installer Smoke (windows-latest)` - budget: `6m`
-- `GoReleaser Snapshot` - budget: `35m`
-
-`.github/workflows/portability-stress.yml` runs only on manual dispatch.
+Portability stress remains manual only. The scheduled full suite includes
+invariant checks, lint, build, vet, tests, race shards, coverage, security,
+browser visual shards, portability, Windows smoke, installer smoke, and a
+GoReleaser snapshot.
 
 ## Still Git/PR Coupled
 

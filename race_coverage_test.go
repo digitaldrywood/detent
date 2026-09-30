@@ -27,7 +27,7 @@ func TestCombinedCoveragePublishesOnlyCurrentSuccessfulRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"pass", "hub-fail", "rest-fail", "web-fail", "list-fail", "missing-hub", "missing-web", "overlap", "changed-selection", "rest-race-fail", "orchestrator-fail", "workspace-fail", "workspace-race-fail", "missing-workspace"} {
+	for _, mode := range []string{"pass", "hub-fail", "hub-b-fail", "hub-c-fail", "rest-fail", "web-fail", "list-fail", "missing-hub", "missing-web", "overlap", "changed-selection", "rest-race-fail", "orchestrator-fail", "workspace-fail", "workspace-race-fail", "missing-workspace"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
@@ -58,7 +58,7 @@ else
     if [ "$1" = run ]; then group=hub; fi
     if [ "$1" = run ] && [ "${!#}" = ./internal/workspace ]; then
         group=workspace
-        case "$*" in *"-timeout 30m"*) ;; *) exit 10 ;; esac
+        case "$*" in *"-timeout "*) ;; *) exit 10 ;; esac
         case " $* " in
             *" -race "*) [ "$FIXTURE_MODE" != workspace-race-fail ]; exit ;;
         esac
@@ -70,7 +70,18 @@ else
             [ "$argument" != github.com/digitaldrywood/detent/internal/web ] || exit 13
         done
     fi
-    profile_mode=set
+	if [ "$group" = hub ]; then
+		case " $* " in
+			*" -run ^Test[A-GI-O] "*|*" -run ^Test[HW] "*|*" -skip ^Test[A-GI-O]|^Test[HW] "*) ;;
+			*) exit 16 ;;
+		esac
+		case " $* " in
+			*" -run ^Test[HW] "*) [ "$FIXTURE_MODE" != hub-b-fail ] || exit 1 ;;
+			*" -skip ^Test[A-GI-O]|^Test[HW] "*) [ "$FIXTURE_MODE" != hub-c-fail ] || exit 1 ;;
+		esac
+		printf '%s\n' "$*" >> hub-invocations
+	fi
+	profile_mode=set
     if [ "$group" != rest ]; then profile_mode=atomic; fi
     if [ "$1 $2 ${3:-}" = 'test -count=1 -race' ]; then
         case " $* " in *" ./internal/web "*) ;; *) exit 14 ;; esac
@@ -120,7 +131,7 @@ fi
 				t.Fatal(err)
 			}
 			for _, input := range []string{"1", "2"} {
-				command := exec.CommandContext(t.Context(), bash, "gate.sh", "2", "15m", outputPath, "4", "20m")
+				command := exec.CommandContext(t.Context(), bash, "gate.sh", "2", "15m", outputPath, "4", "20m", "^Test[A-GI-O]", "^Test[HW]")
 				command.Dir = dir
 				command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+dir, "DETENT_API_TOKEN=fixture-token", "FIXTURE_MODE="+mode, "FIXTURE_INPUT="+input, "FIXTURE_MERGER="+merger)
 				output, err := command.CombinedOutput()
@@ -134,6 +145,10 @@ fi
 				if mode == "pass" {
 					if strings.Contains(string(profile), "stale") || strings.Count(string(profile), "/file"+input+".go:") != 4 {
 						t.Fatalf("published wrong input: %s", profile)
+					}
+					invocations, err := os.ReadFile(filepath.Join(dir, "hub-invocations"))
+					if err != nil || strings.Count(string(invocations), "./internal/hubserver\n") != 3*int(input[0]-'0') {
+						t.Fatalf("hub partitions = %q: %v", invocations, err)
 					}
 				} else if string(profile) != "stale prior result" {
 					t.Fatalf("failed gate published partial result: %s", profile)

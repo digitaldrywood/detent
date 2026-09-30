@@ -533,7 +533,9 @@ function EffortPicker(props: ComposerPreferenceControlsProps): React.ReactElemen
                       </span>
                     ) : null}
                   </span>
-                  {option.default && option.id !== AUTO_PREFERENCE ? (
+                  {option.default &&
+                  option.id !== AUTO_PREFERENCE &&
+                  props.preferences.model !== AUTO_PREFERENCE ? (
                     <span
                       data-testid={`composer-effort-default-${option.id}`}
                       className="ms-auto shrink-0 rounded-sm bg-foreground/[0.08] px-1.5 py-0.5 font-medium text-[10px] text-muted-foreground uppercase"

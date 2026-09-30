@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -115,22 +116,13 @@ func (s *Service) changeRunnerCredential(c echo.Context, replacement string) err
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	token, err := apiBearerToken(c)
-	if err != nil {
-		return s.nativeAPIError(c, runnerUnauthorized())
-	}
-	if replacement == token {
+	if apikey.HashToken(replacement) == credential.Hash {
 		return s.nativeAPIError(c, nativeInvalid("Rotation requires a different credential"))
 	}
 	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		var created, expires, hash string
-		var revoked sql.NullString
-		if err := tx.QueryRowContext(ctx, "SELECT created_at, expires_at, token_hash, revoked_at FROM api_tokens WHERE id = ?", credential.ID).Scan(&created, &expires, &hash, &revoked); err != nil {
-			return nil, err
-		}
-		if revoked.Valid || hash != apikey.HashToken(token) || !runnerTimeValid(now, created, expires) {
-			return nil, runnerUnauthorized()
-		}
+		// runnerTransaction rechecks the current hash, revocation and time
+		// policy before this mutation; renewal alone permits elapsed expiry.
+		hash := credential.Hash
 		kind := "renewed"
 		if replacement != "" {
 			kind = "rotated"
@@ -171,12 +163,16 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
-		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
-		DisplayName     string                    `json:"display_name"`
-		Capacity        int                       `json:"capacity"`
-		Version         string                    `json:"version"`
-		OS              string                    `json:"os,omitempty"`
-		Architecture    string                    `json:"architecture,omitempty"`
+		Problems         []runnerauth.Problem      `json:"problems"`
+		ProtocolMajor    int                       `json:"protocol_major,omitempty"`
+		SettingsRejected bool                      `json:"settings_rejected,omitempty"`
+		BackendIsolation isolation.Report          `json:"backend_isolation,omitempty"`
+		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
+		DisplayName      string                    `json:"display_name"`
+		Capacity         int                       `json:"capacity"`
+		Version          string                    `json:"version"`
+		OS               string                    `json:"os,omitempty"`
+		Architecture     string                    `json:"architecture,omitempty"`
 		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
 		// can serve for a workspace session (decisions section 18.10). They
 		// ride the heartbeat beside the provider reports because the claim
@@ -190,7 +186,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
-		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be user or container"))
+		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be sandbox, container or user"))
 	}
 	scope := nativeRequestScope(c)
 	if scope.credential.Runner.RunnerID != "" && string(scope.credential.Runner.MachineID) != c.Param("machine") {
@@ -199,15 +195,28 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	if len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, nativeInvalid("Display name, version and nonnegative capacity are required"))
 	}
-	return s.runnerTransaction(c, http.StatusNoContent, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+	status := http.StatusNoContent
+	if scope.credential.Runner.RunnerID != "" {
+		status = http.StatusOK
+	}
+	return s.runnerTransaction(c, status, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		if scope.credential.Runner.RunnerID != "" {
+			if err := updateRunnerIsolationReport(ctx, tx, scope, request.BackendIsolation); err != nil {
+				return nil, err
+			}
 			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
+				return nil, err
+			}
+			if err := updateRunnerProblems(ctx, tx, scope, request.Problems, request.ProtocolMajor, request.SettingsRejected, now); err != nil {
 				return nil, err
 			}
 			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
 				return nil, err
 			}
-			return struct{}{}, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)
+			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
+				return nil, err
+			}
+			return readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID)
 		}
 		if len(request.ProviderReports) != 0 {
 			return nil, nativeInvalid("Provider reports require an enrolled runner")
@@ -225,9 +234,6 @@ func validRunnerPlatform(os, architecture string) bool {
 }
 
 func updateRunnerHeartbeat(ctx context.Context, tx *sql.Tx, scope nativeScope, capacity int, version, os, architecture string, now time.Time) error {
-	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-		return err
-	}
 	result, err := tx.ExecContext(ctx, `UPDATE runner_identities SET reported_capacity = ?, os = ?, architecture = ?, last_heartbeat_at = ? WHERE id = ? AND token_id = ? AND organization_id = ?`, capacity, os, architecture, formatHubTime(now), scope.credential.Runner.RunnerID, scope.credential.ID, scope.organization)
 	if err != nil {
 		return err

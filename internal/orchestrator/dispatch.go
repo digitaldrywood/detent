@@ -30,6 +30,9 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 // planner remains usable for previews that cannot perform remote reads.
 func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
 	planner := o.dispatchPlanner()
+	if o.workerHostChecker != nil {
+		planner.workerHostAvailable = func(host string) bool { return o.workerHostChecker.WorkerHostAvailable(ctx, host) }
+	}
 	planner.operatorRejectedHead = func(issue connector.Issue) (bool, error) {
 		return o.operatorRejectedHead(ctx, issue)
 	}
@@ -211,7 +214,6 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 				return
 			}
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
-			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
 			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
 			rescheduled := state.Retry[issue.ID]
 			rescheduled.RecoveryAttemptID = retry.RecoveryAttemptID
@@ -221,8 +223,6 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			rescheduled.ForgeUnavailable = retry.ForgeUnavailable
 			rescheduled.ForgeHost = retry.ForgeHost
 			rescheduled.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
-			rescheduled.GitHubMonitor = retry.GitHubMonitor
-			rescheduled.GitHubCredential = retry.GitHubCredential
 			rescheduled.Wait = retry.Wait
 			rescheduled.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 			state.Retry[issue.ID] = rescheduled
@@ -352,11 +352,6 @@ func dispatchFailureRetryReason(reason string) string {
 }
 
 func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
-	if retry.GitHubMonitor {
-		if _, exists := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; exists {
-			return true
-		}
-	}
 	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
 		return false
 	}
@@ -482,7 +477,6 @@ const (
 	dispatchIssueFailureGitHubLookupPaused    = "github_lookup_backoff"
 	dispatchIssueFailureTrackerUnavailable    = "tracker_unavailable"
 	dispatchIssueFailureForgeUnavailable      = "forge_unavailable"
-	dispatchIssueFailureGitHubMonitor         = "worker_github_budget_monitor_unavailable"
 	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
 	dispatchIssueFailureMemoryPressure        = "memory_pressure_high"
 	dispatchIssueFailureIOPressure            = "io_pressure_high"
@@ -626,9 +620,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, queuedRetry, now) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
 	}
-	if workerGitHubMonitorBlocks(state, issue.ID, queuedRetry, now) {
-		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubMonitor}
-	}
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
@@ -730,7 +721,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	projectStats := o.projectStateSlotStats(slotIssue, state)
 
-	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
+	workerHost, ok := o.liveDispatchPlanner(ctx).selectWorkerHost(state, preferredWorkerHost)
 	if !ok && !mergeControlEligible {
 		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
 		o.recordMergeFailed(state, issue, now, "worker_host_unavailable", nil)
@@ -1023,7 +1014,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		CapacityScope:          capacityScope,
 		CapacityProbe:          capacityProbeKey != "",
 		ForgeProbeHost:         reservedForgeProbeHost(state, issue.ID),
-		GitHubCredential:       reservedGitHubCredential(state, issue.ID),
 		ModelPermitExempt:      !modelPermitRequired,
 		StopDestination:        o.cfg.StopRunTargetState,
 		StopPriorityOptions:    stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
@@ -1081,6 +1071,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if retryQueued {
 		request.RetryMode = queuedRetry.RetryMode
 		request.ResumeState = queuedRetry.ResumeState
+		if queuedRetry.WorkerHost != workerHost {
+			request.RetryMode = runpkg.RetryModeFresh
+			request.ResumeState = store.AgentResumeState{}
+		}
 	}
 	if priorAttempt.ExplainBeforeRetry {
 		delete(state.PriorAttempts, issue.ID)

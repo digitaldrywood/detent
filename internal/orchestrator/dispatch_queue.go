@@ -28,9 +28,17 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 		projectCapacity = len(state.Running) + o.dispatchPlanner().availableSlots(state)
 	}
 	stateCapacity := o.projectStateSlotStats(slotIssue, state).capacity
-	hostCapacity := o.cfg.MaxConcurrentAgentsPerHost
+	hostCapacity := o.cfg.workerHostCapacity(workerHost)
 	hosts := make([]scheduler.HostCandidate, 0, len(o.cfg.WorkerHosts))
 	for _, host := range o.cfg.WorkerHosts {
+		if o.cfg.WorkerHostSelection == "preference" || len(o.cfg.WorkerHostCaps) > 0 {
+			if host != workerHost {
+				continue
+			}
+		}
+		if o.workerHostChecker != nil && !o.workerHostChecker.WorkerHostAvailable(ctx, host) {
+			continue
+		}
 		hosts = append(hosts, scheduler.HostCandidate{Host: host})
 	}
 	for _, running := range state.Running {
@@ -50,10 +58,10 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 			hostCapacity--
 		}
 	}
-	if projectCapacity <= 0 || stateCapacity <= 0 || (o.cfg.MaxConcurrentAgentsPerHost > 0 && hostCapacity <= 0) {
+	if projectCapacity <= 0 || stateCapacity <= 0 || (o.cfg.workerHostCapacity(workerHost) > 0 && hostCapacity <= 0) {
 		return scheduler.Slot{}, false, scheduler.DispatchGateDecision{Reason: scheduler.DecisionReasonProjectCapacityFull}
 	}
-	if len(hosts) > 0 {
+	if len(hosts) > 0 && o.cfg.WorkerHostSelection != "preference" && len(o.cfg.WorkerHostCaps) == 0 {
 		// A poll-time choice is not affinity. Only a retry has a preferred host.
 		workerHost = ""
 		if action.retryState != nil {
@@ -126,6 +134,9 @@ func (o *Orchestrator) removePendingGlobalDispatches(remove func(string) bool) {
 }
 
 func (o *Orchestrator) dispatchGrantedRequests(ctx context.Context, state *State, now time.Time) {
+	restScope := &connector.RESTScope{ProjectID: o.cfg.Project.ID, Name: "global_grants"}
+	ctx = connector.WithRESTScope(ctx, restScope)
+	defer connector.LogRESTScope(o.logger, restScope)
 	type readyDispatch struct {
 		pending pendingGlobalDispatch
 		grant   scheduler.DispatchResult
@@ -202,6 +213,9 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 	}
 	action.issue = o.hydrateDispatchDependencies(ctx, prepared[0], make(map[string]dependencyBlocker))
 	action.workerHost = grant.Slot.Host
+	if o.workerHostChecker != nil && !o.workerHostChecker.WorkerHostAvailable(ctx, action.workerHost) {
+		return
+	}
 	retry, retryQueued := state.Retry[action.issue.ID]
 	if retryQueued {
 		if action.retryState == nil || retry.DueAt.After(now) {

@@ -21,10 +21,13 @@ func TestWorkerScratchEnvironmentMatches(t *testing.T) {
 		{name: "relative path", env: []string{"TMPDIR=relative"}},
 		{name: "unrelated reference", env: []string{"PATH=" + root}},
 		{name: "changed temp retains owner", env: []string{"TMPDIR=" + t.TempDir(), "DETENT_WORKER_SCRATCH=" + root}, want: true},
+		{name: "external scratch", env: []string{"TMPDIR=" + filepath.Join(WorkerScratchRoot(root), "attempt-1")}, want: true},
+		{name: "external scratch marker", env: []string{"DETENT_WORKER_SCRATCH=" + filepath.Join(WorkerScratchRoot(root), "attempt-1")}, want: true},
+		{name: "other workspace external scratch", env: []string{"DETENT_WORKER_SCRATCH=" + filepath.Join(WorkerScratchRoot(root+"-neighbor"), "attempt-1")}},
 		{name: "explicit other owner", env: []string{"TMPDIR=" + root, "DETENT_WORKER_SCRATCH=" + t.TempDir()}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := workerScratchEnvironmentMatches(root, tt.env); got != tt.want {
+			if got := workerScratchEnvironmentMatches(workerScratchOwnerRoots(root), tt.env); got != tt.want {
 				t.Fatalf("ownership match = %t, want %t", got, tt.want)
 			}
 		})

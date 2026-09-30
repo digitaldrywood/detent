@@ -1,0 +1,170 @@
+KEEP	internal/orchestrator	TestRunParksIssueAfterRepeatedInstantBackendFailuresTruncatesConfiguredOutput	Checks configured truncation in blocked reasons and comments.
+KEEP	internal/orchestrator	TestRunRetriesTransientStartupCleanupFetchAndDispatchesCandidate	Checks failed startup cleanup is retried exactly once.
+KEEP	internal/orchestrator	TestStateReturnsDefensiveCopies	Checks snapshot mutations cannot change internal state.
+KEEP	internal/orchestrator	TestTickLeavesTextDependencyBlockedPRIssueBlocked	Checks text-only dependencies trigger identifier lookup.
+KEEP	internal/orchestrator	TestTickAutoUnblocksDependencyFromIssueBody	Checks issue-body dependency formats trigger identifier lookup.
+KEEP	internal/orchestrator	TestTickAutoUnblocksDependencyWaitingIssue	Checks unblock audit comment, event, and blocked-state removal.
+KEEP	internal/orchestrator	TestDeferredDependencyUnblockYieldsRefreshBudget	Checks one scan per refresh and competing read progress.
+KEEP	internal/orchestrator	TestTickFinalizesAffectedEpicWhenActiveChildMovesToDone	Checks completed children are removed from the epic transition watch.
+KEEP	internal/orchestrator	TestRequestRefreshQueuesImmediateTick	Checks refresh is queued and non-coalesced with a nonzero timestamp.
+KEEP	internal/orchestrator	TestMergeRequiredCheckStreakClearsWhenBlocked	Checks parking resets the missing-check streak before recovery.
+KEEP	internal/orchestrator	TestDispatchIssueClearsReapedWorkspaceMarker	Checks dispatch removes the reaped-workspace marker.
+KEEP	internal/orchestrator	TestTransitionCompletedActiveIssuesCompletesOperationalWorkWithoutPullRequest	Checks operational completion state and operational evidence in the audit.
+KEEP	internal/orchestrator	TestDelegateNativeMergeQueueIssuesFallsBackWithoutNativeQueue	Checks unavailable native queues cause no enqueue.
+KEEP	internal/orchestrator	TestNativeMergeQueueUnknownAdmissionLimit	Checks zero and negative admission limits defer all enqueues.
+KEEP	internal/orchestrator	TestDelegateNativeMergeQueueIssuesWaitsForMissingEntryOutcome	Checks a missing provider entry retains an active queue entry.
+KEEP	internal/orchestrator	TestNativeMergeQueueRemovalOrdering	Checks older, equal, and missing removal timestamps preserve cached ownership.
+KEEP	internal/orchestrator	TestStateSnapshotEmpty	Checks empty snapshots have zero counts and no rows.
+KEEP	internal/orchestrator	TestCompletionFenceUnchangedOrUnknownLaneDefers	Checks missing-lane completion produces no tracker comment.
+KEEP	internal/orchestrator	TestDependencyDeferralEvidenceAndReleaseAcrossRestart	Checks refusal evidence persists across database reopen and dependency release.
+KEEP	internal/orchestrator	TestQueuedHumanGateConditionsNeverDeliver	Checks both queued human-gate diagnostics remain visible.
+KEEP	internal/orchestrator	TestDispatchableAuthorizationDecisionCarriesSelectorDetail	Checks selector refusal rule, value, and explanation text.
+KEEP	internal/orchestrator	TestRecoverDurableWorkAttemptsPreservesNewerClaimLease	Checks stale capacity release preserves a newer claim lease.
+KEEP	internal/orchestrator	TestTransitionCompletedActiveIssuesWaitsWhenReviewThreadsUnavailable	Checks unavailable hydration leaves lane unchanged without updates or comments.
+KEEP	internal/orchestrator	TestProviderWindowScaledCap	Checks permit-cap arithmetic at percentage boundaries.
+KEEP	internal/orchestrator	TestRecordMergeQueueEnteredResetsTerminalAttempt	Checks terminal merge fields and attempt durations reset.
+KEEP	internal/orchestrator	TestWorkerGitHubMonitorIdleHoldExpires	Checks a running probe retains the monitor block at expiry.
+KEEP	internal/orchestrator	TestConfigFromWorkflowIncludesDispatchPriorityByState	Checks priority slices are copied and workflow flags propagate.
+KEEP	internal/orchestrator	TestAnnotateUnblockerCountsIsInputOrderIndependent	Checks unblocker counts stay correct across input permutations.
+KEEP	internal/orchestrator	TestValidatorFailedMemoRejectsDifferentPRProvenance	Checks failed verdicts reject another repository and accept exact provenance.
+KEEP	internal/orchestrator	TestBlockedCauseFingerprintIgnoresAttemptMutatedSignals	Checks workspace and workpad churn leave breaker fingerprints unchanged.
+KEEP	internal/cli	TestOnboardingDraftAnswersCommandUsesCurrentNonDetentCheckoutAsTarget	Checks draft JSON includes status, confidence, and review notes.
+KEEP	internal/cli	TestOnboardingValidateAnswersCommandSummarizesReviewGateProfile	Checks review-gate defaults and explanatory summaries.
+KEEP	internal/cli	TestRootCommandBootsFromGlobalConfig	Checks boot mode, resolved config path, and flag provenance.
+KEEP	internal/cli	TestStartCommandYesInstallsWithoutPrompt	Checks --yes installs in one call without prompting.
+KEEP	internal/cli	TestDevRuntimeCommandBuildsKanbanDemoBootConfig	Checks Kanban demo identity, color, fixture absence, and transition override.
+KEEP	internal/cli	TestDevRuntimeCommandDefaultsNonDemoHostToLoopback	Checks non-demo runtime defaults to loopback.
+KEEP	internal/cli	TestDevRuntimeCommandBuildsIsolatedBootConfig	Checks isolated runner, connector, port, and database configuration.
+KEEP	internal/cli	TestDevRuntimeCommandKeepsExplicitHostForDemo	Checks an explicit demo host overrides the wildcard default.
+KEEP	internal/cli	TestAgentPoolsFixPreservesSplitPathForMixedClassPoolBinding	Checks mixed-class binding emits a split preview containing agent_pools.
+KEEP	internal/cli	TestRootCommandHelpListsAdminCommands	Checks root help lists the administrative commands.
+KEEP	internal/cli	TestPublishSnapshotOnceAssignsMonotonicSeq	Checks snapshot sequence increments on every publication.
+KEEP	internal/cli	TestDoctorInvariantAdmissionRepeatedEntries	Checks repeated admission entries are counted and human moves excluded.
+KEEP	internal/cli	TestRunWithShutdownZeroSessionsLogsCleanupBoundaries	Checks all shutdown cleanup boundaries and timing are logged.
+KEEP	internal/cli	TestDoctorParkReviewThreshold	Checks configured park thresholds and warning detail.
+KEEP	internal/cli	TestDoctorParkReviewListsEveryIssue	Checks every parked issue appears with its park count.
+KEEP	internal/cli	TestProjectDependenciesInjectsNonNilRunner	Checks the injected runner is nonnil and has the expected type.
+KEEP	internal/cli	TestCheckDoctorRouteModelsFailsRejectedBackendCommandPin	Checks rejected model-pin provenance and proposal target path.
+KEEP	internal/cli	TestCloudEmptyEntitlementsUseDefaultCatalog	Checks empty entitlements serialize as null and preserve default plans.
+KEEP	internal/cli	TestMergeSnapshotUsesNewestHostPressureObservations	Checks pressure values come from the newest observations.
+KEEP	internal/cli	TestDoctorBlockedRecoveryClassifiesHumanHolds	Checks human-hold reason and action-specific remedies.
+KEEP	internal/cli	TestDoctorTokenAuditExternalWorkflow	Checks external workflow diagnostics report both exact byte counts.
+KEEP	internal/cli	TestCheckDoctorWorkflowLintWarnsForExplicitTopLevelBudgetSetting	Checks top-level budget warning paths and enable-or-remove hints.
+KEEP	internal/cli	TestDoctorWorkflowOptimizationFlagsMissingSessionBrake	Checks the missing-session-brake finding is emitted.
+KEEP	internal/cli	TestReapWorkerProcessesClassifiesCleanupOnlyFailures	Checks cleanup-only error classification with errors.As.
+KEEP	internal/cli	TestGlobalConfigReloaderHotAppliesSchedulerCapacityWithoutInterruptingWorkers	Checks lowered capacity preserves occupied slots and admits only after attrition.
+KEEP	internal/cli	TestRequestUpdateRestartRacesManualDrainWithoutOverwritingOwner	Checks restart binary stays valid during concurrent drain and restart requests.
+KEEP	internal/cli	TestDoctorModelSelectionProvenance	Checks model-selection provenance and secret redaction.
+KEEP	internal/cli	TestReapWorkerProcessesPreservesStaleIdentityArtifacts	Checks stale process identities skip artifact cleanup.
+KEEP	internal/cli	TestDoctorTokenAuditGateConflict	Checks gate-conflict false positives, duplicates, and contradictions.
+KEEP	internal/cli	TestDetentRolloutsTraversalBoundaries	Checks traversal excludes symlink targets even during root replacement.
+KEEP	internal/cli	TestCheckDoctorConfigReload	Checks ordinary-file diagnostics say the config is watched for live reload.
+KEEP	internal/cli	TestDoctorCommandWritesJSONReport	Checks JSON report structure, PASS summary, and absence of progress text.
+KEEP	internal/hubserver	TestWorkspaceRelayRecordsANonZeroExitAsFailed	Checks nonzero exit persists failure, exit code, output, and empty reason.
+KEEP	internal/hubserver	TestWorkspaceRelayGivesEachExecRunItsOwnStream	Checks separate exec runs get distinct streams starting at sequence one.
+KEEP	internal/hubserver	TestWorkspaceRelayForwardsAFilesRequestAndItsAnswer	Checks Files forwarding, hub actor stamp, and actor removal on replies.
+KEEP	internal/hubserver	TestWorkspaceRelayWritesAnAuditRowForEveryPersonConnection	Checks connection audit rows record closure, traffic, and reason.
+KEEP	internal/hubserver	TestWorkspaceRelayGitWriteCheckIgnoresOtherChannels	Checks Git write refusal ignores non-Git channels.
+KEEP	internal/hubserver	TestWorkspaceRequestAfterThePreviousOneClosedIsAccepted	Checks closing or expired predecessors allow a new requested workspace.
+KEEP	internal/hubserver	TestWorkspaceBindCarriesRunOnCreationActions	Checks bind carries only creation actions in authored order with commands.
+KEEP	internal/hubserver	TestRecordNativeAttemptCapturesDispatchState	Checks persisted attempt revision and continuation dispatch generation.
+KEEP	internal/hubserver	TestClaimCandidatesIgnoreAnsweredOnProjectionProfile	Checks answered projection-profile items remain claimable.
+KEEP	internal/hubserver	TestClaimCandidatesKeepOfferingUnsuccessfulAttempts	Checks failed, cancelled, and interrupted attempts remain retryable.
+KEEP	internal/hubserver	TestWorkItemChangeSurfaceCreditsOnlyTheFinalDiff	Checks empty, absent, or earlier diffs earn no final revision credit.
+KEEP	internal/hubserver	TestAttemptDiffDenylistAppliedOnWrite	Checks denied patches are removed from responses and the database.
+KEEP	internal/hubserver	TestConversationReferencesAreBounded	Checks references are capped at MaxReferences.
+KEEP	internal/hubserver	TestWorkItemChangeSurfaceReportsNoConnector	Checks absent connector and empty change-request ID.
+KEEP	internal/hubserver	TestConversationCoordinatorFailurePreservesUserText	Checks provider failure preserves partial assistant and user text.
+KEEP	internal/hubserver	TestNativeConcurrentOrderedEvents	Checks concurrent duplicate events persist only one event.
+KEEP	internal/hubserver	TestHostedBillingJSONRefusesCheckoutWithMultipleSubscriptions	Checks multiple subscriptions disable checkout.
+KEEP	internal/hubserver	TestListHostedMembersIsOrdered	Checks member listing consistently orders owner before viewer.
+KEEP	internal/hubserver	TestHostedInvitationConcurrentKeyInvitesOnce	Checks concurrent invitation retries produce one ID and one provider call.
+KEEP	internal/hubserver	TestProjectActionCreateNormalizesAndRecordsProvenance	Checks action normalization, defaults, provenance, and listing order.
+KEEP	internal/hubserver	TestClaimHostedCommandIsExclusive	Checks concurrent command claims have exactly one winner.
+KEEP	internal/hubserver	TestHostedAccountClientRoutesMounted	Checks every account-client API call has a mounted route.
+KEEP	internal/hubserver	TestOnboardingRepositoryPoliciesAndRunners	Checks runner exclusions and absence of private runner data.
+KEEP	internal/hubserver	TestNativeConcurrentDependencyCycle	Checks concurrent opposing dependencies cannot both create a cycle.
+KEEP	internal/hubserver	TestConversationCoordinatorAvailability	Checks coordinator availability depends on a configured backend.
+KEEP	internal/hubserver	TestGitHubWebhookEqualTimestampConflictConvergesAndHydrates	Checks equal-timestamp conflicts converge and enqueue one conflict hydration.
+KEEP	internal/hubserver	TestGitHubWebhookSourceOrderingConverges	Checks webhook ordering preserves newer title, author, and source timestamp.
+KEEP	internal/hubserver	TestGitHubWebhookMapsAndClearsWorkflowStateFromLabels	Checks removing a workflow label clears its mapped state.
+KEEP	internal/hubserver	TestGitHubWebhookPayloadRetentionPreservesAuditAndProjection	Checks payload purging retains pending payloads, audit metadata, and projection.
+KEEP	internal/hubserver	TestConcurrentClaimsProduceOneFencedWinner	Checks concurrent claims persist one winner with a newer fencing token.
+KEEP	internal/hubserver	TestReconcileDoesNotCompleteHydrationCreatedAfterCapture	Checks new or coalesced post-capture hydrations remain pending.
+KEEP	internal/hubserver	TestTrackerCandidatesApplyQueueOrderBeforeLimit	Checks priority and queue rank are applied before the result limit.
+KEEP	internal/hubserver	TestOpenCreatesPrivateDatabaseFiles	Checks database and SQLite sidecar permissions are 0600.
+KEEP	internal/hubserver	TestSchemaEnforcesIdentityAndAppendOnlyConstraints	Checks uniqueness, foreign keys, fencing, and append-only constraints.
+KEEP	internal/hubserver	TestOpenCreatesHubSchemaAndConfiguresSQLite	Checks exact schema tables and SQLite operating pragmas.
+KEEP	internal/hubserver	TestHostedReviewLaneMigration	Checks review-lane migration persists Human Review as non-dispatchable.
+KEEP	internal/connector/github	TestConnectorFetchCandidateIssuesWithFilterIgnoresStatusLabels	Checks filtered polling makes exactly three requests using only the status label.
+KEEP	internal/connector/github	TestConnectorFetchIssuesByStatesIgnoresHumanActionIssueMentions	Checks human-action issue mentions create no dependency references.
+KEEP	internal/connector/github	TestConnectorFetchCandidateIssuesCapturesLinkedChildIssues	Checks lightweight polling omits child relationships and expensive query fields.
+KEEP	internal/connector/github	TestConnectorFetchIssuesByStatesDefaultsBlankProjectStatusesToBacklog	Checks default-status mutation includes the correct project and field IDs.
+KEEP	internal/connector/github	TestConnectorUpdateIssueStateReplacesStatusLabels	Checks status replacement preserves case-varied selector labels.
+KEEP	internal/connector/github	TestConnectorSetAssigneeAddsUserByLogin	Checks whitespace-trimmed assignee login is sent in the payload.
+KEEP	internal/connector/github	TestClientGraphQLRecordsRateLimitStatusWithoutSnapshot	Checks flushing clears the recorded rate-limit status.
+KEEP	internal/connector/github	TestReadinessGitHubAppInstallationLabelModeSkipsProjectAndIssueFieldPermissions	Checks label mode omits Projects and Issue Fields permission requirements.
+KEEP	internal/connector/github	TestInstallationTokenSourceRefreshesNearExpiry	Checks near-expiry tokens refresh instead of being reused.
+KEEP	internal/connector/github	TestClientGraphQLCountsStaleHeaderInferredMutation	Checks stale headers add zero cost and preserve the previous quota snapshot.
+KEEP	internal/connector/github	TestPullRequestCheckInventoryRetainsIgnoredNames	Checks cancelled and skipped check conclusions are retained.
+KEEP	internal/connector/github	TestStatusCacheReturnsFreshMetadataByProject	Checks cache metadata is isolated by project and preserves field ID.
+KEEP	internal/runner	TestBindConversationLogsResumeMode	Checks bind logs the selected conversation resume mode.
+KEEP	internal/runner	TestRunnerRunLeavesThreadResumeDisabledByDefault	Checks default runs neither look up nor send resume state.
+KEEP	internal/runner	TestRunnerRunRetryResumeUsesRequestedState	Checks requested resume identity and persisted resumed-from session.
+KEEP	internal/runner	TestBuildPromptIgnoresFencedNoteHeadings	Checks heading-like text inside fenced output is omitted correctly.
+KEEP	internal/runner	TestBuildPromptOmitsWorkflowInstructionsWhenUnconfigured	Checks unconfigured workflow instructions are omitted and base prompt leads.
+KEEP	internal/runner	TestBuildPromptAppendsGitHubClosingReferenceInstruction	Checks the prompt includes the GitHub closing reference.
+KEEP	internal/runner	TestSupervisorDoesNotAdvanceRetryForCapacityError	Checks capacity errors retain their capacity classification.
+KEEP	internal/runner	TestSupervisorDoesNotApplyGenericBackoffToGitHubRESTHeadroom	Checks REST reservation errors retain their exact error and capacity classification.
+KEEP	internal/runner	TestRunAgentBackendTurnKeepsLivenessTimeoutSeparateFromMaxDuration	Checks liveness timeout and total duration are forwarded separately.
+KEEP	internal/runner	TestWorkerGitHubFilteredEnvironment	Checks gh reads the exact worker token with token environment variables absent.
+KEEP	internal/runner	TestWorkerServiceEnvironmentOverridesAmbientServiceCredentials	Checks effective process environment overrides ambient service credentials.
+KEEP	internal/runner	TestTurnUsageEntryPricesTheTurn	Checks nonzero USD cost and exact pricing callback arguments.
+KEEP	internal/runner	TestAttemptDiffSourceComputesWorktreeDiff	Checks diff status, line counts, patches, and secret-file normalization.
+KEEP	internal/runner	TestAttemptDiffSourceStripsPatchesWhenTruncated	Checks stripping patches preserves additions and marks files truncated.
+KEEP	internal/runner	TestProviderIdentityWriteOutlivesReadDeadline	Checks provider writes complete after the caller's shorter deadline.
+KEEP	internal/web	TestProjectDiagnosticsRendersWorkflowFlowEfficiencyCharts	Checks flow-efficiency values and lane chart inclusion.
+KEEP	internal/web	TestKanbanMoveSuccessResponseRefreshesProjectBoard	Checks dialog move response uses morph headers and success feedback.
+KEEP	internal/web	TestKanbanDragMoveSuccessResponseRefreshesProjectBoardWithoutInlineFlash	Checks drag move response uses morph headers without inline success feedback.
+KEEP	internal/web	TestProjectDiagnosticsRendersWorkflowMetricsTrends	Checks trend labels and exact positive and negative duration changes.
+KEEP	internal/web	TestKanbanMoveSerializesMutationsPerProject	Checks maximum concurrent connector mutations stays at one.
+KEEP	internal/web	TestKanbanMoveAllowsConfiguredTransitionOverrides	Checks configured transition successfully writes Human Review.
+KEEP	internal/web	TestProjectDiagnosticsRendersWorkflowMetricsEmptyHistory	Checks empty-history guidance and zero project row count.
+KEEP	internal/web	TestAPIBoardCardFleetSheetShowsIssueCommentControls	Checks fleet conversation includes thread and comment-post controls.
+KEEP	internal/web	TestLibraryPageListsLocalArtifactsAndPullRequestRecords	Checks artifact details and PR evidence while rejecting unsafe review URLs.
+KEEP	internal/web	TestChatMutationRequiresConfirmationAndUsesKanbanHandler	Checks confirmation feedback and persisted chat action provenance.
+KEEP	internal/web	TestProjectKanbanRendersConfiguredDispatchPriorityLabel	Checks configured dispatch-priority label markers and rank explanation.
+KEEP	internal/web	TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode	Checks read-only boards omit mutation URLs and action controls.
+KEEP	internal/web	TestServerEventsStreamsPublishedSnapshots	Checks an already-open SSE stream delivers newly published snapshots.
+KEEP	internal/web	TestAPIBoardCardRendersIssueCommentEmptyState	Checks issue-comment empty-state text is rendered.
+KEEP	internal/web	TestAPIBoardCardRendersIssueComments	Checks comment body, author, backend, and remote marker are rendered.
+KEEP	internal/web	TestAPIIssueResolvesIdleBoardReferences	Checks idle issue lane and activity across supported reference forms.
+KEEP	internal/web	TestAPIStateProjectsRunningBuildUnderInstance	Checks running build version and commit appear under instance.
+KEEP	internal/web	TestAPIStateSurfacesProjectAuthHealth	Checks project authentication status, error, and timestamp.
+KEEP	internal/web	TestServerPreservesSnapshotBudgetWhenSpendQueryFails	Checks spend-query failure preserves budget totals, cap, days, and points.
+KEEP	internal/web	TestAPIStateRespondsDuringDrainWithoutStoreEnrichment	Checks draining state requests bypass store enrichment and return promptly.
+KEEP	internal/web	TestAPIUsageWritesDrainOnShutdown	Checks shutdown drains usage logs and last-used writes.
+KEEP	internal/web	TestFleetRendersGitHubQuotaMetric	Checks fleet renders the GitHub quota metric and formatted usage.
+KEEP	internal/web	TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation	Checks process health stays OK and connector retry metadata is exposed.
+KEEP	internal/web	TestHealthReportsRunningBuildDistinctFromAppliedUpdate	Checks running build metadata remains distinct from applied-update metadata.
+KEEP	internal/web	TestHealthReportsStrandedActiveIssues	Checks stranded issue identity and refusal reason appear in health.
+KEEP	internal/web	TestCapacityClearEndpointAcceptsAsyncRequest	Checks async clear response reports requested status and zero requests.
+KEEP	internal/web	TestHealthReportsEnvironmentPath	Checks health reports the exact process PATH.
+KEEP	internal/web	TestHealthReportsDraining	Checks draining health reports sessions_remaining.
+KEEP	internal/web	TestWorkItemAPICreatesLocalSQLiteItem	Checks created item normalization, fields, priority, deliverable, and refresh.
+KEEP	internal/web	TestServerOpenAPIIssueExplanationSchemaVersion	Checks explanation schema versions, dependency fields, and reason references.
+KEEP	internal/web	TestServerOpenAPIIssueProgressCredit	Checks progress-credit operation and response schema reference.
+KEEP	internal/web	TestPrivateDashboardCookieIsSecureBehindTLSProxy	Checks private-dashboard cookies remain Secure on an HTTP proxy hop.
+KEEP	internal/web	TestBoardConfiguredAgentsCache	Checks cache reuse and invalidation for every relevant input change.
+KEEP	internal/web	TestBoardConfiguredAgents	Checks fleet model-selection model and effort values.
+KEEP	internal/web	TestBoardConfiguredAgentsIdentifierKeys	Checks identifier keys stay distinct from ID keys and across projects.
+KEEP	internal/web	TestBoardConfiguredAgentsModelOverride	Checks route and issue model precedence over fleet defaults.
+KEEP	internal/web	TestSnapshotEnrichmentHistoryInvalidation	Checks history revisions and exact freshness boundaries invalidate enrichment.
+KEEP	internal/web	TestKanbanSnapshotWithPendingStatesConcurrentRenderMove	Checks concurrent rendering and moves preserve one board row.
+KEEP	internal/web	TestKanbanSnapshotWithPendingStatesPrefersCompletedRowTrackerState	Checks completed rows use tracker Human Review state rather than completion status.
+KEEP	internal/web	TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefsFromCompletedRows	Checks completed dependencies no longer render as active blockers.
+KEEP	internal/web	TestKanbanSnapshotWithPendingStatesConcurrentAdvancedRender	Checks concurrent renders preserve exactly one advanced Production card.
+KEEP	internal/web	TestKanbanSnapshotWithPendingStatesIgnoresCompletedHistoryForMissingPendingMove	Checks stale completion history preserves the pending Todo state.
+KEEP	internal/web	TestKanbanSnapshotWithPendingStatesReleasesTerminalCompletedMove	Checks terminal completion removes the pending board card.
+KEEP	internal/web	TestRequestKanbanRefreshRetryUsesWithoutCancel	Checks retry context detaches cancellation while preserving values.
+KEEP	internal/web	TestProjectSmallMultiplesUseBoardWorkloadTaxonomy	Checks per-project workload taxonomy counts.

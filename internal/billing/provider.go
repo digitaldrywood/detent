@@ -32,6 +32,7 @@ type Snapshot struct {
 	InvoiceID         string    `json:"invoice_id"`
 	InvoiceStatus     string    `json:"invoice_status"`
 	InvoiceCreatedAt  time.Time `json:"invoice_created_at"`
+	PeriodStart       time.Time `json:"period_start"`
 	PeriodEnd         time.Time `json:"period_end"`
 	TrialEnd          time.Time `json:"trial_end"`
 	CancelAt          time.Time `json:"cancel_at"`

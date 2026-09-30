@@ -129,6 +129,8 @@ type Config struct {
 	Authorization                 selector.Selector
 	SelectorContext               selector.Context
 	WorkerHosts                   []string
+	WorkerHostSelection           string
+	WorkerHostCaps                map[string]int
 	BudgetRefusalCooldown         time.Duration
 	WorkspaceCleanupIdleTTL       time.Duration
 	WorkspaceCleanupSweepInterval time.Duration
@@ -321,6 +323,7 @@ type Orchestrator struct {
 	release                 releasepkg.Coordinator
 	capacityController      runpkg.CapacityController
 	providerCapacity        runpkg.ProviderCapacityResolver
+	workerHostChecker       runpkg.WorkerHostChecker
 	capacityStatus          runpkg.CapacityStatusController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	recoveryInspector       runpkg.BlockedRecoveryInspector
@@ -490,6 +493,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		runner = FakeRunner{}
 	}
 	reaper := deps.WorkspaceReaper
+	workerHostChecker, _ := runner.(runpkg.WorkerHostChecker)
 	if reaper == nil {
 		if candidate, ok := runner.(WorkspaceReaper); ok {
 			reaper = candidate
@@ -721,6 +725,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		projectID:               cfg.Project.ID,
 		capacityController:      capacityController,
 		providerCapacity:        providerCapacity,
+		workerHostChecker:       workerHostChecker,
 		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
 		recoveryInspector:       blockedRecoveryInspector,
