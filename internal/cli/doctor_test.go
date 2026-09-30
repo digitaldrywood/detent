@@ -1185,6 +1185,12 @@ func TestCheckDoctorProjects(t *testing.T) {
 					return tt.gitErr
 				},
 			}, RuntimeSecret{}, false)
+			for i, check := range got {
+				if check.Name == "Project alpha Human Review policy" {
+					got = append(got[:i], got[i+1:]...)
+					break
+				}
+			}
 			if len(got) != len(tt.wantStatus) {
 				t.Fatalf("len(checks) = %d, want %d", len(got), len(tt.wantStatus))
 			}

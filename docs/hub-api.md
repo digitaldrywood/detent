@@ -752,9 +752,8 @@ mutation transaction, including before returning a cached approval response.
 Before publishing, an administrator approves a review policy tied to the current
 repository `policy_id`. Approving a native project's repository policy seeds the
 default review policy when the project has none: no CI check is pinned, and
-`require_review` is set only when the repository gate is `human_review`, so under
-any other gate a published version is `reviewed` and lands without a person.
-A review policy that pins no checks follows the repository gate: approving the
+`require_review` follows the repository policy's `review.human` setting, which
+defaults to false. A review policy that pins no checks follows that setting: approving the
 repository policy again rewrites it to the default, and an approval that expects
 no review policy may replace it. A review policy an administrator shaped by
 pinning checks is never rewritten; it goes stale when the repository policy

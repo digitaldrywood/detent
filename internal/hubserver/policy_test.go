@@ -310,6 +310,7 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	reviewed := newNativeFixture(t, nil, "", "reviewed")
 	gated := hubTestPolicy()
 	gated.Gates.Kind, gated.Gates.AutomatedReview = "human_review", ""
+	gated.Gates.HumanReview = true
 	gated = gated.WithID()
 	approveHubTestPolicy(t, reviewed.service, reviewed.base+"/policy", gated)
 	response = performHubAPIRequest(t, reviewed.service, http.MethodGet, reviewed.base+"/change-review-policy", reviewed.token, nil)

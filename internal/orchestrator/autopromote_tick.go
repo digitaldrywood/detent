@@ -1376,13 +1376,13 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, cfg Config) 
 	}
 	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
 		return staleMergingPullRequestDecision{
-			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(),
 			reason:      mergeRevocationApprovalLabelRemoved,
 		}
 	}
 	pullRequest := issue.PullRequest
 	if pullRequest == nil {
-		return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: string(AutoPromoteReasonMissingPullRequest)}
+		return staleMergingPullRequestDecision{targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(), reason: string(AutoPromoteReasonMissingPullRequest)}
 	}
 	pullRequestState := normalizePullRequestState(pullRequest.State)
 	if pullRequestState == "" && pullRequestHydrationBlocksProgress(pullRequest) {
@@ -1397,7 +1397,7 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, cfg Config) 
 		}
 		if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
 			return staleMergingPullRequestDecision{
-				targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+				targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(),
 				reason:      mergeRevocationCITriggerLabelRemoved,
 			}
 		}
@@ -2224,7 +2224,7 @@ func staleTodoPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPromo
 	case AutoPromoteReasonMissingPullRequest:
 		return ""
 	default:
-		return cfg.SourceState
+		return cfg.reviewTargetState()
 	}
 }
 
@@ -2271,7 +2271,7 @@ func staleMergedPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPro
 	case AutoPromoteReasonPullRequestMerged:
 		return doneStateName(terminalStates)
 	case AutoPromoteReasonPullRequestHydrationUnavailable:
-		return cfg.SourceState
+		return cfg.reviewTargetState()
 	default:
 		return ""
 	}
@@ -3364,7 +3364,7 @@ func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
 // issue explicitly requests human review. Preserve legacy routing without it.
 func (o *Orchestrator) nonReviewDecisionTargetState(issue connector.Issue, fallback string) string {
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	if gate.Effective(cfg.Gate).Kind == gate.KindHumanReview || autoPromoteOptoutLabel(issue, cfg) {
+	if cfg.humanReviewEnabled() && (gate.Effective(cfg.Gate).Kind == gate.KindHumanReview || autoPromoteOptoutLabel(issue, cfg)) {
 		return fallback
 	}
 	if stateIn(blockedStatusState, o.cfg.ActiveStates) || stateIn(blockedStatusState, o.cfg.ObservedStates) {

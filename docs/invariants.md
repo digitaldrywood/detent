@@ -127,13 +127,14 @@ change to erase the remaining rejection evidence.
 unchanged and new heads, drafts, dashboard and observed moves, and repair dispatch
 (#2943).
 
-Human Review is entered only for PR-review outcomes or an explicit opt-out of
-an automated gate (including a configured `human_review` gate). Non-review
-human decisions, including attempt-allowance exhaustion and Workpad blockers,
-use the configured Blocked lane when the gate is not `human_review` and the
-issue has no auto-promote opt-out label. Projects without a configured Blocked
-lane retain their existing destination. Allowance triage notes and the
-`attempt_allowance_exhausted` reason are preserved; operator moves out of
+Human Review is entered only when the project explicitly sets `review.human: true`
+and a review outcome or gate requires it. With `review.human: false`, the
+orchestrator routes review holds, attempt-allowance exhaustion, gate timeouts,
+and draft PRs to Blocked with their existing reasons. A legacy
+`requires-human-review` label and a configured `optout_label` are review holds,
+not permission to enter Human Review. New projects default to false. This
+consolidates review routing under the project setting (#3211). Allowance triage
+notes and `attempt_allowance_exhausted` remain intact; operator moves out of
 Blocked still reset the allowance and auto-promote decision memory (#2880).
 The dependency auto-unblock sweep retains these non-review decisions in Blocked
 even when an unconsumed body or native dependency is already Done; both reasons
@@ -459,6 +460,12 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Review routing for projects with `review.human: false` uses the existing Blocked
+lane and existing decision reasons (#3211). The reviewed fingerprints cover the
+completed-run transition reason, merge-revocation destination, and the central
+lane writer. These changes consolidate Human Review routing under the project
+setting; they add no reason code or recovery mechanism.
 
 Runner credential expiry (#3382) no longer rejects the existing renewal
 operation for the same enrolled runner and organization. The host keeps its

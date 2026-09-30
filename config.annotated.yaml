@@ -43,6 +43,8 @@ worker:
   github_rest_poll_interval_ms: 60000
 
 # Bound fleet concurrency globally and serialize only the merge lane.
+review:
+  human: false
 agent:
   max_concurrent_agents: 4
   # The project may override global subscription-provider pacing. Missing or
@@ -59,7 +61,6 @@ agent:
     pass_state: Merging
     rework_state: Rework
     quiet_seconds: 600
-    optout_label: requires-human-review
 
 # The command gate runs in the isolated worktree. Automated review remains a
 # required independent signal before automatic promotion.

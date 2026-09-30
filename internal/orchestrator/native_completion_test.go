@@ -59,6 +59,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	}
 	undispatched := append([]connector.WorkflowState(nil), landing...)
 	undispatched[3].Dispatchable = false
+	blockedLanding := append([]connector.WorkflowState(nil), landing...)
+	blockedLanding[1].Transitions = append([]string{"Blocked"}, blockedLanding[1].Transitions...)
+	blockedLanding = append(blockedLanding, connector.WorkflowState{Name: "Blocked", Transitions: []string{"In Progress"}})
 	yes, no := true, false
 	head := strings.Repeat("c", 40)
 	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
@@ -72,6 +75,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		reviewed     *bool
 		updateErr    error
 		plain        bool
+		humanReview  *bool
 		wantState    string
 		wantComment  string
 		wantDeferred bool
@@ -80,6 +84,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "commits move to the configured review lane", change: opened, states: workflow, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "a version that needs no reviewer goes straight to landing", change: accepted, states: landing, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "a version waiting for a reviewer goes to review", change: opened, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
+		{name: "disabled review sends unaccepted change to blocked", change: opened, states: blockedLanding, humanReview: &no, wantState: "Blocked", wantComment: "opened Change Request change_1"},
+		{name: "disabled review lands accepted change", change: accepted, states: blockedLanding, humanReview: &no, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "an accepted version without a landing move goes to review", change: accepted, states: workflow, wantState: "In Review", wantComment: "so it waits in In Review"},
 		{name: "an approval that arrived after the publish lands", change: waiting, states: landing, reviewed: &yes, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "a run that published no version never lands an earlier reviewed one", change: opened, states: landing, reviewed: &yes, wantState: "In Review", wantComment: "No version was published for review"},
@@ -104,6 +110,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
 			cfg.AutoPromote.SourceState = "In Review"
+			cfg.AutoPromote.HumanReview = test.humanReview
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &hubSchedulingSource{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
