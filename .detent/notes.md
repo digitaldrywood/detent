@@ -1,3 +1,28 @@
+# Issue #3449 handoff
+
+## Codex Workpad
+
+Plan and result: reproduced all four recorded assertion failures from scheduled run 36758716559 / job 110035612931 on clean develop 640b8abc10f0adb4ad580d1835b349796062130e. No data race was reported. This branch repairs the three independent failures; the identical INV-3 source fingerprint failure remains owned by #3448 / PR #3464. Native dependency registered before coding.
+
+Key files: internal/config/config.go omits zero Review from JSON while retaining enabled review as a digest input. The existing runner_policy_test.go table pins the old opt-out default explicitly, retains the historical approval ID, and checks both config-digest and descriptor rejection of human-review enablement and opt-out removal. internal/routine/manager_test.go configures a custom opt-out label. ci_workflow_test.go removes the obsolete release-configuration text test requiring retired blocking hooks, in accordance with the test audit policy. docs/invariants.md updates INV-3; no new mechanism or generated inputs.
+
+Validation: baseline focused reproduction exited 1 in all four recorded areas (20.8s command). After pinning the old label alone, the policy regression still failed with config digest 98345caedcb8265db4907d47227b90103434cf3e3fced96c2b21c977895e4f9f, confirming the zero Review serialization defect before its fix. Passed config subtree, policy and routine tests (12.7s command), focused release provenance/hooks tests (1.6s), affected-package vet (1.1s), and final strengthened policy table (1.5s). Whitespace inspection passed. No full checks, coverage, race suite, or Actions rerun/wait. Configured gate true runs on the committed head immediately before push; final publication, review and checks evidence belongs to the canonical issue Workpad.
+
+Depends on: digitaldrywood/detent#3448. Its unmerged PR #3464 repairs the remaining recorded source-audit failure. Independent source repair is complete; publish and ready this PR, then retain the dependency for orchestrator handoff. The next scheduled integrated develop validation confirms the complete shard repair. No tracker lane writes or live-instance changes.
+
+Skill draft: no — existing debugging and policy-compatibility guidance covers this repair.
+
+```detent-status
+schema: 1
+status: blocked
+blockers:
+  - ref: "digitaldrywood/detent#3448"
+    reason: "remaining recorded TestRepositorySources failure is repaired by unmerged PR #3464"
+human_action: null
+```
+
+## Historical handoffs from develop
+
 # Issue #2976 merge fallback handoff (attempt 7212, generation 80)
 
 - PR #3052 is open against `develop` on the assigned isolated branch; its body includes `Fixes #2976`. Fetched published head: `99f99e34cea4fea794c0ddc7a8cea973c24e2957`.
@@ -6,7 +31,7 @@
 - Key issue files remain `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`. Prior resolution retains develop's audit-only Merging path and the PR's In Progress repair-only filter in the non-Merging decision path.
 - Updated handoff notes with one current Workpad/status fence; prior handoffs are historical.
 
-## Codex Workpad
+## Historical Workpad
 
 Plan and result: retain the unpublished resolution, finish and commit the current develop merge while preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
 
@@ -14,7 +39,7 @@ Validation: no tests, lint, vet, builds, local gate (including `true`), CI check
 
 Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No push, PR merge, issue-state change or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:

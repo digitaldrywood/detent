@@ -506,13 +506,18 @@ of equivalent absent/default execution settings across binary upgrades. The
 policy config normalization treats absent and `least_loaded` host selection
 identically, omits empty host caps and unset local status, and retains the older
 `[]` representation for empty required checks. Runtime defaults remain intact.
+Disabled human review is omitted from the policy JSON, preserving approvals
+created before the Review field existed (#3449). Enabling human review remains
+an explicit policy change. The historical opt-out label must be configured to
+retain its approved value; removing it still changes the policy digest.
 Explicit host preference, nonempty caps, local status, required checks, commands,
 workspace paths, and effective prompts remain policy inputs requiring the existing
 administrator approval. Source identity and administrator-authorized runner
 requirements still match exactly; no mismatch bypass or recovery path is added.
 `TestRunnerPolicyUpgradeKeepsApprovedID` pins a v0.117.1 approval with an explicit
-workspace root so worker scratch paths cannot change the fixture, and covers
-the recorded unchanged-definition upgrade failure and explicit changes.
+workspace root and its historical opt-out label so defaults cannot change the
+fixture, and covers the recorded unchanged-definition upgrade failure and
+explicit changes.
 
 Runner availability (#3169) reuses weekly-window evaluation and the existing
 runner-capacity exclusion: runners report zero capacity outside the cached

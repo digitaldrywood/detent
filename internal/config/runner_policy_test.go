@@ -21,6 +21,9 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Reproduce the approved effective configuration: the opt-out label was a
+	// default in v0.117.1 and must now be configured explicitly to retain it.
+	workflow.Config.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 	// Captured with v0.117.1's config and gate sources. Unlike rebuilding the
 	// approval from today's Config type, these constants catch new digest inputs.
 	approved := policy.Descriptor{
@@ -45,6 +48,8 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		{"absent host selection", func(w *Workflow) { w.Config.Worker.HostSelection = "" }, true},
 		{"empty host caps", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{} }, true},
 		{"empty required checks", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{} }, true},
+		{"explicit enabled human review", func(w *Workflow) { w.Config.Review.Human = true }, false},
+		{"removed optout label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "" }, false},
 		{"explicit host preference", func(w *Workflow) { w.Config.Worker.HostSelection = "preference" }, false},
 		{"explicit host cap", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{"local": 2} }, false},
 		{"explicit local status", func(w *Workflow) { w.Config.Gate.LocalStatus = "local-gate" }, false},
@@ -59,6 +64,9 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 			current, err := ResolvePolicy(candidate)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if (current.ConfigDigest == approved.ConfigDigest) != test.match {
+				t.Fatalf("config digest = %s, want match %t with %s", current.ConfigDigest, test.match, approved.ConfigDigest)
 			}
 			if err := current.Match(approved); (err == nil) != test.match {
 				t.Fatalf("upgraded policy match = %v, want match %t (config digest %s)", err, test.match, current.ConfigDigest)
