@@ -78,11 +78,30 @@ func (s *Service) registerChangeRoutes(e *echo.Echo) {
 	e.GET(changeBase+"/:change", s.getChange, read)
 	e.POST(changeBase+"/:change/versions", s.publishChangeVersion, write)
 	e.POST(changeBase+"/:change/discussion", s.discussChange, write)
-	e.POST(changeBase+"/:change/versions/:version/reviews", s.reviewChange, operator)
+	e.POST(changeBase+"/:change/versions/:version/reviews", s.reviewChange, s.requireChangeReviewer())
 	e.GET(changeBase+"/:change/versions/:version/viewed-files", s.changeViewedFiles, operator)
 	e.POST(changeBase+"/:change/versions/:version/viewed-files", s.viewChangeFile, operator)
 	e.POST(changeBase+"/:change/versions/:version/checks", s.submitChangeCheck, write)
 	e.POST(changeBase+"/:change/versions/:version/landing", s.landChange, write)
+}
+
+// A hosted review is a project decision, so a write grant alone is not
+// enough: the reviewer must also be an organization owner or administrator.
+// Self-hosted operator tokens retain their existing review authority.
+func (s *Service) requireChangeReviewer() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return s.requireNativeScope(apiScopeOperator)(func(c echo.Context) error {
+			scope := nativeRequestScope(c)
+			if scope.credential.Hosted != nil {
+				if scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
+					return s.nativeAPIError(c, nativeNotFound())
+				}
+				scope.requireHostedAdmin = true
+				c.Set("native_scope", scope)
+			}
+			return next(c)
+		})
+	}
 }
 
 func (s *Service) requireChangeReviewPolicyAdmin() echo.MiddlewareFunc {

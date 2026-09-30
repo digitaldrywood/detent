@@ -822,8 +822,8 @@ next version.
 An `approved` decision that leaves the current version `reviewed` moves the
 primary issue to the landing lane: the lane named `Merging`, when the issue's
 lane may move there and it dispatches. The runner that holds the project claims
-the issue there and lands the reviewed head with plain git and its own
-credentials: it fetches the base branch (the remote's default), verifies the
+the issue there and lands the reviewed head with its own credentials. By
+default it uses plain git: it fetches the base branch (the remote's default), verifies the
 worktree still stands at the reviewed head, combines the two by the approved
 policy's `merge_method` (a squash commit, a merge commit, or the head's commits
 replayed onto the base), and pushes the result to the base branch, refusing to
@@ -844,6 +844,19 @@ review lane with a comment that carries it, such as "allow the runner to push
 to develop, or enable GitHub pull request mode for this project". Only an
 infrastructure failure (the remote unreachable, the Hub refusing the report)
 fails the run and retries it.
+
+A project may opt in with `deliverable.github_pull_request: true` in its
+approved repository policy. For a github.com origin and an authenticated `gh`
+on the project runner, landing then publishes the reviewed attempt branch,
+finds or opens a pull request against the remote default branch, and asks
+GitHub to merge the exact reviewed head using the policy's `merge_method`.
+GitHub's branch protection, required checks, and required reviews decide
+whether the merge succeeds. The runner verifies that the returned merge commit
+is on the base branch before reporting it to the Hub. A refused merge returns
+the issue to review with the GitHub reason; the reviewer can approve it again
+after fixing that condition. This mode uses the runner's `gh` credentials and
+does not give them to the Hub. The default remains plain git and requires no
+GitHub API access.
 
 Native approval never becomes a required GitHub review. Detail optionally reuses
 the existing projected `PullRequestSummary`, labels it as a snapshot, and identifies
