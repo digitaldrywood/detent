@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 func sleepInhibitorCommand(platform string) (string, []string) {
@@ -21,11 +23,11 @@ func sleepInhibitorCommand(platform string) (string, []string) {
 	}
 }
 
-func inhibitSleep(ctx context.Context) (func(), error) {
-	return startSleepInhibitor(ctx, runtime.GOOS, exec.CommandContext)
+func inhibitSleep(ctx context.Context, failed func()) (func(), error) {
+	return startSleepInhibitor(ctx, runtime.GOOS, exec.CommandContext, failed)
 }
 
-func startSleepInhibitor(ctx context.Context, platform string, command func(context.Context, string, ...string) *exec.Cmd) (func(), error) {
+func startSleepInhibitor(ctx context.Context, platform string, command func(context.Context, string, ...string) *exec.Cmd, failures ...func()) (func(), error) {
 	name, args := sleepInhibitorCommand(platform)
 	if name == "" {
 		return func() {}, nil
@@ -49,6 +51,9 @@ func startSleepInhibitor(ctx context.Context, platform string, command func(cont
 	go func() {
 		defer close(done)
 		if err := cmd.Wait(); err != nil && held.Err() == nil {
+			for _, failed := range failures {
+				failed()
+			}
 			slog.Default().Warn("runner sleep inhibitor exited", "error", err)
 		}
 	}()
@@ -65,10 +70,37 @@ func (r *Runner) keepAwake(ctx context.Context) func() {
 	if r.sleepInhibitor == nil {
 		return func() {}
 	}
-	release, err := r.sleepInhibitor(ctx)
-	if err != nil {
-		r.logger.Warn("runner sleep inhibition unavailable", "error", err)
-		return func() {}
+	failed := false
+	report := func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if !failed {
+			failed = true
+			r.sleepFailures++
+		}
 	}
-	return release
+	release, err := r.sleepInhibitor(ctx, report)
+	if err != nil {
+		report()
+		r.logger.Warn("runner sleep inhibition unavailable", "error", err)
+		release = func() {}
+	}
+	return func() {
+		release()
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if failed {
+			failed = false
+			r.sleepFailures--
+		}
+	}
+}
+
+func (r *Runner) Problems() []runnerauth.Problem {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.sleepFailures > 0 {
+		return []runnerauth.Problem{runnerauth.NewProblem("keep_awake_failed")}
+	}
+	return nil
 }

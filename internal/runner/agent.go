@@ -142,7 +142,8 @@ type Dependencies struct {
 }
 
 type Runner struct {
-	sleepInhibitor            func(context.Context) (func(), error)
+	sleepInhibitor            func(context.Context, func()) (func(), error)
+	sleepFailures             int
 	mu                        sync.RWMutex
 	promptHistory             map[string]sessionPrompt
 	projectID                 string

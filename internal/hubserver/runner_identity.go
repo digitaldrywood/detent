@@ -172,6 +172,9 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
+		Problems         []runnerauth.Problem      `json:"problems"`
+		ProtocolMajor    int                       `json:"protocol_major,omitempty"`
+		SettingsRejected bool                      `json:"settings_rejected,omitempty"`
 		BackendIsolation isolation.Report          `json:"backend_isolation,omitempty"`
 		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
 		DisplayName      string                    `json:"display_name"`
@@ -211,6 +214,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 				return nil, err
 			}
 			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
+				return nil, err
+			}
+			if err := updateRunnerProblems(ctx, tx, scope, request.Problems, request.ProtocolMajor, request.SettingsRejected, now); err != nil {
 				return nil, err
 			}
 			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {

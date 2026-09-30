@@ -459,6 +459,33 @@ idle period. Active work finishes without preemption; workspace sessions do not
 participate. There is no background loop or capacity reservation for home work.
 `TestRunnerHomeClaims` and `TestRunnerHomeReturnAndOrdering` enforce this behavior.
 
+Runner problems (#3171, human-approved) are contextual diagnostics, never
+dispatch reason codes. Heartbeats replace the runner-reported `problems` list;
+each problem carries a stable code, message, fix hint, and first-seen time.
+Continuing codes retain their first-seen time, and omitted problems clear.
+The existing instance telemetry loop also triggers the enrolled runner's
+throttled heartbeat, so diagnostics remain reachable when every project fails
+to start. Heartbeat requests do not block local telemetry publication.
+The runner reports unavailable tiers, missing backends, unreachable host
+services, invalid local settings, and sleep-inhibition failures without sending
+local command output or service addresses in generated diagnostic messages.
+The Hub derives unservable home work from the existing isolation advertisement,
+rejected routing settings from the runner's application result, and unsupported
+versions from the native protocol major (an omitted major remains compatible
+with older heartbeats). Hub conditions clear when they no longer hold.
+Problems raise `needs_attention` above online, outside hours, and offline;
+revoked and expired credential states retain precedence. Separate connection
+health preserves the existing offline dispatch exclusion. Diagnostics never
+change grants, capacity, selectors, leases, or advertised isolation tiers.
+Only needs-attention rows produce an alert signal. Outside hours, offline
+outside the window, draining, and spillover remain plain statuses. The fleet
+header links its nonzero attention count to a filtered list; messages and fix
+hints remain on runner cards, with no global banner. Hosted readers do not see
+home-project diagnostics for home assignments outside their project access.
+`TestRunnerProblemsHeartbeat`, `TestRunnerHubProblems`, `TestMergeProblems`,
+`TestIsolationProblems`, and `TestKeepAwakeProblems` cover replacement,
+aggregation, timestamp stability, recovery, and dispatch independence.
+
 Dispatch ordering (#3298) consolidates urgency into the existing comparator.
 Merging remains first when the project config places it first; other lanes
 compare tracker priority and configured label rank before lane rank, then retain

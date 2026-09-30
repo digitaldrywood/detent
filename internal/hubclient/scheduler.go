@@ -16,12 +16,14 @@ import (
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	Problems          func() []runnerauth.Problem
 	IsolationReport   func(context.Context) isolationpolicy.Report
 	ProviderReports   func() ([]providercapacity.Report, error)
 	OrganizationID    tracker.OrganizationID
@@ -34,6 +36,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	problems          func() []runnerauth.Problem
 	isolationReport   func(context.Context) isolationpolicy.Report
 	providerReports   func() ([]providercapacity.Report, error)
 	claimPolicies     map[string]claimPolicy
@@ -74,6 +77,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		problems:        config.Problems,
 		isolationReport: config.IsolationReport,
 		providerReports: config.ProviderReports,
 		claimPolicies:   make(map[string]claimPolicy),
