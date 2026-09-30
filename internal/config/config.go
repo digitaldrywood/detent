@@ -325,8 +325,8 @@ type DeliverableElicitationRule struct {
 
 type Worker struct {
 	SSHHosts                       []string       `yaml:"ssh_hosts"`
-	HostSelection                  string         `yaml:"host_selection,omitempty"`
-	HostCaps                       map[string]int `yaml:"host_caps,omitempty"`
+	HostSelection                  string         `yaml:"host_selection,omitempty" json:"HostSelection,omitempty"`
+	HostCaps                       map[string]int `yaml:"host_caps,omitempty" json:"HostCaps,omitempty"`
 	MaxConcurrentAgentsPerHost     *int           `yaml:"max_concurrent_agents_per_host"`
 	GitHubToken                    string         `yaml:"github_token,omitempty"`
 	GitHubTokenResolutionTimeoutMS int            `yaml:"github_token_resolution_timeout_ms"`
