@@ -741,7 +741,7 @@ func TestRunningProcessArguments(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			args := runningProcessArguments(tt.pid, "/config/global.yaml", func(path string) ([]byte, error) {
-				if path != "/proc/42/cmdline" {
+				if path != filepath.Join("/proc", "42", "cmdline") {
 					t.Fatalf("path=%s", path)
 				}
 				if tt.readErr {

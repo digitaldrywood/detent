@@ -14,6 +14,8 @@
 // are recorded in README.md ("Contract ambiguities resolved").
 import * as Schema from "effect/Schema";
 
+import { ChatUsage } from "./usage.ts";
+
 import { ApiError } from "./conversation.ts";
 
 // --- Roles and grants -------------------------------------------------------
@@ -675,6 +677,7 @@ export type BillingPrice = typeof BillingPrice.Type;
  * "checkout buttons per configured price" needs the list on the payload.
  */
 export const BillingReport = Schema.Struct({
+  chat_usage: Schema.optional(ChatUsage),
   organization_id: Schema.String,
   state: BillingState,
   entitlement: PlanReport,

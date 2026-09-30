@@ -500,6 +500,13 @@ export function BillingSettings(): React.ReactElement {
                 }
               />
             ))}
+            {billing.value.chat_usage === undefined ? null : (
+              <SettingsRow
+                title="AI usage this billing period"
+                description={`${billing.value.chat_usage.range.from.slice(0, 10)} – ${billing.value.chat_usage.range.to.slice(0, 10)} · ${billing.value.chat_usage.turns.toLocaleString()} ${billing.value.chat_usage.turns === 1 ? "turn" : "turns"}${billing.value.chat_usage.unpriced_turns > 0 ? ` · ${billing.value.chat_usage.unpriced_turns} ${billing.value.chat_usage.unpriced_turns === 1 ? "turn" : "turns"} awaiting pricing` : ""}`}
+                status={`${billing.value.chat_usage.tokens.toLocaleString()} tokens · $${billing.value.chat_usage.cost_usd.toFixed(6)} USD`}
+              />
+            )}
             <SettingsRow title="">
               <div className="pb-3">
                 <ControlError message={checkout.error?.message ?? portal.error?.message ?? null} />

@@ -17,6 +17,19 @@ export const UsageWindow = Schema.Struct({
 export type UsageWindow = typeof UsageWindow.Type;
 
 /** The hero numbers: what the window cost, processed and ran. */
+export const ChatUsage = Schema.Struct({
+  range: UsageWindow,
+  input: Schema.Number,
+  cached_input: Schema.Number,
+  output: Schema.Number,
+  reasoning_output: Schema.Number,
+  tokens: Schema.Number,
+  turns: Schema.Number,
+  unpriced_turns: Schema.Number,
+  cost_usd: Schema.Number,
+});
+export type ChatUsage = typeof ChatUsage.Type;
+
 export const UsageTotal = Schema.Struct({
   cost: Schema.Number,
   tokens: Schema.Number,
@@ -111,6 +124,7 @@ export type UsageRunner = typeof UsageRunner.Type;
  * one currency at a time.
  */
 export const UsageReport = Schema.Struct({
+  chat: Schema.optional(ChatUsage),
   range: UsageWindow,
   total: UsageTotal,
   providers: Schema.Array(UsageProvider),

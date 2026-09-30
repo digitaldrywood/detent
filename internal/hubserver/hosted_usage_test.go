@@ -478,6 +478,7 @@ func usageFixtureValue(t *testing.T, raw []byte) usageReport {
 	}
 	from := time.Date(2026, 9, 9, 13, 0, 0, 0, time.UTC)
 	report := usageReport{
+		Chat:      chatUsageSummary{Range: usageWindow{From: from, To: from.Add(24 * time.Hour)}},
 		Range:     usageWindow{From: from, To: from.Add(24 * time.Hour)},
 		Total:     usageTotal{Cost: 2.14, Tokens: 4141159, Sessions: 5},
 		Providers: []usageProvider{},
