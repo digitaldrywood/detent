@@ -938,6 +938,10 @@ sessions-without-merge allowance. Draft PRs retain implementation routing so the
 author can finish. Repairs share the existing merge duration bound and treat
 unstarted CI like implementation runs (waiting only after push or in waiting_ci).
 The dispatch, CI parity, and duration regressions cover these boundaries (#2845).
+`TestCompletionRebaseAfterRestart` preserves the persisted diff and conflict
+baseline through restart for both Rework implementation and In Progress merge
+repair. `TestRepairDurationBound` applies the merge duration ceiling only to
+merge-mode runs and verifies ordinary cancellation for Rework (#3548).
 
 Rework dispatch (#2800) reads the gate's live `AutomatedReviewPending()`
 predicate for clean, green PRs without actionable threads or findings. The existing
