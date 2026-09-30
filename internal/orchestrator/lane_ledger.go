@@ -29,7 +29,6 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		tokens = running.Tokens
 	}
 	running.Tokens = tokens
-	releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", "worker completed after lane transition", event.CompletedAt)
 	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
 		o.recoverBackendCapacity(state, running, event.CompletedAt)
 	} else {

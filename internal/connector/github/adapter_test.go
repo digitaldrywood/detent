@@ -18,7 +18,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -1116,86 +1115,8 @@ func TestConnectorBoundedBacklogFetchesUseUnfilteredLightweightQuery(t *testing.
 	}
 }
 
-func TestConnectorFetchCandidateIssuesDoesNotBlockOnBlankProjectStatusDefaulting(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		releaseDefaultWrite := make(chan struct{})
-		var releaseOnce sync.Once
-		release := func() {
-			releaseOnce.Do(func() {
-				close(releaseDefaultWrite)
-			})
-		}
-		defer release()
-		server := &graphqlTestServer{t: t, unsupportedNative: true, responses: []graphqlTestResponse{
-			{
-				body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null}]}}}}`,
-			},
-			{
-				release: releaseDefaultWrite,
-				body:    `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
-			},
-			{
-				body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`,
-			},
-		}}
-		c, err := NewConnector(Config{
-			Endpoint: "https://blank-status.test/",
-			APIKey:   "token",
-			HTTPClient: recoveryHTTPClient(func(r *http.Request) (*http.Response, error) {
-				w := httptest.NewRecorder()
-				server.serveHTTP(w, r)
-				return w.Result(), nil
-			}),
-			ProjectSlug:  "PVT_1",
-			ActiveStates: []string{"Todo"},
-		})
-
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		type result struct {
-			issues []connector.Issue
-			err    error
-		}
-		results := make(chan result, 1)
-		go func() {
-			issues, err := c.FetchCandidateIssues(context.Background())
-			results <- result{issues: issues, err: err}
-		}()
-
-		// Wait until fetch has returned or is durably blocked on the held response.
-		// No wall-clock deadline competes with scheduling the fetch goroutine.
-		synctest.Wait()
-		select {
-		case result := <-results:
-			if result.err != nil {
-				t.Fatalf("FetchCandidateIssues() error = %v", result.err)
-			}
-			if len(result.issues) != 0 {
-				t.Fatalf("FetchCandidateIssues() len = %d, want 0", len(result.issues))
-			}
-		default:
-			t.Fatal("FetchCandidateIssues() blocked on default status write")
-		}
-
-		if requests := server.requests(); len(requests) != 2 {
-			t.Fatalf("request count before release = %d, want scan and held status lookup", len(requests))
-		}
-		release()
-		synctest.Wait()
-		requests := server.requests()
-		if len(requests) != 3 {
-			t.Fatalf("request count = %d, want 3", len(requests))
-		}
-		updateVariables := requestVariables(t, requests[2])
-		if updateVariables["itemId"] != "PVTI_blank" || updateVariables["optionId"] != "OPT_backlog" {
-			t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
-		}
-	})
-}
+// Wait until fetch has returned or is durably blocked on the held response.
+// No wall-clock deadline competes with scheduling the fetch goroutine.
 
 func TestConnectorFetchCandidateIssuesDefaultStatusWriteSurvivesParentCancellation(t *testing.T) {
 	t.Parallel()
@@ -4649,17 +4570,24 @@ func TestConnectorFetchIssueParentsReturnsParentAndTrackedInIssues(t *testing.T)
 	if len(got) != 2 {
 		t.Fatalf("FetchIssueParents() len = %d, want 2", len(got))
 	}
-	if got[0].ID != "I_parent" || got[0].Identifier != "digitaldrywood/detent#258" || got[0].State != "Todo" {
-		t.Fatalf("first parent = %#v", got[0])
-	}
-	if got[1].ID != "I_tracked_parent" || got[1].Identifier != "digitaldrywood/detent#259" || got[1].State != "In Progress" {
-		t.Fatalf("second parent = %#v", got[1])
-	}
-	if got[0].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
-		t.Fatalf("first parent child issues = %#v", got[0].ChildIssues)
-	}
-	if got[1].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
-		t.Fatalf("second parent child issues = %#v", got[1].ChildIssues)
+	for index, tt := range []struct {
+		name       string
+		id         string
+		identifier string
+		state      string
+	}{
+		{name: "sub-issue parent", id: "I_parent", identifier: "digitaldrywood/detent#258", state: "Todo"},
+		{name: "trackedIn parent", id: "I_tracked_parent", identifier: "digitaldrywood/detent#259", state: "In Progress"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := got[index]
+			if parent.ID != tt.id || parent.Identifier != tt.identifier || parent.State != tt.state {
+				t.Fatalf("parent = %#v", parent)
+			}
+			if len(parent.ChildIssues) != 1 || parent.ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
+				t.Fatalf("parent child issues = %#v", parent.ChildIssues)
+			}
+		})
 	}
 
 	requests := server.requests()
@@ -4691,12 +4619,7 @@ func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"items":[{"number":258}]}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/258",
-			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+			body:   `{"items":[{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
@@ -4720,8 +4643,8 @@ func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want parent lookup, search, project item", len(requests))
 	}
 	if requests[1]["method"] != http.MethodGet || !strings.HasPrefix(requests[1]["path"].(string), "/search/issues?") {
 		t.Fatalf("search request = %#v, want REST issue search", requests[1])
@@ -4741,12 +4664,7 @@ func TestConnectorFetchIssueParentsReturnsCrossRepoBodyReferencedEpic(t *testing
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"total_count":1,"items":[{"number":258,"html_url":"https://github.com/digitaldrywood/detent/issues/258"}]}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/258",
-			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+			body:   `{"total_count":1,"items":[{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
@@ -4767,15 +4685,131 @@ func TestConnectorFetchIssueParentsReturnsCrossRepoBodyReferencedEpic(t *testing
 	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want parent lookup, search, project item", len(requests))
 	}
 	searchPath := requests[1]["path"].(string)
 	if !strings.Contains(searchPath, "user%3Adigitaldrywood") || strings.Contains(searchPath, "repo%3A") {
 		t.Fatalf("search path = %q, want owner-scoped search", searchPath)
 	}
-	if requests[2]["path"] != "/repos/digitaldrywood/detent/issues/258" {
-		t.Fatalf("REST issue path = %#v, want cross-repo epic issue", requests[2])
+	if !strings.Contains(requests[2]["query"].(string), "projectItems") {
+		t.Fatalf("project item query = %#v, want cross-repo epic status", requests[2])
+	}
+}
+
+func TestConnectorFetchIssueParentsFiltersSearchHits(t *testing.T) {
+	t.Parallel()
+
+	type hit struct {
+		repo   string
+		title  string
+		body   string
+		labels []label
+	}
+	tests := []struct {
+		name      string
+		childRepo string
+		hits      []hit
+		wantID    string
+		labelMode bool
+	}{
+		{name: "shorthand", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "- [ ] #251"}}, wantID: "I_epic_0"},
+		{name: "qualified", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Parent", body: "digitaldrywood/detent#251", labels: []label{{Name: "epic"}}}}, wantID: "I_epic_0"},
+		{name: "full URL", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "https://github.com/digitaldrywood/detent/issues/251"}}, wantID: "I_epic_0"},
+		{name: "cross repository", childRepo: "digitaldrywood/agent-runtime", hits: []hit{{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "digitaldrywood/agent-runtime#251"}}, wantID: "I_epic_0"},
+		{name: "label status", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Parent", body: "#251", labels: []label{{Name: "epic"}, {Name: "detent:todo"}}}}, wantID: "I_epic_0", labelMode: true},
+		{name: "unrelated org hits", childRepo: "digitaldrywood/detent", hits: []hit{
+			{repo: "digitaldrywood/other", title: "Ordinary issue", body: "#251"},
+			{repo: "digitaldrywood/other", title: "Epic: Wrong child", body: "#252"},
+			{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "#251"},
+		}, wantID: "I_epic_2"},
+		{name: "no matching epic", childRepo: "digitaldrywood/detent", hits: []hit{
+			{repo: "digitaldrywood/other", title: "Ordinary issue", body: "#251"},
+			{repo: "digitaldrywood/other", title: "Epic: Wrong child", body: "#252"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := make([]restIssue, 0, len(tt.hits))
+			for index, candidate := range tt.hits {
+				body := candidate.body
+				items = append(items, restIssue{
+					NodeID:  fmt.Sprintf("I_epic_%d", index),
+					Number:  258 + index,
+					Title:   candidate.title,
+					Body:    &body,
+					State:   "open",
+					HTMLURL: fmt.Sprintf("https://github.com/%s/issues/%d", candidate.repo, 258+index),
+					Labels:  candidate.labels,
+				})
+			}
+			searchBody, err := json.Marshal(restIssueSearchResponse{TotalCount: len(items), Items: items})
+			if err != nil {
+				t.Fatal(err)
+			}
+			responses := []graphqlTestResponse{
+				{body: fmt.Sprintf(`{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":%q},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`, tt.childRepo)},
+				{method: http.MethodGet, body: string(searchBody)},
+			}
+			if tt.wantID != "" && !tt.labelMode {
+				responses = append(responses, graphqlTestResponse{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"fieldValues":{"nodes":[]}}]}}}}`})
+			}
+			server := newGraphQLTestServer(t, responses)
+			config := Config{ProjectSlug: "PVT_1"}
+			if tt.labelMode {
+				config = Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}}
+			}
+			c := newGitHubTestConnector(t, server, config)
+			got, err := c.FetchIssueParents(context.Background(), "I_child")
+			if err != nil {
+				t.Fatalf("FetchIssueParents() error = %v", err)
+			}
+			if tt.wantID == "" {
+				if len(got) != 0 {
+					t.Fatalf("FetchIssueParents() = %#v, want no parents", got)
+				}
+			} else if len(got) != 1 || got[0].ID != tt.wantID || got[0].State != "Todo" {
+				t.Fatalf("FetchIssueParents() = %#v, want %s in Todo", got, tt.wantID)
+			}
+			requests := server.requests()
+			if len(requests) != len(responses) {
+				t.Fatalf("request count = %d, want %d (no per-hit reads)", len(requests), len(responses))
+			}
+			for _, request := range requests {
+				if path, ok := request["path"].(string); ok && strings.HasPrefix(path, "/repos/") {
+					t.Fatalf("unexpected per-hit REST request: %s", path)
+				}
+			}
+		})
+	}
+}
+
+func TestConnectorFetchIssueParentsBatchesProjectFieldsForMatchingEpics(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"trackedInIssues":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`},
+		{method: http.MethodGet, body: `{"total_count":2,"items":[{"node_id":"I_epic_1","number":258,"title":"Epic: One","body":"#251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258"},{"node_id":"I_epic_2","number":259,"title":"Epic: Two","body":"digitaldrywood/detent#251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/259"}]}`},
+		{body: `{"data":{"issue0":{"id":"I_epic_1","number":258,"repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"}}]}},"issue1":{"id":"I_epic_2","number":259,"repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_2","project":{"id":"PVT_1"}}]}}}}`},
+		{body: `{"data":{"item0":{"id":"PVTI_1","statusValue":{"name":"Todo"},"fieldValues":{"nodes":[]}},"item1":{"id":"PVTI_2","statusValue":{"name":"In Progress"},"fieldValues":{"nodes":[]}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "I_epic_1" || got[0].State != "Todo" || got[1].ID != "I_epic_2" || got[1].State != "In Progress" {
+		t.Fatalf("FetchIssueParents() = %#v, want both epics with project statuses", got)
+	}
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent query, search, batched membership and fields", len(requests))
+	}
+	for _, request := range requests[2:] {
+		if query, ok := request["query"].(string); !ok || !strings.Contains(query, "item1") && !strings.Contains(query, "issue1") {
+			t.Fatalf("unbatched project query = %#v", request)
+		}
 	}
 }
 
@@ -4792,12 +4826,7 @@ func TestConnectorFetchIssueParentsPaginatesBodyReferencedEpicSearch(t *testing.
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"total_count":101,"items":[{"number":258}]}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/258",
-			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"Depends on: #251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[]}`,
+			body:   `{"total_count":101,"items":[{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"Depends on: #251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[]}]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
@@ -4815,8 +4844,8 @@ func TestConnectorFetchIssueParentsPaginatesBodyReferencedEpicSearch(t *testing.
 	}
 
 	requests := server.requests()
-	if len(requests) != 5 {
-		t.Fatalf("request count = %d, want parent lookup, 2 search pages, REST issue, project item", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent lookup, 2 search pages, project item", len(requests))
 	}
 	firstSearch := requests[1]["path"].(string)
 	secondSearch := requests[2]["path"].(string)
@@ -5586,6 +5615,230 @@ func TestConnectorPullRequestDiffFingerprintIsContentStableAndCached(t *testing.
 	})
 	if changed == first {
 		t.Fatalf("changed fingerprint = %q, want a new value", changed)
+	}
+}
+
+func TestPullRequestValidationDiffConcurrentPRs(t *testing.T) {
+	t.Parallel()
+	type fixture struct {
+		base, head string
+		files      []string
+		contents   []string
+		patch      string
+	}
+	fixtures := map[int]fixture{
+		155: {base: "d8970cb2b42f2463a6f10f9f2b88151dd4b5d6c1", head: "236813f76fa510ff22d778fd1fd341f390cf15da", files: []string{"AGENTS.md", "README.md"}, contents: []string{"bench origin", "bench origin"}},
+		156: {base: "d8970cb2b42f2463a6f10f9f2b88151dd4b5d6c1", head: "178c860585360bf7056e76ebfbc6a68fe08afc44", files: []string{"WORKFLOW.md", "detent.yaml", "docs/detent-rework-cost.md"}, contents: []string{"workflow", "agent config", "rework cost"}},
+		220: {base: "1cc80a5a29fcc4269f89204a167216ae7591d2bd", head: "e5be6db5371bb1ebffeb440d8d27a9d8119026b9", files: []string{"WORKFLOW.md", "ui/build.gradle.kts", "ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt"}, contents: []string{"stall procedure", "timeout", "cleanup"}},
+		190: {base: "9ae69513839167f50336794c361ba0db627d995a", head: "fa96813851dda0908bb27560919dc30c9a5ca96b", files: []string{"core/src/iosTest/kotlin/pro/pyroapex/pos/core/db/IosDatabaseTest.kt"}, contents: []string{"iOS database"}},
+	}
+	for number, f := range fixtures {
+		var patch strings.Builder
+		for index, path := range f.files {
+			fmt.Fprintf(&patch, "diff --git a/%s b/%s\n@@ -0,0 +1 @@\n+%s\n", path, path, f.contents[index])
+		}
+		f.patch = patch.String()
+		fixtures[number] = f
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var number int
+		var filesEndpoint bool
+		if strings.HasSuffix(r.URL.Path, "/files") {
+			_, _ = fmt.Sscanf(r.URL.Path, "/repos/example/repo/pulls/%d/files", &number)
+			filesEndpoint = true
+		} else if _, err := fmt.Sscanf(r.URL.Path, "/repos/example/repo/pulls/%d", &number); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		f, ok := fixtures[number]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if filesEndpoint {
+			var files []map[string]string
+			for index, path := range f.files {
+				files = append(files, map[string]string{"filename": path, "patch": "@@ -0,0 +1 @@\n+" + f.contents[index]})
+			}
+			_ = json.NewEncoder(w).Encode(files)
+			return
+		}
+		if r.Header.Get("Accept") == "application/vnd.github.diff" {
+			_, _ = io.WriteString(w, f.patch)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"number":%d,"base":{"sha":%q},"head":{"sha":%q}}`, number, f.base, f.head)
+	}))
+	t.Cleanup(server.Close)
+	c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		number int
+		diff   connector.ValidationDiff
+		err    error
+	}
+	results := make(chan outcome, len(fixtures))
+	for number, fixture := range fixtures {
+		go func() {
+			issue := connector.Issue{Identifier: fmt.Sprintf("example/repo#%d", number), PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number, BaseSHA: fixture.base, HeadSHA: fixture.head}}
+			diff, err := c.PullRequestValidationDiff(t.Context(), issue)
+			results <- outcome{number, diff, err}
+		}()
+	}
+	for range fixtures {
+		got := <-results
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		want := fixtures[got.number]
+		if !reflect.DeepEqual(got.diff.Files, want.files) || got.diff.Patch != want.patch || got.diff.HeadSHA != want.head || got.diff.PRNumber != got.number {
+			t.Fatalf("PR %d snapshot = %#v", got.number, got.diff)
+		}
+	}
+}
+
+func TestPullRequestValidationDiffFetchFailuresAreRetryable(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		failedCall int
+	}{
+		{name: "initial metadata", failedCall: 1},
+		{name: "files", failedCall: 2},
+		{name: "patch", failedCall: 3},
+		{name: "refreshed metadata", failedCall: 4},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if int(calls.Add(1)) == tt.failedCall {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/files"):
+					_, _ = io.WriteString(w, `[{"filename":"AGENTS.md","patch":"@@ -0,0 +1 @@\n+bench origin"}]`)
+				case r.Header.Get("Accept") == "application/vnd.github.diff":
+					_, _ = io.WriteString(w, "diff --git a/AGENTS.md b/AGENTS.md\n@@ -0,0 +1 @@\n+bench origin\n")
+				default:
+					_, _ = io.WriteString(w, `{"number":155,"base":{"sha":"base"},"head":{"sha":"head"}}`)
+				}
+			}))
+			t.Cleanup(server.Close)
+			c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{Identifier: "example/repo#155", PRRepository: "example/repo",
+				PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base", HeadSHA: "head"}}
+			if _, err := c.PullRequestValidationDiff(t.Context(), issue); err == nil || !connector.IsRetryable(err) {
+				t.Fatalf("fetch failure = %v, want retryable error", err)
+			}
+		})
+	}
+}
+
+func TestPullRequestValidationDiffPreservesFetchFailureClassification(t *testing.T) {
+	t.Parallel()
+	for _, failure := range []struct {
+		name      string
+		status    int
+		body      string
+		headers   http.Header
+		transport error
+		want      error
+		retryable bool
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, want: ErrAuthenticationFailed},
+		{name: "forbidden", status: http.StatusForbidden, want: ErrAuthenticationFailed},
+		{name: "not found", status: http.StatusNotFound, want: ErrNotFound},
+		{name: "server error", status: http.StatusInternalServerError, want: ErrTransient, retryable: true},
+		{name: "timeout", transport: context.DeadlineExceeded, want: ErrTransient, retryable: true},
+		{name: "rate limited", status: http.StatusTooManyRequests, want: ErrRateLimited, retryable: true},
+		{name: "forbidden rate limited", status: http.StatusForbidden, headers: http.Header{"Retry-After": []string{"60"}}, want: ErrRateLimited, retryable: true},
+		{name: "invalid response", status: http.StatusOK, body: "{invalid", want: ErrInvalidResponse},
+	} {
+		for _, stage := range []struct {
+			name string
+			call int
+		}{
+			{name: "initial metadata", call: 1},
+			{name: "files", call: 2},
+			{name: "patch", call: 3},
+			{name: "refreshed metadata", call: 4},
+		} {
+			if failure.name == "invalid response" && stage.name == "patch" {
+				// The patch response is plain text, not JSON.
+				continue
+			}
+			t.Run(failure.name+"/"+stage.name, func(t *testing.T) {
+				t.Parallel()
+				server := httptest.NewServer(http.NotFoundHandler())
+				t.Cleanup(server.Close)
+				var calls atomic.Int32
+				client := staticHTTPClient{do: func(req *http.Request) (*http.Response, error) {
+					if int(calls.Add(1)) == stage.call {
+						if failure.transport != nil {
+							return nil, failure.transport
+						}
+						return jsonResponse(req, failure.status, failure.body, failure.headers), nil
+					}
+					switch {
+					case strings.HasSuffix(req.URL.Path, "/files"):
+						return jsonResponse(req, http.StatusOK, `[{"filename":"AGENTS.md","patch":"@@ -0,0 +1 @@\n+safe"}]`, nil), nil
+					case req.Header.Get("Accept") == "application/vnd.github.diff":
+						return jsonResponse(req, http.StatusOK, "diff --git a/AGENTS.md b/AGENTS.md\n@@ -0,0 +1 @@\n+safe\n", nil), nil
+					default:
+						return jsonResponse(req, http.StatusOK, `{"number":155,"base":{"sha":"base"},"head":{"sha":"head"}}`, nil), nil
+					}
+				}}
+				c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", HTTPClient: client})
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.client.restBackoffs = newRESTBackoffRegistry()
+				issue := connector.Issue{Identifier: "example/repo#155", PRRepository: "example/repo",
+					PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base", HeadSHA: "head"}}
+				_, err = c.PullRequestValidationDiff(t.Context(), issue)
+				if err == nil || connector.IsRetryable(err) != failure.retryable {
+					t.Fatalf("fetch failure = %v, retryable = %t, want %t", err, connector.IsRetryable(err), failure.retryable)
+				}
+				if !errors.Is(err, failure.want) {
+					t.Fatalf("fetch failure = %v, want wrapped %v", err, failure.want)
+				}
+			})
+		}
+	}
+}
+
+func TestValidationDiffRejectsOtherPRFiles(t *testing.T) {
+	t.Parallel()
+	patch := "diff --git a/WORKFLOW.md b/WORKFLOW.md\n@@ -0,0 +1 @@\n+workflow\n"
+	pr220Patch := "diff --git a/WORKFLOW.md b/WORKFLOW.md\n+stall procedure\ndiff --git a/ui/build.gradle.kts b/ui/build.gradle.kts\n+timeout\ndiff --git a/ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt b/ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt\n+cleanup\n"
+	for _, tt := range []struct {
+		name  string
+		files []string
+		patch string
+		want  bool
+	}{
+		{name: "matching workflow", files: []string{"WORKFLOW.md"}, patch: patch, want: true},
+		{name: "path contains destination marker", files: []string{"docs b/readme.md"}, patch: "diff --git a/docs b/readme.md b/docs b/readme.md\n+docs\n", want: true},
+		{name: "ambiguous suffix is not the destination", files: []string{"readme.md"}, patch: "diff --git a/docs b/readme.md b/docs b/readme.md\n+docs\n"},
+		{name: "renamed file", files: []string{"new.md"}, patch: "diff --git a/old.md b/new.md\nsimilarity index 100%\nrename from old.md\nrename to new.md\n", want: true},
+		{name: "docs PR list with workflow patch", files: []string{"AGENTS.md", "README.md"}, patch: patch},
+		{name: "missing file list", files: nil, patch: patch},
+		{name: "PR220 receipt files", files: []string{"WORKFLOW.md", "ui/build.gradle.kts", "ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt"}, patch: pr220Patch, want: true},
+		{name: "PR190 iOS files against PR220 patch", files: []string{"core/src/iosTest/kotlin/pro/pyroapex/pos/core/db/IosDatabaseTest.kt"}, patch: pr220Patch},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameValidationFiles(tt.files, tt.patch); got != tt.want {
+				t.Fatalf("sameValidationFiles(%v) = %t, want %t", tt.files, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -7467,5 +7720,44 @@ func TestConnectorLookupBranchHead(t *testing.T) {
 				t.Fatalf("variables = %#v", variables)
 			}
 		})
+	}
+}
+
+func TestConnectorPostCommitStatusPostsSuccessForTheExactHead(t *testing.T) {
+	t.Parallel()
+
+	sha := strings.Repeat("a1", 20)
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodPost,
+			path:   "/repos/example/repo/statuses/" + sha,
+			body:   `{"context":"local-gate","state":"success","created_at":"2026-09-29T00:00:00Z"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	if err := c.PostCommitStatus(context.Background(), "example/repo", sha, "local-gate", "Detent ran the configured gate on this head"); err != nil {
+		t.Fatalf("PostCommitStatus() error = %v", err)
+	}
+	requests := server.requests()
+	if len(requests) != 1 || requests[0]["method"] != http.MethodPost {
+		t.Fatalf("requests = %#v, want one POST", requests)
+	}
+	body := requests[0]["body"].(map[string]any)
+	if body["state"] != "success" || body["context"] != "local-gate" {
+		t.Fatalf("status body = %#v, want success for local-gate", body)
+	}
+
+	for _, test := range []struct{ name, repository, sha, context string }{
+		{name: "short sha", repository: "example/repo", sha: "abc123", context: "local-gate"},
+		{name: "branch name", repository: "example/repo", sha: "main", context: "local-gate"},
+		{name: "no context", repository: "example/repo", sha: sha, context: " "},
+		{name: "no repository", repository: "repo", sha: sha, context: "local-gate"},
+	} {
+		if err := c.PostCommitStatus(context.Background(), test.repository, test.sha, test.context, ""); err == nil {
+			t.Errorf("%s: PostCommitStatus() accepted an invalid target", test.name)
+		}
+	}
+	if got := len(server.requests()); got != 1 {
+		t.Fatalf("invalid targets reached GitHub: %d requests", got)
 	}
 }

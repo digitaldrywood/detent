@@ -8,6 +8,12 @@ import (
 
 const mergeControlCheckedHeadOutput = "merge_control_checked_head"
 
+// A checked clean merge uses the existing fast path and needs no workspace.
+func (p dispatchPlanner) workspaceBreakerAllowsMerge(state *State, issue connector.Issue) bool {
+	return state != nil && state.FailureBreaker.Active() && state.FailureBreaker.Class == workAttemptErrorWorkspace &&
+		p.readyMergeControlCandidate(state, issue)
+}
+
 func (p dispatchPlanner) readyMergeControlCandidate(state *State, issue connector.Issue) bool {
 	if !p.mechanicalMergeAdmission(issue) || !mergeWorkerProgrammaticMergeReady(issue, p.cfg) || issue.PullRequest.BaseBranchStrict || strings.TrimSpace(issue.PullRequest.BaseSHA) == "" {
 		return false
@@ -23,7 +29,7 @@ func sameMergeControlRevision(checked, current connector.Issue) bool {
 		pullRequestRepository(checked) == pullRequestRepository(current) &&
 		pullRequestNumber(checked) == pullRequestNumber(current) &&
 		checked.PullRequest.HeadSHA == current.PullRequest.HeadSHA &&
-		checked.PullRequest.BaseSHA == current.PullRequest.BaseSHA
+		!current.PullRequest.BaseBranchStrict
 }
 
 func (o *Orchestrator) reconcileMergeControlDemand(decisions []dispatchPlanDecision, outcomes map[string]dispatchIssueOutcome) {

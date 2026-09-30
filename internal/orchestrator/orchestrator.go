@@ -129,6 +129,8 @@ type Config struct {
 	Authorization                 selector.Selector
 	SelectorContext               selector.Context
 	WorkerHosts                   []string
+	WorkerHostSelection           string
+	WorkerHostCaps                map[string]int
 	BudgetRefusalCooldown         time.Duration
 	WorkspaceCleanupIdleTTL       time.Duration
 	WorkspaceCleanupSweepInterval time.Duration
@@ -296,11 +298,13 @@ type Orchestrator struct {
 	validator               Validator
 	securityAuditor         SecurityAuditor
 	reaper                  WorkspaceReaper
+	quarantineWarnings      map[string]struct{}
 	trimHostCache           func(context.Context, toolcache.Policy, time.Time) error
 	logger                  *slog.Logger
 	globalDispatchGate      scheduler.ProjectDispatchGate
 	globalDispatchReady     chan struct{}
 	globalDispatchPending   map[string]pendingGlobalDispatch
+	lastDispatchCandidates  []connector.Issue
 	readMemoryPressure      func(context.Context) (hostpressure.Sample, error)
 	readIOPressure          func(context.Context) (hostpressure.Sample, error)
 	readCPUPressure         func(context.Context) (hostpressure.Sample, error)
@@ -320,6 +324,7 @@ type Orchestrator struct {
 	release                 releasepkg.Coordinator
 	capacityController      runpkg.CapacityController
 	providerCapacity        runpkg.ProviderCapacityResolver
+	workerHostChecker       runpkg.WorkerHostChecker
 	capacityStatus          runpkg.CapacityStatusController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	recoveryInspector       runpkg.BlockedRecoveryInspector
@@ -482,12 +487,17 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if deps.Connector == nil {
 		return nil, ErrMissingConnector
 	}
+	cfg = withNativeLandingLane(cfg, deps.Connector)
 
 	runner := deps.Runner
 	if runner == nil {
 		runner = FakeRunner{}
 	}
 	reaper := deps.WorkspaceReaper
+	var workerHostChecker runpkg.WorkerHostChecker
+	if candidate, ok := runner.(runpkg.WorkerHostChecker); ok {
+		workerHostChecker = candidate
+	}
 	if reaper == nil {
 		if candidate, ok := runner.(WorkspaceReaper); ok {
 			reaper = candidate
@@ -719,6 +729,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		projectID:               cfg.Project.ID,
 		capacityController:      capacityController,
 		providerCapacity:        providerCapacity,
+		workerHostChecker:       workerHostChecker,
 		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
 		recoveryInspector:       blockedRecoveryInspector,
@@ -887,7 +898,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			}
 		case request := <-o.stopRequests:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			o.handleStopRunRequest(ctx, &state, request)
+			if len(state.Running) < before {
+				o.refillProjectSlotsExcluding(ctx, &state, o.clockNow(), request.request.IssueID)
+			}
 		case request := <-o.modelPermitRequests:
 			state.syncWorkerProgress()
 			request.reply <- o.handleModelPermitRequest(&state, request.issueID)
@@ -899,7 +914,16 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case result := <-o.runResults:
 			state.syncWorkerProgress()
 			o.startCompletion(&state)
+			before := len(state.Running)
+			_, operatorStopped := o.pendingStops[result.IssueID]
 			o.handleRunResult(ctx, &state, result)
+			if len(state.Running) < before {
+				if operatorStopped {
+					o.refillProjectSlotsExcluding(ctx, &state, o.clockNow(), result.IssueID)
+				} else {
+					o.refillProjectSlots(ctx, &state, o.clockNow())
+				}
+			}
 			o.publishState(&state)
 			o.completionState.Store(nil)
 			continue
@@ -911,7 +935,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			}
 		case result := <-heartbeatResults:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			o.handleHeartbeatResult(&state, result)
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 		case event := <-o.validatorCapacityEvents:
 			state.syncWorkerProgress()
 			o.handleValidatorCapacityEvent(&state, event)
@@ -925,6 +953,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			request.reply <- o.forceQuit(request.ctx, &state, request.at)
 		case request := <-o.recoveryRequests:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			var response WorkAttemptRecoveryResponse
 			var err error
 			if request.receiptOnly {
@@ -936,17 +965,28 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 				response, err = o.handleWorkAttemptRecovery(ctx, &state, request.request, request.at)
 			}
 			request.reply <- workAttemptRecoveryReply{response: response, err: err}
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 			if !request.receiptOnly && err == nil && response.Queued {
 				resetTicker(ticker, time.Millisecond)
 			}
 		case request := <-o.operatorMoves:
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			request.reply <- o.applyOperatorMove(ctx, &state, request.request, request.at)
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 		case update := <-o.configUpdates:
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
+			previousCapacity := state.MaxConcurrentAgents
 			o.applyRuntimeUpdate(&state, update.update, ticker)
+			if state.MaxConcurrentAgents > previousCapacity {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 			o.finishTick(&state)
 			update.reply <- struct{}{}
 		case request := <-o.stateRequests:
@@ -1430,6 +1470,10 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 		o.cfg.Claiming.AssigneeRequired != cfg.Claiming.AssigneeRequired {
 		o.ownershipStartupLogged = false
 	}
+	if update.Connector != nil {
+		o.connector = update.Connector
+	}
+	cfg = withNativeLandingLane(cfg, o.connector)
 	o.cfg = cfg
 	now := time.Now
 	if o.now != nil {
@@ -1437,9 +1481,6 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	}
 	updatedAt := now()
 	o.reloadProjectFailureBreaker(state, cfg.FailureBreaker, updatedAt)
-	if update.Connector != nil {
-		o.connector = update.Connector
-	}
 	o.heartbeats.configure(cfg, o.connector, o.workAttempts)
 	if update.ReplaceRelease {
 		o.release = update.Release

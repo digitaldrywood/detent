@@ -24,6 +24,10 @@ func (s *Service) nativeCapabilities(c echo.Context) error {
 	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	features := []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeCheckoutRepositoryCapability}
+	if s.workspaces != nil {
+		features = append(features, tracker.NativeWorkspaceCapability)
+	}
 	return c.JSON(http.StatusOK, struct {
 		ServerID        string   `json:"server_id"`
 		ProtocolMajors  []int    `json:"protocol_majors"`
@@ -31,7 +35,7 @@ func (s *Service) nativeCapabilities(c echo.Context) error {
 		Features        []string `json:"features"`
 		MaxRequestBytes int      `json:"max_request_bytes"`
 		MaxPageSize     int      `json:"max_page_size"`
-	}{serverID, []int{1, 2}, []int{1}, []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, maxAPIRequestBodyBytes, maxAPIPageLimit})
+	}{serverID, []int{1, 2}, []int{1}, features, maxAPIRequestBodyBytes, maxAPIPageLimit})
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {

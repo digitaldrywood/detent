@@ -304,6 +304,67 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 	}
 }
 
+func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
+	now := time.Date(2026, 9, 24, 3, 0, 0, 0, time.UTC)
+	parkedAt := now.Add(-time.Hour).Add(500 * time.Millisecond)
+	const source = "digitaldrywood/detent#685"
+	for _, tt := range []struct {
+		name           string
+		body           string
+		authorized     bool
+		commentAt      time.Time
+		parkCause      string
+		legacyBlocker  bool
+		started        bool
+		wantState      string
+		wantTransition bool
+	}{
+		{name: "authorized clearance resumes existing work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, started: true, wantState: "Rework", wantTransition: true},
+		{name: "authorized clearance queues new work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
+		{name: "same-second clearance", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Truncate(time.Second), parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
+		{name: "unauthorized Workpad cannot clear", body: "status: in_progress\nblockers: []\nhuman_action: null", commentAt: now, parkCause: workpadBlockedUnactionedReason},
+		{name: "clearance predates park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Add(-time.Minute), parkCause: workpadBlockedUnactionedReason},
+		{name: "human action remains", body: "status: blocked\nblockers: []\nhuman_action: approve release", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason},
+		{name: "converted generated prerequisite stays human held", body: "status: blocked\nblockers: []\nhuman_action: decide whether to publish", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason},
+		{name: "unrelated human park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: noProgressLimitReason},
+		{name: "unmigrated generated prerequisite remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, legacyBlocker: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			issue := dependencyAutoUnblockIssue("issue-human-clearance", blockedStatusState)
+			issue.StageUpdatedAt = &parkedAt
+			if tt.started {
+				issue.BranchName = "detent/human-clearance"
+			}
+			body := "## Codex Workpad\n\n```detent-status\nschema: 1\n" + tt.body + "\n```"
+			issue.Comments = []connector.IssueComment{{Body: body, AuthorAuthorized: tt.authorized, CreatedAt: &tt.commentAt}}
+			issue.WorkpadSignal, _ = workpad.SignalFromComment(body, "", "digitaldrywood/detent")
+			if tt.legacyBlocker {
+				issue.DependencySource = connector.BlockedRefSourceNative
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: source, Source: connector.BlockedRefSourceNative}}
+				tracker.blockers = []connector.Issue{{Identifier: source, State: "Todo"}}
+			}
+			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: parkedAt, Source: BlockedSourceProjectStatus,
+				Recovery: &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerHuman, Cause: tt.parkCause, TargetState: "Rework"}}
+
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			_, ok := transitioned[issue.ID]
+			if ok != tt.wantTransition {
+				t.Fatalf("transitioned = %t, want %t; updates = %+v", ok, tt.wantTransition, tracker.updates)
+			}
+			if tt.wantTransition {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState {
+					t.Fatalf("updates = %+v, want %s", tracker.updates, tt.wantState)
+				}
+			} else if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %+v, want no transition", tracker.updates)
+			}
+		})
+	}
+}
+
 func TestExplicitIssueStatePredicateDoesNotBecomeLegacyDependency(t *testing.T) {
 	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
 	referenced := dependencyAutoUnblockIssue("issue-reference-open", "In Progress")

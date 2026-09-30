@@ -1290,6 +1290,10 @@ INSERT INTO validator_verdicts (
   project_id,
   issue_id,
   head_sha,
+  repository,
+  base_sha,
+  diff_digest,
+  diff_files_json,
   identifier,
   issue_url,
   pr_number,
@@ -1303,8 +1307,12 @@ INSERT INTO validator_verdicts (
   next_retry_at,
   recorded_at,
   updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
+  repository = excluded.repository,
+  base_sha = excluded.base_sha,
+  diff_digest = excluded.diff_digest,
+  diff_files_json = excluded.diff_files_json,
   identifier = excluded.identifier,
   issue_url = excluded.issue_url,
   pr_number = excluded.pr_number,

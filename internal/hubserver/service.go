@@ -7,9 +7,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -26,6 +29,7 @@ const (
 type Service struct {
 	billing           *hostedBillingWorker
 	hostedMutationMu  sync.Mutex
+	hostedAuthLogger  *slog.Logger
 	hostedSessions    *auth.Service
 	echo              *echo.Echo
 	database          *database
@@ -39,8 +43,12 @@ type Service struct {
 	reconcileCancel   context.CancelFunc
 	reconcileDone     chan struct{}
 	reconcileStopOnce sync.Once
+	pullRequests      *pullRequestCache
+	conversations     *conversationService
 	closeOnce         sync.Once
 	closeErr          error
+	clientBuild       appClientBuild
+	workspaces        *workspaceService
 }
 
 type healthResponse struct {
@@ -62,6 +70,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := cfg.Hosted.validate(); err != nil {
 		return nil, err
 	}
+	hostedAuthLogger := cfg.Logger
 	if cfg.Hosted != nil {
 		cfg.Logger = slog.New(hostedLogHandler{output: cfg.Logger.Handler()})
 	}
@@ -88,14 +97,17 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	workerContext, workerCancel := context.WithCancel(context.Background())
 	reconcileContext, reconcileCancel := context.WithCancel(context.Background())
 	service := &Service{
-		echo:            e,
-		database:        database,
-		tracker:         workTracker,
-		config:          cfg,
-		workerCancel:    workerCancel,
-		workerDone:      make(chan struct{}),
-		reconcileCancel: reconcileCancel,
-		reconcileDone:   make(chan struct{}),
+		echo:             e,
+		hostedAuthLogger: hostedAuthLogger,
+		database:         database,
+		tracker:          workTracker,
+		config:           cfg,
+		workerCancel:     workerCancel,
+		workerDone:       make(chan struct{}),
+		reconcileCancel:  reconcileCancel,
+		reconcileDone:    make(chan struct{}),
+		clientBuild:      conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
+		pullRequests:     newPullRequestCache(),
 	}
 	if cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)
@@ -103,6 +115,27 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.Hosted != nil {
 		service.hostedSessions, err = auth.NewSessionService(auth.SessionConfig{SessionTTL: 30 * 24 * time.Hour, PublicURL: cfg.Hosted.PublicURL}, service)
 		if err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+	}
+	if cfg.Conversation != nil && cfg.Conversation.Enabled && !cfg.CredentialMaintenance {
+		service.conversations = newConversationService(service, cfg.Conversation.normalized())
+		if err := service.conversations.start(ctx); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+	}
+	if cfg.Workspace != nil && cfg.Workspace.Enabled && !cfg.CredentialMaintenance {
+		if err := cfg.Workspace.validate(); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+		service.workspaces = newWorkspaceService(service, *cfg.Workspace)
+		if err := service.workspaces.start(ctx); err != nil {
 			workerCancel()
 			reconcileCancel()
 			return nil, errors.Join(err, database.Close())
@@ -148,9 +181,21 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		resultErr = errors.Join(resultErr, service.Close())
 	}()
 
-	listener, err := cfg.listen(ctx, "tcp", cfg.ListenAddress)
+	network, address := "tcp", cfg.ListenAddress
+	if path, ok := listenerUnixPath(cfg.ListenAddress); ok {
+		if err := prepareUnixListener(ctx, path); err != nil {
+			return err
+		}
+		network, address = "unix", path
+	}
+	listener, err := cfg.listen(ctx, network, address)
 	if err != nil {
 		return fmt.Errorf("listen for hub requests: %w", err)
+	}
+	if network == "unix" {
+		if err := os.Chmod(address, 0o600); err != nil {
+			return errors.Join(fmt.Errorf("restrict hub socket: %w", err), listener.Close())
+		}
 	}
 	cfg.Logger.Info("hub serving", "address", listener.Addr().String())
 
@@ -183,10 +228,38 @@ func validateListenerSecurity(cfg Config) error {
 	if (certFile == "") != (keyFile == "") {
 		return errors.New("hub TLS certificate and key must be configured together")
 	}
-	if listenerAddressLoopback(cfg.ListenAddress) || certFile != "" || cfg.TrustedProxy {
+	if _, unix := listenerUnixPath(cfg.ListenAddress); unix || listenerAddressLoopback(cfg.ListenAddress) || certFile != "" || cfg.TrustedProxy {
 		return nil
 	}
 	return fmt.Errorf("%w: %s", ErrInsecureListener, cfg.ListenAddress)
+}
+
+func listenerUnixPath(address string) (string, bool) {
+	path, ok := strings.CutPrefix(strings.TrimSpace(address), "unix:")
+	return path, ok && filepath.IsAbs(path) && filepath.Clean(path) == path
+}
+
+func prepareUnixListener(ctx context.Context, path string) error {
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return errors.New("hub Unix socket directory must exist and be private to the service user (mode 0700)")
+	}
+	existing, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || existing.Mode()&os.ModeSocket == 0 {
+		return errors.New("hub Unix socket path exists and is not a socket")
+	}
+	dialer := net.Dialer{Timeout: time.Second}
+	connection, err := dialer.DialContext(ctx, "unix", path)
+	if err == nil {
+		return errors.Join(errors.New("another process is serving the hub Unix socket"), connection.Close())
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		return errors.New("hub Unix socket may still be in use; remove it after confirming no Hub owns it")
+	}
+	return os.Remove(path)
 }
 
 func listenerAddressLoopback(address string) bool {
@@ -278,6 +351,12 @@ func (s *Service) Close() error {
 		s.stopHostedBilling()
 		if s.outbox != nil {
 			s.outbox.stop()
+		}
+		if s.conversations != nil {
+			s.conversations.stop()
+		}
+		if s.workspaces != nil {
+			s.workspaces.Stop()
 		}
 		s.closeErr = errors.Join(httpErr, webhookErr, reconcileErr, s.database.Close())
 	})

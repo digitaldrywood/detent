@@ -90,7 +90,7 @@ func TestRunnerSelectedSessionLimits(t *testing.T) {
 							t.Fatalf("attempt changed: %+v", sessions.started)
 						}
 					} else {
-						_, err = runner.Validate(t.Context(), ValidatorRequest{Issue: issue})
+						_, err = runner.Validate(t.Context(), testValidatorRequest(issue))
 					}
 					if stop == "duration" {
 						if !errors.Is(err, ErrSessionDurationExceeded) {

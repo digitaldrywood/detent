@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 )
@@ -57,6 +58,7 @@ func TestMain(m *testing.M) {
 			panic("clear " + name + ": " + err.Error())
 		}
 	}
+	defaultInspectCaches = func(context.Context) toolcache.Report { return toolcache.Report{} }
 	exitCode := m.Run()
 	if err := os.RemoveAll(codexHome); err != nil {
 		fmt.Fprintln(os.Stderr, "clean test Codex home:", err)

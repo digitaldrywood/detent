@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -36,7 +37,7 @@ func prepareRunner(t *testing.T, f nativeFixture, operations ...string) runnerFi
 	var enrollment runnerauth.Enrollment
 	decodeHubResponse(t, response, &enrollment)
 	return runnerFixture{nativeFixture: f, binding: binding, enrollment: enrollment, base: base,
-		redemption: runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}}
+		redemption: runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}}
 }
 
 func (r *runnerFixture) enroll(t *testing.T) {
@@ -50,7 +51,7 @@ func (r runnerFixture) identityPath() string { return r.base + "/runners/" + r.b
 
 func TestRunnerEnrollmentSingleRedemption(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "enrollment")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	start := make(chan struct{})
 	statuses := make(chan int, 8)
@@ -87,9 +88,93 @@ func TestRunnerEnrollmentSingleRedemption(t *testing.T) {
 	}
 }
 
+func TestRunnerUnboundEnrollment(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	base := "/api/v2/organizations/" + string(f.project.OrganizationID)
+	create := func(t *testing.T, request runnerauth.EnrollmentRequest) runnerauth.Enrollment {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments", testHubAdminToken, request)
+		requireNativeStatus(t, response, http.StatusCreated)
+		var enrollment runnerauth.Enrollment
+		decodeHubResponse(t, response, &enrollment)
+		return enrollment
+	}
+	redemption := func(t *testing.T, binding runnerauth.Binding) runnerauth.Redemption {
+		t.Helper()
+		credential, err := apikey.GenerateToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}
+	}
+	unbound := runnerauth.EnrollmentRequest{ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60}
+
+	for _, test := range []struct {
+		name    string
+		request runnerauth.EnrollmentRequest
+		status  int
+	}{
+		{"unbound", unbound, http.StatusCreated},
+		{"runner without machine", func() runnerauth.EnrollmentRequest {
+			request := unbound
+			request.RunnerID = runnerauth.NewBinding().RunnerID
+			return request
+		}(), http.StatusUnprocessableEntity},
+		{"shared without a host", func() runnerauth.EnrollmentRequest {
+			request := unbound
+			request.SharedMachine = true
+			return request
+		}(), http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments", testHubAdminToken, test.request), test.status)
+		})
+	}
+
+	enrollment := create(t, unbound)
+	first := runnerauth.NewBinding()
+	statuses := make(chan int, 4)
+	var workers sync.WaitGroup
+	for i := range 4 {
+		binding := first
+		if i > 0 {
+			binding = runnerauth.NewBinding()
+		}
+		body := redemption(t, binding)
+		workers.Go(func() {
+			statuses <- performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, body).Code
+		})
+	}
+	workers.Wait()
+	close(statuses)
+	winners := 0
+	for status := range statuses {
+		if status == http.StatusCreated {
+			winners++
+		} else if status != http.StatusUnauthorized {
+			t.Fatalf("redemption status = %d", status)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("unbound redemption winners = %d, want 1", winners)
+	}
+	var runner, machine string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT runner_id, machine_id FROM runner_enrollments WHERE id = ?", enrollment.ID).Scan(&runner, &machine); err != nil || runner == "" || machine == "" {
+		t.Fatalf("redeemed enrollment binding = %q %q, %v", runner, machine, err)
+	}
+	var identities int
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_identities WHERE id = ? AND machine_id = ?", runner, machine).Scan(&identities); err != nil || identities != 1 {
+		t.Fatalf("runner identity rows = %d, %v", identities, err)
+	}
+
+	taken := create(t, unbound)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", taken.Token, redemption(t, runnerauth.Binding{RunnerID: runner, MachineID: tracker.MachineID(machine)})), http.StatusConflict)
+}
+
 func TestRunnerConcurrentRotationHasOneWinner(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "rotations")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read)
 	r.enroll(t)
 	start := make(chan struct{})
@@ -154,7 +239,7 @@ func TestRunnerEnrollmentValidationAndClock(t *testing.T) {
 
 func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 9, 5, 12, 0, 0, 123, time.UTC)
+	now := time.Date(2026, 9, 29, 0, 31, 39, 0, time.UTC)
 	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
 	f := newNativeFixture(t, openTestService(t, config), "", "lifecycle")
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -176,6 +261,21 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 	if !renewed.ExpiresAt.Equal(now.Add(runnerauth.CredentialTTL)) || renewed.Binding != r.binding {
 		t.Fatal("renewal changed binding or expiry incorrectly")
 	}
+	// Production sequence: last renewal 12:31:39Z, stopped 22:17Z,
+	// restarted the next day at 12:34Z, after the 12:31:39Z expiry.
+	now = time.Date(2026, 9, 29, 22, 17, 0, 0, time.UTC)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), http.StatusOK)
+	now = time.Date(2026, 9, 30, 12, 34, 0, 0, time.UTC)
+	heartbeatPath := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
+	heartbeat := map[string]any{"capacity": 2, "version": "test"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeatPath, r.redemption.Credential, heartbeat), http.StatusUnauthorized)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/renew", r.redemption.Credential, struct{}{})
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &renewed)
+	if renewed.Binding != r.binding || renewed.OrganizationID != r.identity.OrganizationID || !renewed.ExpiresAt.Equal(now.Add(runnerauth.CredentialTTL)) {
+		t.Fatal("restart renewal changed identity or expiry incorrectly")
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeatPath, r.redemption.Credential, heartbeat), http.StatusOK)
 	replacement, err := apikey.GenerateToken()
 	if err != nil {
 		t.Fatal(err)
@@ -202,18 +302,19 @@ func TestRunnerRenewRotateRevokeRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service = openTestService(t, config)
+	now = now.Add(30 * 24 * time.Hour)
 	for _, path := range []string{r.identityPath() + "/renew", r.identityPath() + "/rotate", f.base + "/claims", f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"} {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, replacement, struct{}{}), http.StatusUnauthorized)
 	}
 	var events string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT group_concat(kind, ',') FROM (SELECT kind FROM runner_identity_events WHERE runner_id = ? ORDER BY id)", r.binding.RunnerID).Scan(&events); err != nil || events != "enrolled,renewed,rotated,revoked" {
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT group_concat(kind, ',') FROM (SELECT kind FROM runner_identity_events WHERE runner_id = ? ORDER BY id)", r.binding.RunnerID).Scan(&events); err != nil || events != "enrolled,renewed,renewed,rotated,revoked" {
 		t.Fatalf("lifecycle audit = %q, err=%v", events, err)
 	}
 }
 
 func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "binding")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	r.enroll(t)
 	other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -267,7 +368,7 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 		t.Fatal("history did not attribute event to authenticated runner")
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.base+"/machines/"+string(r.binding.MachineID)+"/routing", testHubAdminToken, runnerauth.HostChange{ExpectedRevision: 1, DisplayName: "Renamed", Capacity: 2}), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Worker override", "capacity": 2, "version": "test"}), http.StatusNoContent)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Worker override", "capacity": 2, "version": "test"}), http.StatusOK)
 	var display, machine string
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id, display_name FROM machines WHERE id = ?", r.binding.MachineID).Scan(&machine, &display); err != nil || machine != string(r.binding.MachineID) || display != "Renamed" {
 		t.Fatal("rename did not preserve identity")

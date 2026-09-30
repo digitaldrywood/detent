@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -10,13 +11,15 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.SchedulingSource, error) {
+func newHubScheduling(cfg globalconfig.Config, version string, problems ...func() []runnerauth.Problem) (orchestrator.SchedulingSource, error) {
 	clientConfig := cfg.Client
 	if !clientConfig.Configured() {
 		return nil, errors.New("hub client is not configured")
@@ -67,22 +70,57 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 	for name, id := range clientConfig.NativeProjects {
 		nativeProjects[name] = tracker.ProjectID(id)
 	}
+	checkoutRoots := make(map[string]string, len(nativeProjects))
+	for _, project := range cfg.Projects {
+		if _, ok := nativeProjects[project.ID]; ok {
+			checkoutRoots[project.ID] = project.Workdir
+		}
+	}
 	var providerReports func() ([]providercapacity.Report, error)
 	if clientConfig.ProviderCapacityFile != "" {
 		providerReports = func() ([]providercapacity.Report, error) {
 			return providercapacity.Load(clientConfig.ProviderCapacityFile)
 		}
 	}
+	var reportProblems func() []runnerauth.Problem
+	if len(problems) > 0 {
+		reportProblems = problems[0]
+	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		Problems:        reportProblems,
+		IsolationReport: func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		CheckoutRepository: func(project string) string {
+			return runnerCheckoutRepository(context.Background(), checkoutRoots[project])
+		},
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),
+			// What this runner can serve for a workspace session (decisions
+			// section 18.1). The hub's claim gate reads it from the row it
+			// stamps the heartbeat on, so a runner that never reports it is
+			// never offered a workspace item, and the lane is started under
+			// exactly the same condition. Isolation is `user` because every
+			// channel this runner serves runs as the runner's own account.
+			WorkspaceCapabilities: workspaceLaneCapabilities(context.Background(), cfg),
+			WorkspaceIsolation:    workspacesession.IsolationUser,
 		},
 		HeartbeatInterval: clientConfig.HeartbeatInterval(),
 		LeaseTTL:          clientConfig.LeaseTTL(),
 	})
+}
+
+func runnerCheckoutRepository(ctx context.Context, root string) string {
+	if root == "" || !runnerCheckoutReady(root) {
+		return ""
+	}
+	remote, err := defaultGitRemoteURL(ctx, root)
+	if err != nil {
+		return ""
+	}
+	repository, _ := doctorGitHubRepositoryFromRemoteURL(remote)
+	return repository
 }
 
 func newHubRunnerFleet(cfg globalconfig.Config) (*hubclient.FleetClient, error) {

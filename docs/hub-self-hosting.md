@@ -8,7 +8,7 @@ automatic failover, or high availability guarantee. Never share a live SQLite
 file over NFS/SMB, mount it into runners, or run a second owner against it.
 
 Self-hosted Detent is free. No WorkOS, Stripe, Detent Cloud account,
-`hub.detent.build` callback, Detent subscription or purchased infrastructure is
+`cloud.detent.build` callback, Detent subscription or purchased infrastructure is
 required. Operators choose authentication, including WorkOS/custom/generic/local
 options; selecting WorkOS must never enable Detent billing. An external auth
 provider may have its own connectivity/account requirements. The currently
@@ -31,7 +31,7 @@ install the executable at that path or adjust the example unit. Do not use an
 unversioned download URL for an upgrade. The release includes this runbook and
 the [Hub unit](examples/hub/detent-hub.service) and
 [Caddy example](examples/hub/Caddyfile). These examples deploy a customer-operated
-Hub, not the shared hub.detent.build entry/registry. See the
+Hub, not the shared cloud.detent.build entry/registry. See the
 [deployment boundary](examples/hub/README.md); equivalent files are in the same tagged
 source checkout. Native package documentation lives under `/usr/share/doc/detent/docs`.
 
@@ -186,6 +186,17 @@ sudo -u detent-hub /usr/bin/detent hub backup --database /var/lib/detent-hub/hub
 sudo -u detent-hub /usr/bin/detent hub verify --database '/var/lib/detent-hub/backups/<unique-snapshot>.db'
 sudo systemctl start detent-hub
 ```
+
+The running Hub holds its database in SQLite exclusive locking mode, so
+WAL-shipping replicators such as Litestream cannot attach to `hub.db` and fail
+with `database is locked`. Do not weaken the lock to enable them. For routine
+off-host copies, schedule a script (for example from a root-owned systemd timer
+at a quiet hour) that stops the Hub, runs `hub backup`, and starts the Hub again
+immediately, restarting it even when the backup fails. Only then run `hub verify`
+against the detached snapshot, compress it and upload that file to encrypted
+object storage. The Hub is unavailable while `hub backup` checks and copies the
+database, which grows with database size and storage speed; drain runners or
+choose a window where that outage cannot outlast active leases.
 
 Replace angle-bracket placeholders before execution. Backup output must not
 exist and must differ from the source. Copy only the completed snapshot to the

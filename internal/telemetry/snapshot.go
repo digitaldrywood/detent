@@ -9,14 +9,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/observability"
-	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type Snapshot struct {
-	OpenQuestions      []operations.Decision       `json:"-"`
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
 	HostCache          *toolcache.Report           `json:"host_cache,omitempty"`
 
@@ -55,7 +53,6 @@ type Snapshot struct {
 	RateLimits              *RateLimits         `json:"rate_limits"`
 	TrackerUnavailable      []TrackerCondition  `json:"tracker_unavailable,omitempty"`
 	ForgeUnavailable        []ForgeCondition    `json:"forge_unavailable,omitempty"`
-	GitHubMonitors          []GitHubMonitor     `json:"worker_github_budget_monitor_unavailable,omitempty"`
 	CIUnavailable           []CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
@@ -161,7 +158,6 @@ func (s Snapshot) AgeSeconds(now time.Time) int64 {
 }
 
 func (s Snapshot) WithFreshness(now time.Time) Snapshot {
-	s.OpenQuestions = operations.WithQuestionAges(s.OpenQuestions, now)
 	if len(s.Projects) == 0 {
 		s.Refresh = s.Refresh.WithFreshness(now)
 		return s
@@ -301,22 +297,6 @@ type ForgeCondition struct {
 	ProbeAttempts   int       `json:"probe_attempts,omitempty"`
 	ProbeIssueID    string    `json:"probe_issue_id,omitempty"`
 	LastError       string    `json:"last_error,omitempty"`
-}
-
-type GitHubMonitor struct {
-	ProjectID          string    `json:"project_id,omitempty"`
-	CredentialIdentity string    `json:"credential_identity"`
-	Consumer           string    `json:"consumer"`
-	Operation          string    `json:"operation,omitempty"`
-	DetectedAt         time.Time `json:"detected_at"`
-	LastObservedAt     time.Time `json:"last_observed_at"`
-	NextProbeAt        time.Time `json:"next_probe_at"`
-	LastProbeAt        time.Time `json:"last_probe_at,omitzero"`
-	LastProbeResult    string    `json:"last_probe_result,omitempty"`
-	LastProbeDetail    string    `json:"last_probe_detail,omitempty"`
-	ProbeAttempts      int       `json:"probe_attempts,omitempty"`
-	ProbeIssueID       string    `json:"probe_issue_id,omitempty"`
-	LastError          string    `json:"last_error,omitempty"`
 }
 
 type AdmissionProposal struct {
@@ -1264,9 +1244,8 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
-	HeadCommittedAt              *time.Time         `json:"head_committed_at"`
-	Checks                       []PullRequestCheck `json:"checks,omitempty"`
-	HumanQuestionWorkFingerprint string             `json:"human_question_work_fingerprint,omitempty"`
+	HeadCommittedAt *time.Time         `json:"head_committed_at"`
+	Checks          []PullRequestCheck `json:"checks,omitempty"`
 
 	Number                     int                         `json:"number,omitempty"`
 	URL                        string                      `json:"url,omitempty"`
@@ -1454,6 +1433,8 @@ type Queued struct {
 	WorkspaceCreateCount  int        `json:"workspace_create_count,omitempty"`
 	WorkspaceDestroyCount int        `json:"workspace_destroy_count,omitempty"`
 }
+
+const WorkspaceDiskExhaustionMessage = "host disk full: no space left on device"
 
 const (
 	QueueStateRetrying         = "retrying"

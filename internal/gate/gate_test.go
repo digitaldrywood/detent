@@ -834,20 +834,28 @@ func TestEvaluateAutomatedReviewModes(t *testing.T) {
 	tests := []struct {
 		name       string
 		mode       string
+		required   *bool
 		review     string
+		pending    bool
 		expired    bool
 		p1Findings []Finding
 		want       Decision
 	}{
 		{name: "required absent", mode: AutomatedReviewRequired, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
 		{name: "required absent after deadline", mode: AutomatedReviewRequired, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required pending", mode: AutomatedReviewRequired, pending: true, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "required pending after deadline", mode: AutomatedReviewRequired, pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required present", mode: AutomatedReviewRequired, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required late review", mode: AutomatedReviewRequired, review: "COMMENTED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "optional absent", mode: AutomatedReviewOptional, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
 		{name: "optional absent after deadline", mode: AutomatedReviewOptional, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "optional pending after deadline", mode: AutomatedReviewOptional, pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "optional present", mode: AutomatedReviewOptional, review: "APPROVED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "optional late review", mode: AutomatedReviewOptional, review: "APPROVED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "off absent", mode: AutomatedReviewOff, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "off pending", mode: AutomatedReviewOff, pending: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "legacy disabled pending", required: new(false), pending: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "legacy disabled pending after deadline", required: new(false), pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "off present", mode: AutomatedReviewOff, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required p1", mode: AutomatedReviewRequired, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
 		{name: "optional late p1", mode: AutomatedReviewOptional, review: "COMMENTED", expired: true, p1Findings: []Finding{{Severity: "p1"}}, want: Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{{Severity: "p1"}}}},
@@ -858,16 +866,39 @@ func TestEvaluateAutomatedReviewModes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := Evaluate(Config{Kind: KindCommand, AutomatedReview: tt.mode}, nil, Summary{
+			got := Evaluate(Config{Kind: KindCommand, AutomatedReview: tt.mode, RequireAutomatedReview: tt.required}, nil, Summary{
 				PullRequestURL: "https://github.test/pull/1297",
 				CIStatus:       "green",
 				ReviewState:    tt.review,
+				ReviewPending:  tt.pending,
 				P1Findings:     tt.p1Findings,
 			}, now, EvaluationOptions{AutomatedReviewWaitExpired: tt.expired})
 			if got.Action != tt.want.Action || got.Reason != tt.want.Reason || !slices.Equal(got.Findings, tt.want.Findings) {
 				t.Fatalf("Evaluate() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEvaluatePendingReviewExpiresAfterRepeatedMissingDecisions(t *testing.T) {
+	t.Parallel()
+
+	started := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	cfg := Config{Kind: KindCommand, AutomatedReview: AutomatedReviewOptional}
+	summary := Summary{
+		PullRequestURL: "https://github.test/pull/3062",
+		CIStatus:       "green",
+		ReviewPending:  true,
+	}
+	for i := range 22 {
+		got := Evaluate(cfg, nil, summary, started.Add(time.Duration(i)*time.Minute*2), EvaluationOptions{})
+		if got.Action != ActionWait || got.Reason != ReasonAutomatedReviewMissing {
+			t.Fatalf("decision %d before expiry = %#v, want automated review wait", i+1, got)
+		}
+	}
+	got := Evaluate(cfg, nil, summary, started.Add(time.Hour), EvaluationOptions{AutomatedReviewWaitExpired: true})
+	if got.Action != ActionPass || got.Reason != ReasonReady {
+		t.Fatalf("decision after expiry = %#v, want ready pass", got)
 	}
 }
 
@@ -945,6 +976,59 @@ func TestInstructionsDoNotDuplicateWorkpadPredicates(t *testing.T) {
 				if strings.Contains(got, want) {
 					t.Errorf("instructions duplicate %q", want)
 				}
+			}
+		})
+	}
+}
+
+func TestLocalStatusConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cfg       Config
+		effective string
+		problem   string
+	}{
+		{name: "unset", cfg: Config{Kind: KindCommand}, effective: ""},
+		{name: "command gate", cfg: Config{Kind: KindCommand, LocalStatus: " local-gate "}, effective: "local-gate"},
+		{name: "default kind is command", cfg: Config{LocalStatus: "local-gate"}, effective: "local-gate"},
+		{name: "human review gate", cfg: Config{Kind: KindHumanReview, LocalStatus: "local-gate"}, effective: "", problem: "gate.local_status requires kind command"},
+		{name: "artifact gate", cfg: Config{Kind: KindArtifact, LocalStatus: "local-gate"}, effective: "", problem: "gate.local_status requires kind command"},
+		{name: "multi-line context", cfg: Config{Kind: KindCommand, LocalStatus: "local\ngate"}, effective: "local\ngate", problem: "gate.local_status must be a single-line status context of at most 100 characters"},
+		{name: "also a pre-merge required check", cfg: Config{Kind: KindCommand, LocalStatus: "local-gate", RequiredStatusChecks: []string{"build", " local-gate "}}, effective: "local-gate", problem: "gate.local_status must not be listed in gate.required_status_checks: Detent posts it in the merge lane, after the pre-merge gate"},
+		{name: "overlong context", cfg: Config{Kind: KindCommand, LocalStatus: strings.Repeat("x", 101)}, effective: strings.Repeat("x", 101), problem: "gate.local_status must be a single-line status context of at most 100 characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := Effective(tt.cfg).LocalStatus; got != tt.effective {
+				t.Fatalf("Effective().LocalStatus = %q, want %q", got, tt.effective)
+			}
+			problems := Validate("gate", tt.cfg)
+			if tt.problem == "" && len(problems) != 0 {
+				t.Fatalf("Validate() = %v, want none", problems)
+			}
+			if tt.problem != "" && !slices.Contains(problems, tt.problem) {
+				t.Fatalf("Validate() = %v, want %q", problems, tt.problem)
+			}
+		})
+	}
+}
+
+func TestEffectivePreservesRequiredStatusPolicyPresence(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		checks []string
+	}{
+		{name: "omitted"},
+		{name: "explicitly empty", checks: []string{}},
+		{name: "configured", checks: []string{"Checks"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Effective(Effective(Config{RequiredStatusChecks: tt.checks}))
+			if (got.RequiredStatusChecks == nil) != (tt.checks == nil) || !slices.Equal(got.RequiredStatusChecks, tt.checks) {
+				t.Fatalf("required checks=%#v, want %#v", got.RequiredStatusChecks, tt.checks)
 			}
 		})
 	}

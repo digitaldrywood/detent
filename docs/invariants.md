@@ -17,7 +17,25 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
+
 **Statement:** The orchestrator is the only writer of tracker lane state.
+
+Validator reviews now refresh the PR head before dispatch, seed a clean review
+workspace at that commit, and compare the current PR head again before storing
+the verdict. A changed head produces the existing wait verdict under the head
+that was actually reviewed; the next tick evaluates the new head. This keeps
+validation evidence attributable to its commit without giving workers lane
+ownership. The runner also verifies the review tree after `before_run`, after
+the validator turn, and after `after_run`. It also checks HEAD before and after
+cleanup, so a cleanup hook cannot hide a commit change. The PR ref is fetched
+from the hydrated PR repository, even when the source checkout is a fork.
+Workspace failures remain instance
+failures even when the validator turn also fails, and cannot yield a verdict.
+`TestRunnerValidateRejectsReviewWorkspaceMutation`, `TestValidatorStageTracksHeadBeforeAndDuringReview`,
+`TestLocalGitSeedReviewHead`, `TestLocalGitSeedReviewHeadUsesPullRequestRepository`,
+and `TestLocalGitVerifyReviewTreeAfterSeeding`
+cover these boundaries (#3031).
 
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; current unfinished work cannot promote on completion or
@@ -42,8 +60,9 @@ the independent corroboration. The dispatch fingerprint and mergeability baselin
 persist with the attempt across restart, including merge-mode conflict repairs in active lanes
 (#2929); a changed head SHA alone is not implementation. No-progress
 outcomes consume the existing issue attempt allowance, including merge-mode
-conflict repairs dispatched in active lanes. Successful repairs also consume a
-started code session without requiring failure evidence. Merging-lane runs,
+conflict repairs dispatched in active lanes. Completed, successful PR deliveries
+without a recorded error do not consume the allowance, including successful
+conflict repairs; a subsequent completion-gate wait is not a failed delivery. Merging-lane runs,
 legacy merge-mode rows without a lane, and historical merge-routing receipts
 remain excluded (`TestAttemptAllowanceExcludesMergeRouting` and
 `TestAttemptAllowanceDispatchAndRestart`, #2933). No-progress outcomes
@@ -56,6 +75,16 @@ ineligible for review and the tick never marks them ready.
 and `TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
 appended prose, durable allowance accounting, and ready-PR controls. This
 consolidates existing completion evidence without adding a mechanism.
+
+A persisted successful completion with a complete Workpad and ready PR remains
+owned by the existing active-lane gate until the matching head is eligible for
+Merging. A replacement head or an ended
+attempt without completion remains in In Progress for normal dispatch; elapsed
+time without a worker is diagnostic only. The stranded-active sweep no longer
+writes a Todo or Rework lane transition (#3238), removing its competing lane
+decision. `TestCompletedReadyPullRequestEntersMergeGate` and
+`TestTickDispatchesPlanApprovedIssueAfterLongRefresh` cover completion and
+next-cycle dispatch.
 
 An operator rejects a reviewed PR by moving its card to Rework, including through
 the dashboard. The existing lane history records the PR identity and hydrated
@@ -89,6 +118,12 @@ Blocked still reset the allowance and auto-promote decision memory (#2880).
 The dependency auto-unblock sweep retains these non-review decisions in Blocked
 even when an unconsumed body or native dependency is already Done; both reasons
 reuse the existing sticky-reason policy.
+Current recorded sticky reasons are evaluated before dependency hydration and
+comment reads; blocked cards that cannot auto-unblock do not consume tracker
+requests. Freshly hydrated workpad reasons still use the same sticky policy,
+and mismatched lane timestamps continue through ordinary hydration.
+`TestDependencyAutoUnblockRetainsNonReviewDecision` covers the absence of tracker
+reads for persisted allowance and workpad holds.
 
 Any closed issue, regardless of its closure reason, retains its
 non-terminal label snapshots in ordinary refresh reads, even without prior pipeline membership (#2865). The existing
@@ -96,6 +131,12 @@ non-terminal label snapshots in ordinary refresh reads, even without prior pipel
 continues to exclude closed issues. `TestTickReconcilesClosedLabelsWithoutPreviousPipeline`
 covers first-refresh and between-refresh closure without direct-ID retention.
 Any closed issue leaves non-terminal lanes on the first successful reconciliation.
+Transition refresh reuses the current successful candidate and status scans for
+retained pipeline, watched, and blocked identities. It fetches retained identities
+missing from those scans so external moves and closures still resolve; a failed
+status scan preserves the existing direct refresh and retention behavior.
+`TestRefreshTransitionSetsReusesStatusSnapshots` covers fresh closed and moved
+snapshots, missing identities, and failed status scans without duplicate reads.
 Non-completed closures are also removed from the board, pipeline, and active-work
 tracking, including the lane writer’s pending publication overlays (#2869).
 Completed closures retain their existing immediate Done transition visibility.
@@ -135,7 +176,7 @@ excluded identity contributes to the aggregate skip count; only open cards in
 configured active, non-terminal lanes record a per-card scheduler decision
 (#2916). `TestTickAuthorizationDeclineMixedLanes` covers mixed lanes, custom
 active states, terminal overlap, closed cards, and duplicate retained inputs. `TestTickAuthorizationBeforeRecovery` covers mixed instance labels across
-stranded recovery, stale Todo PR reconciliation, blocked recovery, and both
+stale Todo PR reconciliation, blocked recovery, and both
 dependency sweep orderings. `TestTickAuthorizationSelectorSemantics` preserves
 nested selectors, identity/field predicates, and declined retry cleanup.
 
@@ -160,7 +201,26 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+SSH host loss uses the existing host-scoped instance-capacity retry without incrementing issue failure counts or draining healthy hosts. `TestSSHHostLossUsesInstanceRetry`, `TestSSHHostLossClearsResumeOnSpillover`, and `TestSSHLocalTargetIntegration` cover attribution and retry behavior (#3239).
+
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
+
+Validator PR-diff provenance failures are production failures, not code findings (#3066).
+The validator uses a repository/PR/base/head snapshot whose file list and patch
+agree, records its digest and identity with the verdict, and reuses only a
+matching persisted verdict. Missing or mismatched evidence stays in the
+existing validator retry path and cannot publish a blocking severity finding.
+GitHub diff fetches retain the client's retryability: permanent failures use
+the existing instance-owned validator infrastructure path, while transient
+fetches and changing PR evidence remain retryable. Persisted retry deadlines
+also survive a restart when `max_attempts` is one and the stored attempt count
+is zero.
+`TestPullRequestValidationDiffConcurrentPRs`,
+`TestValidationDiffRejectsOtherPRFiles`, and
+`TestValidatorVerdictRejectsDifferentPRProvenance`,
+`TestPullRequestValidationDiffPreservesFetchFailureClassification`,
+`TestValidatorDiffFetchFailureUsesInstancePath`, and
+`TestValidatorRetryDeadlineSurvivesReloadWithOneMaxAttempt` cover this boundary.
 
 `TestAttemptAllowanceCountsIssueJourney` excludes successful reports whose stored
 blocker evidence includes an instance owner from the issue session allowance.
@@ -178,6 +238,37 @@ and timeout text; the runner no longer presents every workspace failure as a
 `git fetch` failure. `TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`
 checks that these failures drain the instance without a forge condition or
 issue retry accounting. Actual remote write timeouts still use forge availability.
+Remote Git reads during workspace preparation use forge availability only when
+a matching forge host and `ls-remote` or `fetch` operation identify the failure.
+Structured Git command errors and direct `after_create` hook commands establish
+the operation; compound hooks need the Git-specific SSH refusal in their output.
+An unrelated later command in a compound hook cannot inherit an earlier Git read.
+SSH refusal, transport loss, and 5xx responses retain the original workspace
+error, enter the existing forge retry with backoff, and do not count toward the
+project breaker. `TestRecoverDurableWorkspaceGitReadWait` verifies that an
+`ls-remote` wait restores its forge condition and retry deadline after restart.
+Workspace command and `after_create` hook ENOSPC failures use
+the existing retry backoff as instance-owned capacity failures, with a host disk
+alert on the board and health view; they do not count toward the project breaker.
+`TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker` reproduces the recorded
+Git-index and hook failures, and `TestBoardAndHealthShowHostDiskExhaustionRetry`
+checks the operator signal. Other preparation failures remain instance-owned; their breaker
+uses `agent.failure_breaker.cooldown_seconds` rather than the separate
+blocked-recovery cooldown. A checked clean merge that needs no new workspace
+always uses the existing no-workspace merge-control path, including when worker
+capacity is free and no breaker or forge condition exists. Fresh hydration must
+preserve the checked head and a non-strict base policy; advancement of a
+non-strict base does not require workspace synchronization or a CI retry.
+`TestReadyMergeAllowsNonStrictBaseAdvancement` covers the native merge of the
+unchanged checked head; the safety matrix retains changed-head, strict-policy,
+CI, draft, thread, and operator-withdrawal controls. The same checked merge may continue
+when the matching forge condition came from a Git read; forge write and
+credential conditions retain their existing merge hold.
+`TestClassifyWorkspaceForgeReadFailure`,
+`TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
+`TestRecoverDurableWorkspaceGitReadWait`,
+`TestWorkspaceBreakerHonorsFailureCooldown`, `TestReadyMergeAtWorkerCapacity`,
+and `TestCheckedMergeUnderForgeCondition` cover these boundaries (#3067).
 `TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
 completion handlers to triage workspace, startup, transport, protocol, and capacity
 failures. These failures publish no triage comment and do not consume the triage
@@ -194,13 +285,15 @@ approval-denial classification through the existing instance-owned forge wait, w
 `TestHandleRunResultReconcilesDeliverableRecoveryExactHead` preserves credential-failure
 reconciliation. `TestWorkerCredentialBlockerError` preserves final-message credential
 reports as write-path failures.
-`TestHumanQuestionRejectsWorkerGitHubCredentialPrerequisite` checks that
-credential and API-budget design questions reach durable recording (including write-access
-and manual-PR design choices). Explicit support requests remain rejected across polite
-auxiliaries and manual-open word order, while actual
-access failures and explicit write-enablement/manual-PR requests remain
-instance-owned. Question rejection shares the worker access-failure classifier;
-credential or authentication terminology alone is not failure evidence (#2616).
+Worker access failures remain classified as instance-owned. In an autonomous
+issue-worker run, product or design questions are expressed through a blocked
+Workpad `human_action`, not a worker question tool: its Codex app-server is
+never started with `default_mode_request_user_input`, and a question it asks
+anyway is answered empty. A conversation turn, where a person is live in the
+chat and the hub relays the question to them, may use `request_user_input`.
+`TestAppServerMarksOnlyConversationTurns` and
+`TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns` keep the
+question feature off every ordinary issue run.
 Compound push commands whose follow-up GitHub CLI read cannot log in reuse the
 instance token-resolution wait (`worker_github_cli_auth` in the diagnostic), not
 the project forge outage. `TestCompoundPushCLIAuth` preserves this distinction
@@ -293,22 +386,16 @@ writes followed by successful persistence and normal turn completion.
 Dispatch Workpad comment-read failures use the existing tracker availability observer
 and tracker-unavailable dispatch reason; they never become issue dependency evidence.
 
-Worker credential classification (#2846) uses the connector's shared GraphQL
-secondary cooldown, including Retry-After, instead of converting throttled probes
-into monitor failures. Cancellation during that wait does not register a monitor.
-Monitor eligibility resolves the issue's queued retry even when the caller supplies
-no retry; at `NextProbeAt` the carrier can reserve the existing single canary.
-An idle hold expires at `NextProbeAt` even when its carrier cannot dispatch;
-an in-flight canary retains ownership. Eligibility checks are read-only and retain
-the condition's attempt history, so a repeated failure after expiry increases
-backoff. Missing candidate batches preserve monitor carrier retries; only a
-dispatchable carrier reserves a probe and consumes an attempt. Durable attempt recovery restores both the
-condition and its carrier retry, and a successful budget observation clears it.
-`TestWorkerGitHubClassificationWaitsForSharedCooldown`,
-`TestWorkerGitHubMonitorCarrierEligibility`, and
-`TestDispatchableWorkerGitHubMonitorCarrier` cover cooldown, expiry, and dispatch
-through restart. This consolidates classification with the existing cooldown and
-uses the existing backend-capacity probe delay; it adds no new recovery loop.
+Worker credential classification uses the connector's shared GraphQL secondary
+cooldown, including Retry-After. A failed `GET /rate_limit` observation now
+logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
+A successful response still enforces the configured worker reserve. The old
+credential-wide monitor condition, canary, retry restoration, and scheduler
+skip reason are retired. Historical monitor attempts remain visible in attempt
+history without restoring a dispatch hold. `TestWorkerGitHubProbeFailureIsInstanceDiagnostic`,
+`TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor`, and
+`TestTimedOutWorkerProbeDoesNotHoldDispatch` cover the timeout and dispatch
+sequence.
 
 Worker GitHub CLI preflight (#2741) checks that `gh auth token` can read the
 selected credential from its private per-attempt `hosts.yml`. Failures reuse
@@ -332,9 +419,9 @@ belongs to the existing instance controls, and the next eligible worker can
 re-verify the report. `TestRecordedBlockerDispatchOwnership` covers fresh and retry
 dispatch, mixed human-action holds, and preserved scheduler wait detail. Only
 explicit human actions in structured blocked Workpads share evaluated evidence
-with the existing Needs-you question projection, including PR-less cards and recorded age;
+with the existing Needs-you human-action projection, including PR-less cards and recorded age;
 `TestWorkpadHumanActionSnapshot` and `TestOperationsWorkpadHumanAction` cover that path.
-Legacy blocker prose does not become a human question or hide dependency decisions.
+Legacy blocker prose does not become a human action or hide dependency decisions.
 No timer, recovery path, or reason code is added.
 `TestSymbolicBlockerCompletion` and `TestSymbolicBlockerPromotion` cover attribution,
 retained diagnostic detail, final usage/diff accounting, CI scheduling after a pushed head,
@@ -342,6 +429,106 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Runner credential expiry (#3382) no longer rejects the existing renewal
+operation for the same enrolled runner and organization. The host keeps its
+credential and machine binding across stops longer than 24 hours. Ordinary
+API calls and rotation still enforce expiry; renewal keeps timestamp validity,
+token-hash and revocation checks, including the existing transactional authority
+recheck. Revocation remains final. This removes renewal's expiry rule and its
+duplicate authority check without adding a recovery path or configuration.
+`TestRunnerCredentialExpiryBoundaries` and `TestRunnerRenewRotateRevokeRestart`
+cover expiry boundaries, extended stops and the recorded production sequence.
+
+Runner isolation (#3168) replaces the undeliverable default `container` declaration
+with `sandbox` and extends existing claim compatibility to backend-probed tiers.
+Missing or withdrawn tier reports use the existing no-compatible-work result;
+no new reason code, recovery path, lane writer, or configuration key is introduced.
+Backend policy mapping fails closed instead of retrying as a native process.
+The existing lease owns execution isolation; the mutable routing cache is removed
+from backend enforcement rather than adding another cache revision guard.
+Claude verifies effective policy on its worker before sending a model prompt.
+`TestRunnerIsolationClaims`, `TestRunnerIsolationHeartbeatWithdrawsTier`,
+`TestProbeBackendTiers`, and each backend's `TestIsolationSettings` cover dispatch,
+withdrawal, failed probes, and policy mapping. Raw workspace terminals still report
+their actual `user` isolation independently of agent sandbox support.
+
+Runner availability (#3169) reuses weekly-window evaluation and the existing
+runner-capacity exclusion: runners report zero capacity outside the cached
+window and do not claim new work locally. Active jobs retain lease authority
+and finish normally. An optional deadline after the window closes cancels the
+agent through its existing execution context, preserves and publishes unfinished
+work to a WIP branch after confirmed worker shutdown, and reports interruption
+through `Finish` without consuming failure retries. Publication reuses checkpoint
+path, content, and history checks; a final checkpoint records the published head
+under retained lease authority. Routing updates refresh the deadline in the
+existing execution guard. A failed WIP
+push retains local work and is logged as an instance failure. Sleep inhibition
+is held during jobs and released when they finish. “Outside hours” is a plain
+fleet status derived from the stored window; stale heartbeat, revoked, and
+expired states take precedence. This adds no lane writer, recovery loop, or
+exclusion reason.
+
+Home-project spillover (#3170, human-approved) is claim-time eligibility using
+one nullable `home_dry_since` timestamp per runner. Home projects are a subset
+of administrator-authorized projects; spillover never widens grants or selectors.
+Only dispatchable Todo/Rework home work counts, after dependency, policy,
+selector, lease, and provider checks. Claims retain normal ordering among home
+projects, clear the timestamp when home work is available, and start it only
+when home work runs dry. General work becomes eligible after the configured
+idle period. Active work finishes without preemption; workspace sessions do not
+participate. There is no background loop or capacity reservation for home work.
+`TestRunnerHomeClaims` and `TestRunnerHomeReturnAndOrdering` enforce this behavior.
+
+Runner problems (#3171, human-approved) are contextual diagnostics, never
+dispatch reason codes. Heartbeats replace the runner-reported `problems` list;
+each problem carries a stable code, message, fix hint, and first-seen time.
+Continuing codes retain their first-seen time, and omitted problems clear.
+The existing instance telemetry loop also triggers the enrolled runner's
+throttled heartbeat, so diagnostics remain reachable when every project fails
+to start. Heartbeat requests do not block local telemetry publication.
+The runner reports unavailable tiers, missing backends, unreachable host
+services, invalid local settings, and sleep-inhibition failures without sending
+local command output or service addresses in generated diagnostic messages.
+The Hub derives unservable home work from the existing isolation advertisement,
+rejected routing settings from the runner's application result, and unsupported
+versions from the native protocol major (an omitted major remains compatible
+with older heartbeats). Hub conditions clear when they no longer hold.
+Problems raise `needs_attention` above online, outside hours, and offline;
+revoked and expired credential states retain precedence. Separate connection
+health preserves the existing offline dispatch exclusion. Diagnostics never
+change grants, capacity, selectors, leases, or advertised isolation tiers.
+Only needs-attention rows produce an alert signal. Outside hours, offline
+outside the window, draining, and spillover remain plain statuses. The fleet
+header links its nonzero attention count to a filtered list; messages and fix
+hints remain on runner cards, with no global banner. Hosted readers do not see
+home-project diagnostics for home assignments outside their project access.
+`TestRunnerProblemsHeartbeat`, `TestRunnerHubProblems`, `TestMergeProblems`,
+`TestIsolationProblems`, and `TestKeepAwakeProblems` cover replacement,
+aggregation, timestamp stability, recovery, and dispatch independence.
+
+Dispatch ordering (#3298) consolidates urgency into the existing comparator.
+Merging remains first when the project config places it first; other lanes
+compare tracker priority and configured label rank before lane rank, then retain
+unblocker, age, and identifier ties.
+A Todo hotfix can therefore precede ordinary Rework without a separate selector,
+capacity change, configuration key, or new mechanism. `TestSortIssuesForDispatch`
+covers cross-lane urgency, normalized Merging precedence, and equal-priority lane
+ties; the existing safety boundary fuzz seeds remain required.
+
+The stranded-active lane recovery is removed (#3238). In Progress remains an
+active dispatch candidate after a long refresh, and the existing completion
+transition owns finished attempts. The diagnostic snapshot still reports the
+idle interval; `stranded_active_recovery` is removed from the transition-reason
+allowlist so the deleted lane writer cannot be restored under that reason.
+`TestTickDispatchesPlanApprovedIssueAfterLongRefresh` covers the reported
+approval-to-dispatch sequence.
+
+The worker GitHub REST budget monitor's credential-wide dispatch hold and
+recovery canary are removed (#3248). A failed budget observation is now an
+instance diagnostic; only a successful response can enforce the existing REST
+reserve. This removes a self-protection path that converted a transient probe
+timeout into a project-wide dispatch outage.
 
 Operator rejection (#2943) consolidates promotion eligibility with existing lane
 history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate
@@ -484,7 +671,7 @@ The dispatch, CI parity, and duration regressions cover these boundaries (#2845)
 Rework dispatch (#2800) reads the gate's live `AutomatedReviewPending()`
 predicate for clean, green PRs without actionable threads or findings. The existing
 `awaiting_gate` decision no longer requires retained completion evidence for this
-case, so question waits cannot cause repeated sessions while a review is pending.
+case, preventing repeated sessions while a review is pending.
 `TestReworkLiveReviewGateDispatch` replays post-answer scheduler passes and checks
 that a current-head review or actionable PR state preserves dispatch eligibility.
 Failed current-head CI ends a completed gate wait when `ci_failure_action: rework`
@@ -493,27 +680,12 @@ routes repair (#2909), including when the card is already in Rework. The existin
 handoff without a redundant lane write. `TestCompletedReworkCIGateDispatch`
 covers immediate repair dispatch and preserves pending CI and review waits.
 
-Question closure resolution (#2793) uses the existing transition refresh and
-answer columns. Durable unanswered issue IDs join that refresh so questions
-left behind across restart resolve when the tracker reports closure or a terminal
-lane. No separate reconciliation loop is introduced. Closure markers never become
-authorized human replies; reopening requires a new question key.
-`TestRefreshResolvesTerminalHumanQuestions` covers terminal states, reopening,
-tracker failure, and the distinction between closure and human authorization.
-
-Question reporting (#2945) omits unanswered questions whose latest per-project,
-per-issue scheduler decision declines authorization. Operations and health share
-this read-only projection; stored questions and dispatch reply handling remain
-unchanged. `TestOpenHumanQuestionsAuthorization` covers declined and authorized
-waits, reauthorization, and project/issue isolation without a recovery mechanism.
-
 Human-owned Workpad blockers route through the existing completion Blocked
 transition on the first report (#2779). The repeated-report threshold is removed:
 live blocker evaluation already suppresses the next dispatch, so a second
 completion cannot be required. `TestFirstHumanBlockerCompletionReachesBlocked`
 replays that conflict with and without a PR and preserves human-owned recovery.
-Question waits retain their current lane; automated Blocked transitions do not
-renew the attempt allowance.
+Automated Blocked transitions do not renew the attempt allowance.
 
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
@@ -612,8 +784,11 @@ existing model-selection level (#2597), inheriting omitted limits from the flat
 project values. This consolidates limit resolution into the existing selection
 and guard paths; it adds no guard or escalation mechanism. Running sessions keep
 the resolved limits across turns, checkpoints, and fallbacks; label/configuration
-changes do not reset attempts or lifetime usage. Turn inactivity and no-progress
-behavior remain unchanged. Covered by `TestModelSelectionSessionLimits`,
+changes do not reset attempts or lifetime usage. Turn inactivity remains
+unchanged. The separate session no-progress cancellation was removed (#3252):
+a live local gate wait relies on the gate lock deadline and absolute worker
+session bound, with no issue Rework transition for unchanged work product during
+the wait. Covered by `TestModelSelectionSessionLimits`,
 `TestRunnerSelectedSessionLimits`, and `TestResumedSelectionKeepsSessionLevel`.
 
 Issue-body effort is bounded by the selected complexity level's effective effort
@@ -665,6 +840,19 @@ Missing audits start while the completed Rework issue waits, and a trusted
 current-head pass is required before promotion to Merging. `TestReworkLivePullRequestPromotion`,
 `TestReworkLiveDraftPromotion`, and `TestReworkLiveSecurityAudit` cover this
 consolidation; no new transition reason or recovery loop is introduced.
+
+Allowance triage retains its single durable result while current-head CI is
+queued or running and no required check is missing. It does not publish the
+stall note or park the issue for that Detent-owned wait. The existing Blocked
+sweep also reconciles historical `attempt_allowance_exhausted` parks from the
+recorded PR head through the same
+promotion gate: a clean, green unchanged or newer head returns to Merging for
+the exact-head audit. Human actions, failing checks, and known audit findings
+continue to hold. Historical parks cannot be removed from the tracker by the
+triage change alone, so this reuses the existing sweep and lane action rather
+than adding another recovery loop or reason code (#3064).
+`TestAttemptAllowanceLiveHead` and
+`TestAttemptTriageParkRecoversOnCleanGreenHead` cover the wait and recovery.
 
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
@@ -749,6 +937,26 @@ residual, direct, and branch cleanup;
 `TestResidualCleanupProtectsFinalizingTerminalWorkers` covers terminal worker
 ownership until its completion event.
 
+For a terminal native issue whose Change Request has a recorded landing,
+cleanup also accepts a clean worktree and branch still at that landing's head.
+This covers squash commits, which cannot prove delivery through branch ancestry.
+Later commits, uncommitted files, nonterminal issues, and issues without a
+recorded landing retain the existing protection. The normal reaper removes the
+landed workspace and clears its cleanup failure; no new sweep or retention
+state is introduced (#3234).
+GitHub terminal cleanup and the supported `cleanup_workspace` action refresh
+the issue-to-PR association and hydrate the PR again before accepting the exact
+merged head (#3093). A verified repository/PR identity, successful merge time,
+and available current head are required. This proof exists only for that cleanup
+call and shares the native landing checks; it is never persisted as tracker
+state. Deleted branches, cached merged snapshots, and issue closure alone do
+not establish delivery. Both branch and worktree must still match the delivered
+head, and the normal `before_remove` lifecycle rechecks local work.
+`TestVerifyCleanupDelivery` covers unavailable and mismatched verification;
+`TestLocalGitCleanupRecordedLanding` reproduces squash delivery after source
+branch deletion and checks later/dirty/mismatched work and directory absence.
+`TestRunnerReapSquashLandedWorkspace` covers proof propagation through the runner.
+
 The operator-approved September 14 retention scope (#2681, INV-11 approval
 recorded in the issue) extends this same reaper sweep: completed workspaces
 expire after seven days in a configured terminal lane or after issue closure,
@@ -762,23 +970,28 @@ archives a verified Git bundle, staged and working-tree diffs, and all working
 files. Active issues and live processes remain protected. Content-addressed
 archives prevent identical recovery copies from accumulating after removal
 failures while preserving earlier snapshots after partial deletion.
+Quarantine removal in this existing sweep makes read-only directories writable
+before deletion; persistent failures are warned once per path while later
+sweeps still retry (#3039). This does not add a sweep or recovery path.
 `TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
 `TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
 lossless expiry, and repeated removal failures. See
 [workspace retention](workspace-retention.md) for limits and recovery instructions.
 
 The existing automated-review check retains stale and in-progress bot summary
-evidence (#2764): an established review cycle must complete at the current head
-before promotion. Native queue admission and programmatic merge wait for that
-cycle only when the effective gate requires automated review (#2905). Review
-requests are likewise posted only for a required automated review. Trusted quota
+evidence (#2764). Native queue admission and programmatic merge wait for an
+established cycle at the current head only when the effective gate requires
+automated review (#2905). Review requests are likewise posted only for a required
+automated review. Trusted quota
 or unavailable replies after the latest per-head request complete that head as
 COMMENTED with no findings; an unanswered request alone is not review evidence.
-An expired review deadline does not waive an established bot review cycle for
-promotion.
+The existing gate deadline also ends a pending-review wait, including when
+automated review is disabled.
 The existing `automated_review_missing` wait and PR comment publication are reused;
 a per-head comment marker deduplicates `@codex review` requests across ticks and
 restarts. No new gate, reason, or reconciliation loop is introduced.
+`TestEvaluateAutomatedReviewModes`,
+`TestEvaluatePendingReviewExpiresAfterRepeatedMissingDecisions`,
 `TestAutoPromoteReviewAtHead`, `TestReviewHeadRequestAndWait`, and
 `TestReviewSummaryRetainsPendingHead` cover decision, request failures/deduplication,
 and trusted summary evidence respectively.
@@ -796,6 +1009,27 @@ Doctor reports it per project. Null means no completed comparison; the count
 retains its last successful value on refresh failure and does not independently
 audit GitHub or include observed-only lanes. No additional polling or dispatch
 gate is introduced.
+
+Worker scratch cleanup (#3291, #3292) removes attempt data without deleting
+its workspace parent or shared group. Explicit workspace deletion removes only
+that workspace's scratch root. Keeping shared parents stable removes the
+creation-versus-cleanup race and the bounded scratch-creation retry; no lock,
+platform error retry, or new recovery path replaces them. Existing retention
+continues to sweep stale attempts and roots of removed workspaces.
+`TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup` covers concurrent
+attempt cleanup within one workspace and across siblings, plus sibling root
+removal. `TestRemoveWorkerScratchRootKeepsSharedGroup` covers explicit
+root deletion without shared-parent removal.
+
+The approved Cloud domain migration (#3241) consolidates shared hosted origin
+comparison around the explicit production and staging alias pairs. Reopening a
+shared tenant may use its environment's old or canonical hostname while keeping
+its immutable stored origin as history. Organization, provider, bootstrap identity,
+deployment mode and allocation generation must still match. This introduces no
+binding migration, revocation, configuration key or recovery path; self-hosted
+origin binding stays exact. `TestHostedDatabaseCloudAliases` covers forward
+migration, rollback, unchanged stored bindings and rejected environment/identity
+substitutions.
 
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
@@ -851,7 +1085,7 @@ blocker evidence (#2813); other owners or evidence key presence alone do not suf
 Merge-worker attempts are excluded, including generic agent records with merge
 run-mode metadata and historical receipts routing the current head to Rework
 (#2907); those routing decisions are not implementation sessions.
-Question-ending successful waits and sessions with a live structured
+Previously recorded question-ending waits and sessions with a live structured
 human blocker are also excluded (#2789). Conflicted PR sessions count toward the
 allowance because conflict resolution is worker-owned Rework (#2807); a conflict
 does not override a genuine human-wait exclusion. The existing
@@ -1013,8 +1247,13 @@ new branches start at the base. Before the fast path rebases, the observed remot
 head must be an ancestor of the local head. The rebase may rewrite those commits,
 but the push uses the lease on that same observed remote head. Agent conflict
 resolution merges the target into the PR branch, preserving remote ancestry,
-which is checked before validation and publication. Unsafe local heads abort any
-unfinished rebase and attempt to restore the observed PR head without discarding
+which is checked before validation. A resolved head passes the configured gate
+before a normal push; a gate or push error fails the attempt, and a divergent
+remote advance makes the push fail without replacing published work. A retry
+with an unpublished local head repeats verified publication when it contains
+the current target; otherwise it returns to worker conflict resolution instead
+of the fast-path rebase and push. Unsafe local heads abort any unfinished rebase
+and attempt to restore the observed PR head without discarding
 uncommitted work. Restoration failures remain conflicts with diagnostic details,
 not runner failures. No push may replace published work with a stale or freshly
 created base branch.
@@ -1031,6 +1270,12 @@ without publishing issue findings. Findings publish to the PR
 before the existing lane writer routes to Rework; the trusted run marker prevents
 repeat publication after a failed lane write. Comments remain explanatory, never
 verdict evidence. Required-gate telemetry uses the same audit classifier.
+For an exact base and head, a durable trusted pass takes precedence over the
+in-memory running-stage marker; failed or inconclusive reads retain the running
+wait. Both the required-gate projection and
+auto-promotion read that result on their next evaluation; an old-head result
+cannot satisfy either gate. `TestDurableAuditPassSupersedesRunningStageForGate`
+covers a pass recorded after an initially missing green-CI gate.
 `security_audit_wait`, explicitly requested by #2642, distinguishes an active run
 from missing evidence in wait telemetry; it is not a new lane-transition reason
 or recovery path. `TestMergingSecurityAuditVerdict` and
@@ -1071,6 +1316,28 @@ from Merging, but withdrawal failure does not block the lane write (#2826). Its 
 without altering reason forwarding; operator destinations and reasons remain
 intact, covered by `TestNativeMergeQueueReviewReworkAfterEnqueue`.
 
+Slot refill reuses ordinary dispatch eligibility and releases deferred Hub claims
+through the existing claim writer. Fresh Hub scheduling results are already
+claimed and remain eligible even when absent from the previous refresh; excluded
+or ineligible claims are released. Ordinary tracker candidates retain the previous
+refresh bound. `TestHubRefillRetainsNewClaims` and
+`TestEventAndTickDispatchEligibilityParity` cover these boundaries (#3219).
+
+Native issue archive (#3267) preserves workflow state and all issue, comment,
+attempt, change, version, and audit records. Archive refuses live ownership
+using the existing lease lifecycle (expired or released attempts are interrupted), and archived issues are
+excluded from tracker and claim candidates. Restore allocates an unarchived
+issue through the existing hosted transaction, as do native creation and import
+pages. Hosted usage counts native unarchived issues per organization across
+projects, including terminal issues; over-limit reads, exports, and reductions
+remain available. Archive reuses the completion mutation exemptions for its
+retained audit records. Catalogs predating the issue allowance default to 200
+without rewriting immutable plan versions. Self-hosted databases have no quota.
+`TestNativeArchiveLifecycle`, `TestNativeArchiveActiveWork`,
+`TestHostedIssueAllowanceBoundaries`, `TestHostedIssueArchiveAndDowngrade`,
+`TestHostedIssueConcurrentAllocation`, and `TestHostedIssueImportAllocation`
+exercise these boundaries without adding a brake, lease, or recovery mechanism.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.
@@ -1110,8 +1377,8 @@ and `TestCommandGateQueueEligibleCI` cover the handoff to the merge group.
 contributed to the measured rebase and CI loop.
 
 **Enforcement:** `TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch`
-exercises native queue delegation. `TestRepositoryWorkflow` requires
-`merge_group: checks_requested` in this repository. Other repositories retain
+exercises native queue delegation. `TestRepositoryWorkflow` allows the
+`merge_group` trigger only for pull requests into `main`. Other repositories retain
 their chosen settings; Detent detects the queue and uses its serialized merge
 worker where no queue exists. These tests do not inspect live GitHub settings.
 
@@ -1144,47 +1411,62 @@ cover this consolidation of the Rework detour into existing queue admission.
 **Change:** Edit INV-4 and the queue delegation tests in the same PR before
 changing the ownership or fallback behavior.
 
-## INV-5 — CI once per ready head
+## INV-5 — Local pull-request validation and scheduled release evidence
 
-**Statement:** Real CI never runs on pull_request events. Real jobs report `skipped` on pull requests so the merge queue can accept them without claiming tests passed; the merge group runs the full suite once per batch and main runs the integration jobs after merge.
+**Scope:** This is the Detent repository's development policy. Managed projects
+choose their own workflow triggers, required checks, validation commands, and
+release policies. Detent honors each project's configuration and branch rules;
+PR CI, merge-group CI, and required status checks remain supported.
 
-The implementation handoff records passing local validation and expected skipped
-current-head PR checks separately. Skipped PR jobs are not evidence that the
-suite passed. Queue-eligible skipped checks allow promotion only when the native
-queue is available for that head. The full suite must pass on the merge-group
-commit before merge.
+**Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
+`merge_group`, and no branch ruleset requires a status check. Pull requests do
+not wait for CI or local validation gates before push or merge. The self-hosted
+project uses the existing no-op command `true` and publishes no local status.
+It explicitly sets `gate.required_status_checks: []`, so pending optional or absent
+CI does not block progress. Reported failed CI still blocks, and native
+base-branch requirements remain authoritative;
+omitting the setting preserves aggregate CI behavior for other projects.
+The operator also sets `gate.automated_review: "off"`; pending automated review
+does not create a completion wait in that mode. Required and optional modes
+retain their existing waits and timeout behavior; reported P1 findings still
+route to Rework. The existing review-mode matrix covers this consolidation.
 
-**Why:** Every reviewed PR was force-pushed and each fix/rebase repeated the long
-Verify job; draft iteration avoids paying this cost before local review ends.
+`make check-fast`, focused tests, and vet remain available for optional
+diagnostics. When invoked, checks preserve failures. The local tools take no
+shared validation lock and support concurrent worktrees: lint uses
+`--allow-parallel-runners`, and each client test command uses at most two workers
+while retaining file isolation and all tests. These tools do not become merge
+requirements.
 
-**Enforcement:** `TestRepositoryWorkflow` parses this repository's CI YAML,
-requires the PR activity allowlist and excludes every real job from PR execution (including
-the Invariant Gate), rejects successful placeholder jobs, and restricts portability, Windows core, installer, and
-snapshot jobs to main push or explicit manual dispatch. The manual dispatch is
-a deliberate operator exception, not an automatic PR/merge-group trigger.
-The worker convention is to finish local validation/review before marking ready;
-Rework can produce a new ready head. The promotion tick leaves drafts unchanged,
-even when their other gates pass (#2922). `TestReworkLiveDraftPromotion`
-covers draft exclusion and rechecking live evidence. Workflow assertions cannot deduplicate
-manual reruns or repeated ready/reopened events. Other projects may opt into
-label gating or their own CI convention.
+`TestMakeCheckFastOverlapsWorktrees` exercises the Make graph with controlled
+tools in two linked worktrees while the legacy common-directory lock is held.
+Both builds must start before either completes, and each writes its evidence
+inside its own worktree. The pinned-linter tests also require the parallel-runner
+flag (#3253).
 
-CI push triggers are restricted to main: release tags run the release workflow
-without creating newer mandatory check IDs that invalidate their own provenance
-(#2419). `TestCoordinatorTagToSigningProvenance` exercises coordinator annotation,
-the repository's workflow triggers, and the signing input gate, including retries
-and rejection of missing, stale, cancelled, skipped, or failed evidence.
+GitHub Actions schedules the full suite hourly from the repository's default branch.
+Preflight pins the current `develop` SHA and skips when that commit already has
+a validated release tag. Every full-suite job runs on the pinned commit. A green
+run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
+exact status evidence, and dispatches the release workflow. It does not merge
+to `main` or deploy production. A failing run opens or updates one fingerprinted
+Todo hotfix issue per failed job. A later green run closes those issues. Manual
+dispatch can force `verify-fast` to fail to exercise issue filing and closure.
 
-`detent doctor` also reads every workflow under the project's source root and
-warns when a job runs on pull_request events: a job is exempt only when its
-`if` contains `github.event_name != 'pull_request'`, is exactly the placeholder
-equality, or is made of `||` alternatives that each require some other
-`github.event_name`. Projects may keep per-push CI; the verdict is a warning.
+Every `develop` push deploys to staging even when that commit has not passed
+scheduled validation. Production release artifacts use validated tags only.
 
-**Change:** Edit INV-5 and workflow assertions in the same PR when changing these
-triggers, draft handling, or the documented manual-run exception.
+**Enforcement:** `TestRepositoryWorkflow` checks schedule, manual dispatch,
+required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
+checks every workflow for forbidden pull-request and merge-group events.
+`TestWorkflowViolations` rejects trigger and coverage regressions.
+
+**Change:** Update this invariant and its workflow assertions in the same pull
+request when changing validation or release evidence.
 
 ## INV-6 — Isolated Codex home
+
+Remote SSH lifecycles run the same provider isolation and private temporary GitHub credential setup on the selected host. The transport carries configuration over encrypted stdin and removes bootstrap credentials after teardown. `TestSSHLocalTargetIntegration` exercises remote hooks, gates, push, cleanup, and disconnect cancellation (#3239).
 
 **Statement:** Workers run with an isolated Codex home; user-level instructions never reach a worker.
 
@@ -1223,16 +1505,19 @@ changing identity format or duplicate handling.
 
 ## INV-8 — No strict freshness protection
 
-**Statement:** No strict up-to-date branch protection is allowed on branches Detent merges into.
+**Scope:** This is the Detent repository's branch protection policy. Managed
+projects may require strict freshness; Detent honors their branch rules.
+
+**Statement:** This repository does not require strict up-to-date branch protection on branches Detent merges into.
 
 **Why:** Strict freshness invalidated already-tested heads after other merges
 and fed the measured repeated rebase/CI loop.
 
-**Enforcement:** The existing merge-queue doctor recommendation reads protection
-and measured history (`TestDoctorMergeQueueRecordedHistory`). Repository tests
-cannot guarantee live branch settings, and this PR does not change them or add
-a live doctor check per ID. The operator must inspect configured merged-into
-branches; do not claim this rule is universally enforced by local CI.
+**Enforcement:** Doctor reports live branch protection as project evidence,
+without treating strict freshness as a failure. `TestDoctorRespectsProjectCIPolicy`
+prevents this repository's CI and protection policy from becoming global advice.
+Repository tests cannot guarantee live branch settings. The operator must inspect
+this repository's merged-into branches; local CI does not enforce live settings.
 
 **Change:** Edit INV-8 in the same PR with the intended protection semantics and
 live verification plan; code changes never imply permission to edit settings.
@@ -1259,6 +1544,15 @@ is not an authorized resurrection.
 
 ## INV-10 — Priority only picks the next job
 
+Project dispatch evaluates candidates in the existing priority order, with at
+most the initial free project slots plus eight candidates of lookahead per pass
+(#3190). Failed hydration, dependency waits, due retries, and rejected dispatches
+consume that same evaluation allowance; they cannot trigger a full-queue tracker
+scan. Local label rejections and project-capacity skips need no evaluation.
+The existing merge-control path remains available when project slots are full.
+This bounds readiness discovery; it does not reserve or hold global capacity,
+and discovered ready work still uses the existing global acquisition lifecycle.
+
 **Statement:** Priority picks the next job. Nothing else.
 
 - If a task can be started, start one. Always. Free capacity is never held,
@@ -1266,6 +1560,16 @@ is not an authorized resurrection.
 - When a slot frees, dispatch the highest-ranked READY request; if none of the
   higher-ranked projects has anything ready, dispatch whatever is ready.
 - The system never cancels, stops, or preempts running work. Only a user cancels work.
+
+Hosted organization subscriptions price project and unarchived-issue capacity,
+never seats or concurrent agent work (#3268). The Hub removes plan membership
+and concurrent-work admission limits while preserving independent runner/host
+capacity and provider safety limits. Free refuses new AI turns at the existing
+execution feature boundary, including Luna coordinator chat and native claims;
+downgrades preserve safe completion. `TestCapacityCatalog`,
+`TestCoordinatorFreeRefusesLuna`, `TestCapacityPaidPlanChanges`, and
+`TestHostedConcurrentClaimsDowngradeRelease` cover this boundary. No new scheduler
+mechanism, reason code, reservation, or recovery loop is introduced.
 
 **Why:** Priority cancellation discarded running attempts, while selected-slot
 reservations refused ready work even with real global capacity available.
@@ -1281,6 +1585,10 @@ Owners consume grants in acquisition order and revalidate current candidates;
 refreshes retain standing requests and update their actions and slot requirements
 in place. Refreshed eligibility decisions remove obsolete requests; shutdown and
 explicit pause/configuration invalidation discard requests and release unused grants.
+Project run completion, lease release, and increased project capacity recheck
+candidates from the last refresh on the orchestrator event loop. The pass reads
+current tracker evidence and uses the tick's eligibility planner before claiming,
+so a stale higher-ranked candidate cannot keep a free project slot idle.
 All modes use the same lifecycle; strict priority is
 only an ordering rule. Authorization, dependencies, retry readiness, and local
 lane ceilings are checked by the callers before acquisition. Admission reads
@@ -1290,6 +1598,8 @@ and filters candidates before acquiring local or global capacity for evaluation.
 `TestQueuedDispatchRanksIndependentRequests`, `TestQueuedDispatchPreservesProjectCeilings`,
 `TestRunDispatchesQueuedRequestsWithoutPolling`,
 `TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`,
+`TestCompletionRefillsProjectSlotWithoutRefresh`, `TestCapacityIncreaseRefillsWithoutRefresh`,
+`TestEventAndTickDispatchEligibilityParity`, `TestQueuedDispatchUsesCurrentWorkpad`,
 `TestQueuedDispatchChoosesAvailableHost`,
 `TestStandingDispatchSurvivesProjectRefresh`, `TestStandingDispatchRequestUpdates`, and
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
@@ -1340,6 +1650,13 @@ CI retry releases the worker and claim; a green head re-enters the same fairness
 order. `TestPushedMergeHeadRequeuesWithoutHoldingSlot` covers post-push admission
 of a same-repository peer and the older issue's return after CI, while
 `TestMergePromptHandsOffPushedHeadBeforeCI` covers the instruction boundary (#3045).
+With explicit `required_status_checks: []`, a freshly hydrated green head with
+no check runs or status contexts and a known base branch proceeds through the
+existing merge path after a push. The native branch-policy hydration owns CI
+eligibility; omitted configuration, observed producers, pending native checks,
+missing native checks, and failures retain their existing post-push wait.
+`TestMergingPushedHeadRespectsBranchPolicy` covers this removal of the unnecessary
+CI retry without making absent CI generally passable.
 The `merge_ci_reservation` dispatch reason is retired. Native merge queue admission
 still defers enqueueing behind a running merge in its repository, without holding
 a worker slot. `merge_fairness_head_reserved` remains retired from producers and
@@ -1434,12 +1751,20 @@ operator-managed workflow update when it lives outside the repository.
 
 ## INV-12 — Native toolchain caches
 
+SSH workers keep the remote host’s native toolchain caches and shared Go admission budget. Worker scratch uses only the host-provided TMPDIR/TMP/TEMP, and never points at the orchestrator’s scratch or caches. `TestSSHProbeRequiresProvidedScratch` and `TestSSHLocalTargetIntegration` exercise these boundaries (#3239).
+
 Detent never substitutes its own cache or state location for a toolchain's native
 one; bounding uses the toolchain's own mechanism. Workers inherit the host
 toolchain caches. Detent may house-keep a native cache (age or size trim that the
 toolchain tolerates) but never relocates it, never keys it per project or per
 attempt, and never introduces a configuration key that does either. Per-attempt
 isolation is limited to `TMPDIR`/`TMP`/`TEMP`.
+
+Sandbox isolation (#3168) grants normal backend turns access to the existing
+native Go build and module caches without relocating them. Restricted Codex turns
+keep cache writes and network access disabled. Claude resolves its subprocess
+temporary directory inside the existing worker scratch directory.
+`TestBackendAppliesRunnerIsolation` covers normal and restricted cache grants.
 
 Detent's former per-attempt and per-project Go caches duplicated a content-addressed,
 concurrency-safe host cache. Two Detent-owned caches of about 750 GB on one host,
@@ -1465,7 +1790,9 @@ and read-only diagnostics. All are registered in the invariant manifest.
 Doctor reports native Go cache paths and readable sizes once per host, the last completed
 reaper trim (or “not recorded”), and warns about legacy `.detent/cache` roots in
 the workspace root or workdirs, including former per-attempt cache components
-under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
+under `.detent/worker-tmp` and under each workdir's worker scratch root in the
+OS temp directory (`detent-worker-scratch/`), where attempt scratch lives so
+toolchain churn stays out of file-watched workspace trees. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
 The native build cache defaults to 10% of total cache-volume capacity with the
 existing 48-hour age trim; explicit bounds win, and unavailable capacity falls
@@ -1483,7 +1810,7 @@ the build cache or traverse the module cache; unmeasured module fields are omitt
 A board card renders exactly: the identity row (project, issue and PR references,
 origin, model and configured effort; Compact may hide effort before model), the title, at most one status line, and the existing priority controls.
 The status line is at most 48 Unicode characters and names the wait in words a
-human acts on, for example "Waiting on #2129", "CI running", "Needs your reply · 4h",
+human acts on, for example "Waiting on #2129", "CI running", "Needs you",
 "Blocked · 1", "Running". Scheduler evidence, tracker snapshot ages, timestamps,
 token counts, attempt counts, fact grids, and diagnostic text are not card
 content; they live in the detail sheet and hover titles. A change that adds a body
@@ -1494,6 +1821,34 @@ the same PR.
 invariant manifest, enforce the content, character budget, and detail preservation. Playwright
 checks one-line status layout in compact, cozy, and comfy densities, and verifies
 that effort is visible at Cozy/Comfy and may be hidden before model at Compact.
+
+## INV-14 — Workers never wait on a human question
+
+Workers receive no `ask_human_question` tool in any project. Dispatch and
+completion do not consult `human_questions` rows, including unanswered rows
+left by older versions. Detent no longer writes those rows, migrates generated
+questions into them, or projects them as active waits. Historical rows remain
+readable as receipts.
+
+A real product decision or physical action is recorded in the existing
+structured Workpad `detent-status` block with `status: blocked` and a concrete
+`human_action`. The card moves to Blocked and displays "Needs you". Instance and
+infrastructure failures remain instance-owned. An authorized newer Workpad can
+clear the action after it is performed; existing recorded-blocker recovery
+moves the card back to executable work. Ordinary replies cannot clear it.
+Legacy generated question prerequisites are converted by recording the action
+on each dependent before removing the old dependency; the generated source
+remains historical evidence.
+
+`TestINV14DispatchQuestionTool` checks worker requests across automated,
+human-review, and disabled auto-promotion configurations.
+`TestINV14LegacyQuestionRowDispatch` checks dispatch with published and
+unconfirmed unanswered legacy rows. `TestLegacyHumanQuestionReceiptsReadable`
+checks historical access. `TestFirstHumanBlockerCompletionReachesBlocked`,
+`TestWorkpadHumanActionSnapshot`, `TestOperationsWorkpadHumanAction`, and
+`TestBoardCardSignalBudget` enforce the visible Blocked path.
+`TestWorkpadHumanActionClearanceRecoversBlockedIssue` checks authorized
+clearance, retained legacy dependencies, and refusal of stale updates.
 
 ## Check boundaries
 

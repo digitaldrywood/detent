@@ -17,6 +17,14 @@ organization/project scope. Policies are resolved on the customer host. See
 | `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor and approval provenance within native project grants |
 | Either policy endpoint | `PUT` | Instance administrator only; `policy` descriptor and `expected_policy_id` (empty for first approval). Exact retries are idempotent; concurrent distinct replacements have one winner. |
 | Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
+| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports the descriptor it resolved when nothing is approved or the approved policy differs. The Hub keeps the latest report per project and offers it for approval as `observed_policy` in `GET .../onboarding`; it grants nothing by itself. |
+
+Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
+(owner or admin); the generic `PUT .../policy` above stays instance-administrator
+only and is not served in hosted mode. A runner reports each new unapproved
+descriptor once, so after the repository's `detent.yaml` or `WORKFLOW.md`
+changes, project settings shows "Approve reported policy" with the runner's own
+descriptor and nobody pastes JSON.
 
 Descriptors reject unknown JSON fields and validate all metadata, hashes and
 content-derived identities. Worker/operator tokens cannot approve or revoke a
@@ -76,7 +84,7 @@ Enrollment redemption accepts its separate one-time bearer token, which cannot c
 
 | Credential | Owner and lifetime | Revocation |
 | --- | --- | --- |
-| Enrollment token | Hub issues a grant for one organization, explicit projects, operations and host-generated runner/machine IDs; valid for 1–900 seconds and one redemption | Administrator deletes the unconsumed enrollment; expiry/revocation does not end an enrolled session |
+| Enrollment token | Hub issues a grant for one organization, explicit projects, operations and, optionally, host-generated runner/machine IDs; valid for 1–900 seconds and one redemption | Administrator deletes the unconsumed enrollment; expiry/revocation does not end an enrolled session |
 | Runner credential | Customer host generates a random 256-bit bearer credential; Hub stores its SHA-256 hash; valid for 24 hours from enrollment or renewal | Administrator revokes the runner; no resurrection by renewal, rotation, generic token rotation or ID reuse |
 | Provider/repository/storage credential | Customer login, keychain, workload identity or private host configuration; may outlive many runner sessions | Customer revokes it at its provider; revoking Hub access does not revoke this credential |
 
@@ -89,6 +97,65 @@ Copying the private identity file copies bearer authority: never clone it into
 machine images or share it across hosts. Multiple logical runners on one host
 share the same machine ID and capacity ceiling through explicit enrollment
 approval. Hardware attestation is not implemented.
+
+### Register a runner with one command
+
+The Enroll dialog in the organization's runner settings asks for a display name
+and the projects the runner may work on, creates a token-first enrollment, and
+shows one command to run on the host:
+
+```sh
+detent hub runner register --url https://cloud.detent.build/organizations/org_example \
+  --token det_enroll_example --name "Build host" --capacity 2 --service
+```
+
+`register` does, in order:
+
+1. Generates the runner and machine IDs and a random credential on the host and
+   writes them to `identity.json` beside the runner configuration (default
+   `~/.config/detent-runner/`, private, outside any repository). An existing
+   identity there is reused, so a retry never creates a second runner.
+2. Redeems the token. The request carries the IDs, host name, display name,
+   capacity, version, OS and architecture, and the host credential, which the
+   Hub stores only as a SHA-256 hash. No provider or repository credential is
+   read or sent.
+3. Reads the names of the granted projects and writes `global.yaml` once: the
+   `client:` block (`hub_url`, `identity_file`, `organization_id`,
+   `native_projects`, `display_name`, `capacity`), `service_name:
+   detent.runner`, and one `projects:` entry per project whose `workdir` is the
+   project's checkout under `--workspace-root` (default `~/detent-runner/NAME`).
+   An existing `global.yaml` is left untouched; checkout checks use its
+   configured projects and `workdir` paths instead of `--workspace-root`.
+4. With `--service`, installs and starts the `detent.runner` background service
+   (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
+   separate from a local board's `detent` service on the same host. If a
+   project's checkout is missing, it prints the clone step and the
+   `detent start --config ... --yes` command to run afterwards instead.
+
+`detent start` and `detent status` default to the runner service when the
+configuration has a `client.hub_url`, including older configurations without
+`service_name`. An explicit `service_name` selects that service. If launchd
+cannot bootstrap a disabled label, the error names it and prints the
+`launchctl enable` command to run before retrying.
+
+The token appears in the command because it is single-use and expires within 15
+minutes; once redeemed it grants nothing. To keep it out of shell history,
+omit `--token` and set `DETENT_RUNNER_ENROLLMENT_TOKEN` instead. A self-hosted
+Hub whose URL does not include `/organizations/ORG` needs `--organization`.
+Projects listed in `client.native_projects` use the Hub in place of the
+GitHub tracker their committed `detent.yaml` names, so the checkout needs no
+local override. `register` starts the service only once every checkout has its
+`WORKFLOW.md`, and refuses an existing identity or configuration that belongs
+to another Hub, organization or project set rather than reusing it.
+
+`init` and `enroll` below remain for scripted setups that bind the IDs before
+the token exists.
+
+An enrollment created without `runner_id` and `machine_id` is token-first: it
+binds to the fresh IDs the host presents when it redeems the token, and the Hub
+records them on the enrollment at that moment. The host still generates its IDs
+and credential locally, the IDs must be unused, and the token can be redeemed
+once. The steps below bind the IDs up front instead.
 
 1. On the customer host, run `detent hub runner init --hub-url https://hub.example.com`.
    It prints only runner/machine IDs and stores the credential under the OS user
@@ -382,6 +449,21 @@ and create a project with
 ```
 
 Project state names and transitions are explicit; there is no prescribed workflow.
+A project created through the hosted client starts from a fixed template instead:
+`Todo` and `In Progress` (dispatchable), `Human Review` (neither dispatchable nor
+terminal, and not `operator_only`, so the orchestrator can move a completed run's
+Change Request there), `Merging` (dispatchable: an accepted Change Request waits
+there for the runner that lands it) and `Done` (terminal). `In Progress` may move
+to `Todo`, `Human Review`, `Merging` or `Done`; `Human Review` may move to `Done`,
+`Merging` or back to `In Progress`; `Merging` may move to `Done`, back to
+`Human Review`, or back to `In Progress`. A completed run whose published
+version the review policy already accepts moves from `In Progress` straight to
+`Merging`; any other committed change waits in the review lane.
+Hub migrations 36, 38 and 39 move projects whose workflow is exactly an earlier
+template onto it and leave customized workflows unchanged. A native project's Change Requests wait in the lane named by the
+runner's `auto_promote.source_state` (default `Human Review`), so a customized
+workflow needs that lane, non-`operator_only` and reachable from its active
+lanes, for completed runs to reach review.
 `operator_only` prevents workers from creating an issue in, or transitioning to,
 that state. `require_dependencies` defaults to true. Setting it false disables
 dependency readiness gating for that project while retaining scope and cycle
@@ -633,6 +715,17 @@ title/discussion, and an ordered set of immutable `version_...` records. These
 records work in native and GitHub-compatible projects without changing issue-field
 ownership. Creating a Change Request does not create a PR or authorize a merge.
 
+A runner opens a native item's Change Request when a work run finishes with
+commits, under the run's lease, and then publishes the run's head as the
+change's version: `base_sha` and `merge_base_sha` are the attempt diff's base,
+`repository` is the https form of the checkout's origin remote, and `code`
+names the head commit under that repository with `availability` `unverified`.
+A rework run whose head is already the current version publishes nothing; any
+other head becomes the next version, so every reviewed head is an immutable
+record. A version the Hub refuses (no https remote, a stale review policy) is
+reported on the run's completion comment and the Change Request stays a draft
+until the next successful run publishes one.
+
 All paths below follow `/api/v2/organizations/{organization}/projects/{project}`.
 Mutations require the existing `idempotency_key`; workers publishing versions
 also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id`.
@@ -646,6 +739,7 @@ also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id
 | `POST /work-items/{item}/changes/{change}/discussion` | Append `body`, optional `version_id`; only operators can import `provenance` |
 | `POST /work-items/{item}/changes/{change}/versions/{version}/reviews` | Operator decision: `approved`, `changes_requested`, or `commented`, plus optional `body` |
 | `POST /work-items/{item}/changes/{change}/versions/{version}/checks` | Credential pinned in the immutable expected check set |
+| `POST /work-items/{item}/changes/{change}/versions/{version}/landing` | Worker under its lease: `merge_sha`, `base_ref`, `method`; records the landed commit and finishes the primary issue |
 | `GET /change-review-policy` | Inspect the approved native review/CI expectations |
 | `PUT /change-review-policy` | Self-hosted instance administrator, or hosted owner/admin with a target-project write grant; compare `expected_review_policy_id` and approve `policy` |
 
@@ -656,7 +750,19 @@ The server rechecks the session, membership role and project grant inside the
 mutation transaction, including before returning a cached approval response.
 
 Before publishing, an administrator approves a review policy tied to the current
-repository `policy_id`. Its `require_review` setting cannot weaken a repository
+repository `policy_id`. Approving a native project's repository policy seeds the
+default review policy when the project has none: no CI check is pinned, and
+`require_review` is set only when the repository gate is `human_review`, so under
+any other gate a published version is `reviewed` and lands without a person.
+A review policy that pins no checks follows the repository gate: approving the
+repository policy again rewrites it to the default, and an approval that expects
+no review policy may replace it. A review policy an administrator shaped by
+pinning checks is never rewritten; it goes stale when the repository policy
+changes and must be approved again. A repository policy whose gates the default
+cannot satisfy (a required check count or validator) seeds nothing. Hub
+migration 40 applies the same rule once to every project with an approved
+repository policy, so projects approved before seeding existed can publish.
+Its `require_review` setting cannot weaken a repository
 human-review gate. `required_checks` cannot fall below the repository check count,
 and a repository validator requires an independent check. Every check pins `name`,
 `principal_id` (an existing token with a project grant), `workflow_id`,
@@ -704,6 +810,40 @@ to their original version and cannot move the current pointer. CI callbacks do n
 require a still-running implementation lease. To rerun validation, publish a new
 version with fresh check identities. Customer-run evidence is visibly distinct
 from independent validation and cannot satisfy an independent expectation.
+
+A `changes_requested` decision puts the review text on the primary issue as a
+comment by the reviewer, where the next run reads it with the rest of the
+discussion, and moves an issue waiting in review or in the landing lane back to
+a dispatchable working lane (`In Progress` when the workflow has it), so the
+runner picks it up again; an issue already being worked stays where it is. The
+rework run reuses the item's Change Request and publishes its new head as the
+next version.
+
+An `approved` decision that leaves the current version `reviewed` moves the
+primary issue to the landing lane: the lane named `Merging`, when the issue's
+lane may move there and it dispatches. The runner that holds the project claims
+the issue there and lands the reviewed head with plain git and its own
+credentials: it fetches the base branch (the remote's default), verifies the
+worktree still stands at the reviewed head, combines the two by the approved
+policy's `merge_method` (a squash commit, a merge commit, or the head's commits
+replayed onto the base), and pushes the result to the base branch, refusing to
+move a base that changed underneath it. It then reports the commit through the
+landing route, and the Hub records it on the Change Request (`landed`, with the
+version, head, merge commit, base branch, method and actor), marks the summary
+`landed`, and moves the issue to the first terminal lane its lane may reach, in
+one transaction. A landed Change Request accepts no further review or landing.
+The Hub never holds git credentials and makes no forge API call to land.
+
+A landing the repository does not allow is refused, never worked around: a
+worktree that moved past the reviewed head, a reviewed head the checkout no
+longer has, a conflict with the base, a base that already contains the head, a
+base branch that moved during the landing, or a base branch the forge protects
+(a pull request requirement, a protected branch, a hook that declines). The
+runner reports the reason, and the orchestrator moves the issue back to the
+review lane with a comment that carries it, such as "allow the runner to push
+to develop, or enable GitHub pull request mode for this project". Only an
+infrastructure failure (the remote unreachable, the Hub refusing the report)
+fails the run and retries it.
 
 Native approval never becomes a required GitHub review. Detail optionally reuses
 the existing projected `PullRequestSummary`, labels it as a snapshot, and identifies
@@ -804,6 +944,17 @@ accounts through the existing agent routing configuration.
     "account_alias": "local-work",
     "shared_account_alias": "team-subscription-a",
     "models": ["gpt-5.6-sol", "gpt-6-astra"],
+    "model_details": [
+      {
+        "id": "gpt-6-astra",
+        "label": "GPT-6-Astra",
+        "provider": "openai",
+        "default": true,
+        "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "default_reasoning_effort": "low"
+      },
+      { "id": "gpt-5.6-sol", "legacy": true, "reasoning_efforts": ["low", "high"] }
+    ],
     "max_concurrent": 2,
     "availability": "unknown",
     "observed_at": "2026-09-05T12:00:00Z"
@@ -811,7 +962,9 @@ accounts through the existing agent routing configuration.
 ]
 ```
 
-Only these fields and optional `reset_at` are accepted. Files are bounded to
+`model_details` is optional and advisory: it describes models `models` already advertises and never widens what capacity matches. The collector writes it; the runner does not yet fill it from its backends' model catalogues. Each entry describes one reported model at most once, with at most 16 distinct reasoning efforts in the backend's own order (the Hub does not check the order), a `default_reasoning_effort` that must be in that list when the list is non-empty, a label of at most 128 characters, and `legacy` set when the provider has named a successor. A report carrying detail for a model outside `models` is rejected. When a conversation's preferences change, the Hub checks them against fresh runner reports: an explicit model must be one a fresh report advertises or the Hub's configured `conversation.model`, which is accepted without any runner report, and an effort outside the fixed vocabulary is accepted only when that model's detail publishes it (docs/conversation/decisions.md section 14); `GET /app/bootstrap` does not republish it yet, so `preferences.models[]` stays empty.
+
+Only these fields, `model_details` and optional `reset_at` are accepted. Files are bounded to
 256 KiB, 32 backends and 128 model identifiers per backend. Aliases are opaque
 lowercase ASCII tokens, at most 64 characters; use no email addresses, API keys,
 login sessions, billing records or customer prompts. Provider/backend/model

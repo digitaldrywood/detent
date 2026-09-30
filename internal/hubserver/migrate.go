@@ -13,7 +13,7 @@ import (
 
 const (
 	hubSchemaTable         = "hub_schema_version"
-	supportedSchemaVersion = int64(21)
+	supportedSchemaVersion = int64(47)
 )
 
 //go:embed migrations/*.sql
@@ -31,6 +31,7 @@ func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64,
 		goose.WithDisableGlobalRegistry(true),
 		goose.WithTableName(hubSchemaTable),
 		goose.WithSlog(logger),
+		goose.WithGoMigrations(hubGoMigrations()...),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create hub migration provider: %w", err)
@@ -78,4 +79,15 @@ func currentSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {
 		return 0, fmt.Errorf("read hub schema version: %w", err)
 	}
 	return version, nil
+}
+
+// hubGoMigrations are the schema steps SQL cannot express: 40 computes the
+// content-addressed identity of each backfilled review policy.
+func hubGoMigrations() []*goose.Migration {
+	return []*goose.Migration{
+		goose.NewGoMigration(40,
+			&goose.GoFunc{RunTx: backfillChangeReviewPolicies},
+			&goose.GoFunc{RunTx: func(context.Context, *sql.Tx) error { return nil }},
+		),
+	}
 }

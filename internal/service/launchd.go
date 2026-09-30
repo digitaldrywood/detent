@@ -3,32 +3,33 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"html"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-const launchdLabel = "com.digitaldrywood.detent"
-
 type launchdManager struct {
-	cfg  Config
-	path string
+	cfg   Config
+	label string
+	path  string
 }
 
 func newLaunchdManager(cfg Config) *launchdManager {
+	label := LaunchdLabel(cfg.Name)
 	path := cfg.LaunchdPlistPath
 	if strings.TrimSpace(path) == "" {
-		path = filepath.Join(cfg.HomeDir, "Library", "LaunchAgents", launchdLabel+".plist")
+		path = filepath.Join(cfg.HomeDir, "Library", "LaunchAgents", label+".plist")
 	}
-	return &launchdManager{cfg: cfg, path: path}
+	return &launchdManager{cfg: cfg, label: label, path: path}
 }
 
 func (m *launchdManager) Info() ManagerInfo {
 	return ManagerInfo{
 		Name:           ManagerLaunchd,
 		Scope:          "user",
-		Unit:           launchdLabel,
+		Unit:           m.label,
 		DefinitionPath: m.path,
 	}
 }
@@ -76,12 +77,29 @@ func (m *launchdManager) Start(ctx context.Context) error {
 	}
 	if _, err := m.cfg.RunCommand(ctx, "launchctl", "print", m.target()); err != nil {
 		if _, bootstrapErr := m.cfg.RunCommand(ctx, "launchctl", "bootstrap", m.domain(), m.path); bootstrapErr != nil {
+			output, queryErr := m.cfg.RunCommand(ctx, "launchctl", "print-disabled", m.domain())
+			if queryErr == nil && launchdDisabled(output, m.label) {
+				return fmt.Errorf("launchd label %s is disabled; enable it with `launchctl enable %s` and retry: %w", m.label, m.target(), bootstrapErr)
+			}
 			return bootstrapErr
 		}
 		return nil
 	}
 	_, err = m.cfg.RunCommand(ctx, "launchctl", "kickstart", m.target())
 	return err
+}
+
+func launchdDisabled(output, label string) bool {
+	// Match the quoted label exactly so a disabled board does not implicate
+	// its runner. launchctl reports entries as "label" => disabled.
+	for line := range strings.SplitSeq(output, "\n") {
+		key, value, found := strings.Cut(line, "=>")
+		if found && strings.TrimSpace(key) == strconv.Quote(label) {
+			state := strings.TrimSpace(value)
+			return state == "disabled"
+		}
+	}
+	return false
 }
 
 func (m *launchdManager) Restart(ctx context.Context) error {
@@ -103,7 +121,7 @@ func (m *launchdManager) domain() string {
 }
 
 func (m *launchdManager) target() string {
-	return m.domain() + "/" + launchdLabel
+	return m.domain() + "/" + m.label
 }
 
 func launchdPlist(cfg Config) string {
@@ -116,7 +134,7 @@ func launchdPlist(cfg Config) string {
 		`<plist version="1.0">`,
 		`<dict>`,
 		`  <key>Label</key>`,
-		`  <string>` + launchdLabel + `</string>`,
+		`  <string>` + LaunchdLabel(cfg.Name) + `</string>`,
 		`  <key>ProgramArguments</key>`,
 		`  <array>`,
 		`    <string>` + escape(cfg.BinaryPath) + `</string>`,

@@ -240,24 +240,25 @@ func TestWorkerCredentialBlockerError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		message      string
-		want         bool
-		wantApproval bool
+		name               string
+		message            string
+		want               bool
+		wantApprovalDenied bool
 	}{
 		{name: "reported missing authentication", message: "Blocked by missing GitHub authentication.\n\n`gh issue view` and `gh pr view` fail.", want: true},
 		{name: "credential detail after generic blocker heading", message: "Blocked.\n\nGitHub authentication is unavailable, so `gh issue view` fails.", want: true},
 		{name: "reported disabled credential policy", message: "Work is blocked: GitHub credential injection is disabled for this worker.", want: true},
 		{name: "reported git credential failure", message: "Blocked because git push failed: could not read username for HTTPS remote.", want: true},
 		{name: "budget scheduler question", message: "Should we replace project timers with a credential-scoped scheduler using GitHub's rate-budget reset window?"},
-		{name: "would enable", message: "Would you enable GitHub connector write access?", want: true, wantApproval: true},
-		{name: "manually open", message: "Could you manually open the PR?", want: true, wantApproval: true},
+		{name: "would enable", message: "Would you enable GitHub connector write access?", want: true, wantApprovalDenied: true},
+		{name: "manually open", message: "Could you manually open the PR?", want: true, wantApprovalDenied: true},
+		{name: "can I open manually", message: "Can I open the PR manually?", want: true, wantApprovalDenied: true},
 		{name: "manual design", message: "Should workers manually open the PR?"},
 		{name: "enable design", message: "Should we enable GitHub connector write access?"},
 		{name: "credential design question", message: "Should GitHub authentication use one credential per project?"},
-		{name: "authentication support question", message: "GitHub authentication failed; can you repair it?", want: true, wantApproval: true},
-		{name: "missing credential support question", message: "GitHub credentials are unavailable; can you restore worker access?", want: true, wantApproval: true},
-		{name: "connector write question", message: "Could you enable GitHub connector write access or open the PR manually?", want: true, wantApproval: true},
+		{name: "authentication support question", message: "GitHub authentication failed; can you repair it?", want: true, wantApprovalDenied: true},
+		{name: "missing credential support question", message: "GitHub credentials are unavailable; can you restore worker access?", want: true, wantApprovalDenied: true},
+		{name: "connector write question", message: "Could you enable GitHub connector write access or open the PR manually?", want: true, wantApprovalDenied: true},
 		{name: "successful fix mentioning incident", message: "Fixed the path that previously reported Blocked by missing GitHub authentication."},
 		{name: "unrelated blocker", message: "Blocked by an ambiguous product decision."},
 		{name: "unrelated authentication blocker", message: "Blocked because authentication is required for the private package registry."},
@@ -279,8 +280,8 @@ func TestWorkerCredentialBlockerError(t *testing.T) {
 				if !errors.As(err, &deliverableErr) || !forgeavailability.WriteOperation(deliverableErr.Operation) {
 					t.Fatalf("workerCredentialBlockerError() = %#v, want classified write operation", err)
 				}
-				if deliverableErr.ApprovalDenied != tt.wantApproval {
-					t.Fatalf("ApprovalDenied = %v, want %v", deliverableErr.ApprovalDenied, tt.wantApproval)
+				if deliverableErr.ApprovalDenied != tt.wantApprovalDenied {
+					t.Fatalf("ApprovalDenied = %t, want %t", deliverableErr.ApprovalDenied, tt.wantApprovalDenied)
 				}
 			}
 		})
@@ -680,10 +681,15 @@ func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
 		},
 	}
 	preclassifyWorkerGitHubPolicy(&policy)
-	result := make(chan error, 1)
+	type governorResult struct {
+		ctxErr error
+		stop   func() error
+		err    error
+	}
+	result := make(chan governorResult, 1)
 	go func() {
-		_, _, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
-		result <- err
+		ctx, stop, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
+		result <- governorResult{ctxErr: ctx.Err(), stop: stop, err: err}
 	}()
 
 	var cancel context.CancelFunc
@@ -699,147 +705,72 @@ func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
 	}
 	cancel()
 	select {
-	case err := <-result:
-		if !errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !errors.Is(err, context.Canceled) {
-			t.Fatalf("startWorkerGitHubGovernor() error = %v, want bounded canceled probe", err)
+	case got := <-result:
+		if got.err != nil || got.ctxErr != nil {
+			t.Fatalf("launch probe timeout stopped governor: error=%v context=%v", got.err, got.ctxErr)
 		}
-		monitorErr, ok := AsWorkerGitHubBudgetMonitorError(err)
-		if !ok || monitorErr.Operation != "launch_probe" || monitorErr.CredentialIdentity == "" {
-			t.Fatalf("monitor error = %#v, want credential-scoped launch probe", monitorErr)
+		if err := got.stop(); err != nil {
+			t.Fatalf("stop governor: %v", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("governor did not return after the probe context was canceled")
 	}
 }
 
-func TestWorkerGitHubMonitorErrorsCarryCredentialScope(t *testing.T) {
+func TestWorkerGitHubProbeFailureIsInstanceDiagnostic(t *testing.T) {
 	t.Parallel()
-
-	transportErr := errors.New("github transport unavailable")
-	server := workerGitHubRateLimitServer(t, func(int64) int64 { return 4200 })
-	t.Cleanup(server.Close)
-	tests := []struct {
-		name          string
-		wantOperation string
-		run           func() error
-	}{
-		{
-			name:          "launch probe",
-			wantOperation: "launch_probe",
-			run: func() error {
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				preclassifyWorkerGitHubPolicy(&policy)
-				policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
-					return nil, transportErr
-				})
-				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
-				return err
-			},
-		},
-		{
-			name:          "launch observation",
-			wantOperation: "launch_observation",
-			run: func() error {
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				preclassifyWorkerGitHubPolicy(&policy)
-				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, func(AgentUpdate) error {
-					return transportErr
-				})
-				return err
-			},
-		},
-		{
-			name:          "periodic probe",
-			wantOperation: "periodic_probe",
-			run: func() error {
-				poll := make(chan time.Time, 1)
-				var calls atomic.Int64
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				preclassifyWorkerGitHubPolicy(&policy)
-				policy.Poll = poll
-				policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
-					if calls.Add(1) > 1 {
-						return nil, transportErr
+	for _, phase := range []string{"launch", "periodic"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			poll := make(chan time.Time, 1)
+			observed := make(chan struct{}, 1)
+			var calls atomic.Int64
+			policy := workerGitHubPolicy{
+				Enabled: true, CredentialMode: workerGitHubCredentialDistinct,
+				Token: "worker-token", CredentialIdentity: "github-rest:worker",
+				RateLimitURL: "https://api.github.test/rate_limit",
+				MinRemaining: 1000, Poll: poll,
+				HTTPClient: workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+					call := calls.Add(1)
+					if (phase == "launch" && call == 1) || (phase == "periodic" && call == 2) {
+						<-request.Context().Done()
+						observed <- struct{}{}
+						return nil, request.Context().Err()
 					}
 					return workerGitHubRateLimitResponse(), nil
-				})
-				governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
-				if err != nil {
-					return err
-				}
-				poll <- time.Now()
-				<-governedCtx.Done()
-				return stop()
-			},
-		},
-		{
-			name:          "periodic observation",
-			wantOperation: "periodic_observation",
-			run: func() error {
-				poll := make(chan time.Time, 1)
-				var updates atomic.Int64
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				preclassifyWorkerGitHubPolicy(&policy)
-				policy.Poll = poll
-				governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, func(AgentUpdate) error {
-					if updates.Add(1) > 1 {
-						return transportErr
+				}),
+				ProbeContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+					if (phase == "launch" && calls.Load() == 0) || (phase == "periodic" && calls.Load() == 1) {
+						return context.WithDeadline(ctx, time.Now().Add(-time.Second))
 					}
-					return nil
-				})
-				if err != nil {
-					return err
-				}
+					return context.WithCancel(ctx)
+				},
+				Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			preclassifyWorkerGitHubPolicy(&policy)
+			governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+			if err != nil || governedCtx.Err() != nil {
+				t.Fatalf("launch: error=%v context=%v", err, governedCtx.Err())
+			}
+			if phase == "periodic" {
 				poll <- time.Now()
-				<-governedCtx.Done()
-				return stop()
-			},
-		},
-		{
-			name:          "worker credential classification",
-			wantOperation: "credential_classification_worker",
-			run: func() error {
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				policy.CredentialMode = workerGitHubCredentialUnclassified
-				policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
-					return nil, transportErr
-				})
-				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
-				return err
-			},
-		},
-		{
-			name:          "orchestrator credential classification",
-			wantOperation: "credential_classification_orchestrator",
-			run: func() error {
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				policy.CredentialMode = workerGitHubCredentialUnclassified
-				policy.OrchestratorToken = "orchestrator-token"
-				policy.HTTPClient = workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
-					if request.Header.Get("Authorization") == "Bearer orchestrator-token" {
-						return nil, transportErr
-					}
-					return workerGitHubPrincipalResponse(), nil
-				})
-				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
-				return err
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := tt.run()
-			if !errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !errors.Is(err, transportErr) {
-				t.Fatalf("error = %v, want monitor and transport errors", err)
+				select {
+				case <-observed:
+				case <-time.After(2 * time.Second):
+					t.Fatal("periodic timeout was not observed")
+				}
 			}
-			monitorErr, ok := AsWorkerGitHubBudgetMonitorError(err)
-			if !ok {
-				t.Fatalf("error = %T %v, want WorkerGitHubBudgetMonitorError", err, err)
+			if governedCtx.Err() != nil {
+				t.Fatalf("probe timeout canceled active turn: %v", governedCtx.Err())
 			}
-			if monitorErr.Operation != tt.wantOperation || monitorErr.CredentialIdentity != "github-rest:worker" || monitorErr.Consumer != telemetry.RESTConsumerWorker {
-				t.Fatalf("monitor error = %#v, want operation %q and worker credential scope", monitorErr, tt.wantOperation)
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(logs.String(), "scope=instance") ||
+				!strings.Contains(logs.String(), "operation="+phase+"_probe") ||
+				!strings.Contains(logs.String(), context.DeadlineExceeded.Error()) {
+				t.Fatalf("probe failure lacks instance attribution: %s", logs.String())
 			}
 		})
 	}
@@ -849,6 +780,7 @@ func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
 	t.Parallel()
 
 	poll := make(chan time.Time, 1)
+	probeDone := make(chan struct{})
 	var calls atomic.Int64
 	policy := workerGitHubPolicy{
 		Enabled:            true,
@@ -862,6 +794,7 @@ func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
 		Poll:               poll,
 		HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
 			if calls.Add(1) > 1 {
+				close(probeDone)
 				return nil, errors.New("periodic DNS failure")
 			}
 			return workerGitHubRateLimitResponse(), nil
@@ -870,9 +803,10 @@ func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
 	}
 	preclassifyWorkerGitHubPolicy(&policy)
 	backend := workerGitHubGovernorBackend{
-		policy: policy,
-		poll:   poll,
-		result: RunResult{FinalState: FinalStateFailed, TurnStarted: true, Tokens: TokenTotals{InputTokens: 2_000_000, OutputTokens: 1_000_000, TotalTokens: 3_000_000}},
+		policy:    policy,
+		poll:      poll,
+		result:    RunResult{FinalState: FinalStateCompleted, TurnStarted: true, Tokens: TokenTotals{InputTokens: 2_000_000, OutputTokens: 1_000_000, TotalTokens: 3_000_000}},
+		probeDone: probeDone,
 	}
 	supervisor, err := NewSupervisor(backend, SupervisorConfig{})
 	if err != nil {
@@ -880,12 +814,11 @@ func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
 	}
 	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-2028"}, Attempt: 4})
 
-	monitorErr, ok := AsWorkerGitHubBudgetMonitorError(completion.Err)
-	if !ok || monitorErr.Operation != "periodic_probe" {
-		t.Fatalf("completion error = %#v, want periodic monitor failure", completion.Err)
+	if completion.Err != nil || completion.Result.FinalState != FinalStateCompleted {
+		t.Fatalf("completion = %#v, want successful active turn after probe failure", completion)
 	}
 	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
-		t.Fatalf("generic retry state = %v, %d, %s; want cooperative monitor stop", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+		t.Fatalf("generic retry state = %v, %d, %s; want completed turn", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
 	}
 	if completion.Result.Tokens.TotalTokens != 3_000_000 {
 		t.Fatalf("tokens = %#v, want actual usage intact", completion.Result.Tokens)
@@ -977,9 +910,10 @@ type workerGitHubCaptureBackend struct {
 }
 
 type workerGitHubGovernorBackend struct {
-	policy workerGitHubPolicy
-	poll   chan<- time.Time
-	result RunResult
+	policy    workerGitHubPolicy
+	poll      chan<- time.Time
+	result    RunResult
+	probeDone <-chan struct{}
 }
 
 type workerGitHubHTTPClientFunc func(*http.Request) (*http.Response, error)
@@ -994,10 +928,15 @@ func (b workerGitHubGovernorBackend) Run(ctx context.Context, _ RunRequest) (Run
 		return b.result, err
 	}
 	b.poll <- time.Now()
-	<-governedCtx.Done()
-	cause := context.Cause(governedCtx)
-	_ = stop()
-	return b.result, cause
+	select {
+	case <-b.probeDone:
+	case <-ctx.Done():
+		return b.result, ctx.Err()
+	}
+	if governedCtx.Err() != nil {
+		return b.result, context.Cause(governedCtx)
+	}
+	return b.result, stop()
 }
 
 func workerGitHubRateLimitResponse() *http.Response {

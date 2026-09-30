@@ -132,11 +132,12 @@ type doctorOutputReport struct {
 }
 
 type doctorCheckJob struct {
-	Name     string
-	Current  func() string
-	Freeze   func() doctorCheckSnapshot
-	Progress <-chan struct{}
-	Run      func(context.Context) []doctorCheck
+	Name          string
+	TimeoutStatus doctorStatus
+	Current       func() string
+	Freeze        func() doctorCheckSnapshot
+	Progress      <-chan struct{}
+	Run           func(context.Context) []doctorCheck
 }
 
 type doctorCheckSnapshot struct {
@@ -821,11 +822,11 @@ func runDoctorCheckWithTimer(ctx context.Context, job doctorCheckJob, timeout ti
 		case <-timer.C():
 			snapshot := freezeDoctorCheck(job)
 			cancel()
-			return doctorTimedOutChecks(job.Name, snapshot, timeout, context.DeadlineExceeded)
+			return doctorTimedOutChecks(job, snapshot, timeout, context.DeadlineExceeded)
 		case <-ctx.Done():
 			snapshot := freezeDoctorCheck(job)
 			cancel()
-			return doctorTimedOutChecks(job.Name, snapshot, timeout, ctx.Err())
+			return doctorTimedOutChecks(job, snapshot, timeout, ctx.Err())
 		}
 	}
 }
@@ -853,11 +854,15 @@ func freezeDoctorCheck(job doctorCheckJob) doctorCheckSnapshot {
 	return snapshot
 }
 
-func doctorTimedOutChecks(name string, snapshot doctorCheckSnapshot, timeout time.Duration, err error) []doctorCheck {
+func doctorTimedOutChecks(job doctorCheckJob, snapshot doctorCheckSnapshot, timeout time.Duration, err error) []doctorCheck {
+	status, detail := doctorFail, doctorTimeoutDetail(job.Name, snapshot.Current, timeout, err)
+	if job.TimeoutStatus != "" && errors.Is(err, context.DeadlineExceeded) {
+		status, detail = job.TimeoutStatus, "inconclusive: "+detail
+	}
 	return append(snapshot.Checks, doctorCheck{
-		Name:   name,
-		Status: doctorFail,
-		Detail: doctorTimeoutDetail(name, snapshot.Current, timeout, err),
+		Name:   job.Name,
+		Status: status,
+		Detail: detail,
 		Hint:   doctorTimeoutHint(),
 	})
 }
@@ -1187,10 +1192,12 @@ func doctorOptions(opts options) options {
 	return opts
 }
 
+var defaultInspectCaches = toolcache.Inspect
+
 func (d doctorDeps) withDefaults() doctorDeps {
 	defaults := defaultDoctorDeps()
 	if d.inspectCaches == nil {
-		d.inspectCaches = toolcache.Inspect
+		d.inspectCaches = defaultInspectCaches
 	}
 	if d.codexStorage == nil {
 		d.codexStorage = defaults.codexStorage

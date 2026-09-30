@@ -59,6 +59,14 @@ func TestSummarizeVersionReview(t *testing.T) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Actor: tracker.Actor{PrincipalID: "human"}, Decision: "commented"})
 		}, "approved", "success", "reviewed"},
 		{"missing artifact", func(d *tracker.ChangeDetail, _ *time.Time) { d.Checks[0].Evidence[0].Availability = "missing" }, "approved", "missing", "needs_evidence"},
+		{"landed after review", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Change.Landed = &tracker.ChangeLanding{VersionID: "v1", MergeSHA: "abc", BaseRef: "main"}
+		}, "approved", "not_required", "landed"},
+		{"landed without a reviewer", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Change.Landed = &tracker.ChangeLanding{VersionID: "v1", MergeSHA: "abc", BaseRef: "main"}
+			d.Reviews = nil
+			d.Versions[0].ReviewPolicy.RequireReview = false
+		}, "not_required", "not_required", "landed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			detail, now := reviewFixture()

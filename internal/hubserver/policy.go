@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -76,6 +78,69 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 	return c.JSON(http.StatusOK, approval)
 }
 
+// observeProjectPolicy records the descriptor a runner resolved for a native
+// project when it could not run it. Each runner's latest report is kept; the
+// approved policy is untouched until an owner approves one of them.
+func (s *Service) observeProjectPolicy(c echo.Context) error {
+	var descriptor policy.Descriptor
+	if err := decodeAPIJSON(c, &descriptor); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := descriptor.Validate(); err != nil {
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+	}
+	scope, err := s.policyScope(c)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok || credential.ID == "" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	reporter := credential.Runner.RunnerID
+	if reporter == "" {
+		reporter = credential.ID
+	}
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at`,
+		scope, descriptor.ID, string(encoded), reporter, formatHubTime(s.config.now())); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// readObservedPolicies returns the distinct descriptors runners reported for
+// scope and could not run, newest first, leaving out approvedID.
+func readObservedPolicies(ctx context.Context, query nativeQueryer, scope, approvedID string) ([]policy.ObservedPolicy, error) {
+	rows, err := query.QueryContext(ctx, "SELECT descriptor_json, runner_id, observed_at, policy_id FROM project_observed_policies WHERE scope = ? AND policy_id <> ? ORDER BY observed_at DESC, runner_id", scope, approvedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []policy.ObservedPolicy{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var raw, id string
+		var observed policy.ObservedPolicy
+		if err := rows.Scan(&raw, &observed.RunnerID, &observed.ObservedAt, &id); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if err := json.Unmarshal([]byte(raw), &observed.Policy); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		result = append(result, observed)
+	}
+	return result, errors.Join(rows.Err(), rows.Close())
+}
+
 func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	var request struct {
 		ExpectedID string `json:"expected_policy_id"`
@@ -101,6 +166,25 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// executingLeaseCountQuery counts the unexpired leases in a scope that would
+// actually run under the policy being replaced: attempt and claim leases, the
+// ones a model or a command executes beneath.
+//
+// A workspace session lease is deliberately not one of them. Section 18.1 gives
+// a workspace its own lease so the runner's capacity accounting, renewal and
+// expiry sweep apply to it with no second mechanism, and section 18.2 says what
+// runs under it: a person reading files, a diff, a preview, a shell. No policy
+// decides any of that -- there is no model, no gate and no command -- so a
+// workspace holds nothing the approval could invalidate. Counting one was worse
+// than merely strict: a workspace renews its lease for as long as it is open,
+// so an open Files panel blocked every policy change in the project until
+// somebody deleted the workspace, with no wait that ended.
+const executingLeaseCountQuery = `SELECT count(*) FROM lease_policies p
+JOIN leases l ON l.lease_id = p.lease_id
+JOIN issues i ON i.id = l.issue_id
+WHERE p.scope = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)
+ AND ` + notWorkspaceItemClause
+
 func (d *database) approvePolicy(ctx context.Context, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -125,8 +209,7 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 	}
 	if current != change.Policy.ID {
 		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM lease_policies p JOIN leases l ON l.lease_id = p.lease_id
-WHERE p.scope = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)`, scope, formatHubTime(now)).Scan(&active); err != nil {
+		if err := tx.QueryRowContext(ctx, executingLeaseCountQuery, scope, formatHubTime(now)).Scan(&active); err != nil {
 			return result, err
 		}
 		if active != 0 {
@@ -143,11 +226,104 @@ WHERE p.scope = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julian
 	if _, err := tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT (scope) DO UPDATE SET policy_id = excluded.policy_id", scope, change.Policy.ID); err != nil {
 		return result, err
 	}
+	if err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy); err != nil {
+		return result, err
+	}
 	result, err = readProjectPolicy(ctx, tx, scope)
 	if err != nil {
 		return result, err
 	}
 	return result, tx.Commit()
+}
+
+// defaultChangeReviewPolicy is the review expectation a native project starts
+// with: no CI check is pinned, and a person reviews each version only when
+// the repository gate asks for one. Under any other gate a published version
+// is already reviewed, so the runner lands it without waiting for anybody.
+// It is what approving the repository policy means for a project nobody
+// configured further.
+func defaultChangeReviewPolicy(descriptor policy.Descriptor) tracker.ChangeReviewPolicy {
+	rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: descriptor.Gates.Kind == "human_review", RequiredChecks: []tracker.ChangeCheckSpec{}}
+	rules.ID = changerequest.PolicyID(rules)
+	return rules
+}
+
+// followsRepositoryGate reports a review policy that pins no CI check. Its
+// review requirement is not a separate decision: it follows the repository
+// gate, the way the default does, so a descriptor approval may rewrite it.
+func followsRepositoryGate(rules tracker.ChangeReviewPolicy) bool {
+	return rules.ID != "" && len(rules.RequiredChecks) == 0
+}
+
+// followDefaultChangeReviewPolicy keeps a native project's review policy usable
+// across a repository policy approval. A project with no review policy, or
+// one that pins no checks, gets the default under the approved descriptor. A
+// review policy an administrator shaped by pinning checks is never
+// rewritten: it goes stale, and publishing says so until the administrator
+// approves it again against the new descriptor. A descriptor whose gates the
+// default cannot satisfy leaves the project as it is.
+func followDefaultChangeReviewPolicy(ctx context.Context, tx *sql.Tx, scope string, descriptor policy.Descriptor) error {
+	organization, project, ok := strings.Cut(scope, "/")
+	if !ok || strings.HasPrefix(scope, "repository:") {
+		return nil
+	}
+	native := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}
+	current, err := readChangePolicy(ctx, tx, native)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	rules := defaultChangeReviewPolicy(descriptor)
+	if err == nil && (current.ID == rules.ID || !followsRepositoryGate(current)) {
+		return nil
+	}
+	if changerequest.ValidatePolicy(rules, descriptor) != nil {
+		return nil
+	}
+	raw, err := json.Marshal(rules)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO change_review_policies (organization_id, project_id, policy_json) VALUES (?, ?, ?)
+ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.policy_json`, native.organization, native.project, string(raw))
+	return err
+}
+
+// backfillChangeReviewPolicies gives every project with an approved
+// repository policy the review policy approving it now seeds: projects
+// approved before seeding existed had none, so no run could publish a
+// version, and projects seeded while the default required review follow the
+// repository gate like any other default. It is hub migration 40.
+func backfillChangeReviewPolicies(ctx context.Context, tx *sql.Tx) error {
+	scopes, err := approvedProjectScopes(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, scope := range scopes {
+		approval, err := readProjectPolicy(ctx, tx, scope)
+		if err != nil {
+			continue
+		}
+		if err := followDefaultChangeReviewPolicy(ctx, tx, scope, approval.Policy); err != nil {
+			return fmt.Errorf("backfill review policy for %s: %w", scope, err)
+		}
+	}
+	return nil
+}
+
+func approvedProjectScopes(ctx context.Context, tx *sql.Tx) (scopes []string, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT scope FROM project_policies WHERE scope NOT LIKE 'repository:%' ORDER BY scope`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return nil, err
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, rows.Err()
 }
 
 type policyQuerier interface {

@@ -177,6 +177,10 @@ at hand.
 
 ### Get started
 
+[Detent Cloud](https://cloud.detent.build) is the shared hosted product. See
+[Cloud onboarding](docs/cloud-onboarding.md) for sign-in and runner enrollment.
+
+
 - [Quick Start](docs/getting-started.md) — configure a tracker and run Detent.
 - [Project Onboarding](docs/ONBOARDING.md) — agent-guided installation and project setup.
 - [Bootstrap a new machine](docs/bootstrap.md) — install prerequisites, templates, and service files.
@@ -199,8 +203,9 @@ join keys, rollout inspection, and runnable audit queries.
 ### Reference and contribute
 
 - [Native Hub and Cloud architecture RFC](docs/cloud-hub-rfc.md) — proposed native authority, portable execution, and launch contracts; [current Hub API](docs/hub-api.md).
+- [Sprites Cloud runners spike](docs/sprites-cloud-runners-spike.md) — measured viability and cost of running Detent runners on Fly Sprites, and the path to production.
 - [CLI reference](docs/cli.md) — exit codes, JSON errors, logging, and structured output.
-- [Release process](docs/release.md).
+- [Release process](docs/release.md) and [branching](docs/branching.md).
 - [Development](docs/development.md) and [contribution guide](CONTRIBUTING.md).
 - [Comparison](docs/comparison.md), [execution seams](docs/execution-seams.md), and [local models](docs/local-models-ollama.md).
 
@@ -458,7 +463,7 @@ updates to release-binary management. Source builds still print the recommended
 command instead of overwriting the binary.
 
 CI runs the `Installer Smoke` confidence job on Ubuntu and Windows against the
-current GitHub Release assets on pushes to `main` and manual workflow dispatch.
+current GitHub Release assets on pushes to `main` and `develop` and manual workflow dispatch.
 It does not run on pull requests, tag pushes, or the nightly CI schedule. The job runs `install.sh`
 and `install.ps1` in release mode, checks checksum output, confirms the
 requested install directory and installer lock metadata, then runs

@@ -2,10 +2,15 @@ package runnerauth
 
 import (
 	"errors"
+	"fmt"
+	"net"
+	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -14,11 +19,33 @@ import (
 const HeartbeatTimeout = 2 * time.Minute
 
 type Routing struct {
-	DisplayName   string              `json:"display_name"`
-	Tags          []string            `json:"tags"`
-	State         string              `json:"state"`
-	CapacityLimit int                 `json:"capacity_limit"`
-	ProjectIDs    []tracker.ProjectID `json:"project_ids"`
+	DisplayName    string              `json:"display_name"`
+	Tags           []string            `json:"tags"`
+	State          string              `json:"state"`
+	CapacityLimit  int                 `json:"capacity_limit"`
+	ProjectIDs     []tracker.ProjectID `json:"project_ids"`
+	HomeProjectIDs []tracker.ProjectID `json:"home_project_ids"`
+	IsolationTier  string              `json:"isolation_tier"`
+	HostServices   []string            `json:"host_services"`
+	Availability   Availability        `json:"availability"`
+	Spillover      Spillover           `json:"spillover"`
+}
+
+type Availability struct {
+	Timezone     string   `json:"timezone"`
+	Windows      []string `json:"windows"`
+	HardDeadline string   `json:"hard_deadline"`
+}
+
+type Spillover struct {
+	Mode         string `json:"mode"`
+	AfterMinutes int    `json:"after_minutes"`
+}
+
+type RoutingSnapshot struct {
+	RunnerID string  `json:"runner_id"`
+	Revision int64   `json:"revision"`
+	Routing  Routing `json:"routing"`
 }
 
 type RoutingChange struct {
@@ -33,6 +60,9 @@ type HostChange struct {
 }
 
 type Runner struct {
+	Problems         []Problem               `json:"problems"`
+	HomeDrySince     *time.Time              `json:"home_dry_since"`
+	HomeStatus       string                  `json:"home_status"`
 	ProviderCapacity []providercapacity.View `json:"provider_capacity,omitempty"`
 	Binding
 	Routing
@@ -48,6 +78,7 @@ type Runner struct {
 	OS               string                 `json:"os"`
 	Architecture     string                 `json:"architecture"`
 	Health           string                 `json:"health"`
+	ConnectionHealth string                 `json:"connection_health"`
 	LastHeartbeatAt  time.Time              `json:"last_heartbeat_at"`
 	Operations       []string               `json:"operations"`
 	Leases           []RunnerLease          `json:"leases"`
@@ -95,6 +126,28 @@ func (r Routing) Normalized() Routing {
 	}
 	r.ProjectIDs = slices.Clone(r.ProjectIDs)
 	slices.Sort(r.ProjectIDs)
+	r.HomeProjectIDs = slices.Clone(r.HomeProjectIDs)
+	if r.HomeProjectIDs == nil {
+		r.HomeProjectIDs = []tracker.ProjectID{}
+	}
+	slices.Sort(r.HomeProjectIDs)
+	if r.IsolationTier == "" {
+		r.IsolationTier = "sandbox"
+	}
+	r.HostServices = slices.Clone(r.HostServices)
+	if r.HostServices == nil {
+		r.HostServices = []string{}
+	}
+	for i := range r.HostServices {
+		r.HostServices[i] = strings.TrimSpace(r.HostServices[i])
+	}
+	config := (activehours.Config{Timezone: r.Availability.Timezone, Windows: r.Availability.Windows}).Normalize()
+	r.Availability.Timezone = config.Timezone
+	r.Availability.Windows = config.Windows
+	r.Availability.HardDeadline = strings.TrimSpace(r.Availability.HardDeadline)
+	if r.Spillover.Mode == "" {
+		r.Spillover.Mode = "never"
+	}
 	return r
 }
 
@@ -114,6 +167,60 @@ func (r Routing) Validate() error {
 	for i, id := range r.ProjectIDs {
 		if id == "" || slices.Contains(r.ProjectIDs[:i], id) {
 			return errors.New("runner project access must contain unique project IDs")
+		}
+	}
+	for i, id := range r.HomeProjectIDs {
+		if !slices.Contains(r.ProjectIDs, id) || slices.Contains(r.HomeProjectIDs[:i], id) {
+			return errors.New("home projects must be unique authorized project IDs")
+		}
+	}
+	if r.IsolationTier != "sandbox" && r.IsolationTier != "native-trusted" {
+		return errors.New("runner isolation tier must be sandbox or native-trusted")
+	}
+	if len(r.HostServices) > 32 {
+		return errors.New("runner host services are limited to 32")
+	}
+	for _, service := range r.HostServices {
+		if err := validateHostService(service); err != nil {
+			return err
+		}
+	}
+	if len(r.Availability.Windows) > 64 {
+		return errors.New("runner availability is limited to 64 windows")
+	}
+	config := activehours.Config{Timezone: r.Availability.Timezone, Windows: r.Availability.Windows}
+	if problems := config.ValidateNonOverlapping("availability"); len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	if r.Availability.HardDeadline != "" {
+		deadline, err := time.ParseDuration(r.Availability.HardDeadline)
+		if err != nil || deadline <= 0 || config.IsZero() {
+			return errors.New("availability.hard_deadline requires a positive duration and a window")
+		}
+	}
+	if r.Spillover.Mode != "never" && r.Spillover.Mode != "after" || r.Spillover.AfterMinutes < 0 || r.Spillover.Mode == "never" && r.Spillover.AfterMinutes != 0 {
+		return errors.New("spillover must be never or after a nonnegative number of minutes")
+	}
+	return nil
+}
+
+func validateHostService(service string) error {
+	if strings.HasPrefix(service, "tcp:") {
+		host, rawPort, err := net.SplitHostPort(strings.TrimPrefix(service, "tcp:"))
+		port, portErr := strconv.Atoi(rawPort)
+		if err != nil || portErr != nil || host != "127.0.0.1" || port < 1 || port > 65535 {
+			return errors.New("host services require tcp:127.0.0.1:<port>")
+		}
+		return nil
+	}
+	socketPath, ok := strings.CutPrefix(service, "unix:")
+	if !ok || !path.IsAbs(socketPath) || path.Clean(socketPath) != socketPath {
+		return errors.New("host services require an absolute unix socket path")
+	}
+	name := strings.ToLower(path.Base(socketPath))
+	for _, privileged := range []string{"docker", "podman", "containerd", "crio", "buildkit", "libvirt", "kubelet"} {
+		if strings.Contains(name, privileged) {
+			return fmt.Errorf("host service %q grants host administration", service)
 		}
 	}
 	return nil
@@ -137,7 +244,7 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 	if r.Health == "revoked" || r.Health == "expired" {
 		add("runner_"+r.Health, "Runner credential is "+r.Health)
 	}
-	if !activeLease && r.Health == "offline" {
+	if !activeLease && (r.Health == "offline" || r.ConnectionHealth == "offline") {
 		add("runner_offline", "Runner heartbeat is stale; work stays queued for this target")
 	}
 	if err := requirements.Match(r.RunnerID, string(r.MachineID), r.Tags); err != nil {
@@ -158,4 +265,73 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 		}
 	}
 	return result
+}
+
+func (r Runner) SpilloverEligible(now time.Time) bool {
+	return len(r.HomeProjectIDs) > 0 && r.HomeDrySince != nil && r.Spillover.Mode == "after" && now.Sub(*r.HomeDrySince).Minutes() >= float64(r.Spillover.AfterMinutes)
+}
+
+func (r Runner) HomeWorkStatus(now time.Time) string {
+	if len(r.HomeProjectIDs) == 0 {
+		return ""
+	}
+	if r.SpilloverEligible(now) {
+		return "Spilled over"
+	}
+	if r.HomeDrySince == nil {
+		return "Preferring home work"
+	}
+	minutes := max(0, int(now.Sub(*r.HomeDrySince).Minutes()))
+	return fmt.Sprintf("Waiting for home work (%dm)", minutes)
+}
+
+func (a Availability) Evaluate(now time.Time) (activehours.Status, error) {
+	return activehours.Evaluate(activehours.Config{Timezone: a.Timezone, Windows: a.Windows}, now, time.Time{})
+}
+
+func (a Availability) Deadline(started time.Time) (time.Time, error) {
+	if a.HardDeadline == "" {
+		return time.Time{}, nil
+	}
+	delay, err := time.ParseDuration(a.HardDeadline)
+	if err != nil || delay <= 0 {
+		return time.Time{}, errors.New("availability hard deadline must be a positive duration")
+	}
+	status, err := a.Evaluate(started)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if status.NextClose.IsZero() {
+		return time.Time{}, nil
+	}
+	if !status.Open {
+		cursor := started.AddDate(0, 0, -8)
+		var closeTime time.Time
+		for cursor.Before(started) {
+			previous, err := a.Evaluate(cursor)
+			if err != nil {
+				return time.Time{}, err
+			}
+			if previous.NextClose.IsZero() || previous.NextClose.After(started) {
+				break
+			}
+			closeTime = previous.NextClose
+			cursor = closeTime
+		}
+		if closeTime.IsZero() {
+			return time.Time{}, nil
+		}
+		return closeTime.Add(delay), nil
+	}
+	return status.NextClose.Add(delay), nil
+}
+
+func (r Runner) Status(now time.Time) string {
+	if r.Health == "online" {
+		status, err := r.Availability.Evaluate(now)
+		if err == nil && !status.Open {
+			return "outside_hours"
+		}
+	}
+	return r.Health
 }

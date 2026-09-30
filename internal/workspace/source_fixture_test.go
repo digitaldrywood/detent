@@ -21,6 +21,7 @@ var (
 )
 
 func runWorkspaceTests(m *testing.M) int {
+	stubReapProcessScanner()
 	var err error
 	sourceRepoSeedDir, err = os.MkdirTemp("", "workspace-source-seed-")
 	if err != nil {

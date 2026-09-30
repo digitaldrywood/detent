@@ -1,6 +1,6 @@
 # Hosted subscription billing
 
-The shared product at `https://hub.detent.build` bills organizations only for use
+The shared product at `https://cloud.detent.build` bills organizations only for use
 of the operator's hosted service. Self-hosted Detent is free with any supported
 authentication provider, including WorkOS/custom; auth selection never enables
 Detent billing, a subscription check or Cloud networking.
@@ -14,11 +14,35 @@ design requires local and self-hosted Hubs to reject hosted billing configuratio
 self-hosting without `--hosted-config` already runs independently; separating that
 flag's WorkOS/policy coupling is follow-up work, not a shipped auth-mode switch.
 
+## Capacity prices in Stripe test mode
+
+The default catalog offers Free ($0), Starter ($49), Growth ($149), and Scale
+($399) per organization per month. Enterprise remains custom. Free has no
+sponsored AI, including Luna general chat; paid subscriptions cover hosting and
+include no model-provider usage or bundled allowance.
+
+With the default catalog, retain approved price IDs in the existing `prices`
+mapping and use `{id: starter, version: 1}`, `{id: growth, version: 1}`, and
+`{id: scale, version: 1}` for new test-mode prices. Use one fixed USD monthly
+licensed price with quantity one per organization. Configure only verified test
+prices for $49/$149/$399. IDs are operator supplied; Detent does not create or
+modify Stripe products or prices. This change performs no live-mode operations.
+The existing $49 test price keeps its original plan/version mapping and paid
+access deadline; retain its catalog record and mapping alongside new prices.
+Do not repoint it to Starter or replace its subscription to migrate capacity.
+Audited base assignments and scoped complimentary grants preserve legacy access.
+
+The billing/plan screens show price, project and unarchived-issue consumption,
+remaining capacity, contextual over-limit state, and owner upgrade/portal actions.
+Changing plans through the portal reuses authoritative reconciliation and existing
+grace rules. Downgrades preserve data and in-flight completion. Archived issues
+remain readable and exportable.
+
 ## Supported test-pilot configuration
 
-Add the following to the hosted identity YAML, alongside explicit
+Add the following to the hosted identity YAML, alongside the default or explicit
 [versioned entitlement plans](hosted-allowances.md). The referenced paid plan
-must already appear in `entitlements.plans` and must differ from its base plan.
+must appear in the selected catalog and must differ from its base plan.
 
 ```yaml
 billing:
@@ -45,9 +69,9 @@ These rules prevent changing credentials or configuration from reassigning
 customer billing records between organizations.
 
 Secret values are read only from the named environment variables. The adapter
-requires an `sk_test_` or `rk_test_` key and a `whsec_` signing secret. It pins
+requires a key matching `mode` (default test: `sk_test_` or `rk_test_`) and a `whsec_` signing secret. It pins
 Stripe API version `2025-06-30.basil` and validates explicit test-mode responses.
-There is no live-mode configuration switch in this delivery. No prices, taxes,
+Live mode requires an explicit `mode: live` (see [shared-site billing configuration](#shared-site-billing-configuration)). No prices, taxes,
 live charges, or public signup are created or enabled by this change. Launching
 live billing requires a separate approved operator/product change.
 
@@ -176,6 +200,92 @@ runner, provider-budget, or permission controls. Omitting billing configuration
 stops billing activity; previously verified local access still expires at its
 stored deadline rather than being extended indefinitely.
 
+## Shared-site billing configuration
+
+Implemented for the shared entry (`detent cloud serve`) and the tenants it
+provisions. Billing stays optional and separate from authentication: a
+self-hosted Hub, with any auth provider including WorkOS, has no `billing` block
+and never contacts Stripe.
+
+Entry configuration (the shared webhook router):
+
+```yaml
+billing:
+  mode: test                      # test (default) or live; never inferred from a key
+  account_id: acct_example
+  api_key_env: DETENT_STRIPE_TEST_KEY            # default DETENT_STRIPE_<MODE>_KEY
+  webhook_secret_env: DETENT_STRIPE_TEST_WEBHOOK_SECRET  # default DETENT_STRIPE_<MODE>_WEBHOOK_SECRET
+allocation:
+  billing:                        # copied into every provisioned tenant
+    mode: test
+    account_id: acct_example
+    portal_configuration_id: bpc_example
+    api_key_env: DETENT_STRIPE_TEST_KEY
+    webhook_secret_env: DETENT_STRIPE_TEST_WEBHOOK_SECRET
+    grace_seconds: 86400
+    reconcile_seconds: 120
+    prices:
+      - price_id: price_example
+        label: Team
+        plan: {id: team, version: 1}
+```
+
+The key must match the mode (`sk_test_`/`rk_test_` or `sk_live_`/`rk_live_`) and
+every Stripe object and event must carry the matching `livemode`; otherwise startup
+or the request fails. The tenant billing block must use the entry's mode and
+account and must not name a `customer_id`. Secrets are read only from the named
+environment variables of the entry process, which passes them to its tenant
+processes; they never appear in generated tenant YAML. A legacy reserved tenant
+may keep a static `customer_id`, now bound together with its mode.
+
+Customer lifecycle: free signup creates no Stripe customer. An owner's first
+Checkout (not a support session) records a customer intent keyed by account, mode
+and organization, then creates the customer with the stable idempotency key
+`detent-customer-ACCOUNT-MODE-ORG` and `metadata.detent_organization_id`. The customer
+also carries `metadata.detent_creation_key` (that same key). Before creating, the
+adapter searches for a customer carrying the organization and adopts it only when
+its creation key matches, so an uncertain earlier response is recovered instead of
+duplicated and a mislabeled customer is never adopted.
+Two matching customers stop billing for that organization (`conflict`) until an
+operator repairs it; no Checkout is created. The tenant persists the binding
+(account, customer, mode). Switching a tenant from `test` to `live` moves its test
+binding into `hosted_billing_retired` (kept for audit, never used again) and the
+first live purchase creates a new live customer; switching `live` back to `test`
+is refused.
+
+Register one webhook endpoint per mode in the Stripe dashboard:
+`https://cloud.detent.build/webhooks/stripe/test` (and, only after live activation,
+`https://cloud.detent.build/webhooks/stripe/live`). Send the subscription, invoice,
+checkout session, charge refund/dispute and customer events. The entry verifies
+the signature with the mode's secret and the event's `livemode` before anything
+else, stores the event ID, type and customer in its registry inbox, then routes it
+through a durable customer-to-organization mapping. An unmapped customer is mapped
+only when Stripe's customer metadata names a ready organization and that tenant
+confirms the same account, mode and customer as its own binding; anything else is
+quarantined without granting access. The tenant records the event and its
+reconciliation worker reads the authoritative subscription from Stripe, so
+duplicate or reordered events are harmless. A tenant outage leaves the event
+pending; the entry retries it (twenty attempts) before quarantining. Only the
+configured mode's endpoint answers; the other returns 404.
+
+Owners cannot delete an organization while a Checkout session is still open or
+its freshly reconciled subscription is active, trialing, in grace or
+payment-failed, or its paid access has not ended; they cancel through the portal
+first.
+
+Live activation (operator-only, outside this change): create live products,
+prices and portal configuration; set up tax and business settings; register the
+live webhook; put `sk_live_`/`whsec_` values in the entry's secret environment;
+switch the entry and tenant `mode` to `live` in a new configuration revision
+with the live account and price mappings. Existing test bindings stay test-only and
+new live customers are created on the next paid action. Rollback: set
+`checkout_disabled: true` in `allocation.billing` (and legacy tenant billing
+blocks) so new Checkout stops, while the price mappings, live binding, portal,
+webhook and reconciliation keep running until subscriptions are cancelled or
+expire. Removing a price instead would end paid access at reconciliation. Never
+switch a live deployment back to `test` to roll back. No prices or
+charges are created by Detent.
+
 ## Shared-site customer and billing contract
 
 The following design is for [#2343](https://github.com/digitaldrywood/detent/issues/2343),
@@ -226,7 +336,7 @@ startup; neither auth choice nor a key prefix silently chooses a deployment mode
 | --- | --- | --- |
 | API key environment reference | `DETENT_STRIPE_TEST_KEY` (`sk_test_` / `rk_test_`) | `DETENT_STRIPE_LIVE_KEY` (`sk_live_` / `rk_live_`) |
 | Webhook secret environment reference | `DETENT_STRIPE_TEST_WEBHOOK_SECRET` | `DETENT_STRIPE_LIVE_WEBHOOK_SECRET` |
-| Shared endpoint | `https://hub.detent.build/webhooks/stripe/test` | `https://hub.detent.build/webhooks/stripe/live` |
+| Shared endpoint | `https://cloud.detent.build/webhooks/stripe/test` | `https://cloud.detent.build/webhooks/stripe/live` |
 | Object/event requirement | Verified account, mapped customer/price, `livemode=false` | Verified account, separate mapped customer/price, `livemode=true` |
 
 Both secrets use `whsec_`; the prefix cannot establish mode. Verify the signature
@@ -283,8 +393,8 @@ delivery, transaction rollback, restart recovery, grace boundaries, renewals,
 refunds/disputes, grant preservation, safe lease completion, local-only dispatch,
 configuration immutability, and browser-visible billing states.
 
-Run `go test -race ./internal/billing ./internal/hubserver ./internal/cli`,
-`make generate`, and the repository's `make check` gate before shipping.
+Run focused `go test` and `go vet` for touched packages and `make generate`.
+Follow the operator-selected local gate for shipping.
 Browser verification uses isolated test instances on ephemeral ports.
 
 Stripe references: [customer portal](https://docs.stripe.com/customer-management),

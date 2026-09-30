@@ -1,6 +1,6 @@
 # Project onboarding
 
-The shared product journey starts at `https://hub.detent.build`: sign in, create
+The shared product journey starts at `https://cloud.detent.build`: sign in, create
 or join an organization, then open a project explicitly shared with you. The
 organization chooser, creation/provisioning state, scoped Work/project navigation
 and billing reuse the existing Templ/HTMX shell. There is no forced tenant-domain
@@ -16,7 +16,54 @@ same name and creator's write grant resumes that project. Return to its scoped
 page to resume setup; infrastructure errors do not require another organization
 or host identity.
 
+A new hosted project starts with the workflow `Todo` → `In Progress` →
+`Merging` → `Done`, with `Human Review` beside it. `Todo`, `In Progress` and
+`Merging` dispatch work; `Human Review` neither dispatches nor ends it. By
+default nobody has to review a run: the project's review policy follows its
+repository gate and asks for a person only under a `human_review` gate. A run
+that committed a change publishes a version the policy already accepts, and the
+runner's orchestrator moves it straight to `Merging`, where the runner that
+holds the project lands the head on the base branch with plain git and the Hub
+finishes the issue in `Done`. A run that committed nothing moves to `Done`.
+
+`Human Review` is where a Change Request waits for a person: in a project whose
+repository gate is `human_review` (opt in by setting that gate in the project's
+`detent.yaml` and approving the policy), and when a landing was refused, for
+example because the base branch requires pull requests. A person approves the
+change in the client, which moves it to `Merging`, or requests changes, which
+sends it back to `In Progress`. `Human Review` is the default
+`auto_promote.source_state`.
+
+Hub migrations 36, 38 and 39 move projects whose workflow is exactly an earlier
+template onto this one. A customized workflow is left unchanged; it needs a
+lane matching the runner's `auto_promote.source_state` that `In Progress` can
+move to, or a completed run's Change Request has no review lane and its
+completion waits, and it needs a dispatchable `Merging` lane reachable from
+`In Progress` and from the review lane, or accepted changes stay in review for a
+person to land by hand. Hub migration 40 gives every project with an approved
+repository policy the default review policy: projects approved before the Hub
+seeded one could not publish versions, and projects seeded while the default
+required review now follow their repository gate.
+
+The hosted hostname migration is tracked in the [Cloud domain runbook](cloud-domain-migration.md).
+Its provisioning results and pending browser cutover are recorded there.
+
 ## Organization provisioning and recovery
+
+Implemented by `detent cloud serve` when its configuration has an `allocation`
+block (see [shared entry](examples/hub/README.md#self-service-provisioning)). Without
+that block the shared entry offers no creation and routes only registered tenants.
+The entry keeps each intent in its registry keyed by the verified subject and a
+per-form creation key, and advances it through the checkpoints below with bounded
+retries (`retry_limit`, exponential backoff up to five minutes). WorkOS creation is
+recovered by the organization's external ID, owner membership is looked up before it
+is created, the tenant database is initialized by the tenant process itself, and
+the tenant accepts the owner only after the provider reports that exact subject as
+an active owner. A restarted entry resumes pending intents and relaunches ready
+tenants. The shared web client screens for these states follow the
+web/conversation client; the entry currently serves minimal pages in the existing
+shell (`/organizations/new`, `/organizations/ORG/provisioning`,
+`/organizations/ORG/delete`) and JSON at `/api/cloud/organizations/ORG/provisioning`.
 
 A verified signed-in identity submits `POST /organizations` with a session-bound
 CSRF token and stable creation idempotency key. Persist a fingerprint of the
@@ -61,7 +108,7 @@ host. Inspect existing files before using `detent onboarding draft-answers`,
 output options. Review generated files before applying them. Cloud neither stores
 workflow source nor writes repository files.
 
-For the shared-site target, use `client.hub_url: https://hub.detent.build`
+For the shared-site target, use `client.hub_url: https://cloud.detent.build`
 and the selected immutable organization ID. Configure `client.organization_id` and
 `client.native_projects` mapping in the instance configuration. The project's
 page shows its native ID. Run `detent doctor` against that configuration; resolve
@@ -75,26 +122,52 @@ accepts validated, bounded policy metadata, including source revision and digest
 never arbitrary workflow fields. An organization owner/admin with project write
 access approves it explicitly. Approval retains the existing compare-and-swap
 and active-lease guards. Edit gate, review, auto-promotion, merge and runner
-requirements in the repository, then inspect and approve the new descriptor.
+requirements in the repository, then approve the new descriptor. A running
+runner reports the policy it resolved: Settings, Projects, then the project's
+Settings shows "A runner is waiting for a new policy" with an "Approve reported
+policy" button, so pasting the inspect output is only needed before any runner
+has started.
+
+A native project (`tracker.kind: hub_native`) makes no GitHub REST or GraphQL
+calls by default. The runner does not give the agent the instance GitHub
+credential, open or look up pull requests, or ask the agent for Workpad comments;
+it opens the native Change Request from the attempt's commits after a successful
+run, and the local gate is the CI. Git transport (clone, fetch) still works. The
+agent prompt ends with a native completion contract that overrides GitHub steps
+in `WORKFLOW.md`. `detent doctor` and `detent hub policy inspect` warn when the
+repository `WORKFLOW.md` still describes GitHub steps; remove them from a
+native project's workflow. Setting `worker.github_token` explicitly in the
+project is the only way to give its workers GitHub access.
 
 ## Customer host enrollment
 
-On the selected host, run `detent hub runner init --hub-url HUB_URL`.
-For shared hosting, `HUB_URL` is `https://hub.detent.build`; self-hosting uses the
-customer endpoint. The selected organization is explicit in enrollment and client
-configuration, not inferred from hostname. Keep its
-private identity file outside repositories. Use the IDs printed on that host in
-the enrollment form, which grants only the selected project. The existing Hub
-runner administration contract requires runner-management grants for every
-organization project; an administrator grants these separately in Organization.
-The short-lived token is displayed only in the response, not persisted as setup
-progress. Set `DETENT_RUNNER_ENROLLMENT_TOKEN` locally and run
-`detent hub runner enroll --organization ORGANIZATION_ID --display-name NAME`.
+In the organization's runner settings, choose Enroll a runner, give the runner
+a name, pick its projects, and copy the one command the dialog shows. Run it on
+the host:
 
-Retry with the same identity file. Init and enrollment reuse its generated
-identity; a display name never transfers host ownership. Do not copy an enrolled
-identity file to another machine. Use the existing `--host-identity-file` protocol
-for multiple distinct runners on one already enrolled host.
+```sh
+detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID \
+  --token TOKEN --name "Build host" --service
+```
+
+The command generates the host's identity locally, redeems the one-time token,
+writes `~/.config/detent-runner/global.yaml` and `identity.json`, and installs
+the `detent.runner` background service. Clone each project's repository into
+the directory it prints (`~/detent-runner/PROJECT` by default) first, or run the
+`detent start --config ... --yes` command it prints after cloning. Nobody copies
+a runner or machine ID by hand. See `docs/hub-api.md` "Register a runner with
+one command" for what each step writes.
+
+Enrolling needs runner management on every organization project. An owner or
+administrator who creates a project receives it automatically; grants for other
+members are set in Organization.
+
+Retry `register` with the same configuration directory: it reuses the identity
+it generated, never creates a second runner, and never rewrites an existing
+`global.yaml`. Do not copy an enrolled identity file to another machine. The
+older `detent hub runner init` and `enroll` commands, and the
+`--host-identity-file` protocol for several runners on one host, remain for
+scripted setups.
 
 The page lists only runners authorized for this project. Names, host IDs, tags,
 health and exclusion reasons come from the existing routing evaluator. Tag edits
@@ -157,12 +230,12 @@ configured portable artifact service rather than overloading local/customer.
 
 This is a test specification for #2341/#2342/#2343 and the expanded #2199 evidence,
 not a claim that current reserved-tenant fixtures pass it. Use synthetic providers,
-ephemeral services and one test hostname representing `hub.detent.build`.
+ephemeral services and one test hostname representing `cloud.detent.build`.
 
 Alice and Bob are unrelated verified identities. Alice creates A, Bob creates B,
 and Casey receives separate invitations to both. A has project PA and B has PB.
 Each tenant owns a separate database and process. Every application URL below is
-on **https://hub.detent.build**; WorkOS/Stripe hosted screens may temporarily leave
+on **https://cloud.detent.build**; WorkOS/Stripe hosted screens may temporarily leave
 the site only for their authenticated provider flow and return to that same host.
 
 | Step | Action and expected evidence |

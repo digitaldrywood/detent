@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -41,15 +40,20 @@ func (s *Service) hostedPlanPage(c echo.Context) error {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Plan information is temporarily unavailable")
 	}
 	data := templates.HostedPageData{Mode: "plan", Title: "Plan and usage", CanManage: true, CanManageOwnership: credential.HostedRole == "owner"}
-	data.PlanName = fmt.Sprintf("%s · version %d", entitlement.EffectiveBase.ID, entitlement.EffectiveBase.Version)
+	data.PlanName = entitlement.Name
+	data.PlanPrice = hostedPlanPrice(entitlement.MonthlyUSDCents)
 	data.PlanSource = "Base plan"
 	if entitlement.Source == "subscription" {
 		data.PlanSource = "Subscription-derived plan"
 	}
 	data.UsageWindow = entitlement.WindowEndsAt.Format(time.RFC3339)
 	for _, name := range hostedAllowanceNames() {
-		used, allowance := entitlement.Usage[name], entitlement.Allowances[name]
-		data.Allowances = append(data.Allowances, templates.HostedAllowanceRow{Label: strings.ReplaceAll(strings.ReplaceAll(name, "api_", "API_"), "_", " "), Consumption: strconv.FormatInt(used, 10), Allowance: strconv.FormatInt(allowance, 10), OverLimit: used > allowance, LimitOnly: slices.Contains([]string{"artifact_bytes", "artifact_upload_bytes", "artifact_retention_seconds"}, name)})
+		allowance, limited := entitlement.Allowances[name]
+		if !limited {
+			continue
+		}
+		used := entitlement.Usage[name]
+		data.Allowances = append(data.Allowances, templates.HostedAllowanceRow{Label: strings.ReplaceAll(strings.ReplaceAll(name, "api_", "API_"), "_", " "), Consumption: strconv.FormatInt(used, 10), Allowance: strconv.FormatInt(allowance, 10), Remaining: strconv.FormatInt(max(allowance-used, 0), 10), OverLimit: used > allowance, LimitOnly: slices.Contains([]string{"artifact_bytes", "artifact_upload_bytes", "artifact_retention_seconds"}, name)})
 	}
 	for _, grant := range entitlement.Grants {
 		status := "Active complimentary access"
@@ -69,4 +73,14 @@ func (s *Service) hostedPlanPage(c echo.Context) error {
 		data.PlanGrants = append(data.PlanGrants, status+" · "+strings.Join(grant.Scope, ", "))
 	}
 	return s.renderHosted(c, http.StatusOK, data)
+}
+
+func hostedPlanPrice(cents *int64) string {
+	if cents == nil {
+		return "Custom or legacy complimentary access"
+	}
+	if *cents == 0 {
+		return "$0 per organization/month · no card required"
+	}
+	return "$" + strconv.FormatFloat(float64(*cents)/100, 'f', -1, 64) + " per organization/month"
 }

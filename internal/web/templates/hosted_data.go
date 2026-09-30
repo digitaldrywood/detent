@@ -3,60 +3,50 @@ package templates
 import (
 	"net/url"
 
-	"github.com/digitaldrywood/detent/internal/onboarding"
-	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/a-h/templ"
 )
 
 type HostedPageData struct {
-	Issue               *tracker.NativeIssue
-	Change              *tracker.ChangeDetail
-	Changes             []tracker.ChangeRequest
-	NextChanges         string
-	BillingEnabled      bool
-	BillingCanPurchase  bool
-	BillingStatus       string
-	BillingMessage      string
-	BillingCheckedAt    string
-	BillingPrices       []HostedBillingPrice
-	BillingAudit        []HostedBillingAudit
-	PlanName            string
-	PlanSource          string
-	UsageWindow         string
-	PlanGrants          []string
-	Allowances          []HostedAllowanceRow
-	Setup               *onboarding.Project
-	SetupAPI            string
-	CanWriteProject     bool
-	ProjectStates       []tracker.NativeState
-	IntegrationSummary  string
-	IntegrationRevision string
-	GitHubRepository    string
-	GitHubIntake        string
-	GitHubProjection    string
-	GitHubPR            bool
-	GitHubAvailable     bool
-	Assets              AssetPaths
-	Title               string
-	Email               string
-	OrganizationName    string
-	OrganizationID      string
-	CSRF                string
-	Error               string
-	Notice              string
-	Mode                string
-	SelectedProject     string
-	CanManage           bool
-	CanCreate           bool
-	CanManageRunners    bool
-	CanManageOwnership  bool
-	CanSupport          bool
-	SupportActor        string
-	SupportReason       string
-	SupportExpiry       string
-	Organizations       []HostedOrganizationChoice
-	Projects            []HostedProjectChoice
-	Members             []HostedMember
-	Issues              []tracker.NativeIssue
+	CreationKey          string
+	Provisioning         HostedProvisioning
+	PendingOrganizations []HostedOrganizationChoice
+	Base                 string
+	SharedOrigin         bool
+	BillingEnabled       bool
+	BillingCanPurchase   bool
+	BillingStatus        string
+	BillingMessage       string
+	ChatUsage            string
+	ChatUsagePeriod      string
+	BillingCheckedAt     string
+	BillingPrices        []HostedBillingPrice
+	BillingAudit         []HostedBillingAudit
+	PlanPrice            string
+	PlanName             string
+	PlanSource           string
+	UsageWindow          string
+	PlanGrants           []string
+	Allowances           []HostedAllowanceRow
+	Assets               AssetPaths
+	Title                string
+	Email                string
+	OrganizationName     string
+	OrganizationID       string
+	CSRF                 string
+	Error                string
+	Notice               string
+	Mode                 string
+	CanManage            bool
+	CanCreate            bool
+	CanManageRunners     bool
+	CanManageOwnership   bool
+	CanSupport           bool
+	SupportActor         string
+	SupportReason        string
+	SupportExpiry        string
+	Organizations        []HostedOrganizationChoice
+	Projects             []HostedProjectChoice
+	Members              []HostedMember
 }
 
 type HostedBillingPrice struct {
@@ -72,8 +62,31 @@ type HostedBillingAudit struct {
 }
 
 type HostedOrganizationChoice struct {
-	ID   string
-	Name string
+	ID     string
+	Name   string
+	Status string
+}
+
+type HostedProvisioning struct {
+	ID        string
+	Name      string
+	State     string
+	Step      string
+	Error     string
+	CanResume bool
+}
+
+func hostedProvisioningLabel(state string) string {
+	switch state {
+	case "requested":
+		return "Waiting to start"
+	case "allocating":
+		return "Setting up"
+	case "failed":
+		return "Needs attention"
+	default:
+		return state
+	}
 }
 
 type HostedProjectChoice struct {
@@ -96,15 +109,42 @@ func hostedPageTitle(data HostedPageData) string {
 		return "Sign in"
 	case "onboarding":
 		return "Your organization"
-	case "project":
-		return "Project work"
 	case "denied":
 		return "Access denied"
+	case "chooser":
+		return "Organizations"
+	case "create":
+		return "Create organization"
+	case "provisioning", "delete":
+		return data.Title
+	case "join":
+		return "Join organization"
 	case "support":
 		return "Support access"
 	default:
 		return "Organization"
 	}
+}
+
+func hostedURL(data HostedPageData, path string) templ.SafeURL {
+	if data.SharedOrigin && data.Base == "" && path == "/organization" {
+		return templ.SafeURL("/organizations")
+	}
+	return templ.SafeURL(data.Base + path)
+}
+
+func hostedSignInURL(data HostedPageData) templ.SafeURL {
+	if data.SharedOrigin && data.Mode != "login" {
+		return templ.SafeURL("/organizations")
+	}
+	return templ.SafeURL("/auth/oidc/start")
+}
+
+func hostedJoinURL(data HostedPageData) templ.SafeURL {
+	if data.SharedOrigin {
+		return templ.SafeURL("/invitations/join")
+	}
+	return templ.SafeURL("/auth/oidc/start?unscoped=1")
 }
 
 func hostedProjectPath(project string) string {
@@ -115,15 +155,12 @@ func hostedMemberPath(member string, action string) string {
 	return "/organization/members/" + url.PathEscape(member) + "/" + action
 }
 
-func hostedIssuePath(project string, issue tracker.NativeWorkItemID) string {
-	return NativeIssuePath(project, issue)
-}
-
 func hostedProjectMode(data HostedPageData) bool {
-	return data.OrganizationID != "" && (data.Mode == "organization" || data.Mode == "project" || data.Mode == "issue" || data.Mode == "change" || data.Mode == "changes")
+	return data.OrganizationID != "" && data.Mode == "organization"
 }
 
 type HostedAllowanceRow struct {
+	Remaining   string
 	LimitOnly   bool
 	Label       string
 	Consumption string

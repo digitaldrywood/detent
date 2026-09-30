@@ -40,7 +40,7 @@ func TestLaunchdPlistIncludesRuntimeSettings(t *testing.T) {
 func TestLaunchdInspectStartAndRestart(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), launchdLabel+".plist")
+	path := filepath.Join(t.TempDir(), LaunchdLabel(DefaultName)+".plist")
 	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestLaunchdInspectStartAndRestart(t *testing.T) {
 				return "", nil
 			}
 			if len(args) > 0 && args[0] == "kill" {
-				if !reflect.DeepEqual(args, []string{"kill", "SIGTERM", "gui/501/" + launchdLabel}) {
+				if !reflect.DeepEqual(args, []string{"kill", "SIGTERM", "gui/501/" + LaunchdLabel(DefaultName)}) {
 					t.Errorf("signal command = %v", args)
 				}
 				stopped = true
@@ -101,7 +101,7 @@ func TestLaunchdInspectStartAndRestart(t *testing.T) {
 	if err := manager.Restart(t.Context()); err != nil {
 		t.Fatalf("Restart() error = %v", err)
 	}
-	wantRestart := []string{"launchctl", "kickstart", "gui/501/" + launchdLabel}
+	wantRestart := []string{"launchctl", "kickstart", "gui/501/" + LaunchdLabel(DefaultName)}
 	if len(commands) == 0 {
 		t.Fatal("commands are empty after restart")
 	}
@@ -113,7 +113,7 @@ func TestLaunchdInspectStartAndRestart(t *testing.T) {
 func TestLaunchdInstallWritesDefinition(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "LaunchAgents", launchdLabel+".plist")
+	path := filepath.Join(t.TempDir(), "LaunchAgents", LaunchdLabel(DefaultName)+".plist")
 	cfg := normalizeConfig(Config{
 		UID:              "501",
 		LaunchdPlistPath: path,
@@ -141,7 +141,7 @@ func TestLaunchdDetectsLoadedJobWithoutDefinitionFile(t *testing.T) {
 		UID:              "501",
 		LaunchdPlistPath: filepath.Join(t.TempDir(), "missing.plist"),
 		RunCommand: func(_ context.Context, name string, args ...string) (string, error) {
-			if name != "launchctl" || !reflect.DeepEqual(args, []string{"print", "gui/501/" + launchdLabel}) {
+			if name != "launchctl" || !reflect.DeepEqual(args, []string{"print", "gui/501/" + LaunchdLabel(DefaultName)}) {
 				t.Fatalf("command = %s %#v", name, args)
 			}
 			return "state = running\npid = 0\n", nil
@@ -174,5 +174,53 @@ func TestLaunchdState(t *testing.T) {
 		if got := launchdState(tt.output); got != tt.want {
 			t.Errorf("launchdState(%q) = %q, want %q", tt.output, got, tt.want)
 		}
+	}
+}
+
+func TestLaunchdBootstrapFailureDiagnosesDisabledLabel(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, disabled string
+		queryErr       bool
+		wantHint       bool
+	}{
+		{name: "runner disabled", disabled: "disabled services = {\n\t\"com.digitaldrywood.detent.runner\" => disabled\n}", wantHint: true},
+		{name: "board disabled only", disabled: "disabled services = {\n\t\"com.digitaldrywood.detent\" => disabled\n}"},
+		{name: "runner enabled", disabled: "disabled services = {\n\t\"com.digitaldrywood.detent.runner\" => enabled\n}"},
+		{name: "query fails", queryErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			bootstrapErr := errors.New("Bootstrap failed: 5: Input/output error")
+			manager := newLaunchdManager(normalizeConfig(Config{
+				Name: "detent.runner", UID: "501", HomeDir: t.TempDir(),
+				RunCommand: func(_ context.Context, name string, args ...string) (string, error) {
+					switch args[0] {
+					case "print":
+						return "Could not find service", errors.New("exit status 113")
+					case "bootstrap":
+						return "", bootstrapErr
+					case "print-disabled":
+						if !reflect.DeepEqual(args, []string{"print-disabled", "gui/501"}) {
+							t.Fatalf("command = %s %v", name, args)
+						}
+						if test.queryErr {
+							return "", errors.New("query failed")
+						}
+						return test.disabled, nil
+					default:
+						t.Fatalf("unexpected command = %s %v", name, args)
+						return "", nil
+					}
+				},
+			}))
+			err := manager.Start(t.Context())
+			if !errors.Is(err, bootstrapErr) {
+				t.Fatalf("err = %v; lost bootstrap failure", err)
+			}
+			if got := strings.Contains(err.Error(), "launchctl enable gui/501/com.digitaldrywood.detent.runner"); got != test.wantHint {
+				t.Fatalf("err = %v, want disabled hint %v", err, test.wantHint)
+			}
+		})
 	}
 }

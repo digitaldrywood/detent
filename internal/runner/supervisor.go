@@ -158,7 +158,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 				slog.Any("panic", recovered),
 			)
 		}
-		if IsTransientOverload(completion.Err) || errors.Is(completion.Err, ErrWorkspaceBranchHeld) || errors.Is(completion.Err, ErrExecutionAuthorityUnavailable) {
+		if IsTransientOverload(completion.Err) || errors.Is(completion.Err, ErrWorkspaceBranchHeld) || errors.Is(completion.Err, ErrExecutionAuthorityUnavailable) || availabilityStopped(request.Execution, completion.Err, s.now()) {
 			completion.Retryable = true
 			completion.RetryAttempt = request.Attempt
 			completion.RetryDelay = s.OverloadRetryDelay()
@@ -256,7 +256,6 @@ func cooperativeStopError(err error) bool {
 		errors.Is(err, ErrSessionDurationExceeded) ||
 		errors.Is(err, ErrSessionMemoryCeilingExceeded) ||
 		errors.Is(err, ErrSessionTurnLimitExceeded) ||
-		errors.Is(err, ErrSessionNoProgress) ||
 		errors.Is(err, ErrWorkerGitHubTokenResolution) ||
 		errors.Is(err, ErrWorkerGitHubBudgetMonitor) ||
 		IsDeliverableConfigurationError(err)

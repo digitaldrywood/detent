@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,42 @@ Body
 		if !strings.Contains(messages, want) {
 			t.Fatalf("errors missing %q:\n%s", want, messages)
 		}
+	}
+}
+
+func TestLoadSkillAliases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		aliases     string
+		wantAliases []string
+		wantDrop    bool
+	}{
+		{name: "absent aliases"},
+		{name: "merged aliases", aliases: "aliases:\n  - old-auth\n  - old-cleanup\n", wantAliases: []string{"old-auth", "old-cleanup"}},
+		{name: "scalar aliases", aliases: "aliases: old-auth\n", wantDrop: true},
+		{name: "empty alias", aliases: "aliases:\n  - ''\n", wantDrop: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workspace := t.TempDir()
+			writeFile(t, filepath.Join(workspace, ".detent", "skills", "skill.md"), "---\nname: current\n"+tt.aliases+"description: Test.\nwhen_to_use: Test.\n---\nBody\n")
+			result, err := Load(workspace, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantDrop {
+				if len(result.Skills) != 0 || len(result.Dropped) != 1 || result.Dropped[0].Reason != DropReasonInvalid {
+					t.Fatalf("Load() = %#v, want one invalid drop", result)
+				}
+				return
+			}
+			if len(result.Skills) != 1 || !slices.Equal(result.Skills[0].Aliases, tt.wantAliases) {
+				t.Fatalf("Load() = %#v, want aliases %v", result, tt.wantAliases)
+			}
+		})
 	}
 }
 

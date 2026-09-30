@@ -157,22 +157,103 @@ func TestFixture(t *testing.T) {
 	}
 }
 
+func TestGatePartitionsSelectDisjointTests(t *testing.T) {
+	t.Parallel()
+	binary := filepath.Join(t.TempDir(), "testgate.exe")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build testgate: %v\n%s", err, output)
+	}
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.26\n",
+		"fixture_test.go": `package fixture
+import "testing"
+func TestAlpha(t *testing.T) { t.Run("TestZulu", func(t *testing.T) {}) }
+func TestBravo(t *testing.T) {}
+func TestCharlie(t *testing.T) {}
+func TestZulu(t *testing.T) {}
+`,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const pattern = "^Test[A-B]"
+	for _, tt := range []struct {
+		name string
+		flag string
+		want []string
+	}{
+		{name: "run", flag: "-run", want: []string{"TestAlpha", "TestAlpha/TestZulu", "TestBravo"}},
+		{name: "skip", flag: "-skip", want: []string{"TestCharlie", "TestZulu"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			outputDir := filepath.Join(dir, "evidence-"+tt.name)
+			command := exec.CommandContext(t.Context(), binary, "-output", outputDir, "-parallel=2", "-timeout=30s", tt.flag, pattern, "./...")
+			command.Dir = dir
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("gate error = %v\n%s", err, output)
+			}
+			data, err := os.ReadFile(filepath.Join(outputDir, "summary.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var summary gateSummary
+			if err := json.Unmarshal(data, &summary); err != nil {
+				t.Fatal(err)
+			}
+			if len(summary.Packages) != 1 {
+				t.Fatalf("summary = %s", data)
+			}
+			var got []string
+			for _, timing := range summary.Packages[0].Tests {
+				got = append(got, timing.Test)
+			}
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("tests = %v, want %v", got, tt.want)
+			}
+			recorded := summary.Run
+			if tt.flag == "-skip" {
+				recorded = summary.Skip
+			}
+			if recorded != pattern {
+				t.Fatalf("summary %s pattern = %q, want %q", tt.flag, recorded, pattern)
+			}
+		})
+	}
+}
+
 func TestGoTestCoverageArgs(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name    string
 		race    bool
 		profile string
+		run     string
+		skip    string
 		want    string
 	}{
-		{"ordinary", false, "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s ./internal/hubserver"},
-		{"race", true, "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race ./internal/hubserver"},
-		{"combined", true, "current.out", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
-		{"coverage", false, "current.out", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
+		{"ordinary", false, "", "", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s ./internal/hubserver"},
+		{"race", true, "", "", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race ./internal/hubserver"},
+		{"combined", true, "current.out", "", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
+		{"coverage", false, "current.out", "", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
+		{"run partition", true, "", "^Test[A-C]", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race -run=^Test[A-C] ./internal/hubserver"},
+		{"skip partition", true, "", "", "^Test[A-C]", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race -skip=^Test[A-C] ./internal/hubserver"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := strings.Join(goTestArgs([]string{"./internal/hubserver"}, 2, 15*time.Minute, tt.race, tt.profile), " ")
+			got := strings.Join(goTestArgs(goTestOptions{
+				packages:     []string{"./internal/hubserver"},
+				parallel:     2,
+				timeout:      15 * time.Minute,
+				race:         tt.race,
+				coverProfile: tt.profile,
+				run:          tt.run,
+				skip:         tt.skip,
+			}), " ")
 			if got != tt.want {
 				t.Fatalf("arguments = %q, want %q", got, tt.want)
 			}

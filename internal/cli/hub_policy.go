@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -23,9 +24,14 @@ func newHubPolicyCommand(lookupEnv func(string) string) *cobra.Command {
 		Use: "inspect", Short: "Print the resolved descriptor without uploading private configuration", Args: NoArgs,
 		Example: "detent hub policy inspect --config /etc/detent/config.yaml --project orders",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, _, descriptor, err := resolveHubPolicy(cmd.Context(), configPath, projectID)
+			_, workflow, descriptor, err := resolveHubPolicy(cmd.Context(), configPath, projectID)
 			if err != nil {
 				return err
+			}
+			if steps := nativeWorkflowGitHubSteps(workflow.Config, workflow.Prompt); len(steps) > 0 {
+				if _, err := fmt.Fprintln(cmd.ErrOrStderr(), "warning: "+nativeWorkflowGitHubStepsWarning(steps)); err != nil {
+					return err
+				}
 			}
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(descriptor)
 		},
@@ -34,7 +40,7 @@ func newHubPolicyCommand(lookupEnv func(string) string) *cobra.Command {
 		Use: "approve", Short: "Approve the resolved repository policy using an administrator credential", Args: NoArgs,
 		Example: "detent hub policy approve --config /etc/detent/config.yaml --project orders",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, repository, descriptor, err := resolveHubPolicy(cmd.Context(), configPath, projectID)
+			cfg, workflow, descriptor, err := resolveHubPolicy(cmd.Context(), configPath, projectID)
 			if err != nil {
 				return err
 			}
@@ -51,7 +57,7 @@ func newHubPolicyCommand(lookupEnv func(string) string) *cobra.Command {
 				}
 				approval, err = native.ApproveProjectPolicy(cmd.Context(), change)
 			} else {
-				approval, err = client.ApproveProjectPolicy(cmd.Context(), repository, change)
+				approval, err = client.ApproveProjectPolicy(cmd.Context(), workflow.Config.Tracker.Repository, change)
 			}
 			if err != nil {
 				return err
@@ -65,14 +71,14 @@ func newHubPolicyCommand(lookupEnv func(string) string) *cobra.Command {
 	return cmd
 }
 
-func resolveHubPolicy(ctx context.Context, configPath, projectID string) (globalconfig.Config, string, policy.Descriptor, error) {
+func resolveHubPolicy(ctx context.Context, configPath, projectID string) (globalconfig.Config, workflowconfig.Workflow, policy.Descriptor, error) {
 	resolution, err := globalconfig.ResolvePath(configPath)
 	if err != nil {
-		return globalconfig.Config{}, "", policy.Descriptor{}, err
+		return globalconfig.Config{}, workflowconfig.Workflow{}, policy.Descriptor{}, err
 	}
 	cfg, err := globalconfig.Read(resolution.Path)
 	if err != nil {
-		return cfg, "", policy.Descriptor{}, err
+		return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, err
 	}
 	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
 		if selected.ID != projectID {
@@ -80,10 +86,11 @@ func resolveHubPolicy(ctx context.Context, configPath, projectID string) (global
 		}
 		workflow, err := project.LoadWorkflowContext(ctx, selected)
 		if err != nil {
-			return cfg, "", policy.Descriptor{}, err
+			return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, err
 		}
+		workflow.Config = project.MapNativeTracker(workflow.Config, cfg.Client.NativeProjects[selected.ID] != "")
 		descriptor, err := project.ResolvePolicy(selected, workflow)
-		return cfg, workflow.Config.Tracker.Repository, descriptor, err
+		return cfg, workflow, descriptor, err
 	}
-	return cfg, "", policy.Descriptor{}, fmt.Errorf("configured project %q was not found", projectID)
+	return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, fmt.Errorf("configured project %q was not found", projectID)
 }

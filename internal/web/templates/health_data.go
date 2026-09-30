@@ -70,6 +70,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = forgeUnavailableHealthDetail(snapshot.ForgeUnavailable)
 		return view
 	}
+	if retries := hostDiskFullRetries(snapshot.Queue); len(retries) > 0 {
+		view.Kind = primitives.KindErr
+		view.Verdict = "Host disk is full."
+		view.Detail = boardCountLabel(len(retries), "workspace preparation is", "workspace preparations are") + " retrying with backoff."
+		return view
+	}
 	if len(snapshot.CIUnavailable) > 0 {
 		view.Kind = primitives.KindErr
 		view.Verdict = "CI is unavailable."
@@ -262,6 +268,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	}
 	rows = append(rows, healthTrackerUnavailableRows(snapshot.TrackerUnavailable)...)
 	rows = append(rows, healthForgeUnavailableRows(snapshot.ForgeUnavailable)...)
+	rows = append(rows, healthHostDiskFullRows(snapshot.Queue)...)
 	rows = append(rows, healthCIUnavailableRows(snapshot.CIUnavailable)...)
 	rows = append(rows, healthLaneSignalRows(snapshot.LaneSignalWarnings)...)
 	rows = append(rows, healthStalenessRows(healthFaultStalenessWarnings(snapshot.StalenessWarnings))...)
@@ -275,6 +282,24 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	}
 	for _, outage := range healthFaultBackendOutages(snapshot.BackendOutages) {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
+	}
+	return rows
+}
+
+func healthHostDiskFullRows(queue []telemetry.Queued) []healthRow {
+	retries := hostDiskFullRetries(queue)
+	rows := make([]healthRow, 0, len(retries))
+	for index, retry := range retries {
+		host := strings.TrimSpace(retry.WorkerHost)
+		if host == "" {
+			host = "Local host"
+		}
+		row := healthRow{ID: "health-host-disk-full-" + boardAlertRowSlug(host, index), Component: "Host disk · " + host,
+			Kind: primitives.KindErr, Status: "Full", Detail: telemetry.WorkspaceDiskExhaustionMessage, Resets: "after disk space is freed and retry succeeds"}
+		if retry.DueAt != nil {
+			row.ResetAt = *retry.DueAt
+		}
+		rows = append(rows, row)
 	}
 	return rows
 }

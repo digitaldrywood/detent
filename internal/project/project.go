@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/routine"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -185,6 +186,7 @@ type Project struct {
 	orchFactory               OrchestratorFactory
 	orchConfig                orchestrator.Config
 	orchDeps                  orchestrator.Dependencies
+	policyScheduling          orchestrator.SchedulingSource
 	runner                    orchestrator.Runner
 	scheduler                 scheduler.Scheduler
 	schedulerFactory          schedulerFactory
@@ -260,6 +262,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	workflow := normalizeWorkflow(cfg.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget)
+	workflow.Config = withMappedNativeTracker(workflow.Config, deps.Scheduling, id)
 	if err := configureProjectPolicy(context.Background(), cfg.Project, &workflow, deps.Scheduling); err != nil {
 		return nil, projectDefinitionError{err: err}
 	}
@@ -507,6 +510,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		orchFactory:               orchestratorFactory,
 		orchConfig:                orchConfig,
 		orchDeps:                  orchDeps,
+		policyScheduling:          deps.Scheduling,
 		runner:                    deps.Runner,
 		scheduler:                 projectScheduler,
 		schedulerFactory:          schedulerFactory,
@@ -543,6 +547,16 @@ func (p *Project) ID() ID {
 		return ""
 	}
 	return p.id
+}
+
+func (p *Project) RunnerProblems() []runnerauth.Problem {
+	p.mu.Lock()
+	value := p.runner
+	p.mu.Unlock()
+	if reporter, ok := value.(interface{ Problems() []runnerauth.Problem }); ok {
+		return reporter.Problems()
+	}
+	return nil
 }
 
 func (p *Project) Config() globalconfig.Project {
@@ -1490,11 +1504,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	issueCoordinator := p.issueCoordinator
 	scheduleConfig := p.scheduleConfig
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
-	scheduling := p.orchDeps.Scheduling
+	scheduling := p.policyScheduling
 	previousPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(projectConfig.GlobalAgents, projectConfig.GlobalBudget)
+	workflow.Config = withMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
 	}
@@ -1739,6 +1754,21 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 		FlakyCheckNames:    append([]string(nil), cfg.Release.FlakyCheckNames...),
 		RequiredCheckNames: append([]string(nil), cfg.Release.RequiredCheckNames...),
 	}, releaseBackend)}, nil
+}
+
+// withMappedNativeTracker makes a project that client.native_projects maps to
+// a Hub project use the Hub instead of the repository's GitHub tracker, so a
+// runner host can reuse a committed detent.yaml without a local override. Any
+// other tracker kind is an explicit local choice and is kept.
+func withMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
+	source, ok := scheduling.(interface {
+		ConnectorForProject(string) (connector.Connector, bool)
+	})
+	if !ok {
+		return workflow
+	}
+	_, mapped := source.ConnectorForProject(string(id))
+	return MapNativeTracker(workflow, mapped)
 }
 
 func projectSchedulingSource(source orchestrator.SchedulingSource, workflow workflowconfig.Config) orchestrator.SchedulingSource {

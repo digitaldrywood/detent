@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -12,13 +13,14 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
-	e.GET("/", s.hostedHome)
+	e.GET("/", s.hostedLanding)
 	e.GET("/login", func(c echo.Context) error {
 		return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "login", Title: "Sign in"})
 	})
@@ -33,6 +35,9 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/organization/billing", s.hostedBillingPage)
 	e.POST("/organization/billing/checkout", s.hostedBillingCheckout)
 	e.POST("/organization/billing/portal", s.hostedBillingPortal)
+	e.GET("/api/v2/organizations/:organization/billing", s.hostedBillingJSON)
+	e.POST("/api/v2/organizations/:organization/billing/checkout", s.hostedBillingCheckout)
+	e.POST("/api/v2/organizations/:organization/billing/portal", s.hostedBillingPortal)
 	e.POST("/webhooks/stripe", s.hostedStripeWebhook)
 	e.GET("/api/cloud/billing/subscription", s.hostedBillingExport)
 	e.POST("/organization/create", s.createHostedOrganization)
@@ -43,19 +48,23 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.POST("/organization/members/:member/role", s.changeHostedRole)
 	e.POST("/organization/grants", s.changeHostedGrant)
 	e.POST("/projects", s.createHostedProject)
-	e.GET("/projects/:project", s.hostedProject)
-	e.GET("/projects/:project/issues/:item", s.hostedWork)
-	e.GET("/projects/:project/issues/:item/changes/:change", s.hostedWork)
-	e.GET("/projects/:project/changes", s.hostedWork)
 	e.GET("/projects/:project/events", s.hostedEvents)
 	e.GET("/api/cloud/metadata", s.hostedMetadata)
 	e.GET("/api/cloud/billing", s.hostedBilling)
+	e.GET("/api/v2/organizations/:organization/entitlements", s.hostedPlanReport)
 	e.POST("/api/v2/organizations/:organization/entitlements", s.updateHostedPlan)
 	e.POST("/api/v2/organizations/:organization/artifact-allowances/:service", s.hostedArtifactAllowances)
+	s.registerHostedUsageRoutes(e)
+	s.registerHostedOrganizationRoutes(e)
+	s.registerAppRoutes(e)
 }
 
 func (s *Service) renderHosted(c echo.Context, status int, data templates.HostedPageData) error {
 	data.OrganizationID = s.config.Hosted.OrganizationID
+	data.Base, data.SharedOrigin = s.hostedBase(), s.hostedShared()
+	if data.SharedOrigin {
+		data.CanSupport = false
+	}
 	data.Assets.Favicon = "/static/img/detent-mark.svg"
 	if data.OrganizationName == "" {
 		data.OrganizationName = data.OrganizationID
@@ -67,22 +76,47 @@ func (s *Service) renderHosted(c echo.Context, status int, data templates.Hosted
 			data.SupportExpiry = session.ExpiresAt.UTC().Format(time.RFC3339)
 		}
 	}
-	if cookie, err := c.Cookie(hostedCookie); err == nil {
-		data.CSRF = hostedCSRF(cookie.Value)
-	}
+	data.CSRF = s.hostedPageCSRF(c)
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
 	c.Response().WriteHeader(status)
 	return templates.HostedPage(data).Render(c.Request().Context(), c.Response())
+}
+
+func (s *Service) hostedPageCSRF(c echo.Context) string {
+	if s.hostedShared() {
+		return s.hostedSharedCSRF(c)
+	}
+	if cookie, err := c.Cookie(hostedCookie); err == nil {
+		return hostedCSRF(cookie.Value)
+	}
+	return ""
 }
 
 func (s *Service) hostedError(c echo.Context, status int, message string) error {
 	return s.renderHosted(c, status, templates.HostedPageData{Mode: "denied", Title: "Access unavailable", Error: message})
 }
 
+func (s *Service) hostedDenied(c echo.Context, status int, message string, denial auth.HostedDenial) error {
+	denial.Status = status
+	auth.LogHostedDenial(s.hostedAuthLogger, c.Response(), c.Request(), denial)
+	return s.hostedError(c, status, message)
+}
+
+// hostedLanding serves the root. A member, or a support session acting as
+// one, gets the client application; a session with no organization access
+// still gets the organization page, which carries the chooser, create and
+// join forms and the staff notice.
+func (s *Service) hostedLanding(c echo.Context) error {
+	if _, _, err := s.hostedCredential(c); err == nil {
+		return s.appShell(c)
+	}
+	return s.hostedHome(c)
+}
+
 func (s *Service) hostedHome(c echo.Context) error {
 	session, _, err := s.hostedSession(c)
 	if err != nil {
-		return c.Redirect(http.StatusSeeOther, "/login")
+		return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 	}
 	data := templates.HostedPageData{Mode: "onboarding", Title: "Your organization", Email: session.Email}
 	var members int
@@ -108,7 +142,7 @@ func (s *Service) hostedHome(c echo.Context) error {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization information is temporarily unavailable")
 		}
 	}
-	if session.Identity.SupportActor == "" {
+	if session.Identity.SupportActor == "" && !s.hostedShared() {
 		memberships, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), session.Identity.Subject, "")
 		if err != nil {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization membership is temporarily unavailable")
@@ -166,72 +200,6 @@ func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data 
 		}
 	}
 	return nil
-}
-
-func (s *Service) hostedProject(c echo.Context) error {
-	credential, status, err := s.hostedCredential(c)
-	if err != nil {
-		return s.hostedError(c, status, "This project is unavailable to this account")
-	}
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: credential}
-	if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, false); err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This project is unavailable to this account")
-	}
-	data := templates.HostedPageData{Mode: "project", Title: "Project", SelectedProject: string(scope.project)}
-	if session, ok := c.Get("hosted_session").(auth.Session); ok {
-		data.Email = session.Email
-	}
-	if err := s.hostedPageData(c, credential, &data); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Project information is temporarily unavailable")
-	}
-	setup, err := s.projectOnboarding(c.Request().Context(), scope)
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Project readiness is temporarily unavailable. Retry without recreating the project.")
-	}
-	data.Setup = &setup
-	data.SetupAPI = "/api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project)
-	data.CanWriteProject = s.requireHostedProject(c.Request().Context(), s.database.db, scope, true) == nil
-	data.CanManage = credential.HostedRole == "owner" || credential.HostedRole == "admin"
-	data.CanManageRunners = credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(c.Request().Context(), credential)
-	project, err := readNativeProject(c.Request().Context(), s.database.db, scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	data.Title = project.Name
-	data.ProjectStates = project.States
-	integration, err := readProjectIntegration(c.Request().Context(), s.database.db, scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	data.IntegrationRevision = fmt.Sprint(integration.Revision)
-	data.GitHubRepository, data.GitHubIntake, data.GitHubProjection = integration.Repository, integration.Intake, integration.Projection
-	data.GitHubPR = integration.RepositoryEnabled
-	data.GitHubAvailable = s.config.ReconcileBackend != nil
-	data.IntegrationSummary = fmt.Sprintf("Profile: %s · GitHub intake: %s · projection: %s · repository/PR integration: %t", integration.Profile, integration.Intake, integration.Projection, integration.RepositoryEnabled)
-	rows, err := s.database.db.QueryContext(c.Request().Context(), `SELECT i.native_id,i.number,i.title,COALESCE(w.source_name,'') FROM issues i LEFT JOIN workflow_states w ON w.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? ORDER BY i.number DESC LIMIT 100`, scope.organization, scope.project)
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Project information is temporarily unavailable")
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var issue tracker.NativeIssue
-		if err := rows.Scan(&issue.WorkItemID, &issue.Number, &issue.Title, &issue.State); err != nil {
-			closeErr := rows.Close()
-			return s.nativeAPIError(c, errors.Join(err, closeErr))
-		}
-		issue.OrganizationID, issue.ProjectID = scope.organization, scope.project
-		data.Issues = append(data.Issues, issue)
-	}
-	if err := rows.Close(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET /projects/:project", string(scope.project), http.StatusOK); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return s.renderHosted(c, http.StatusOK, data)
 }
 
 func (s *Service) hostedEvents(c echo.Context) error {
@@ -298,6 +266,7 @@ func (s *Service) hostedMetadata(c echo.Context) error {
 }
 
 type hostedUsageReport struct {
+	CostDrivers hostedCostDrivers `json:"cost_drivers"`
 	Entitlement HostedEntitlement `json:"entitlement"`
 	HostedMetadata
 	PlanID            string `json:"plan_id"`
@@ -307,7 +276,11 @@ type hostedUsageReport struct {
 
 func (s *Service) hostedUsage(ctx context.Context, report HostedMetadata) (hostedUsageReport, error) {
 	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now())
-	return hostedUsageReport{HostedMetadata: report, Entitlement: entitlement, PlanID: entitlement.EffectiveBase.ID, StorageQuotaBytes: entitlement.Allowances["collaboration_bytes"], EventQuota: entitlement.Allowances["ingested_events"]}, err
+	if err != nil {
+		return hostedUsageReport{}, err
+	}
+	drivers, err := s.hostedCostDrivers(ctx, entitlement)
+	return hostedUsageReport{CostDrivers: drivers, HostedMetadata: report, Entitlement: entitlement, PlanID: entitlement.EffectiveBase.ID, StorageQuotaBytes: entitlement.Allowances["collaboration_bytes"], EventQuota: entitlement.Allowances["ingested_events"]}, err
 }
 
 func (s *Service) hostedBilling(c echo.Context) error {
@@ -331,4 +304,71 @@ func (s *Service) hostedBilling(c echo.Context) error {
 
 func hostedFormTrue(c echo.Context, key string) bool {
 	return strings.EqualFold(c.FormValue(key), "true")
+}
+
+type hostedCostDrivers struct {
+	ActiveIssues          int64            `json:"active_issues"`
+	ArchivedIssues        int64            `json:"archived_issues"`
+	DatabaseBytes         *int64           `json:"database_bytes"`
+	WALBytes              *int64           `json:"wal_bytes"`
+	Requests              *int64           `json:"requests"`
+	RequestBytes          *int64           `json:"request_bytes"`
+	ResponseBytes         *int64           `json:"response_bytes"`
+	ArtifactRetainedBytes *int64           `json:"artifact_retained_bytes"`
+	ArtifactReservedBytes *int64           `json:"artifact_reserved_bytes"`
+	RelayBytes            *int64           `json:"relay_bytes"`
+	WindowEndsAt          time.Time        `json:"window_ends_at"`
+	OperatorAI            chatUsageSummary `json:"operator_ai"`
+	OperatorAICostUSD     *float64         `json:"operator_ai_cost_usd"`
+}
+
+func (s *Service) hostedCostDrivers(ctx context.Context, entitlement HostedEntitlement) (hostedCostDrivers, error) {
+	d := s.database
+	result := hostedCostDrivers{WindowEndsAt: entitlement.WindowEndsAt}
+	if err := d.db.QueryRowContext(ctx, `SELECT coalesce(sum(CASE WHEN i.archived=0 THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN i.archived=1 THEN 1 ELSE 0 END),0) FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.organization_id=? AND p.profile='native'`, d.hostedOrganization).Scan(&result.ActiveIssues, &result.ArchivedIssues); err != nil {
+		return result, err
+	}
+	for _, file := range []struct {
+		suffix string
+		value  **int64
+	}{{"", &result.DatabaseBytes}, {"-wal", &result.WALBytes}} {
+		info, err := os.Stat(d.path + file.suffix)
+		if err == nil {
+			bytes := info.Size()
+			*file.value = &bytes
+		} else if file.suffix == "-wal" && errors.Is(err, os.ErrNotExist) {
+			zero := int64(0)
+			*file.value = &zero
+		}
+	}
+	if requests, known := entitlement.Usage["http_requests"]; known {
+		result.Requests = &requests
+		response := entitlement.Usage["http_response_bytes"]
+		result.ResponseBytes = &response
+		if entitlement.Usage["http_request_bytes_known"] == requests {
+			bytes := entitlement.Usage["http_request_bytes"]
+			result.RequestBytes = &bytes
+		}
+	}
+	var artifacts int64
+	if err := d.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_artifact_usage WHERE observed_at > 0").Scan(&artifacts); err != nil {
+		return result, err
+	}
+	if artifacts > 0 {
+		retained, reserved := entitlement.Usage["artifact_retained_bytes"], entitlement.Usage["artifact_reserved_bytes"]
+		result.ArtifactRetainedBytes, result.ArtifactReservedBytes = &retained, &reserved
+	}
+	if relay, known := entitlement.Usage["relay_bytes"]; known {
+		result.RelayBytes = &relay
+	}
+	var err error
+	result.OperatorAI, err = d.chatUsageSummary(ctx, d.hostedOrganization, chatBillingWindow(s.config.now(), billing.Snapshot{}), nil)
+	if err != nil {
+		return result, err
+	}
+	if result.OperatorAI.UnpricedTurns == 0 {
+		cost := result.OperatorAI.CostUSD
+		result.OperatorAICostUSD = &cost
+	}
+	return result, nil
 }

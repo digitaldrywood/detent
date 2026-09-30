@@ -262,7 +262,13 @@ func TestManagerFromProcessEnvironment(t *testing.T) {
 		{
 			name: "legacy launchd definition",
 			goos: "darwin",
-			env:  map[string]string{launchdServiceEnvironment: launchdLabel},
+			env:  map[string]string{launchdServiceEnvironment: LaunchdLabel(DefaultName)},
+			want: ManagerLaunchd,
+		},
+		{
+			name: "named runner definition",
+			goos: "darwin",
+			env:  map[string]string{launchdServiceEnvironment: LaunchdLabel("detent.runner")},
 			want: ManagerLaunchd,
 		},
 		{
@@ -273,7 +279,7 @@ func TestManagerFromProcessEnvironment(t *testing.T) {
 		{
 			name: "non-macOS process",
 			goos: "linux",
-			env:  map[string]string{launchdServiceEnvironment: launchdLabel},
+			env:  map[string]string{launchdServiceEnvironment: LaunchdLabel(DefaultName)},
 		},
 	}
 	for _, tt := range tests {
@@ -365,7 +371,7 @@ type serviceManagerStub struct {
 }
 
 func (s *serviceManagerStub) Info() ManagerInfo {
-	return ManagerInfo{Name: ManagerSystemd, Scope: "user", Unit: systemdUnitName, DefinitionPath: "/tmp/detent.service"}
+	return ManagerInfo{Name: ManagerSystemd, Scope: "user", Unit: SystemdUnit(DefaultName), DefinitionPath: "/tmp/detent.service"}
 }
 
 func (s *serviceManagerStub) Definition() Definition {
@@ -413,5 +419,36 @@ func TestWriteDefinitionDoesNotOverwrite(t *testing.T) {
 	}
 	if strings.TrimSpace(string(raw)) != "first" {
 		t.Fatalf("contents = %q, want first", raw)
+	}
+}
+
+func TestServiceNamesSelectDistinctDefinitions(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, label, unit, plist, userUnit string
+	}{
+		{name: "", label: "com.digitaldrywood.detent", unit: "detent.service", plist: "com.digitaldrywood.detent.plist", userUnit: "detent.service"},
+		{name: "detent", label: "com.digitaldrywood.detent", unit: "detent.service", plist: "com.digitaldrywood.detent.plist", userUnit: "detent.service"},
+		{name: "detent.runner", label: "com.digitaldrywood.detent.runner", unit: "detent.runner.service", plist: "com.digitaldrywood.detent.runner.plist", userUnit: "detent.runner.service"},
+	} {
+		t.Run(test.label, func(t *testing.T) {
+			t.Parallel()
+			if got := LaunchdLabel(test.name); got != test.label {
+				t.Fatalf("LaunchdLabel(%q) = %q, want %q", test.name, got, test.label)
+			}
+			if got := SystemdUnit(test.name); got != test.unit {
+				t.Fatalf("SystemdUnit(%q) = %q, want %q", test.name, got, test.unit)
+			}
+			home := t.TempDir()
+			cfg := normalizeConfig(Config{Name: test.name, HomeDir: home, BinaryPath: "/usr/local/bin/detent", ConfigPath: "/cfg/global.yaml"})
+			launchd := newLaunchdManager(cfg)
+			if launchd.Info().Unit != test.label || filepath.Base(launchd.Definition().Path) != test.plist || !strings.Contains(launchd.Definition().Content, "<string>"+test.label+"</string>") {
+				t.Fatalf("launchd info = %+v", launchd.Info())
+			}
+			systemd := newSystemdManager(cfg)
+			if systemd.Info().Unit != test.unit || filepath.Base(systemd.userPath) != test.userUnit {
+				t.Fatalf("systemd info = %+v path %s", systemd.Info(), systemd.userPath)
+			}
+		})
 	}
 }

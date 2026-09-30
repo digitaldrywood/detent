@@ -15,10 +15,10 @@
 
 ## Workflow
 
-- Work from a Detent-created worktree branch, never directly on `main`.
+- Work from a Detent-created worktree branch, never directly on `develop` or `main`. Branch from and target `develop`; `main` is production (see [docs/branching.md](docs/branching.md)).
 - Keep generated files and runtime output inside the current worktree.
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
-- Before implementation, confirm dependencies listed in the issue are merged into `origin/main`.
+- Before implementation, confirm dependencies listed in the issue are merged into `origin/develop`.
 - Keep changes scoped to the active issue.
 - Run `make generate` before committing when templates, sqlc queries, or CSS inputs change.
 - Commit only when explicitly requested by the workflow or human, and use conventional commit messages.
@@ -71,6 +71,7 @@ source of incidents.
 
 - Follow the validation rule in [AGENTS.md](AGENTS.md#validation).
 - New or modified Go behavior requires focused table-driven tests using only the standard library.
+- Add a test only when it asserts a behavior no existing test asserts; extend an existing table or fixture before adding a sibling function. No tests for generated code, documentation text, or coverage numbers. Rationale: [docs/test-suite-audit.md](docs/test-suite-audit.md).
 - Generated Go files such as `*_templ.go` and sqlc output do not need hand-written tests.
 
 ### Safety-critical orchestrator validation

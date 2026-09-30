@@ -20,11 +20,19 @@
       "TestConfiguredTerminalRetryAfterStoreRestart",
       "TestConsecutiveRetryCycleCountAcrossServiceRestarts",
       "TestStartupDoesNotReclaimLiveWorkAttempts",
-      "TestHumanQuestionRestartAndConcurrentRequests",
-      "TestHumanQuestionReplyAuthorization",
-      "TestHumanQuestionIndependentRework",
+      "TestINV14DispatchQuestionTool",
+      "TestINV14LegacyQuestionRowDispatch",
+      "TestFirstHumanBlockerCompletionReachesBlocked",
+      "TestWorkpadHumanActionClearanceRecoversBlockedIssue",
       "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
       "TestPreTurnFailuresDrainInstance",
+      "TestClassifyWorkspaceForgeReadFailure",
+      "TestWorkspaceSSHRefusalDoesNotTripProjectBreaker",
+      "TestRecoverDurableWorkspaceGitReadWait",
+      "TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker",
+      "TestWorkspaceBreakerHonorsFailureCooldown",
+      "TestReadyMergeAtWorkerCapacity",
+      "TestCheckedMergeUnderForgeCondition",
       "TestPlanCompletionCoordinationDeferral",
       "TestPlanCompletionPublicationRecovery",
       "TestRecordedBlockerDispatchOwnership",
@@ -63,16 +71,21 @@
       "TestAttemptAllowanceNoteFormat",
       "TestAttemptAllowanceMergeTimeAndRunningOwnership",
       "TestAttemptAllowancePreservesOperatorCompletionLane",
-      "TestTransitionAlreadyMergedCompletion"
+      "TestTransitionAlreadyMergedCompletion",
+      "TestSSHHostLossUsesInstanceRetry",
+      "TestSSHHostLossClearsResumeOnSpillover",
+      "TestSSHQueuedPreferenceAndHostCaps"
     ],
     "./internal/runner": [
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
       "TestWorkerCredentialBlockerError",
       "TestRunnerTriageIsReadOnly",
       "TestINV12WorkerInheritsToolchainEnvironment",
-      "TestINV12BackendToolchainEnvironment"
+      "TestINV12BackendToolchainEnvironment",
+      "TestSSHCallbackDoesNotPublishRemotePID"
     ],
     "./internal/store": [
+      "TestLegacyHumanQuestionReceiptsReadable",
       "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
     ],
     "./internal/release": [
@@ -89,6 +102,8 @@
     "./internal/invariants": [
       "TestRepositorySources",
       "TestRepositoryWorkflow",
+      "TestRepositoryHasNoPullRequestActions",
+      "TestPortabilityStressIsManualOnly",
       "TestSourceViolations",
       "TestWorkflowViolations",
       "TestMutationDocuments",
@@ -101,14 +116,20 @@
     "./internal/cli": [
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
       "TestPrepareWorkerCodexHomeExistingInstructions",
-      "TestDoctorMergeQueueRecordedHistory",
+      "TestDoctorInvariantEvidence",
+      "TestDoctorRespectsProjectCIPolicy",
+      "TestDoctorLocalGateCommitStatusProducer",
       "TestDoctorInvariantAdmission",
       "TestDoctorInvariantAdmissionBatches",
       "TestDoctorInvariantScopeClassification",
       "TestDoctorInvariantAdmissionRepeatedEntries",
       "TestDoctorInvariantAdmissionUnavailableEvidence",
       "TestINV12DoctorNativeCaches",
-      "TestINV12DoctorWorkspaceKinds"
+      "TestINV12DoctorWorkspaceKinds",
+      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns",
+      "TestSSHLocalTargetIntegration",
+      "TestSSHServiceProxyKeepsCentralAuthority",
+      "TestSSHProbeRequiresProvidedScratch"
     ],
     "./internal/connector/github": [
       "TestRefreshBoardFilterCost",
@@ -146,9 +167,16 @@
     "./internal/workpad": [
       "TestMergedCompletionEvidence"
     ],
+    "./internal/web": [
+      "TestOperationsWorkpadHumanAction"
+    ],
     "./internal/web/templates": [
       "TestINV13BoardCardContent",
-      "TestINV13SheetObservations"
+      "TestINV13SheetObservations",
+      "TestBoardCardSignalBudget"
+    ],
+    "./internal/codex": [
+      "TestAppServerMarksOnlyConversationTurns"
     ]
   }
 }

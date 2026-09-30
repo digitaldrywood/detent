@@ -73,6 +73,15 @@ type queuedRecordedBlockerConnector struct {
 	fresh connector.Issue
 }
 
+type queuedCurrentWorkpadConnector struct {
+	*queuedRecordedBlockerConnector
+	comments []connector.IssueComment
+}
+
+func (c *queuedCurrentWorkpadConnector) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
+	return cloneIssueComments(c.comments), nil
+}
+
 func (c *queuedRecordedBlockerConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
 	return []connector.Issue{c.fresh}, nil
 }
@@ -87,7 +96,6 @@ func TestQueuedDispatchRechecksRecordedBlockers(t *testing.T) {
 			issue.DependencySource = connector.BlockedRefSourceNative
 			issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{Type: workpad.PredicatePullRequestState, Identifier: "digitaldrywood/detent#2635", States: []string{"open"}})}}
 			fresh := cloneIssue(issue)
-			fresh.WorkpadSignal = nil
 			blocker := connector.Issue{ID: "2635", Identifier: "digitaldrywood/detent#2635", PullRequest: &connector.PullRequest{State: "merged"}}
 			tracker := &queuedRecordedBlockerConnector{blockerEvidenceTestConnector: &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{hydratedIssues: []connector.Issue{issue}, blockers: []connector.Issue{blocker}}}, fresh: fresh}
 			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
@@ -114,6 +122,59 @@ func TestQueuedDispatchRechecksRecordedBlockers(t *testing.T) {
 			}
 			if !wantRunning && gate.PoolSnapshot().Used != 0 {
 				t.Fatal("blocked grant leaked capacity")
+			}
+		})
+	}
+}
+
+func TestQueuedDispatchUsesCurrentWorkpad(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		current     string
+		wantRunning bool
+	}{
+		{name: "new human hold", current: "blocked", wantRunning: false},
+		{name: "still ready", current: "in_progress", wantRunning: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "project"}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			issue := dispatchTestIssue("workpad", "Todo")
+			issue.Identifier = "digitaldrywood/detent#2470"
+			fresh := cloneIssue(issue)
+			fresh.WorkpadSignal = nil
+			tracker := &queuedCurrentWorkpadConnector{queuedRecordedBlockerConnector: &queuedRecordedBlockerConnector{
+				blockerEvidenceTestConnector: &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{hydratedIssues: []connector.Issue{issue}}},
+				fresh:                        fresh,
+			}}
+			comment := func(status, action string) connector.IssueComment {
+				return connector.IssueComment{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: " + status + "\nblockers: []\nhuman_action: " + action + "\n```"}
+			}
+			tracker.comments = []connector.IssueComment{comment("in_progress", "null")}
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+			held, ok, err := gate.TryAcquire(t.Context(), scheduler.ProjectCandidate{ID: "holder"}, scheduler.SlotRequest{State: "Todo"}, now)
+			if err != nil || !ok {
+				t.Fatalf("hold slot: %t %v", ok, err)
+			}
+			o := Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: gate, globalDispatchReady: make(chan struct{}, 1), globalDispatchPending: make(map[string]pendingGlobalDispatch), supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1)}
+			state := newState(cfg)
+			defer o.releaseRunningSlots(&state)
+			defer o.cancelPendingGlobalDispatches()
+			o.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if len(o.globalDispatchPending) != 1 {
+				t.Fatal("candidate was not queued")
+			}
+			action := "null"
+			if tt.current == "blocked" {
+				action = "needs operator input"
+			}
+			tracker.comments = []connector.IssueComment{comment(tt.current, action)}
+			if err := gate.Release(held); err != nil {
+				t.Fatal(err)
+			}
+			o.dispatchGrantedRequests(t.Context(), &state, now.Add(time.Second))
+			if got := len(state.Running) == 1; got != tt.wantRunning {
+				t.Fatalf("running = %t, want %t", got, tt.wantRunning)
 			}
 		})
 	}

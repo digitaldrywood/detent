@@ -446,6 +446,87 @@ func TestMergingFallbackPushWaitsAfterWorkerReappliesCITriggerWhenHydrationIsGre
 	}
 }
 
+func TestMergingPushedHeadRespectsBranchPolicy(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name           string
+		requiredChecks []string
+		ciStatus       string
+		checkRuns      int
+		statuses       int
+		required       []connector.PullRequestCheck
+		wantMerge      bool
+	}{
+		{name: "explicit native policy without CI", requiredChecks: []string{}, ciStatus: "success", wantMerge: true},
+		{name: "omitted policy", ciStatus: "success"},
+		{name: "configured checks", requiredChecks: []string{"Test"}, ciStatus: "success"},
+		{name: "observed check producer", requiredChecks: []string{}, ciStatus: "success", checkRuns: 1},
+		{name: "observed status producer", requiredChecks: []string{}, ciStatus: "success", statuses: 1},
+		{name: "pending native check", requiredChecks: []string{}, ciStatus: "pending", required: []connector.PullRequestCheck{{Name: "Test", Status: "in_progress"}}},
+		{name: "missing native check", requiredChecks: []string{}, ciStatus: "pending", required: []connector.PullRequestCheck{{Name: "Test", Status: "missing", Conclusion: "missing"}}},
+		{name: "reported failure", requiredChecks: []string{}, ciStatus: "failure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 9, 30, 13, 35, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents:    1,
+				ContinuationRetryDelay: 5 * time.Second,
+				MergeFastPathEnabled:   true,
+				ActiveStates:           []string{"Merging"},
+				ObservedStates:         []string{"Merging"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+					Kind:                 gate.KindCommand,
+					Run:                  "true",
+					RequiredStatusChecks: tc.requiredChecks,
+					AutomatedReview:      gate.AutomatedReviewOff,
+				}},
+			})
+			issue := autoPromoteTickIssue("pushed-head", []string{"bug"}, &connector.PullRequest{
+				Number:                3385,
+				URL:                   "https://github.test/digitaldrywood/detent/pull/3385",
+				State:                 "OPEN",
+				BaseRef:               "develop",
+				MergeableState:        "clean",
+				CIStatus:              tc.ciStatus,
+				HeadSHA:               "new-pushed-head",
+				CheckRunCount:         tc.checkRuns,
+				StatusContextCount:    tc.statuses,
+				RequiredCheckFailures: tc.required,
+			})
+			issue.State = "Merging"
+			issue.Identifier = "digitaldrywood/detent#3382"
+			issue.PRRepository = "digitaldrywood/detent"
+			tracker := &autoPromoteTickMergeConnector{
+				autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+			}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{Issue: cloneIssue(issue), Attempt: 1, StartedAt: now.Add(-time.Minute), Mode: runpkg.RunModeMerge}
+			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID: issue.ID, CompletedAt: now,
+				Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge},
+				Result: runpkg.RunResult{
+					FinalState:            runpkg.FinalStateCompleted,
+					Output:                runpkg.RunOutputMergeFastPathClean,
+					PullRequestHeadPushed: true,
+				},
+			})
+			if got := len(tracker.merges) == 1; got != tc.wantMerge {
+				t.Fatalf("merged = %t, want %t; retries = %+v", got, tc.wantMerge, state.Retry)
+			}
+			_, retrying := state.Retry[issue.ID]
+			if retrying == tc.wantMerge {
+				t.Fatalf("retrying = %t, want %t", retrying, !tc.wantMerge)
+			}
+		})
+	}
+}
+
 func TestMergingFastPathMissingRequiredChecksPrecedeUnknownMergeability(t *testing.T) {
 	t.Parallel()
 

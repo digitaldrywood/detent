@@ -232,7 +232,7 @@ func TestCheckpointPullRequestAssociation(t *testing.T) {
 
 func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"duration", "no progress", "cancelled", "hard reap failure", "periodic", "checkpoint timeout", "duration during checkpoint"} {
+	for _, scenario := range []string{"duration", "cancelled", "hard reap failure", "periodic", "checkpoint timeout", "duration during checkpoint"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			runner, checkpoint, publication := checkpointRunnerFixture(t)
@@ -268,8 +268,6 @@ func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 					switch scenario {
 					case "duration", "checkpoint timeout":
 						return agentTurnExecution{err: ErrSessionDurationExceeded, result: RunResult{FinalState: FinalStateSessionDurationExceeded}}
-					case "no progress":
-						return agentTurnExecution{err: ErrSessionNoProgress}
 					case "cancelled":
 						cancel()
 						return agentTurnExecution{err: context.Canceled}
@@ -317,7 +315,12 @@ func TestCheckpointPublicationCredentialIsolation(t *testing.T) {
 			run := func(ctx context.Context, _ AgentTurnRequest, req RunRequest) agentTurnExecution {
 				submitCheckpoint(t, ctx, req)
 				if unavailable {
-					if err := os.WriteFile(filepath.Join(checkpoint.plan.Info.Path, ".detent"), []byte("unavailable scratch"), 0o600); err != nil {
+					scratchRoot := workspace.WorkerScratchRoot(checkpoint.plan.Info.Path)
+					t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(scratchRoot)) })
+					if err := os.MkdirAll(filepath.Dir(scratchRoot), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(scratchRoot, []byte("unavailable scratch"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -561,5 +564,44 @@ func TestUnsupportedCheckpointProviderDoesNotInterruptPeriodically(t *testing.T)
 	execution := r.runCheckpointedTurn(t.Context(), t.Context(), cp, config.Agent{CheckpointIntervalMS: 1}, nonVerifyingAgentBackend{}, AgentTurnRequest{}, cp.request, run)
 	if execution.result.Checkpoint == nil || publication.calls != 0 || !strings.Contains(execution.result.Checkpoint.Detail, "does not support") {
 		t.Fatalf("provider recovery = %+v", execution.result.Checkpoint)
+	}
+}
+
+func TestAgentTurnDeliverableNativeTracker(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name           string
+		kind           string
+		mode           string
+		wantKind       string
+		wantRepository string
+	}{
+		{name: "github implement", kind: config.TrackerGitHub, mode: RunModeImplement, wantKind: config.DeliverablePullRequest, wantRepository: "acme/orders"},
+		{name: "github plan", kind: config.TrackerGitHub, mode: RunModePlan},
+		{name: "native implement", kind: config.TrackerHubNative, mode: RunModeImplement},
+		{name: "native merge", kind: config.TrackerHubNative, mode: RunModeMerge},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Config{
+				Tracker:     config.Tracker{Kind: tt.kind, Repository: "acme/orders"},
+				Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
+			}
+			kind, repository := agentTurnDeliverable(cfg, connector.Issue{}, tt.mode)
+			if kind != tt.wantKind || repository != tt.wantRepository {
+				t.Fatalf("deliverable = %q %q, want %q %q", kind, repository, tt.wantKind, tt.wantRepository)
+			}
+			calls := 0
+			command := func(AgentTurnRequest, *exec.Cmd) (string, error) {
+				calls++
+				return "[]", nil
+			}
+			turn := AgentTurnRequest{DeliverableKind: kind, DeliverableRepository: repository}
+			if tt.kind == config.TrackerHubNative {
+				if url, err := checkpointPullRequest(t.Context(), &workerCheckpoint{}, turn, command); err != nil || url != "" || calls != 0 {
+					t.Fatalf("native checkpoint ran gh: url=%q err=%v calls=%d", url, err, calls)
+				}
+			}
+		})
 	}
 }

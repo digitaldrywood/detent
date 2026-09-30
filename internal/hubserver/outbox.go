@@ -48,6 +48,10 @@ type WorkflowLabelMutation struct {
 	IssueID        int64
 	Label          string
 	ManagedPrefix  string
+	// Clear removes every label under ManagedPrefix and adds none. It is how
+	// a managed field is emptied — a priority taken off an issue — rather
+	// than moved from one value to another.
+	Clear bool
 }
 
 type WorkpadMutation struct {
@@ -70,6 +74,10 @@ type MergePullRequestMutation struct {
 type WorkflowLabelDesired struct {
 	Label         string `json:"label"`
 	ManagedPrefix string `json:"managed_prefix"`
+	// Clear is set where the managed prefix is to be emptied. It is absent
+	// from every record written before it existed, which decodes to false and
+	// keeps those records meaning what they meant.
+	Clear bool `json:"clear,omitempty"`
 }
 
 type WorkpadDesired struct {
@@ -182,12 +190,13 @@ func (m WorkflowLabelMutation) outboxRecord() (outboxRecord, error) {
 	if prefix == "" {
 		prefix = defaultLabelPrefix
 	}
-	if strings.TrimSpace(m.Label) == "" {
+	if strings.TrimSpace(m.Label) == "" && !m.Clear {
 		return outboxRecord{}, errors.New("workflow label is required")
 	}
 	desired, err := json.Marshal(WorkflowLabelDesired{
 		Label:         strings.TrimSpace(m.Label),
 		ManagedPrefix: prefix,
+		Clear:         m.Clear,
 	})
 	if err != nil {
 		return outboxRecord{}, err

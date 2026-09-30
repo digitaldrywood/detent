@@ -126,7 +126,6 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		RateLimits:         cloneRateLimits(s.RateLimits),
 		TrackerUnavailable: trackerUnavailableSnapshots(s.TrackerUnavailable),
 		ForgeUnavailable:   forgeUnavailableSnapshots(s.ForgeUnavailable),
-		GitHubMonitors:     workerGitHubMonitorSnapshots(s.GitHubMonitors),
 		CIUnavailable:      ciUnavailableSnapshots(s.CIUnavailable),
 		BackendOutages:     backendOutageSnapshots(s.BackendOutages),
 		FailureBreakers:    projectFailureBreakerSnapshots(s),
@@ -247,14 +246,6 @@ func trackerUnavailableSnapshots(condition *TrackerCondition) []telemetry.Tracke
 
 func forgeUnavailableSnapshots(conditions map[string]ForgeCondition) []telemetry.ForgeCondition {
 	result := make([]telemetry.ForgeCondition, 0, len(conditions))
-	for _, key := range sortedKeys(conditions) {
-		result = append(result, conditions[key])
-	}
-	return result
-}
-
-func workerGitHubMonitorSnapshots(conditions map[string]GitHubMonitor) []telemetry.GitHubMonitor {
-	result := make([]telemetry.GitHubMonitor, 0, len(conditions))
 	for _, key := range sortedKeys(conditions) {
 		result = append(result, conditions[key])
 	}
@@ -1296,7 +1287,6 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		pullRequest = &connector.PullRequest{Number: *prNumber}
 	}
 	out := &telemetry.PullRequest{
-		HumanQuestionWorkFingerprint: humanQuestionWorkFingerprint(issue),
 
 		Number:                     pullRequest.Number,
 		URL:                        pullRequest.URL,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -2982,6 +2984,76 @@ func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 	}
 }
 
+func TestValidatorStageTracksHeadBeforeAndDuringReview(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		finalHead   string
+		finalBase   string
+		finalPR     int
+		wantVerdict string
+		probeError  bool
+		degraded    bool
+		workerError bool
+	}{
+		{name: "stable head", finalHead: "B", wantVerdict: gate.ValidatorVerdictPass},
+		{name: "head changes during evaluation", finalHead: "C"},
+		{name: "base changes during evaluation", finalHead: "B", finalBase: "new-base"},
+		{name: "PR changes during evaluation", finalHead: "B", finalPR: 3032},
+		{name: "final head unavailable", finalHead: "B", probeError: true},
+		{name: "final head degraded", finalHead: "B", degraded: true},
+		{name: "workspace infrastructure failure", finalHead: "B", workerError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := autoPromoteTickIssue("issue-head-race", nil, &connector.PullRequest{Number: 3031, HeadSHA: "A", State: "OPEN"})
+			current := cloneIssue(issue)
+			current.PullRequest.HeadSHA = "B"
+			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, hydratedIssues: []connector.Issue{current}}
+			validator := newBlockingAutoPromoteValidatorRunner()
+			if tt.workerError {
+				validator.err = fmt.Errorf("%w: fetch failed", runpkg.ErrValidatorInfrastructure)
+			}
+			cfg := autoPromoteValidatorTestConfig()
+			orch := &Orchestrator{cfg: cfg, connector: tracker, validator: validator}
+			state := newState(cfg)
+			orch.startValidatorStage(t.Context(), &state, issue, time.Now())
+			select {
+			case req := <-validator.started:
+				if got := req.Issue.PullRequest.HeadSHA; got != "B" {
+					t.Fatalf("seeded head = %s, want B", got)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("validator did not start")
+			}
+			current.PullRequest.HeadSHA = tt.finalHead
+			current.PullRequest.BaseSHA = tt.finalBase
+			if tt.finalPR != 0 {
+				current.PullRequest.Number = tt.finalPR
+			}
+			if tt.degraded {
+				current.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+			}
+			tracker.hydratedIssues = []connector.Issue{current}
+			if tt.probeError {
+				tracker.hydrateErr = errors.New("temporary PR read failure")
+			}
+			validator.Release()
+			orch.validatorWG.Wait()
+			validatedIssue := cloneIssue(issue)
+			validatedIssue.PullRequest.HeadSHA = "B"
+			result, _, ok := orch.validatorStageResult(t.Context(), validatedIssue)
+			if tt.probeError || tt.degraded || tt.workerError || tt.wantVerdict == "" {
+				if ok {
+					t.Fatalf("unverified head cached verdict: %#v", result)
+				}
+				return
+			}
+			if !ok || result.Verdict != tt.wantVerdict {
+				t.Fatalf("verdict = %#v, want %s", result, tt.wantVerdict)
+			}
+		})
+	}
+}
+
 func TestTickAutoPromoteStartsValidatorBeforeAutomatedReview(t *testing.T) {
 	t.Parallel()
 
@@ -3067,6 +3139,213 @@ func TestTickAutoPromoteValidatorUnavailableRoutesRework(t *testing.T) {
 	}
 }
 
+func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
+	t.Parallel()
+	issue := connector.Issue{ID: "issue-docs", Identifier: "digitaldrywood/pyroapex-mobile#153",
+		PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base-docs", HeadSHA: "head-docs"}}
+	identity := validatorStageIdentityForIssue(issue)
+	for _, tt := range []struct {
+		name   string
+		repo   string
+		pr     int64
+		base   string
+		head   string
+		digest string
+		want   bool
+	}{
+		{name: "other PR", repo: "digitaldrywood/pyroapex-mobile", pr: 156, base: "base-docs", head: "head-docs", digest: "digest-workflow"},
+		{name: "other base", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-workflow", head: "head-docs", digest: "digest-workflow"},
+		{name: "old head", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs", head: "old-head", digest: "digest-docs"},
+		{name: "missing digest", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs", head: "head-docs"},
+		{name: "exact PR", repo: "digitaldrywood/pyroapex-mobile", pr: 155, base: "base-docs", head: "head-docs", digest: "digest-docs", want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			memo := openValidatorMemoStore(t)
+			at := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+			if err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{
+				ProjectID: "detent", IssueID: issue.ID, HeadSHA: tt.head, Repository: tt.repo,
+				PRNumber: &tt.pr, BaseSHA: tt.base, DiffDigest: tt.digest, DiffFiles: []string{"AGENTS.md", "README.md"},
+				Submitted: true, Verdict: gate.ValidatorVerdictRework, RecordedAt: at,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			o := &Orchestrator{cfg: Config{Project: scheduler.ProjectCandidate{ID: "detent"}}, validatorMemo: memo}
+			_, ok := o.loadValidatorVerdict(t.Context(), issue, identity)
+			if ok != tt.want {
+				t.Fatalf("loaded wrong-PR verdict = %t, want %t", ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidatorFailedMemoRejectsDifferentPRProvenance(t *testing.T) {
+	t.Parallel()
+	issue := connector.Issue{ID: "issue-failed-memo", Identifier: "digitaldrywood/detent#153",
+		PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base-docs", HeadSHA: "head-docs"}}
+	identity := validatorStageIdentityForIssue(issue)
+	for _, tt := range []struct {
+		name string
+		repo string
+		pr   int64
+		base string
+		want bool
+	}{
+		{name: "other repository", repo: "other/repo", pr: 155, base: "base-docs"},
+		{name: "other PR", repo: "digitaldrywood/detent", pr: 156, base: "base-docs"},
+		{name: "other base", repo: "digitaldrywood/detent", pr: 155, base: "base-other"},
+		{name: "exact PR", repo: "digitaldrywood/detent", pr: 155, base: "base-docs", want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			memo := openValidatorMemoStore(t)
+			if err := memo.RecordValidatorVerdict(t.Context(), store.ValidatorVerdict{
+				ProjectID: "detent", IssueID: issue.ID, HeadSHA: identity.HeadSHA,
+				Repository: tt.repo, PRNumber: &tt.pr, BaseSHA: tt.base,
+				Verdict: gate.ValidatorVerdictError, FailureAttempts: gate.DefaultValidatorMaxAttempts,
+				RecordedAt: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			o := &Orchestrator{cfg: Config{Project: scheduler.ProjectCandidate{ID: "detent"}}, validatorMemo: memo}
+			_, ok := o.loadValidatorVerdict(t.Context(), issue, identity)
+			if ok != tt.want {
+				t.Fatalf("loaded failed memo = %t, want %t", ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidatorProvenanceFailureStaysRetryable(t *testing.T) {
+	t.Parallel()
+	issue := connector.Issue{ID: "issue-220", Identifier: "digitaldrywood/pyroapex-mobile#218",
+		PullRequest: &connector.PullRequest{Number: 220, BaseSHA: "base-220", HeadSHA: "head-220"}}
+	cfg := autoPromoteValidatorTestConfig()
+	cfg.AutoPromote.Gate.Validator.MaxAttempts = 1
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	o := &Orchestrator{cfg: cfg, validator: &autoPromoteTickValidator{err: connector.NewRetryableError("validator PR file list differs from patch")},
+		validatorRuns: map[string]Running{}, validatorResults: map[string]validatorStageResult{}, validatorFailures: map[string]validatorStageFailure{},
+		now: func() time.Time { return now }, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	state := newState(cfg)
+	o.startValidatorStage(t.Context(), &state, issue, now)
+	o.validatorWG.Wait()
+	if _, _, ready := o.validatorStageResult(t.Context(), issue); ready {
+		t.Fatal("provenance failure became a routable validator verdict")
+	}
+	failure, ok := o.validatorFailures[validatorStageIdentityForIssue(issue).Key]
+	if !ok || failure.NextRetryAt.IsZero() {
+		t.Fatalf("retryable provenance failure = %#v, present=%t", failure, ok)
+	}
+}
+
+func TestValidatorDiffFetchFailureUsesInstancePath(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		err       error
+		retryable bool
+	}{
+		{name: "401", err: &githubconnector.StatusError{StatusCode: http.StatusUnauthorized, Err: githubconnector.ErrAuthenticationFailed}},
+		{name: "403", err: &githubconnector.StatusError{StatusCode: http.StatusForbidden, Err: githubconnector.ErrAuthenticationFailed}},
+		{name: "404", err: &githubconnector.StatusError{StatusCode: http.StatusNotFound, Err: githubconnector.ErrNotFound}},
+		{name: "500", err: &githubconnector.StatusError{StatusCode: http.StatusInternalServerError, Err: githubconnector.ErrTransient}, retryable: true},
+		{name: "timeout", err: fmt.Errorf("%w: %w", githubconnector.ErrTransient, context.DeadlineExceeded), retryable: true},
+		{name: "rate limit", err: &githubconnector.StatusError{StatusCode: http.StatusTooManyRequests, Err: githubconnector.ErrRateLimited}, retryable: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := connector.Issue{ID: "issue-diff-fetch", Identifier: "digitaldrywood/detent#3150",
+				PullRequest: &connector.PullRequest{Number: 3151, BaseSHA: "base", HeadSHA: "head"}}
+			memo := openValidatorMemoStore(t)
+			cfg := autoPromoteValidatorTestConfig()
+			cfg.AutoPromote.Gate.Validator.MaxAttempts = 1
+			validator := &autoPromoteTickValidator{}
+			var logs strings.Builder
+			orch := &Orchestrator{cfg: cfg, connector: &validatorDiffFailureConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, err: tt.err}, validator: validator,
+				validatorMemo: memo, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			state := newState(cfg)
+			orch.startValidatorStage(t.Context(), &state, issue, time.Now())
+			orch.validatorWG.Wait()
+			if got := len(validator.Requests()); got != 0 {
+				t.Fatalf("validator requests = %d, want none after diff fetch failure", got)
+			}
+			if result, _, ready := orch.validatorStageResult(t.Context(), issue); ready {
+				t.Fatalf("diff fetch failure became a validator verdict: %#v", result)
+			}
+			identity := validatorStageIdentityForIssue(issue)
+			_, hasRetry := orch.validatorFailures[identity.Key]
+			if hasRetry != tt.retryable {
+				t.Fatalf("issue-local validator retry = %t, want %t", hasRetry, tt.retryable)
+			}
+			verdict, memoErr := memo.ValidatorVerdict(t.Context(), store.ValidatorVerdictKey{ProjectID: "detent", IssueID: issue.ID, HeadSHA: identity.HeadSHA})
+			if tt.retryable {
+				if memoErr != nil || verdict.NextRetryAt == nil {
+					t.Fatalf("transient fetch failure memo = %#v, error = %v, want retry deadline", verdict, memoErr)
+				}
+				if strings.Contains(logs.String(), "validator infrastructure failure") {
+					t.Fatalf("transient fetch failure used instance failure path: %s", logs.String())
+				}
+			} else {
+				if !errors.Is(memoErr, store.ErrNotFound) {
+					t.Fatalf("permanent fetch failure persisted validator memo = %#v, error = %v", verdict, memoErr)
+				}
+				if !strings.Contains(logs.String(), "validator infrastructure failure") {
+					t.Fatalf("permanent fetch failure did not use instance failure path: %s", logs.String())
+				}
+			}
+		})
+	}
+}
+
+func TestValidatorRetryDeadlineSurvivesReloadWithOneMaxAttempt(t *testing.T) {
+	t.Parallel()
+	issue := connector.Issue{ID: "issue-retry-reload", Identifier: "digitaldrywood/detent#3150",
+		PullRequest: &connector.PullRequest{Number: 3151, BaseSHA: "base", HeadSHA: "head"}}
+	memo := openValidatorMemoStore(t)
+	cfg := autoPromoteValidatorTestConfig()
+	cfg.AutoPromote.Gate.Validator.MaxAttempts = 1
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	validator := &autoPromoteTickValidator{err: connector.NewRetryableError("validator PR file list differs from patch")}
+	first := &Orchestrator{cfg: cfg, validator: validator, validatorMemo: memo,
+		now: func() time.Time { return now }, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	state := newState(cfg)
+	first.startValidatorStage(t.Context(), &state, issue, now)
+	first.validatorWG.Wait()
+	identity := validatorStageIdentityForIssue(issue)
+	deadline := first.validatorFailures[identity.Key].NextRetryAt
+	if deadline.IsZero() {
+		t.Fatal("first retry deadline is zero")
+	}
+	verdict, err := memo.ValidatorVerdict(t.Context(), store.ValidatorVerdictKey{ProjectID: "detent", IssueID: issue.ID, HeadSHA: identity.HeadSHA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verdict.FailureAttempts != 0 || verdict.NextRetryAt == nil || !verdict.NextRetryAt.Equal(deadline) {
+		t.Fatalf("persisted retry = attempts %d, deadline %v, want 0 and %s", verdict.FailureAttempts, verdict.NextRetryAt, deadline)
+	}
+	reloaded := &Orchestrator{cfg: cfg, validator: validator, validatorMemo: memo,
+		now: func() time.Time { return now.Add(time.Second) }, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if result, _, ready := reloaded.validatorStageResult(t.Context(), issue); ready {
+		t.Fatalf("retryable failure became a verdict after reload: %#v", result)
+	}
+	failure, ok := reloaded.validatorFailures[identity.Key]
+	if !ok || !failure.NextRetryAt.Equal(deadline) {
+		t.Fatalf("reloaded failure = %#v, present=%t, want deadline %s", failure, ok, deadline)
+	}
+	reloaded.startValidatorStage(t.Context(), &state, issue, now.Add(time.Second))
+	reloaded.validatorWG.Wait()
+	if got := len(validator.Requests()); got != 1 {
+		t.Fatalf("validator requests before persisted deadline = %d, want 1", got)
+	}
+}
+
+type validatorDiffFailureConnector struct {
+	*autoPromoteTickConnector
+	err error
+}
+
+func (c *validatorDiffFailureConnector) PullRequestValidationDiff(context.Context, connector.Issue) (connector.ValidationDiff, error) {
+	return connector.ValidationDiff{}, c.err
+}
+
 func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) {
 	t.Parallel()
 
@@ -3080,6 +3359,7 @@ func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) 
 		URL:                    "https://github.test/digitaldrywood/detent/pull/858",
 		BranchName:             "detent/digitaldrywood_detent_858",
 		HeadSHA:                "head-validator-restart",
+		BaseSHA:                "base-validator-restart",
 		State:                  "OPEN",
 		CIStatus:               "success",
 		CodexReviewState:       "COMMENTED",
@@ -3087,10 +3367,11 @@ func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) 
 	})
 	validator := &autoPromoteTickValidator{
 		result: gate.ValidatorResult{
-			Submitted: true,
-			Verdict:   gate.ValidatorVerdictPass,
-			Score:     0.94,
-			Summary:   "Stored validator result.",
+			Submitted:  true,
+			Verdict:    gate.ValidatorVerdictPass,
+			Score:      0.94,
+			Summary:    "Stored validator result.",
+			Repository: "digitaldrywood/detent", PRNumber: 858, BaseSHA: "base-validator-restart", HeadSHA: "head-validator-restart", DiffDigest: "digest-restart", DiffFiles: []string{"README.md"},
 			Findings: []gate.Finding{{
 				Severity: "p2",
 				Body:     "non-blocking note",
@@ -3144,7 +3425,7 @@ func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) 
 	if len(restartedTracker.prComments) != 1 {
 		t.Fatalf("pull request comments after restart = %#v, want one validator result comment", restartedTracker.prComments)
 	}
-	for _, fragment := range []string{"Validator verdict: pass", "score: 0.94", "Stored validator result.", "non-blocking note"} {
+	for _, fragment := range []string{"Validator verdict: pass", "score: 0.94", "Stored validator result.", "non-blocking note", "reviewed PR: digitaldrywood/detent#858", "diff SHA-256: digest-restart", "reviewed files: README.md"} {
 		if !strings.Contains(restartedTracker.prComments[0].body, fragment) {
 			t.Fatalf("pull request comment %q missing %q", restartedTracker.prComments[0].body, fragment)
 		}
@@ -3276,6 +3557,7 @@ func TestTickAutoPromoteValidatorFailureExhaustionRoutesRework(t *testing.T) {
 		Number:     1298,
 		URL:        "https://github.test/digitaldrywood/detent/pull/1298",
 		BranchName: "detent/digitaldrywood_detent_1298",
+		BaseSHA:    "base-validator-exhausted",
 		HeadSHA:    "head-validator-exhausted",
 		State:      "OPEN",
 		CIStatus:   "success",
@@ -3303,6 +3585,9 @@ func TestTickAutoPromoteValidatorFailureExhaustionRoutesRework(t *testing.T) {
 	first := waitForPersistedValidatorFailure(t, memo, key, 1)
 	if first.Verdict != gate.ValidatorVerdictError || first.Submitted || first.NextRetryAt == nil {
 		t.Fatalf("first persisted validator failure = %#v", first)
+	}
+	if first.Repository != "digitaldrywood/detent" || first.PRNumber == nil || *first.PRNumber != 1298 || first.BaseSHA != issue.PullRequest.BaseSHA {
+		t.Fatalf("failed validator memo lacks PR provenance: %#v", first)
 	}
 
 	clock.Set(failure.NextRetryAt)
@@ -4254,72 +4539,6 @@ func TestStaleMergingLinkedPullRequestDoesNotDependOnBranchName(t *testing.T) {
 				t.Fatalf("staleMergingPullRequestDecisionForIssue() = %#v, want issue retained in Merging", decision)
 			}
 		})
-	}
-}
-
-func TestTickAdvancesStaleMergingLaneAfterFrontPRReconcilesDone(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 6, 24, 18, 30, 0, 0, time.UTC)
-	front := autoPromoteTickIssue("issue-front-merged", []string{"bug"}, &connector.PullRequest{
-		Number:         71,
-		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/71",
-		State:          "MERGED",
-		MergeableState: "clean",
-		CIStatus:       "success",
-	})
-	front.State = "Merging"
-	front.Identifier = "digitaldrywood/creswoodcorners-phone#63"
-	next := autoPromoteTickIssue("issue-next-ready", []string{"bug"}, &connector.PullRequest{
-		Number:         72,
-		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/72",
-		State:          "OPEN",
-		MergeableState: "clean",
-		CIStatus:       "success",
-	})
-	next.State = "Merging"
-	next.Identifier = "digitaldrywood/creswoodcorners-phone#64"
-	cfg := normalizeConfig(Config{
-		PollInterval:        time.Minute,
-		MaxConcurrentAgents: 1,
-		MaxConcurrentAgentsByState: map[string]int{
-			"Merging": 1,
-		},
-		AutoPromote: AutoPromoteConfig{
-			Enabled:       true,
-			QuietDuration: 10 * time.Minute,
-		},
-		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
-		TerminalStates: []string{"Done", "Cancelled"},
-	})
-	tracker := &autoPromoteTickConnector{
-		stateIssues:        []connector.Issue{front, next},
-		candidateIssuesSet: true,
-	}
-	runner := newWorkerHostRunner()
-	orch := &Orchestrator{
-		cfg:        cfg,
-		connector:  tracker,
-		supervisor: newTestSupervisor(t, runner, cfg),
-		runResults: make(chan runpkg.Completion, 1),
-		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-	state := newState(cfg)
-
-	orch.tick(context.Background(), &state, now)
-
-	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: front.ID, state: "Done"}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("updates = %#v, want %#v", got, want)
-	}
-	request := receiveWorkerHostRunRequest(t, runner.started)
-	if request.Issue.ID != next.ID {
-		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, next.ID)
-	}
-	if _, ok := state.Running[next.ID]; !ok {
-		t.Fatalf("Running[%q] missing after front PR reconciliation", next.ID)
-	}
-	if running := state.Running[next.ID]; running.cancel != nil {
-		running.cancel()
 	}
 }
 
@@ -6516,6 +6735,7 @@ func (v *autoPromoteTickValidator) Validate(_ context.Context, req ValidatorRequ
 }
 
 type blockingAutoPromoteValidatorRunner struct {
+	err         error
 	releaseOnce sync.Once
 	started     chan ValidatorRequest
 	runStarted  chan RunRequest
@@ -6546,6 +6766,9 @@ func (r *blockingAutoPromoteValidatorRunner) Validate(ctx context.Context, req V
 
 	select {
 	case <-r.release:
+		if r.err != nil {
+			return gate.ValidatorResult{}, r.err
+		}
 		return gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1}, nil
 	case <-ctx.Done():
 		close(r.canceled)
@@ -6775,6 +6998,7 @@ func TestTickAutoPromoteLoadsValidatorVerdictAfterWorkpadHydration(t *testing.T)
 		URL:                    "https://github.test/digitaldrywood/detent/pull/2530",
 		BranchName:             "detent/digitaldrywood_detent_2530",
 		HeadSHA:                "head-validator-after-workpad",
+		BaseSHA:                "base-validator-after-workpad",
 		State:                  "OPEN",
 		MergeableState:         "clean",
 		CIStatus:               "success",
@@ -6791,6 +7015,11 @@ func TestTickAutoPromoteLoadsValidatorVerdictAfterWorkpadHydration(t *testing.T)
 		ProjectID:  "detent",
 		IssueID:    issue.ID,
 		HeadSHA:    issue.PullRequest.HeadSHA,
+		Repository: "digitaldrywood/detent",
+		PRNumber:   new(int64(2530)),
+		BaseSHA:    issue.PullRequest.BaseSHA,
+		DiffDigest: "digest-after-workpad",
+		DiffFiles:  []string{"README.md"},
 		Submitted:  true,
 		Verdict:    gate.ValidatorVerdictPass,
 		Score:      0.96,

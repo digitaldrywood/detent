@@ -1742,7 +1742,7 @@ func TestParseWorkflowDefaults(t *testing.T) {
 		t.Fatalf("Agent.MaxSessionDurationMS = %d, want %d", cfg.Agent.MaxSessionDurationMS, DefaultMaxSessionDurationMS)
 	}
 	if cfg.Agent.NoProgressTimeoutMS != DefaultNoProgressTimeoutMS {
-		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want %d", cfg.Agent.NoProgressTimeoutMS, DefaultNoProgressTimeoutMS)
+		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want legacy default %d", cfg.Agent.NoProgressTimeoutMS, DefaultNoProgressTimeoutMS)
 	}
 	if cfg.Agent.MaxSessionTokens != 0 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want disabled default", cfg.Agent.MaxSessionTokens)
@@ -4631,6 +4631,8 @@ func TestWithRuntimeGitHubToken(t *testing.T) {
 		{name: "environment override", kind: TrackerGitHub, global: "global-token", override: "$WORKER_TOKEN", want: "$WORKER_TOKEN"},
 		{name: "gh override", kind: TrackerGitHub, global: "global-token", override: "gh", want: "gh"},
 		{name: "no credentials", kind: TrackerMemory},
+		{name: "native default", kind: TrackerHubNative, global: "global-token"},
+		{name: "native explicit override", kind: TrackerHubNative, global: "global-token", override: "worker-token", want: "worker-token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

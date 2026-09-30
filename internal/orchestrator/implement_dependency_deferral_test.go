@@ -422,6 +422,33 @@ func TestDependencyDeferralRefusalDetails(t *testing.T) {
 	}
 }
 
+func TestHistoricalDependencyDeferralUsesCurrentProseRefs(t *testing.T) {
+	t.Parallel()
+	const source = "digitaldrywood/detent#134"
+	for _, tt := range []struct {
+		name          string
+		current       []connector.BlockedRef
+		wantCandidate bool
+	}{
+		{name: "migrated source removed while another dependent keeps it open", wantCandidate: true},
+		{name: "migrated source removed with unrelated dependency", current: []connector.BlockedRef{{Identifier: "digitaldrywood/detent#200"}}, wantCandidate: true},
+		{name: "source still current", current: []connector.BlockedRef{{Identifier: source}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := implementProgressIssueWithoutPR()
+			issue.DependencySource = connector.BlockedRefSourceProse
+			issue.BlockedBy = tt.current
+			attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{implementProgressDependencyDeferralHistoryAttempt(1, source, "Todo")}}
+			o := &Orchestrator{cfg: normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, TerminalStates: []string{"Done"}}), connector: hydratingDispatchConnector{blockers: []connector.Issue{{Identifier: source, State: "Todo"}}}, workAttempts: attempts}
+			got := o.filterImplementDependencyDeferrals(t.Context(), []connector.Issue{issue})
+			if (len(got) == 1) != tt.wantCandidate {
+				t.Fatalf("candidates = %+v, want candidate %t", got, tt.wantCandidate)
+			}
+		})
+	}
+}
+
 func TestDependencyDeferralEvidenceAndReleaseAcrossRestart(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

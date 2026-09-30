@@ -3,7 +3,7 @@ Current Detent status: {{ issue.state }}.
 
 Follow repository instructions and keep changes scoped to the issue.
 Use the Detent-appended Blocked handoff block for the Workpad, dependencies,
-human questions, completion, and tracker ownership contract.
+human actions, completion, and tracker ownership contract.
 
 GitHub issues are read-only inputs for this local-status project. Keep audit
 records in Detent; do not add `tracker.github_status_source`; do not write GitHub issue comments, labels, or close state.

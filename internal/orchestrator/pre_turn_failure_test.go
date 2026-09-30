@@ -52,23 +52,27 @@ func TestPreTurnFailuresDrainInstance(t *testing.T) {
 				}
 			}
 			rows := projectFailureBreakerSnapshots(state)
-			if len(rows) != 1 || rows[0].RepresentativeError == "" || rows[0].Count != 3 || !rows[0].InstanceDrained || rows[0].CooldownSeconds != 60 {
+			cooldown := time.Minute
+			if state.FailureBreaker.Class == workAttemptErrorWorkspace {
+				cooldown = time.Hour
+			}
+			if len(rows) != 1 || rows[0].RepresentativeError == "" || rows[0].Count != 3 || !rows[0].InstanceDrained || rows[0].CooldownSeconds != int64(cooldown/time.Second) {
 				t.Fatalf("breaker health evidence = %#v", rows)
 			}
 			if clearProjectFailureBreakerIssue(&state.FailureBreaker, "issue-0") {
 				t.Fatal("moving an issue cleared instance evidence")
 			}
-			if !state.FailureBreaker.ResumeAt.Equal(now.Add(time.Minute)) || !projectFailureBreakerAllowsDispatch(&state, now.Add(time.Minute)) {
+			if !state.FailureBreaker.ResumeAt.Equal(now.Add(cooldown)) || !projectFailureBreakerAllowsDispatch(&state, now.Add(cooldown)) {
 				t.Fatal("cooldown did not resume dispatch")
 			}
-			reserved, allowed := tryReserveProjectFailureBreakerCanary(&state, "canary", now.Add(time.Minute))
-			if !reserved || !allowed || projectFailureBreakerAllowsDispatch(&state, now.Add(time.Minute)) {
+			reserved, allowed := tryReserveProjectFailureBreakerCanary(&state, "canary", now.Add(cooldown))
+			if !reserved || !allowed || projectFailureBreakerAllowsDispatch(&state, now.Add(cooldown)) {
 				t.Fatal("cooldown did not admit exactly one canary")
 			}
 			if !clearProjectFailureBreakerIssue(&state.FailureBreaker, "canary") || !state.FailureBreaker.Active() {
 				t.Fatal("moving canary did not release reservation while preserving drain")
 			}
-			reserved, allowed = tryReserveProjectFailureBreakerCanary(&state, "canary", now.Add(time.Minute))
+			reserved, allowed = tryReserveProjectFailureBreakerCanary(&state, "canary", now.Add(cooldown))
 			if !reserved || !allowed {
 				t.Fatal("moved canary retained reservation")
 			}

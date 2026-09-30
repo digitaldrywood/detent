@@ -34,6 +34,10 @@ func doctorInstructionFiles(ctx context.Context, root, prompt, workflowPath stri
 	if err != nil {
 		return []doctorInstructionFile{{"WORKFLOW.md (effective prompt)", prompt, len(prompt)}}, []string{err.Error()}
 	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return []doctorInstructionFile{{"WORKFLOW.md (effective prompt)", prompt, len(prompt)}}, []string{err.Error()}
+	}
 	gitRoot, gitErr := doctorWorkflowSourceGit(ctx, root, "rev-parse", "--show-toplevel")
 	var dirs []string
 	if gitErr != nil {
@@ -41,7 +45,11 @@ func doctorInstructionFiles(ctx context.Context, root, prompt, workflowPath stri
 		// Codex still reads the current directory outside a Git repository.
 		dirs = []string{root}
 	} else {
-		gitRoot = strings.TrimSpace(gitRoot)
+		gitRoot, gitErr = filepath.EvalSymlinks(strings.TrimSpace(gitRoot))
+		if gitErr != nil {
+			problems = append(problems, "resolve instruction repository: "+gitErr.Error())
+			gitRoot = root
+		}
 		for dir := root; ; dir = filepath.Dir(dir) {
 			dirs = append(dirs, dir)
 			if dir == gitRoot {
@@ -59,6 +67,9 @@ func doctorInstructionFiles(ctx context.Context, root, prompt, workflowPath stri
 	// The effective prompt already accounts for its configured source. A bare
 	// WORKFLOW.md reference also denotes that source when no local file exists.
 	if workflowPath != "" {
+		if resolved, resolveErr := filepath.EvalSymlinks(workflowPath); resolveErr == nil {
+			workflowPath = resolved
+		}
 		seen[filepath.Clean(workflowPath)] = true
 		localWorkflow := filepath.Join(root, "WORKFLOW.md")
 		if _, statErr := os.Stat(localWorkflow); os.IsNotExist(statErr) {
@@ -217,6 +228,12 @@ func checkDoctorWorkflowSourceDrift(ctx context.Context, id string, project glob
 		check.Detail = err.Error()
 		return check
 	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		check.Status = doctorWarn
+		check.Detail = err.Error()
+		return check
+	}
 	path := strings.TrimSpace(project.Workflow)
 	if filepath.IsAbs(path) || strings.HasPrefix(path, "~/") {
 		path, err = expandDoctorWorkspacePath(path)
@@ -228,12 +245,19 @@ func checkDoctorWorkflowSourceDrift(ctx context.Context, id string, project glob
 		check.Detail = err.Error()
 		return check
 	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		check.Status = doctorWarn
+		check.Detail = err.Error()
+		return check
+	}
 	working, err := os.ReadFile(path)
 	if err != nil {
 		check.Status = doctorWarn
 		check.Detail = err.Error()
 		return check
 	}
+	working = doctorNormalizedWorkflowPolicy(working)
 	ref := strings.TrimSpace(project.WorkflowRef)
 	if ref == "" {
 		if deps.githubRepositoryInfo == nil || !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
@@ -276,6 +300,7 @@ func checkDoctorWorkflowSourceDrift(ctx context.Context, id string, project glob
 		check.Detail += " size unavailable: " + err.Error()
 		return check
 	}
+	reference = string(doctorNormalizedWorkflowPolicy([]byte(reference)))
 	check.Detail += fmt.Sprintf(" %d bytes", len(reference))
 	if project.WorkflowRef != "" && string(working) != reference {
 		check.Status = doctorWarn

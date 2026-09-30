@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -206,6 +207,7 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	}
 	dashboardURL := "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(dashboardPort.Value))
 	runner, err := factory(servicepkg.Config{
+		Name:         serviceNameForConfig(cfg),
 		GOOS:         runtime.GOOS,
 		BinaryPath:   binaryPath,
 		ConfigPath:   resolution.Path,
@@ -332,6 +334,7 @@ func runningServiceArguments(ctx context.Context, configPath string, opts option
 		runCommand = defaultCommandRunner
 	}
 	runner, err := factory(servicepkg.Config{
+		Name:       configuredServiceName(configPath, opts),
 		GOOS:       runtime.GOOS,
 		ConfigPath: configPath,
 		LockPath:   filepath.Join(filepath.Dir(configPath), "detent.db.lock"),
@@ -658,4 +661,28 @@ func pointerInt(value *int, fallback int) int {
 		return fallback
 	}
 	return *value
+}
+
+// configuredServiceName selects the config's service, or the board default
+// when the config cannot be read.
+func configuredServiceName(configPath string, opts options) string {
+	read := opts.readOrDefault
+	if read == nil {
+		read = func(path string) (globalconfig.Config, error) { return globalconfig.ReadOrDefault(path) }
+	}
+	cfg, err := read(configPath)
+	if err != nil {
+		return ""
+	}
+	return serviceNameForConfig(cfg)
+}
+
+func serviceNameForConfig(cfg globalconfig.Config) string {
+	if cfg.ServiceName != "" {
+		return cfg.ServiceName
+	}
+	if cfg.Client.Configured() {
+		return runnerServiceName
+	}
+	return servicepkg.DefaultName
 }
