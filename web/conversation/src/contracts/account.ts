@@ -502,6 +502,7 @@ export const RunnerRouting = Schema.Struct({
   state: Schema.String,
   capacity_limit: Schema.Number,
   project_ids: Schema.Array(Schema.String),
+  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
   isolation_tier: Schema.String,
   host_services: Schema.Array(Schema.String),
   availability: RunnerAvailability,
@@ -537,6 +538,9 @@ export const FleetRunner = Schema.Struct({
   leases: Schema.Array(RunnerLease),
   isolation_tier: Schema.optional(Schema.String),
   availability: Schema.optional(RunnerAvailability),
+  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
+  home_status: Schema.optional(Schema.String),
+  home_dry_since: Schema.optional(Schema.NullOr(Schema.String)),
   routing: Schema.optional(RunnerRouting),
   revision: Schema.optional(Schema.Number),
 });
