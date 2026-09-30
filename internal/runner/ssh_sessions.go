@@ -14,16 +14,17 @@ import (
 // If the channel ends before FinishSession arrives, the owner closes precisely
 // the sessions it opened on that channel using usage already received.
 type SSHCallbacks struct {
-	handle func(context.Context, string, []json.RawMessage) (any, error)
-	store  SessionStore
-	mu     sync.Mutex
-	wg     sync.WaitGroup
-	closed bool
-	active map[int64]UsageUpdate
+	handle    func(context.Context, string, []json.RawMessage) (any, error)
+	store     SessionStore
+	execution Execution
+	mu        sync.Mutex
+	wg        sync.WaitGroup
+	closed    bool
+	active    map[int64]UsageUpdate
 }
 
 func (r *Runner) SSHRunCallbacks(request RunRequest) *SSHCallbacks {
-	return &SSHCallbacks{handle: r.SSHCallbackHandler(request), store: r.store, active: make(map[int64]UsageUpdate)}
+	return &SSHCallbacks{handle: r.SSHCallbackHandler(request), store: r.store, execution: request.Execution, active: make(map[int64]UsageUpdate)}
 }
 
 func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {

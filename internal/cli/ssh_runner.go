@@ -142,6 +142,9 @@ func (r *sshRunner) Run(ctx context.Context, request runnerpkg.RunRequest) (resu
 			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			runErr = errors.Join(runErr, request.Execution.Finish(finishCtx, outcome))
+			if changes, ok := request.Execution.(runnerpkg.ChangeExecution); ok && runErr == nil {
+				result.NativeChange = changes.NativeChange()
+			}
 		}()
 	}
 	var response runnerpkg.SSHRunResponse
@@ -202,6 +205,7 @@ func (r *sshRunner) callSSH(ctx context.Context, request runnerpkg.RunRequest, m
 		}
 		return callbacks.Handle(ctx, method, args)
 	})
+	callbacks.BindExecutionSources(peer, workflow.Config.Workspace.Root)
 	err = peer.Call(ctx, method, response, bootstrap)
 	err = errors.Join(err, input.Close())
 	peer.Close()
@@ -239,8 +243,12 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 	ready := make(chan struct{})
 	finished := make(chan struct{})
 	var once sync.Once
+	sources := &runnerpkg.SSHExecutionSources{}
 	peer = runnerpkg.NewSSHPeer(ctx, input, output, func(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 		<-ready
+		if strings.HasPrefix(method, "source.") {
+			return sources.Handle(ctx, method, args)
+		}
 		if (method != "run" && method != "reap" && method != "reconcile") || len(args) != 1 {
 			return nil, errors.New("unsupported SSH worker request")
 		}
@@ -259,6 +267,7 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 		if bootstrap.Version != runnerpkg.SSHProtocolVersion {
 			return nil, errors.New("incompatible SSH worker protocol")
 		}
+		bootstrap.Run.Sources = sources
 		result, err := runSSHBootstrap(ctx, peer, bootstrap, logger, method)
 		if method == "run" {
 			if err != nil {

@@ -3,6 +3,7 @@ package hubclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -56,6 +57,22 @@ type nativeArtifacts struct {
 	sequence    int
 	reservation artifact.Reservation
 	log         artifact.Upload
+	journalRoot string
+	capture     func(context.Context, string, string) (artifact.GitCapture, error)
+}
+
+func (e *nativeExecution) SetArtifactSource(journalRoot string, source func(context.Context, string, string) (artifact.GitCapture, error)) {
+	a := &e.artifacts
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.journalRoot, a.capture = journalRoot, source
+}
+
+func (a *nativeArtifacts) captureGit(ctx context.Context, directory, base, head string) (artifact.GitCapture, error) {
+	if a.capture != nil {
+		return a.capture(ctx, base, head)
+	}
+	return artifact.CaptureGit(ctx, directory, base, head, 3)
 }
 
 func (e *nativeExecution) PrepareArtifacts(ctx context.Context, directory string) error {
@@ -95,7 +112,14 @@ func (e *nativeExecution) PrepareArtifacts(ctx context.Context, directory string
 	if a.client == nil {
 		return artifact.ErrMissing
 	}
-	spoolDir := filepath.Join(directory, ".detent", "artifacts", e.data.AttemptID)
+	journalRoot := directory
+	if a.capture != nil {
+		if a.journalRoot == "" {
+			return artifact.ErrInvalid
+		}
+		journalRoot = a.journalRoot
+	}
+	spoolDir := filepath.Join(journalRoot, ".detent", "artifacts", e.data.AttemptID)
 	if err := os.MkdirAll(spoolDir, 0o700); err != nil {
 		return err
 	}
@@ -109,7 +133,7 @@ func (e *nativeExecution) PrepareArtifacts(ctx context.Context, directory string
 		a.base = string(saved)
 		a.incomplete = true
 	} else if errors.Is(err, os.ErrNotExist) {
-		capture, err := artifact.CaptureGit(ctx, directory, "HEAD", "HEAD", 3)
+		capture, err := a.captureGit(ctx, directory, "HEAD", "HEAD")
 		if err != nil {
 			return err
 		}
@@ -247,6 +271,31 @@ func (e *nativeExecution) FinalizeArtifacts(ctx context.Context, directory strin
 	if a.directory == "" || a.finished {
 		return nil
 	}
+	// Freeze the remote capture before publishing any of it. Retries use the
+	// same bytes even if the checkout changes or the SSH channel disappears.
+	bundlePath := filepath.Join(a.directory, "diff.json")
+	var bundle artifact.GitCapture
+	saved, err := os.ReadFile(bundlePath)
+	if err == nil {
+		if err := json.Unmarshal(saved, &bundle); err != nil {
+			return errors.Join(artifact.ErrIntegrity, err)
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		bundle, err = a.captureGit(ctx, directory, a.base, "HEAD")
+		if err != nil {
+			a.incomplete = true
+			return err
+		}
+		data, err := json.Marshal(bundle)
+		if err != nil {
+			return err
+		}
+		if err := writeArtifactFile(bundlePath, data); err != nil {
+			return err
+		}
+	} else {
+		return err
+	}
 	if err := a.flush(ctx, true); err != nil {
 		if !errors.Is(err, artifact.ErrQuota) {
 			return err
@@ -262,10 +311,6 @@ func (e *nativeExecution) FinalizeArtifacts(ctx context.Context, directory strin
 			return err
 		}
 		a.log.State = state
-	}
-	bundle, err := artifact.CaptureGit(ctx, directory, a.base, "HEAD", 3)
-	if err != nil {
-		return err
 	}
 	r := a.reservation
 	r.Kind, r.Key = "diff", e.data.AttemptID+":diff"

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -22,6 +23,9 @@ type SSHRunRequest struct {
 	Request   RunRequest
 	Callbacks []string
 	Recovery  *tracker.NativeRecovery
+	Native    bool
+	Capacity  *providercapacity.Reservation
+	Sources   *SSHExecutionSources `json:"-"`
 }
 
 type SSHRunResponse struct {
@@ -55,6 +59,10 @@ func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 	if request.Execution != nil {
 		recovery := request.Execution.Recovery()
 		wire.Recovery = &recovery
+		_, wire.Native = request.Execution.(ArtifactSourceExecution)
+		if capacity, ok := request.Execution.(ProviderCapacityExecution); ok {
+			wire.Capacity = capacity.ProviderCapacity()
+		}
 	}
 	return wire
 }
@@ -89,6 +97,13 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 	}
 	if wire.Recovery != nil {
 		request.Execution = &sshExecution{peer: peer, recovery: *wire.Recovery}
+		if wire.Native {
+			sources := wire.Sources
+			if sources == nil {
+				sources = &SSHExecutionSources{}
+			}
+			request.Execution = &sshNativeExecution{sshExecution: request.Execution.(*sshExecution), sources: sources, capacity: wire.Capacity}
+		}
 	}
 	return request
 }
@@ -109,7 +124,7 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 		if strings.HasPrefix(method, "execution.") {
 			name := strings.TrimPrefix(method, "execution.")
 			switch name {
-			case "Validate", "Start", "Checkpoint":
+			case "Validate", "Start", "Checkpoint", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			}
 			return nil, errors.New("unsupported SSH execution method")

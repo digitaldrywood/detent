@@ -40,12 +40,12 @@ func TestSSHHostConfiguration(t *testing.T) {
 	}
 }
 
-func TestSSHRejectsUnsupportedNativeArtifacts(t *testing.T) {
+func TestSSHSupportsNativeArtifacts(t *testing.T) {
 	t.Parallel()
 	cfg := Default()
 	cfg.Tracker.Kind = TrackerHubNative
 	cfg.Worker.SSHHosts = []string{"remote", "local"}
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "hub_native artifact") {
-		t.Fatalf("native SSH execution was accepted: %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("native SSH execution was rejected: %v", err)
 	}
 }

@@ -25,23 +25,25 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		github bool
+		ssh    bool
 	}{
-		{"plain git by default", false},
-		{"approved GitHub PR policy", true},
+		{"plain git by default", false, false},
+		{"approved GitHub PR policy", true, false},
+		{"SSH native landing", false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, false, test.github)
+			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh)
 		})
 	}
 }
 
 func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 	t.Parallel()
-	testNativeExecutionLandsReviewedVersion(t, true, false)
+	testNativeExecutionLandsReviewedVersion(t, true, false, false)
 }
 
-func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github bool) {
+func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh bool) {
 	t.Helper()
 	h := newNativeChangeHubWithStates(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
@@ -143,6 +145,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github bool) 
 		t.Fatal(err)
 	}
 	defer stop()
+	if ssh {
+		landing, _ = nativeSSHExecution(t, guarded, landing, t.TempDir())
+	}
 	execution, ok := landing.(runner.LandingExecution)
 	if !ok {
 		t.Fatalf("execution %T cannot land", landing)

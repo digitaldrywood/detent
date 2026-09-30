@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
@@ -20,7 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-const SSHProtocolVersion = 1
+const SSHProtocolVersion = 2
 
 // SSHPeer multiplexes worker callbacks and their replies over the authenticated
 // SSH channel. Neither endpoint needs a listening socket or an on-disk request.
@@ -204,12 +205,14 @@ func sshErrorTypes() []error {
 
 func sshSentinels() []error {
 	return []error{context.Canceled, context.DeadlineExceeded, store.ErrNotFound, syscall.ENOSPC, os.ErrNotExist, os.ErrPermission,
+		artifact.ErrInvalid, artifact.ErrIntegrity, artifact.ErrMissing, artifact.ErrStorage, artifact.ErrUnsupported,
+		artifact.ErrConflict, artifact.ErrQuota, artifact.ErrExpired, artifact.ErrDenied, artifact.ErrAuthorization,
 		ErrWorkspacePreparation, ErrWorkspaceBranchHeld, ErrAgentResumeUnsupported,
 		ErrWorkerGitHubTokenResolution, ErrWorkerGitHubBudgetMonitor, ErrWorkerGitHubRESTReserved,
 		ErrSessionTokenCeilingExceeded, ErrSessionBudgetProjectionExceeded, ErrSessionMemoryCeilingExceeded,
 		ErrSessionDurationExceeded, ErrTurnDurationExceeded, ErrSessionTurnLimitExceeded,
 		ErrOperatorStopped, ErrMergeRevoked, ErrLaneRevoked, ErrCIUnavailable, ErrModelPermitUnavailable,
-		ErrMergeWorkerStartupTimeout, ErrMergeWorkerDurationExceeded, ErrAgentTurnCleanup, ErrWorkerProcessReap,
+		ErrMergeWorkerStartupTimeout, ErrMergeWorkerDurationExceeded, ErrAgentTurnCleanup, ErrWorkerProcessReap, ErrLandingNotReviewed,
 		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired}
 }
 
