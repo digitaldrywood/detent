@@ -1064,15 +1064,16 @@ func TestValidateDoctorModelCatalog(t *testing.T) {
 func TestCheckDoctorProjects(t *testing.T) {
 	t.Parallel()
 
+	sourceRoot := t.TempDir()
 	parsedDisabledBudget, err := workflowconfig.ParseWorkflow([]byte("---\nbudget:\n  per_day_max_usd: 50\n  per_issue_max_usd: 5\n---\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
-	disabledBudgetWorkflow := validDoctorWorkflow("/repo")
+	disabledBudgetWorkflow := validDoctorWorkflow(sourceRoot)
 	disabledBudgetWorkflow.Budget = parsedDisabledBudget.Config.Budget
-	omittedBudgetWorkflow := validDoctorWorkflow("/repo")
+	omittedBudgetWorkflow := validDoctorWorkflow(sourceRoot)
 	omittedBudgetWorkflow.Budget = workflowconfig.Default().Budget
-	disabledProgressWorkflow := validDoctorWorkflow("/repo")
+	disabledProgressWorkflow := validDoctorWorkflow(sourceRoot)
 	disabledProgressWorkflow.Budget.BillingMode = workflowconfig.BillingModeSubscription
 	disabledProgressWorkflow.Agent.NoProgressTokenLimit = 0
 	disabledProgressWorkflow.Agent.NoProgressSpendLimitUSD = 0
@@ -1115,8 +1116,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "inherited spend breaker warns about billing ambiguity",
@@ -1124,18 +1125,18 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: omittedBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
 			projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
-			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
+			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "all progress brakes disabled",
@@ -1143,17 +1144,17 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledProgressWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "billing_mode=subscription", "no user-level Codex instruction files", "no effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "billing_mode=subscription", "no user-level Codex instruction files", "no effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "workflow and source repo valid",
 			projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
-			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no GitHub Actions workflows", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "scope evidence unavailable", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -5207,6 +5208,36 @@ func TestCheckDoctorDashboardAddress(t *testing.T) {
 			wantDetail: "config resolves the dashboard to 127.0.0.1:4000, but the running Detent service uses 100.111.222.33:4000 (from worker environment)",
 		},
 	}
+	ephemeralPort := 0
+	ephemeralTests := []struct {
+		name       string
+		running    dashboardAddress
+		wantStatus doctorStatus
+		wantDetail string
+	}{
+		{
+			name:       "port 0 accepts the running listener's port",
+			running:    dashboardAddress{Value: "127.0.0.1:50036", HostSource: dashboardAddressSourceListener, PortSource: dashboardAddressSourceListener},
+			wantStatus: doctorOK,
+			wantDetail: "matches the running Detent service",
+		},
+		{
+			name:       "port 0 still requires the configured host",
+			running:    dashboardAddress{Value: "100.111.222.33:50036", HostSource: dashboardAddressSourceListener, PortSource: dashboardAddressSourceListener},
+			wantStatus: doctorFail,
+			wantDetail: "config resolves the dashboard to 127.0.0.1:0",
+		},
+	}
+	for _, tt := range ephemeralTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := checkDoctorDashboardAddress(BootConfig{Port: &ephemeralPort}, tt.running)
+			if got.Status != tt.wantStatus || !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Fatalf("checkDoctorDashboardAddress() = %#v, want status %s detail containing %q", got, tt.wantStatus, tt.wantDetail)
+			}
+		})
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -6301,7 +6332,7 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 	}{
 		{name: "GitHub readiness", current: "GitHub readiness", lastCompleted: "Project alpha skills"},
 		{name: "local workflow overlay", current: "local workflow overlay", lastCompleted: "Project alpha capabilities", blockOverlay: true},
-		{name: "dependency auto-unblock", current: "dependency auto-unblock", lastCompleted: "Project alpha INV-5 CI once per ready head", blockDependency: true},
+		{name: "dependency auto-unblock", current: "dependency auto-unblock", lastCompleted: "Project alpha INV-4 queue is the merge path", blockDependency: true},
 	}
 
 	for _, tt := range tests {
@@ -6941,6 +6972,32 @@ func TestDoctorWorkerGitHubCredentialResolution(t *testing.T) {
 				if strings.Contains(check.Detail+check.Hint, secret) {
 					t.Fatal("doctor disclosed a secret")
 				}
+			}
+		})
+	}
+}
+
+func TestDoctorTimedOutChecksUsesJobTimeoutStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		job        doctorCheckJob
+		err        error
+		wantStatus doctorStatus
+		wantPrefix string
+	}{
+		{name: "default fails", job: doctorCheckJob{Name: "Project detent checks"}, err: context.DeadlineExceeded, wantStatus: doctorFail, wantPrefix: "timed out after 30s"},
+		{name: "cache scan warns", job: doctorCheckJob{Name: "Host native toolchain caches", TimeoutStatus: doctorWarn}, err: context.DeadlineExceeded, wantStatus: doctorWarn, wantPrefix: "inconclusive: timed out after 30s"},
+		{name: "cancelled cache scan still fails", job: doctorCheckJob{Name: "Host native toolchain caches", TimeoutStatus: doctorWarn}, err: context.Canceled, wantStatus: doctorFail, wantPrefix: "timed out after 30s: context canceled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checks := doctorTimedOutChecks(tt.job, doctorCheckSnapshot{}, 30*time.Second, tt.err)
+			if len(checks) != 1 || checks[0].Status != tt.wantStatus || !strings.HasPrefix(checks[0].Detail, tt.wantPrefix) || checks[0].Name != tt.job.Name {
+				t.Fatalf("doctorTimedOutChecks() = %#v, want one %s check with detail prefix %q", checks, tt.wantStatus, tt.wantPrefix)
 			}
 		})
 	}

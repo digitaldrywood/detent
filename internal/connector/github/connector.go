@@ -146,7 +146,6 @@ type Connector struct {
 	now                 func() time.Time
 	mu                  sync.RWMutex
 	writeMu             sync.Mutex
-	prerequisiteMu      sync.Mutex
 	instanceLogin       string
 	projectURL          string
 

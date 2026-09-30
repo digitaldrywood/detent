@@ -1,0 +1,8 @@
+{
+  "id": "mem_admin",
+  "user_id": "user_dana",
+  "email": "dana@threefold.solutions",
+  "role": "member",
+  "status": "active",
+  "grants": [{ "project_id": "proj_parable", "write": true, "runner": true }]
+}

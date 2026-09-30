@@ -49,6 +49,8 @@ const (
 	RunOutputMergeFallbackDeferred    = "merge_fallback_deferred"
 	RunOutputMergeFallbackResolved    = "merge_fallback_resolved"
 	RunOutputMergeFallbackRework      = "merge_fallback_rework"
+	RunOutputNativeLanded             = "native_landed"
+	RunOutputNativeLandingRefused     = "native_landing_refused"
 )
 
 var (
@@ -367,9 +369,16 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
-	Workspace               string
-	TempDir                 string
-	Prompt                  string
+	// ConversationControl, when set, connects a live conversation to the turn on
+	// backends that implement AgentLiveBackend.
+	ConversationControl *AgentConversationControl
+	Workspace           string
+	TempDir             string
+	Prompt              string
+	// Attachments are the files the user attached to the message that starts
+	// this turn (decisions section 17.1). Images become provider image input;
+	// text files are appended to Prompt as a delimited data block.
+	Attachments             []AgentAttachment
 	ToolInstructions        string
 	SupplementalTools       bool
 	ReadOnly                bool
@@ -711,6 +720,7 @@ const (
 
 type ValidatorRequest struct {
 	Issue            connector.Issue
+	Diff             *connector.ValidationDiff
 	StartedAt        time.Time
 	SelectorContext  selector.Context
 	OnUsageUpdate    UsageUpdateHandler
@@ -758,8 +768,78 @@ type RunResult struct {
 	DeliverableCommands     []DeliverableCommandEvidence
 	WorkspaceBranch         string
 	MergePrecheck           *MergePrecheck
-	MergeFallbackFindings   string
-	budgetProjection        *dispatchBudgetProjection
+	// GateValidatedHead is the pull request head on which Detent itself ran
+	// the configured command gate and saw it pass. Empty when it did not.
+	GateValidatedHead string
+	// GateValidatedRun is the gate command that passed on GateValidatedHead.
+	GateValidatedRun      string
+	MergeFallbackFindings string
+	// NativeChange is what a successful hub-native work run left for review.
+	// It is nil for every other run, and for a native run whose lease was
+	// lost or whose worktree could not be read.
+	NativeChange *NativeChange
+	// NativeLanding is what a hub-native landing run did with the reviewed
+	// version: landed it, or refused with a reason a person acts on. It is
+	// nil for every other run.
+	NativeLanding    *NativeLanding
+	budgetProjection *dispatchBudgetProjection
+}
+
+// NativeLandingTarget is the reviewed version a landing run puts on the
+// base branch: the Change Request, the version, its head, and the merge
+// method the approved policy names.
+type NativeLandingTarget struct {
+	ChangeID  string
+	VersionID string
+	HeadSHA   string
+	Method    string
+	Title     string
+	Number    int64
+}
+
+// NativeLanding reports a landing run's outcome. A landed version names the
+// commit the base branch advanced to; a refused one carries the refusal kind
+// and the reason, and the base branch is unchanged.
+type NativeLanding struct {
+	ChangeID    string
+	VersionID   string
+	HeadSHA     string
+	Landed      bool
+	MergeSHA    string
+	BaseRef     string
+	Method      string
+	RefusalKind string
+	Refusal     string
+}
+
+// NativeChange describes a successful hub-native work run's change. A hub
+// native item has no pull request; the runner opens the Change Request under
+// the run's lease and reports it here, and the orchestrator moves the item.
+type NativeChange struct {
+	// Changed reports that the run's final attempt diff has commits ahead of
+	// its base. A run that committed nothing has nothing to review.
+	Changed bool
+	// ChangeID is the Change Request that carries the commits, empty when
+	// the run changed nothing or the Change Request could not be opened.
+	ChangeID string
+	// Error says why a changed run has no Change Request.
+	Error string
+	// VersionID is the immutable version that carries this run's head on
+	// the Change Request, published under the run's lease so a reviewer has
+	// something to decide on. It is empty when the version could not be
+	// published; VersionError then says why.
+	VersionID    string
+	VersionError string
+	// VersionCode is the hub's error code for an unpublished version, such
+	// as policy_mismatch, so the item's comment can say who has to act.
+	VersionCode string
+	// Reviewed reports that the project's review policy already accepts the
+	// published version: no person has to review it, so the item goes
+	// straight to the landing lane.
+	Reviewed bool
+	BaseSHA  string
+	HeadSHA  string
+	Files    int
 }
 
 type ArtifactProgressEvidence struct {

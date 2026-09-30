@@ -436,6 +436,86 @@ func TestWorkerGitHubMonitorCanaryReleasedByEarlierCompletionHandlers(t *testing
 	}
 }
 
+func TestWorkerGitHubMonitorCompletedCanaryGetsAnotherProbe(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 24, 6, 10, 52, 0, time.UTC)
+	credential := "github-rest:shared-worker"
+	issue := dispatchTestIssue("issue-monitor-canary", "In Progress")
+	for _, tt := range []struct {
+		name       string
+		rateLimits *telemetry.RateLimits
+		recovered  bool
+		deferLane  bool
+	}{
+		{name: "no observation schedules another canary"},
+		{name: "lane refresh defers completion", deferLane: true},
+		{name: "completion observation recovers", recovered: true, rateLimits: &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{CredentialIdentity: credential, Consumer: telemetry.RESTConsumerSharedPool, Remaining: 4340}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}})
+			connector := &implementProgressConnector{}
+			generation := uint64(0)
+			if tt.deferLane {
+				connector.refreshErr = errors.New("tracker unavailable")
+				generation = 1
+			}
+			orch := &Orchestrator{cfg: cfg, connector: connector, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: func() time.Time { return now }}
+			state := newState(cfg)
+			state.GitHubMonitors[credential] = GitHubMonitor{CredentialIdentity: credential, ProbeIssueID: issue.ID, ProbeAttempts: 1, LastProbeResult: "in_progress"}
+			state.Running[issue.ID] = Running{Issue: issue, GitHubCredential: credential, Generation: generation, StartedAt: now}
+			completedAt := now.Add(5 * time.Minute)
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID: issue.ID, CompletedAt: completedAt,
+				Request: runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeImplement, Generation: generation},
+				Result:  runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, TurnStarted: true, RateLimits: tt.rateLimits},
+			})
+			condition, active := state.GitHubMonitors[credential]
+			if tt.recovered {
+				if active {
+					t.Fatalf("condition = %#v, want recovered credential", condition)
+				}
+				return
+			}
+			wantNext := completedAt.Add(backendCapacityProbeDelayForAttempt(1))
+			if !active || condition.ProbeIssueID != "" || condition.LastProbeResult != "deferred" || !condition.NextProbeAt.Equal(wantNext) {
+				t.Fatalf("condition = %#v, want fresh bounded probe at %s", condition, wantNext)
+			}
+			if workerGitHubMonitorBlocks(&state, "other", Retry{}, wantNext) {
+				t.Fatal("later scheduler pass retained expired credential hold")
+			}
+			other := dispatchTestIssue("other", "In Progress")
+			newDispatchPlanner(cfg).markDispatched(&state, dispatchAction{issue: other}, wantNext)
+			if got := state.GitHubMonitors[credential].ProbeIssueID; got != other.ID {
+				t.Fatalf("follow-up probe owner = %q, want %q", got, other.ID)
+			}
+			if got := state.Running[other.ID].GitHubCredential; got != credential {
+				t.Fatalf("follow-up worker credential = %q, want %q", got, credential)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubMonitorOlderObservationDoesNotClearNewFailure(t *testing.T) {
+	t.Parallel()
+	credential := "github-rest:shared-worker"
+	old := time.Date(2026, 9, 24, 6, 10, 0, 0, time.UTC)
+	newer := old.Add(time.Minute)
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
+	orch := &Orchestrator{cfg: cfg, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	state := newState(cfg)
+	state.GitHubMonitors[credential] = GitHubMonitor{CredentialIdentity: credential, LastObservedAt: newer, NextProbeAt: newer.Add(time.Minute)}
+	running := Running{Issue: connector.Issue{ID: "canary"}, GitHubCredential: credential}
+	orch.recoverWorkerGitHubMonitorFromUpdate(&state, running, &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{CredentialIdentity: credential, ObservedAt: &old}}}, newer.Add(time.Minute))
+	if _, ok := state.GitHubMonitors[credential]; !ok {
+		t.Fatal("older observation cleared the newer monitor failure")
+	}
+	orch.recoverWorkerGitHubMonitorFromUpdate(&state, running, &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{CredentialIdentity: credential, ObservedAt: &newer}}}, newer.Add(time.Minute))
+	if _, ok := state.GitHubMonitors[credential]; ok {
+		t.Fatal("current observation did not clear the monitor failure")
+	}
+}
+
 func TestWorkerGitHubMonitorRawSentinelUsesRecoverableFallbackScope(t *testing.T) {
 	t.Parallel()
 

@@ -247,6 +247,9 @@ func (c *Connector) hydratePullRequestWithEvidence(ctx context.Context, issue co
 			issues[0].PRSource = node.CandidatePR.source
 			attachPullRequestToIssue(&issues[0], node.CandidatePR.repo, *node.CandidatePR.pullRequest)
 		}
+		if err := c.attachRequiredBranchChecks(ctx, &issues[0]); err != nil {
+			return issues[0], err
+		}
 		return issues[0], nil
 	}
 	if node.CandidatePR != nil {

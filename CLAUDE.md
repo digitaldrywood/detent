@@ -15,10 +15,10 @@
 
 ## Workflow
 
-- Work from a Detent-created worktree branch, never directly on `main`.
+- Work from a Detent-created worktree branch, never directly on `develop` or `main`. Branch from and target `develop`; `main` is production (see [docs/branching.md](docs/branching.md)).
 - Keep generated files and runtime output inside the current worktree.
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
-- Before implementation, confirm dependencies listed in the issue are merged into `origin/main`.
+- Before implementation, confirm dependencies listed in the issue are merged into `origin/develop`.
 - Keep changes scoped to the active issue.
 - Run `make generate` before committing when templates, sqlc queries, or CSS inputs change.
 - Commit only when explicitly requested by the workflow or human, and use conventional commit messages.

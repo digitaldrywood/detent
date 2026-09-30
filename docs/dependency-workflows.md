@@ -4,74 +4,51 @@
 
 Use Todo for genuine software dependency waiting and preserve existing PR phases.
 
-## Human questions
+## Human action
 
-Ask clarification and approval questions in normal comments on the original
-issue. Never create synthetic human-prerequisite issues, labels, or dependency
-edges. The old `ensure_human_prerequisite` mutation is disabled, including for
-existing issues. Intentional standalone human tasks remain non-executable.
+Finish independent technical work and authorized fallbacks first. If a person
+must make a product decision or perform a physical action, record a concrete
+`human_action` in the Workpad `detent-status` block with `status: blocked`.
+Detent routes the card to Blocked, where the board shows "Needs you". Keep any
+existing PR intact. A reply authorizes only what it says; retain separate
+authorization for sends, publishing, deployment, charges, and destructive
+actions. Instance and infrastructure failures stay attributed to the instance.
 
-Finish independent technical work, stub-testable implementation, and authorized
-fallbacks first. Use `ask_human_question` with a stable `key` and a readable
-`question`: explain the concrete blocker, researched recommendation, practical
-alternatives, and exact decision. Keep the current lane and PR intact and leave
-the Workpad `in_progress`. Detent records the question and comment IDs in SQLite
-and releases the worker without completing the issue.
+Do not create synthetic human-prerequisite issues, labels, or dependency edges.
+Intentional standalone human tasks remain non-executable.
 
-An authorized ordinary-language reply resumes interpretation by the worker.
-Ambiguous replies require a focused follow-up in the same thread with a new
-key. No special command, YAML, completion evidence, or issue closure is required.
-A reply is never blanket approval: preserve action-specific authorization for
-live sends, publishing, deployment, charges, and destructive operations.
+When the action is done, an authorized project member records what was decided
+or done in a **newer** `## Codex Workpad` comment on the original issue. Clear
+`human_action` in its structured block. If no other blocker remains, use:
 
-Only one outstanding question can be reserved per issue. Posting intents are
-persisted before GitHub writes; retries reconcile a stable comment marker. An
-explicitly rejected post releases its unposted reservation so a retry can ask
-the question, including after restart. Confirmed comments are never released.
-An uncertain post is held for reconciliation rather than blindly reposted and
-is reported as a posting error, not as waiting for a human reply. Separate
-failure and operational parks are never cleared by the question mechanism.
-
-### Migrate a generated question
-
-After upgrading Detent, use the authenticated project-write endpoint
-`POST /api/v1/projects/{project_id}/human-questions/migrate` with a JSON body:
-
-```json
-{
-  "project_id": "<configured project ID>",
-  "dependent": "digitaldrywood/digitaldrywood#647",
-  "source": "digitaldrywood/digitaldrywood#685",
-  "source_body_sha256": "e09e09f2c8c2548f9efc44bb4ea8dc8d906f481081fa9da1e4997a8307bbbd90",
-  "previously_generated_question": true,
-  "question": "Newsletter delivery remains deferred and does not block completed #647. For future delivery work, should we use a human-operated Sender step with final content and consent-checked recipient review before each send? The investigation found that the ID-only send endpoint cannot pin the approved payload. I recommend a reviewed manual handoff; the alternative is to keep delivery unavailable until content and audience can be pinned. This decision does not authorize any actual send or reopen #647."
-}
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
 ```
 
-The hash above selects #685 as inspected on September 9, 2026. Re-read the source
-and obtain its exact current body hash if it changes; do not automatically
-accept drift. Select only generated clarification/approval issues explicitly
-approved for migration, never intentional standalone human work or genuine
-software dependencies. Repeat for every original dependent of a selected source.
+Detent recognizes an authorized Workpad update made after the Blocked entry
+and moves the issue through its existing recorded-blocker recovery to Todo or
+Rework. An ordinary reply alone does not clear the Workpad. If other blockers
+remain, keep them in the newer blocked Workpad; Detent retains their normal
+dependency or predicate checks. Do not move the tracker lane by hand.
 
-The concrete #647 issue was subsequently completed with delivery deferred and
-the #685 dependency removed. `previously_generated_question` explicitly attests
-to that previously generated question when no dependency remains. It defaults
-to false; never use it for intentional standalone human tasks. Migration may
-post on a closed original issue but never reopens it or creates a new dependency.
+### Convert an older generated question prerequisite
 
-The endpoint reserves the internal wait and posts the readable question with
-source context before removing the selected body/native dependency and Workpad
-blocker. It retains unrelated blockers, PR state, and historical text. The source
-is retired as **not planned**, with a superseded explanation, only after no
-remaining body/native dependents exist. Its contract and history remain intact;
-no completion evidence is invented. Retries reuse the persisted question. A
-partial failure is safe to retry with the same request. An uncertain comment
-post remains held for reconciliation without generating a second question.
-
-Migration must go through the running service that owns SQLite; do not open or
-edit its database from a separate process. The endpoint does not restart Detent.
-Existing breaker parks remain subject to their own recovery rules.
+An upgrade can leave a generated `detent-human` issue linked to executable
+work. The removed question-migration endpoint cannot convert it. For each
+affected dependent, first inspect the generated source and confirm that it is
+an unresolved generated question, not a software dependency or an intentional
+standalone human task. Record the unresolved decision as a concrete blocked
+Workpad `human_action` on the dependent, preserving unrelated blockers and its
+PR. Then remove the generated source from the dependent's `Depends on:` or
+`Blocked by:` line and from any native tracker dependency relation. Detent
+keeps the dependent in Blocked with "Needs you" until the action is cleared as
+above. Repeat for every dependent before retiring the generated source as not
+planned, with a link to the dependents; retain the source and its comments as
+history. Already completed dependents stay completed. Never treat closing the
+source as approval of the decision or permission for an external action.
 
 ## Dependency configuration
 

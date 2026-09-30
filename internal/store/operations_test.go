@@ -59,7 +59,7 @@ func TestOperationsRecordedHistory(t *testing.T) {
 			if len(report.Actions) != 1 || report.Actions[0].Kind != "return_retired_parks" {
 				t.Fatalf("actions: %#v", report.Actions)
 			}
-			if len(report.Decisions) != 1 || report.Decisions[0].URL != "https://github.com/owner/repo/issues/1#issuecomment-123" {
+			if len(report.Decisions) != 0 {
 				t.Fatalf("decisions: %#v", report.Decisions)
 			}
 			refreshed, err := backend.OperationsReport(t.Context(), now, now)

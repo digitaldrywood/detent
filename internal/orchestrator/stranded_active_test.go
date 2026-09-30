@@ -1,11 +1,11 @@
 package orchestrator
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -137,161 +137,48 @@ func TestStrandedActiveIssueSnapshots(t *testing.T) {
 	}
 }
 
-func TestRecoverStrandedActiveIssues(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 8, 17, 15, 0, 0, 0, time.UTC)
-	enteredAt := now.Add(-30 * time.Minute)
-	baseIssue := connector.Issue{
-		ID:             "issue-1860",
-		Identifier:     "digitaldrywood/detent#1860",
-		URL:            "https://github.com/digitaldrywood/detent/issues/1860",
-		Title:          "Recover stranded active cards",
-		State:          "In Progress",
-		StageUpdatedAt: &enteredAt,
-	}
-
-	tests := []struct {
-		name       string
-		mutate     func(*connector.Issue, *State)
-		workspace  runpkg.BlockedRecoverySnapshot
-		wantTarget string
+func TestTickDispatchesPlanApprovedIssueAfterLongRefresh(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		interval time.Duration
+		pr       *connector.PullRequest
 	}{
-		{
-			name:       "stranded with no artifacts recovers to Todo",
-			workspace:  runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "missing"},
-			wantTarget: "Todo",
-		},
-		{
-			name: "stranded with open pull request routes to Rework",
-			mutate: func(issue *connector.Issue, _ *State) {
-				issue.PullRequest = &connector.PullRequest{Number: 1861, State: "OPEN"}
-			},
-			workspace:  runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "missing"},
-			wantTarget: autoPromoteReworkState,
-		},
-		{
-			name: "stranded with unpushed work routes to Rework",
-			workspace: runpkg.BlockedRecoverySnapshot{
-				WorkspaceStatus:  "present",
-				WorkspacePresent: true,
-				HeadSHA:          "work-head",
-				BaseFingerprint:  "base-head",
-				UnpushedCommits:  1,
-			},
-			wantTarget: autoPromoteReworkState,
-		},
-		{
-			name: "stranded with dirty worktree routes to Rework",
-			workspace: runpkg.BlockedRecoverySnapshot{
-				WorkspaceStatus:  "present",
-				WorkspacePresent: true,
-				HeadSHA:          "base-head",
-				BaseFingerprint:  "base-head",
-				WorkspaceFiles:   2,
-			},
-			wantTarget: autoPromoteReworkState,
-		},
-		{
-			name: "stranded with pushed workspace commit routes to Rework",
-			workspace: runpkg.BlockedRecoverySnapshot{
-				WorkspaceStatus:  "present",
-				WorkspacePresent: true,
-				HeadSHA:          "pushed-head",
-				BaseFingerprint:  "base-head",
-			},
-			wantTarget: autoPromoteReworkState,
-		},
-		{
-			name: "stranded with clean base workspace recovers to Todo",
-			workspace: runpkg.BlockedRecoverySnapshot{
-				WorkspaceStatus:  "present",
-				WorkspacePresent: true,
-				HeadSHA:          "base-head",
-				BaseFingerprint:  "base-head",
-			},
-			wantTarget: "Todo",
-		},
-		{
-			name: "live worker is never disturbed",
-			mutate: func(issue *connector.Issue, state *State) {
-				state.Running[issue.ID] = Running{Issue: *issue}
-			},
-			workspace: runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "missing"},
-		},
-		{
-			name: "live worker with thirteen minute delayed heartbeat is never routed",
-			mutate: func(issue *connector.Issue, state *State) {
-				delayed := now.Add(-13 * time.Minute)
-				state.Running[issue.ID] = Running{Issue: cloneIssue(*issue)}
-				state.WorkAttempts = []telemetry.WorkAttempt{{IssueID: issue.ID, Status: "active", Stale: true, HeartbeatAt: &delayed, LeaseExpiresAt: &delayed}}
-			},
-		},
-		{
-			name:      "unavailable workspace evidence holds active lane",
-			workspace: runpkg.BlockedRecoverySnapshot{WorkspaceStatus: "unavailable"},
-		},
-	}
-
-	for _, tt := range tests {
+		{name: "eleven minute refresh", interval: 11 * time.Minute},
+		{name: "twenty three minute refresh", interval: 23 * time.Minute},
+		{name: "twenty three minute refresh with existing PR", interval: 23 * time.Minute, pr: &connector.PullRequest{Number: 3238, State: "OPEN", URL: "https://github.test/digitaldrywood/detent/pull/3238"}},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			issue := cloneIssue(baseIssue)
-			state := State{
-				StrandedActiveThreshold: 10 * time.Minute,
-				Running:                 map[string]Running{},
-				BoardIssues:             []connector.Issue{issue},
+			approvedAt := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+			now := approvedAt.Add(tt.interval)
+			issue := connector.NewIssue()
+			issue.ID = "issue-3238"
+			issue.Identifier = "digitaldrywood/detent#3238"
+			issue.URL = "https://github.test/digitaldrywood/detent/issues/3238"
+			issue.Title = "Dispatch approved plan"
+			issue.State = gate.DefaultPlanStop
+			issue.Labels = []string{"plan-approved"}
+			issue.PullRequest = tt.pr
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done", "Cancelled"}, StrandedActiveThreshold: 10 * time.Minute, Plan: gate.PlanConfig{Enabled: true, Review: gate.PlanReviewHuman, Stop: gate.DefaultPlanStop}})
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1)}
+			state := newState(cfg)
+			defer orch.releaseRunningSlots(&state)
+			if transitioned := orch.reviewPlanIssues(t.Context(), &state, []connector.Issue{issue}, approvedAt); len(transitioned) != 1 {
+				t.Fatalf("plan approval = %#v, want transition to In Progress", transitioned)
 			}
-			if tt.mutate != nil {
-				tt.mutate(&issue, &state)
-				state.BoardIssues[0] = cloneIssue(issue)
+			if len(tracker.updates) != 1 || tracker.updates[0].state != "In Progress" {
+				t.Fatalf("plan approval updates = %#v, want In Progress", tracker.updates)
 			}
-			tracker := &strandedActiveRecoveryConnector{}
-			orchestrator := &Orchestrator{
-				cfg:               Config{ActiveStates: []string{"Todo", "In Progress", autoPromoteReworkState}},
-				connector:         tracker,
-				recoveryInspector: strandedActiveRecoveryInspector{snapshot: tt.workspace},
+			tracker.stateIssues[0].StageUpdatedAt = &approvedAt
+			orch.tick(t.Context(), &state, now)
+			if len(tracker.updates) != 1 {
+				t.Fatalf("lane updates = %#v, want no stranded recovery transition", tracker.updates)
 			}
-
-			transitioned := orchestrator.recoverStrandedActiveIssues(t.Context(), &state, []connector.Issue{issue}, now)
-			if tt.wantTarget == "" {
-				if len(transitioned) != 0 || len(tracker.updates) != 0 {
-					t.Fatalf("transitioned = %#v, updates = %#v, want no transition", transitioned, tracker.updates)
-				}
-				return
-			}
-			if _, ok := transitioned[issue.ID]; !ok {
-				t.Fatalf("transitioned = %#v, want %s", transitioned, issue.ID)
-			}
-			if len(tracker.updates) != 1 || tracker.updates[0].issueID != issue.ID || tracker.updates[0].state != tt.wantTarget {
-				t.Fatalf("updates = %#v, want %s -> %s", tracker.updates, issue.ID, tt.wantTarget)
+			if _, ok := state.Running[issue.ID]; !ok {
+				t.Fatalf("issue was not dispatched after %s; decisions = %#v", tt.interval, state.SchedulerDecisions)
 			}
 		})
 	}
-}
-
-type strandedActiveRecoveryUpdate struct {
-	issueID string
-	state   string
-}
-
-type strandedActiveRecoveryConnector struct {
-	connector.Connector
-	updates []strandedActiveRecoveryUpdate
-}
-
-func (c *strandedActiveRecoveryConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
-	c.updates = append(c.updates, strandedActiveRecoveryUpdate{issueID: issueID, state: state})
-	return nil
-}
-
-type strandedActiveRecoveryInspector struct {
-	snapshot runpkg.BlockedRecoverySnapshot
-}
-
-func (i strandedActiveRecoveryInspector) BlockedRecoverySnapshot(context.Context, runpkg.RunRequest) runpkg.BlockedRecoverySnapshot {
-	return i.snapshot
 }
 
 func withStrandedActiveAttempts(state State, attempts ...telemetry.WorkAttempt) State {

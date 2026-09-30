@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,15 +13,17 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func (b *AgentBackend) RunTurn(
 	ctx context.Context,
 	req runner.AgentTurnRequest,
 	onUpdate runner.AgentUpdateHandler,
-) (runner.AgentTurnResult, error) {
+) (turnResult runner.AgentTurnResult, turnErr error) {
 	ctx = contextOrBackground(ctx)
 	turnTimeout := b.options.TurnTimeout
 	if req.TurnTimeout > 0 {
@@ -32,7 +35,7 @@ func (b *AgentBackend) RunTurn(
 		defer cancel()
 	}
 
-	cmd, err := b.command(ctx, req)
+	cmd, sandboxSettings, err := b.commandWithIsolation(ctx, req)
 	if err != nil {
 		return runner.AgentTurnResult{}, err
 	}
@@ -40,7 +43,24 @@ func (b *AgentBackend) RunTurn(
 	procgroup.SetTempDir(cmd, req.TempDir)
 
 	stderr := newTailBuffer(b.options.StderrTailBytes)
-	cmd.Stdin = strings.NewReader(req.Prompt)
+	var sandboxInput io.WriteCloser
+	managedSandbox := sandboxSettings != nil
+	if managedSandbox {
+		sandboxInput, err = cmd.StdinPipe()
+		if err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		defer func() {
+			if sandboxInput != nil {
+				if err := sandboxInput.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+					turnErr = errors.Join(turnErr, err)
+				}
+			}
+		}()
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"CLAUDE_CODE_TMPDIR": req.TempDir}})
+	} else {
+		cmd.Stdin = strings.NewReader(req.Prompt)
+	}
 
 	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
@@ -115,7 +135,23 @@ func (b *AgentBackend) RunTurn(
 	go func() {
 		waitDone <- waitAndCleanup(cmd, processGroupID)
 	}()
-	state, streamErr := b.consumeStream(ctx, cmd, processGroupID, stdout, onUpdate)
+	var streamOutput io.Reader = stdout
+	if sandboxInput != nil {
+		reader, verifyErr := verifySandboxProcess(ctx, sandboxInput, stdout, sandboxSettings)
+		if verifyErr == nil {
+			verifyErr = json.NewEncoder(sandboxInput).Encode(map[string]any{"type": "user", "session_id": "", "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": req.Prompt}})
+		}
+		if err := sandboxInput.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			verifyErr = errors.Join(verifyErr, err)
+		}
+		sandboxInput = nil
+		if verifyErr != nil {
+			verifyErr = terminateWithCause(cmd, processGroupID, verifyErr)
+			return runner.AgentTurnResult{}, errors.Join(verifyErr, <-waitDone, <-stderrDone, stdout.Close(), stderrReader.Close())
+		}
+		streamOutput = reader
+	}
+	state, streamErr := b.consumeStream(ctx, cmd, processGroupID, streamOutput, onUpdate)
 	waitErr := <-waitDone
 	if stderrErr := <-stderrDone; stderrErr != nil {
 		waitErr = errors.Join(waitErr, fmt.Errorf("read claude stderr: %w", stderrErr))
@@ -157,7 +193,57 @@ func (b *AgentBackend) RunTurn(
 }
 
 func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, error) {
+	cmd, _, err := b.commandWithIsolation(ctx, req)
+	return cmd, err
+}
+
+func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, map[string]any, error) {
+	var verificationSettings map[string]any
 	argv := b.argv(req)
+	if b.options.IsolationPolicy != nil {
+		policy, pinned := isolation.FromContext(ctx)
+		var err error
+		if !pinned {
+			policy, err = b.options.IsolationPolicy()
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		policy.WritableRoots = []string{req.Workspace}
+		if req.TempDir != "" {
+			policy.WritableRoots = append(policy.WritableRoots, req.TempDir)
+		}
+		policy.WritableRoots = append(policy.WritableRoots, req.ExtraWritableRoots...)
+		if policy.Tier == isolation.Sandbox && !req.ReadOnly {
+			paths, err := toolcache.Resolve(ctx)
+			if err == nil {
+				for _, path := range []string{paths.Build, paths.Modules} {
+					if path != "" && path != "off" {
+						policy.WritableRoots = append(policy.WritableRoots, path)
+					}
+				}
+			}
+		}
+		settings, err := IsolationSettings(policy)
+		if err != nil {
+			return nil, nil, err
+		}
+		if policy.Tier == "sandbox" && len(b.options.ExtraArgs) > 0 {
+			return nil, nil, errors.New("runner isolation cannot apply Claude extra arguments")
+		}
+		if policy.Tier == "sandbox" {
+			verificationSettings = settings
+			bounded := *b
+			bounded.options.PermissionMode = "acceptEdits"
+			argv = bounded.argv(req)
+			argv = append(argv, "--input-format", "stream-json", "--tools", "Bash,Read,Glob,Grep", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`)
+		}
+		encoded, err := json.Marshal(settings)
+		if err != nil {
+			return nil, nil, err
+		}
+		argv = append(argv, "--setting-sources", "", "--settings", string(encoded))
+	}
 	var cmd *exec.Cmd
 	if b.options.CommandFactoryWithArgs != nil {
 		cmd = b.options.CommandFactoryWithArgs(ctx, argv)
@@ -165,7 +251,7 @@ func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest)
 		cmd = b.options.CommandFactory(ctx)
 	}
 	if cmd == nil {
-		return nil, ErrNilCommand
+		return nil, nil, ErrNilCommand
 	}
 	cmd.Dir = req.Workspace
 	if len(cmd.Args) == 0 {
@@ -174,7 +260,7 @@ func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest)
 	if b.options.CommandFactoryWithArgs == nil {
 		cmd.Args = append(cmd.Args, argv...)
 	}
-	return cmd, nil
+	return cmd, verificationSettings, nil
 }
 
 func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {

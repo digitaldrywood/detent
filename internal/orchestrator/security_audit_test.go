@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -125,6 +126,109 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDurableAuditPassSupersedesRunningStageForGate(t *testing.T) {
+	t.Parallel()
+	issue := securityAuditTestIssue()
+	issue.State = "Human Review"
+	issue.PullRequest.State = "open"
+	issue.PullRequest.CIStatus = "success"
+	issue.PullRequest.MergeableState = "clean"
+	memo := newSecurityAuditMemoryStore()
+	o := securityAuditTestOrchestrator(memo)
+	o.cfg.AutoPromote.Enabled = true
+	o.cfg.AutoPromote.Gate.AutomatedReview = gate.AutomatedReviewOff
+	state := newState(o.cfg)
+	now := time.Now()
+	o.refreshRequiredGateEvidence(t.Context(), &state, []connector.Issue{issue})
+	if got := state.RequiredGates[issue.ID]; got.Reason != string(gate.ReasonSecurityAuditMissing) {
+		t.Fatalf("initial gate = %+v", got)
+	}
+	run := securityAuditPassingRun(issue)
+	if _, err := memo.RecordSecurityAuditRun(t.Context(), run); err != nil {
+		t.Fatal(err)
+	}
+	o.securityAuditRuns[o.securityAuditIdentity(issue).cacheKey] = struct{}{}
+	for _, tc := range []struct {
+		name       string
+		head       string
+		wantReason string
+		wantRun    int64
+		wantAction AutoPromoteAction
+	}{
+		{name: "exact head", head: issue.PullRequest.HeadSHA, wantReason: string(gate.ReasonReady), wantRun: run.ID, wantAction: AutoPromoteActionPromote},
+		{name: "old head", head: "next-head", wantReason: string(gate.ReasonSecurityAuditMissing), wantAction: AutoPromoteActionAwaitReview},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := cloneIssue(issue)
+			current.PullRequest.HeadSHA = tc.head
+			o.refreshRequiredGateEvidence(t.Context(), &state, []connector.Issue{current})
+			got := state.RequiredGates[current.ID]
+			if got.Reason != tc.wantReason || got.AuditRunID != tc.wantRun {
+				t.Fatalf("required gate = %+v, want reason %s run %d", got, tc.wantReason, tc.wantRun)
+			}
+			evaluation := o.securityAuditEvaluation(t.Context(), current)
+			summary := AutoPromoteSummaryFromIssue(current)
+			summary.SecurityAudit = evaluation
+			decision := EvaluateAutoPromote(current, summary, o.cfg.AutoPromote, now)
+			if decision.Action != tc.wantAction || string(decision.Reason) != tc.wantReason {
+				t.Fatalf("auto promotion = %+v, want %s/%s", decision, tc.wantAction, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestRunningAuditWaitsOnUnusableDurableEvidence(t *testing.T) {
+	t.Parallel()
+	issue := securityAuditTestIssue()
+	for _, tc := range []struct {
+		name            string
+		run             *securityaudit.Run
+		lookupErr       error
+		dispositionsErr error
+	}{
+		{name: "lookup unavailable", lookupErr: errors.New("database busy")},
+		{name: "dispositions unavailable", run: new(securityaudit.Run), dispositionsErr: errors.New("database busy")},
+		{name: "inconclusive run", run: new(securityaudit.Run)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			memo := newSecurityAuditMemoryStore()
+			if tc.run != nil {
+				run := securityAuditPassingRun(issue)
+				if tc.name == "inconclusive run" {
+					run.ExitStatus = securityaudit.ExitStatusFailed
+				}
+				memo.runs = append(memo.runs, run)
+			}
+			o := securityAuditTestOrchestrator(&failingAuditLookupStore{SecurityAuditStore: memo, lookupErr: tc.lookupErr, dispositionsErr: tc.dispositionsErr})
+			o.securityAuditRuns[o.securityAuditIdentity(issue).cacheKey] = struct{}{}
+			got := o.securityAuditEvaluation(t.Context(), issue)
+			if !got.Running || got.Allowed {
+				t.Fatalf("evaluation = %+v, want running wait", got)
+			}
+		})
+	}
+}
+
+type failingAuditLookupStore struct {
+	store.SecurityAuditStore
+	lookupErr       error
+	dispositionsErr error
+}
+
+func (s *failingAuditLookupStore) LatestSecurityAuditRun(ctx context.Context, key securityaudit.Key) (securityaudit.Run, error) {
+	if s.lookupErr != nil {
+		return securityaudit.Run{}, s.lookupErr
+	}
+	return s.SecurityAuditStore.LatestSecurityAuditRun(ctx, key)
+}
+
+func (s *failingAuditLookupStore) ListSecurityAuditDispositions(ctx context.Context, runID int64) ([]securityaudit.Disposition, error) {
+	if s.dispositionsErr != nil {
+		return nil, s.dispositionsErr
+	}
+	return s.SecurityAuditStore.ListSecurityAuditDispositions(ctx, runID)
+}
+
 func TestDisposedFalsePositiveDoesNotProduceSecurityAuditRework(t *testing.T) {
 	t.Parallel()
 
@@ -214,6 +318,51 @@ func TestStartSecurityAuditStageLogsFailedExecution(t *testing.T) {
 	}
 }
 
+func TestOversizedSecurityAuditSnapshotRecordsSizeWithoutReviewerAuth(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		diffBytes int
+		limit     int
+	}{
+		{name: "reported incident", diffBytes: 272414, limit: 262144},
+		{name: "custom limit", diffBytes: 9, limit: 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := securityAuditTestIssue()
+			snapshot := securityAuditSnapshotFromIssue("detent", issue)
+			snapshot.Diff = strings.Repeat("x", tc.limit)
+			snapshot.DiffBytes = tc.diffBytes
+			snapshot.DiffTruncated = true
+			memo := newSecurityAuditMemoryStore()
+			orch := securityAuditTestOrchestrator(memo)
+			orch.connector = &securityAuditTestConnector{snapshot: snapshot}
+			orch.securityAuditor = &securityAuditTestAuditor{preflightLimit: tc.limit}
+			orch.cfg.AutoPromote.Gate.SecurityAudit.MaxAttempts = 1
+			orch.startSecurityAuditStage(t.Context(), issue, time.Now())
+			orch.securityAuditWG.Wait()
+			if len(memo.runs) != 1 {
+				t.Fatalf("runs = %#v, want one refusal", memo.runs)
+			}
+			run := memo.runs[0]
+			size, ok := securityaudit.ParseDiffTooLargeFailure(run.Failure)
+			if !ok || size.ActualBytes != tc.diffBytes || size.LimitBytes != tc.limit || run.AuthenticationMode != securityaudit.AuthenticationNotRun || run.ExitStatus != securityaudit.ExitStatusFailed || run.OutputBytes != 0 {
+				t.Fatalf("run = %#v, size = %#v, want size refusal without reviewer", run, size)
+			}
+			evaluation := orch.securityAuditEvaluation(t.Context(), issue)
+			if evaluation.Reason != securityaudit.ReasonDiffTooLarge || evaluation.ActualBytes != tc.diffBytes || evaluation.MaxDiffBytes != tc.limit {
+				t.Fatalf("evaluation = %#v, want size reason", evaluation)
+			}
+			comment := autoPromoteComment(AutoPromoteSummary{SecurityAudit: evaluation}, AutoPromoteDecision{Action: AutoPromoteActionRework, Reason: AutoPromoteReasonSecurityAuditFailed}, "Human Review", "Rework")
+			for _, required := range []string{"diff_too_large", "security_audit.max_diff_bytes", strconv.Itoa(tc.diffBytes), strconv.Itoa(tc.limit)} {
+				if !strings.Contains(comment, required) {
+					t.Fatalf("comment = %q, missing %q", comment, required)
+				}
+			}
+		})
+	}
+}
+
 func TestLiveSecurityAuditEvaluationRefreshesExactHead(t *testing.T) {
 	t.Parallel()
 
@@ -291,12 +440,17 @@ func (s *securityAuditMemoryStore) ListSecurityAuditDispositions(_ context.Conte
 }
 
 type securityAuditTestAuditor struct {
-	request SecurityAuditRequest
-	err     error
+	request        SecurityAuditRequest
+	err            error
+	preflightLimit int
 }
 
 func (a *securityAuditTestAuditor) Audit(_ context.Context, request SecurityAuditRequest) (SecurityAuditExecution, error) {
 	a.request = request
+	if a.preflightLimit > 0 {
+		_, err := securityaudit.BuildPrompt(request.Snapshot, a.preflightLimit)
+		return SecurityAuditExecution{}, err
+	}
 	startedAt := request.StartedAt.UTC()
 	output := `{"verdict":"pass","summary":"No actionable security findings.","findings":[]}`
 	return SecurityAuditExecution{

@@ -15,6 +15,7 @@ const (
 
 	AuthenticationSubscription = "chatgpt_subscription"
 	AuthenticationRejected     = "non_subscription"
+	AuthenticationNotRun       = "not_run"
 
 	ExitStatusSuccess = "success"
 	ExitStatusFailed  = "failed"
@@ -28,6 +29,7 @@ const (
 	ReasonMissing            = "missing"
 	ReasonStale              = "stale"
 	ReasonFailed             = "failed"
+	ReasonDiffTooLarge       = "diff_too_large"
 	ReasonEmptyOutput        = "empty_output"
 	ReasonMeteredAuth        = "metered_auth"
 	ReasonUntrustedService   = "untrusted_service"
@@ -104,12 +106,14 @@ type Disposition struct {
 }
 
 type Evaluation struct {
-	AllFindings []Finding
-	Running     bool
-	Allowed     bool
-	Reason      string
-	RunID       int64
-	Findings    []Finding
+	AllFindings  []Finding
+	Running      bool
+	Allowed      bool
+	Reason       string
+	RunID        int64
+	Findings     []Finding
+	ActualBytes  int
+	MaxDiffBytes int
 }
 
 func ReviewerDigest() string {
@@ -151,6 +155,16 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 	}
 	if run.ReviewerVersion != ReviewerVersion || run.ReviewerDigest != ReviewerDigest() {
 		evaluation.Reason = ReasonReviewerMismatch
+		return evaluation
+	}
+	if size, ok := ParseDiffTooLargeFailure(run.Failure); ok && run.ExitStatus == ExitStatusFailed {
+		evaluation.Reason = ReasonDiffTooLarge
+		evaluation.ActualBytes = size.ActualBytes
+		evaluation.MaxDiffBytes = size.LimitBytes
+		return evaluation
+	}
+	if run.AuthenticationMode == AuthenticationNotRun {
+		evaluation.Reason = ReasonFailed
 		return evaluation
 	}
 	if run.AuthenticationMode != AuthenticationSubscription {

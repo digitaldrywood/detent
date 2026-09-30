@@ -1,0 +1,75 @@
+[
+  {
+    "id": "proj_parable",
+    "name": "parable",
+    "profile": "native",
+    "can_write": true,
+    "can_manage_runners": true,
+    "states": [
+      { "name": "Todo", "terminal": false, "dispatchable": true, "transitions": ["In Progress"] },
+      { "name": "In Progress", "terminal": false, "dispatchable": false, "transitions": ["Done"] },
+      { "name": "Done", "terminal": true, "dispatchable": false, "transitions": [] }
+    ],
+    "onboarding": {
+      "ready": true,
+      "steps": [
+        {
+          "name": "Repository configuration",
+          "state": "ready",
+          "detail": "Inspect detent.yaml and WORKFLOW.md on the customer host, then explicitly approve the resolved policy descriptor."
+        },
+        {
+          "name": "Local validation",
+          "state": "ready",
+          "detail": "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local."
+        },
+        {
+          "name": "Execution runner",
+          "state": "ready",
+          "detail": "Requires approved project access, matching tags and host selectors, a fresh heartbeat and available capacity."
+        },
+        {
+          "name": "Artifact history",
+          "state": "ready",
+          "detail": "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access."
+        }
+      ]
+    }
+  },
+  {
+    "id": "proj_marketing",
+    "name": "threefold-marketing",
+    "profile": "github_compatible",
+    "can_write": false,
+    "can_manage_runners": false,
+    "states": [
+      { "name": "Todo", "terminal": false, "dispatchable": true, "transitions": ["Done"] },
+      { "name": "Done", "terminal": true, "dispatchable": false, "transitions": [] }
+    ],
+    "onboarding": {
+      "ready": false,
+      "steps": [
+        {
+          "name": "Repository configuration",
+          "state": "ready",
+          "detail": "Inspect detent.yaml and WORKFLOW.md on the customer host, then explicitly approve the resolved policy descriptor."
+        },
+        {
+          "name": "Local validation",
+          "state": "action_required",
+          "detail": "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local."
+        },
+        {
+          "name": "Execution runner",
+          "state": "action_required",
+          "detail": "Requires approved project access, matching tags and host selectors, a fresh heartbeat and available capacity."
+        },
+        {
+          "name": "Artifact history",
+          "state": "action_required",
+          "detail": "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access."
+        }
+      ]
+    }
+  }
+]

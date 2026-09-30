@@ -21,7 +21,6 @@ func TestINV13BoardCardContent(t *testing.T) {
 		want string
 	}{
 		{name: "running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "Running"},
-		{name: "question", view: boardCardView{Facts: []cardFactView{{Name: "reason", Text: "waiting for a human reply · 4h"}}}, card: projectKanbanCard{Blockers: []string{"repo#1"}}, want: "Needs your reply · 4h"},
 		{name: "blocked", card: projectKanbanCard{Blockers: []string{"repo#1"}}, want: "Blocked · 1"},
 		{name: "dependency", view: boardCardView{DispatchStatus: "Waiting"}, card: projectKanbanCard{Blockers: []string{"digitaldrywood/pyroapex#2129 [native] (Rework)"}}, want: "Waiting on #2129"},
 		{name: "CI red", card: projectKanbanCard{CIStatus: "fail"}, want: "CI failed"},

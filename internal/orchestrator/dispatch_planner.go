@@ -18,9 +18,10 @@ import (
 )
 
 type dispatchPlanner struct {
-	recordedBlockers func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
-	cfg              Config
-	now              time.Time
+	operatorRejectedHead func(connector.Issue) (bool, error)
+	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
+	cfg                  Config
+	now                  time.Time
 }
 
 type dispatchPlanHooks struct {
@@ -160,14 +161,6 @@ func (p dispatchPlanner) plan(
 					continue
 				}
 			}
-			if reservation, blocked := mergeReservationBlocks(state, issue, now); blocked {
-				logDecision(dispatchPlanDecision{
-					Issue: issue, QueuePosition: queuePosition,
-					SkipReason: "merge_ci_reservation",
-					SkipDetail: "merge running for " + reservation.IssueID,
-				})
-				continue
-			}
 			action, ok, reason := p.retryAction(state, issue, retry, now)
 			if !ok {
 				logDecision(dispatchPlanDecision{
@@ -213,14 +206,6 @@ func (p dispatchPlanner) plan(
 				})
 				continue
 			}
-		}
-		if reservation, blocked := mergeReservationBlocks(state, issue, now); blocked {
-			logDecision(dispatchPlanDecision{
-				Issue: issue, QueuePosition: queuePosition,
-				SkipReason: "merge_ci_reservation",
-				SkipDetail: "merge running for " + reservation.IssueID,
-			})
-			continue
 		}
 		action, ok, reason := p.dispatchAction(state, issue, now)
 		if !ok {
@@ -320,7 +305,7 @@ func (p dispatchPlanner) retryAction(
 	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || retry.CIUnavailable) {
 		return dispatchAction{}, false, dispatchSkipCIUnavailable
 	}
-	if forgeAvailabilityBlocks(state, issue, retry, p.cfg.ForgeHost, now) {
+	if p.forgeAvailabilityBlocks(state, issue, retry, now) {
 		return dispatchAction{}, false, dispatchSkipForgeUnavailable
 	}
 	if workerGitHubMonitorBlocks(state, issue.ID, retry, now) {
@@ -464,6 +449,7 @@ func (p dispatchPlanner) newDispatchAction(
 
 func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now time.Time) {
 	issue := cloneIssue(action.issue)
+	reserveIdleWorkerGitHubMonitorProbe(state, issue.ID, now)
 	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	reserveMergeCandidate(state, issue, now)
 	state.Running[issue.ID] = Running{
@@ -759,7 +745,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if activeTrackerUnavailable(state) && trackerDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
 	}
-	if forgeAvailabilityBlocks(state, issue, Retry{}, p.cfg.ForgeHost, now) {
+	if p.forgeAvailabilityBlocks(state, issue, Retry{}, now) {
 		return dispatchableDecision{reason: dispatchSkipForgeUnavailable}
 	}
 	if workerGitHubMonitorBlocks(state, issue.ID, Retry{}, now) {
@@ -784,7 +770,15 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if artifactGateWaitStatusBlocksDispatch(issue, p.cfg.AutoPromote.Gate) {
 		return dispatchableDecision{reason: dispatchSkipArtifactGateWaitStatus}
 	}
-	if autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote) {
+	rejected := false
+	if p.operatorRejectedHead != nil {
+		var err error
+		rejected, err = p.operatorRejectedHead(issue)
+		if err != nil {
+			return dispatchableDecision{reason: dispatchSkipAwaitingGate}
+		}
+	}
+	if autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote) && !rejected {
 		return dispatchableDecision{reason: dispatchSkipAwaitingGate}
 	}
 	if mergedPullRequestReconciliationPending(issue, p.cfg) {
@@ -844,7 +838,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if !mergeControl && !p.workerSlotsAvailable(state, preferredWorkerHost) {
 		return dispatchableDecision{reason: dispatchSkipWorkerHostUnavailable}
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) {
+	if !projectFailureBreakerAllowsDispatch(state, now) && !p.workspaceBreakerAllowsMerge(state, issue) {
 		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
 	}
 	if p.recordedBlockers != nil {

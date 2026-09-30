@@ -214,6 +214,7 @@ type WorkAttemptRecovery interface {
 func (s *Server) apiState(c echo.Context) error {
 	complete := s.stateEndpoints.begin(stateEndpointFleet)
 	defer func() { complete(c.Request().Context()) }()
+	updateFields := c.QueryParam("fields") == "update,counts"
 
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
@@ -222,12 +223,18 @@ func (s *Server) apiState(c echo.Context) error {
 			return c.JSON(http.StatusOK, snapshotErrorResponse(demoBaseTime, "snapshot_unavailable", "Snapshot unavailable"))
 		}
 		snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
+		if updateFields {
+			return c.JSON(http.StatusOK, updateStateResponse(snapshot))
+		}
 		return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
 	}
 	now := s.now()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
+	}
+	if updateFields {
+		return c.JSON(http.StatusOK, updateStateResponse(snapshot))
 	}
 	var enrichment stateEnrichmentAPIResponse
 	if !snapshot.Shutdown.Draining {
@@ -240,6 +247,13 @@ func (s *Server) apiState(c echo.Context) error {
 	response := stateResponse(snapshot, generatedAt(snapshot, now), now, s.instanceName(), s.build)
 	response.Enrichment = enrichment
 	return c.JSON(http.StatusOK, response)
+}
+
+func updateStateResponse(snapshot telemetry.Snapshot) map[string]any {
+	return map[string]any{
+		"update": snapshot.Update,
+		"counts": map[string]int{"running": len(snapshot.Running)},
+	}
 }
 
 func (s *Server) apiProject(c echo.Context) error {

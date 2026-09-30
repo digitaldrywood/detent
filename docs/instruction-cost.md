@@ -45,8 +45,8 @@ Use one shared rule rather than repeating it in each lane and completion block:
 > the full log and return a short summary; inspect relevant details on failure.
 
 “Full gate” means the command selected for that project and stage. For this
-Detent worker it is `make check-fast`; the heavier merge-queue checks remain
-separate. Preserve any explicit safety-critical validation requirements.
+Detent worker it is `make check-fast`; the scheduled GitHub Actions run owns
+the complete suite. Preserve any explicit safety-critical validation requirements.
 Fixes after a failed run need validation again; a green unchanged tree does not.
 
 If a project already provides `make check-summary`, use it after confirming it

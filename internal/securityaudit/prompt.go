@@ -65,7 +65,25 @@ type Snapshot struct {
 	BaseSHA          string
 	HeadSHA          string
 	Diff             string
+	DiffBytes        int
 	DiffTruncated    bool
+}
+
+type DiffTooLargeError struct {
+	ActualBytes int
+	LimitBytes  int
+}
+
+func (e *DiffTooLargeError) Error() string {
+	return fmt.Sprintf("diff_too_large actual_bytes=%d limit_bytes=%d", e.ActualBytes, e.LimitBytes)
+}
+
+func ParseDiffTooLargeFailure(failure string) (DiffTooLargeError, bool) {
+	var size DiffTooLargeError
+	if _, err := fmt.Sscanf(failure, "diff_too_large actual_bytes=%d limit_bytes=%d", &size.ActualBytes, &size.LimitBytes); err != nil || size.ActualBytes <= size.LimitBytes || size.LimitBytes <= 0 {
+		return DiffTooLargeError{}, false
+	}
+	return size, true
 }
 
 func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
@@ -76,6 +94,9 @@ func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
 		return "", errors.New("security audit snapshot requires repository, pull request number, base SHA, and head SHA")
 	}
 	size := len(snapshot.Diff)
+	if snapshot.DiffBytes > size {
+		size = snapshot.DiffBytes
+	}
 	for path, content := range snapshot.FindingFiles {
 		size += len(path) + len(content)
 	}
@@ -87,7 +108,7 @@ func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
 		size += len(raw)
 	}
 	if snapshot.DiffTruncated || size > maxDiffBytes {
-		return "", fmt.Errorf("security audit textual diff exceeds %d bytes", maxDiffBytes)
+		return "", &DiffTooLargeError{ActualBytes: size, LimitBytes: maxDiffBytes}
 	}
 	if strings.TrimSpace(snapshot.Diff) == "" && snapshot.Previous == nil {
 		return "", errors.New("security audit textual diff is empty")

@@ -7,12 +7,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -161,12 +163,20 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 	for range 2 {
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding", request), http.StatusOK)
 	}
-	response := f.page(t, "owner", "/projects/"+first)
+	response := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/projects")
 	requireNativeStatus(t, response, http.StatusOK)
-	for _, text := range []string{"Project setup", "existing", "No matching runner", "Missing artifact gateway", "Create your first native issue", "Repository review and merge policy"} {
-		if !strings.Contains(response.Body.String(), text) {
-			t.Errorf("missing %q", text)
-		}
+	var projects []hostedProjectView
+	decodeHubResponse(t, response, &projects)
+	index := slices.IndexFunc(projects, func(project hostedProjectView) bool { return project.ID == first })
+	if index < 0 || projects[index].Onboarding.Ready || len(projects[index].Onboarding.Steps) == 0 {
+		t.Fatalf("project list readiness = %+v", projects)
+	}
+	response = f.page(t, "owner", base+"/onboarding")
+	requireNativeStatus(t, response, http.StatusOK)
+	var setup onboarding.Project
+	decodeHubResponse(t, response, &setup)
+	if setup.Progress.Repository != "existing" || setup.Ready {
+		t.Fatalf("onboarding = %+v", setup)
 	}
 	issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-issue"}, Title: "First native issue", Body: "No GitHub issue required", State: "Todo"}
 	for range 2 {
@@ -205,7 +215,12 @@ func TestOnboardingCustomerBindingValidation(t *testing.T) {
 func seedOnboardingBrowserJourney(t *testing.T) *browserHostedFixture {
 	t.Helper()
 	f := newBrowserHostedFixture(t, true)
-	organization := "/api/v2/organizations/org_browser_preview"
+	return seedHostedOnboardingJourney(t, f)
+}
+
+func seedHostedOnboardingJourney(t *testing.T, f *browserHostedFixture) *browserHostedFixture {
+	t.Helper()
+	organization := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID
 	for _, project := range []string{f.project, f.privateProject} {
 		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
 	}
@@ -229,7 +244,7 @@ func seedOnboardingBrowserJourney(t *testing.T) *browserHostedFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "customer-build-host", DisplayName: "Customer build runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
+	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "customer-build-host", DisplayName: "Customer build runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding", map[string]any{"idempotency_key": "ready", "progress": onboarding.Progress{Repository: "existing", Doctor: true, Provider: true, Artifacts: "local"}}), http.StatusOK)
 	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-run"}, Title: "First native run", State: "Todo"})
@@ -254,11 +269,11 @@ func TestHostedOnboardingFirstRun(t *testing.T) {
 	t.Parallel()
 	f := seedOnboardingBrowserJourney(t)
 	for _, tt := range []struct{ project, contains string }{
-		{f.project, "Latest execution: succeeded"},
-		{f.privateProject, "gpu"},
+		{f.project, `"latest_run":"succeeded"`},
+		{f.privateProject, `"gpu"`},
 	} {
 		t.Run(tt.project, func(t *testing.T) {
-			response := f.page(t, "owner", "/projects/"+tt.project)
+			response := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/projects/"+tt.project+"/onboarding")
 			requireNativeStatus(t, response, http.StatusOK)
 			if !strings.Contains(response.Body.String(), tt.contains) {
 				t.Fatalf("missing %q", tt.contains)
@@ -289,5 +304,60 @@ func TestOnboardingBrowserPreview(t *testing.T) {
 	case <-f.stop:
 	case <-timer.C:
 	case <-t.Context().Done():
+	}
+}
+
+func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "observed policy")
+	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	first.enroll(t)
+	second := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	second.enroll(t)
+	reader := prepareRunner(t, f, runnerauth.Read)
+	reader.enroll(t)
+	observedIDs := func(t *testing.T) ([]string, *policy.Approval) {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var setup onboarding.Project
+		decodeHubResponse(t, response, &setup)
+		ids := []string{}
+		for _, observed := range setup.ObservedPolicies {
+			ids = append(ids, observed.Policy.ID+"@"+observed.RunnerID)
+		}
+		return ids, setup.Policy
+	}
+	report := func(t *testing.T, token string, body any, status int) {
+		t.Helper()
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, body), status)
+	}
+	original := hubTestPolicy()
+	changed := original
+	changed.Gates.AutoPromote = true
+	changed = changed.WithID()
+
+	if ids, _ := observedIDs(t); len(ids) != 0 {
+		t.Fatalf("observed policies before any report = %v", ids)
+	}
+	report(t, reader.redemption.Credential, original, http.StatusForbidden)
+	report(t, first.redemption.Credential, policy.Descriptor{ID: "nope"}, http.StatusUnprocessableEntity)
+	report(t, first.redemption.Credential, original, http.StatusNoContent)
+	report(t, second.redemption.Credential, changed, http.StatusNoContent)
+	ids, approved := observedIDs(t)
+	want := []string{changed.ID + "@" + second.binding.RunnerID, original.ID + "@" + first.binding.RunnerID}
+	if approved != nil || !slices.Equal(ids, want) {
+		t.Fatalf("observed policies = %v, want %v (approved %+v)", ids, want, approved)
+	}
+
+	approveHubTestPolicy(t, f.service, f.base+"/policy", original)
+	ids, approved = observedIDs(t)
+	if approved == nil || approved.Policy.ID != original.ID || !slices.Equal(ids, want[:1]) {
+		t.Fatalf("after approving the first runner's policy: observed %v, approved %+v", ids, approved)
+	}
+
+	report(t, first.redemption.Credential, changed, http.StatusNoContent)
+	if ids, _ = observedIDs(t); len(ids) != 1 || !strings.HasPrefix(ids[0], changed.ID+"@") {
+		t.Fatalf("two runners reporting the same descriptor = %v, want it once", ids)
 	}
 }

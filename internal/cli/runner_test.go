@@ -9,17 +9,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/observability"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
@@ -173,7 +177,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
 
-	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
+	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, gobudget.Budget{}, nil, nil, serviceapi.Connection{})
 	if err != nil {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
@@ -395,7 +399,7 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	cfg.Workspace.Root = t.TempDir()
 	cfg.Budget.PricingPath = filepath.Join(t.TempDir(), "missing-models.yaml")
 
-	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
+	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, gobudget.Budget{}, nil, nil, serviceapi.Connection{})
 	if err == nil {
 		t.Fatal("buildRunner() error = nil, want pricing load error")
 	}
@@ -562,6 +566,53 @@ func TestBuildCodexCommandUsesConfiguredShell(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		conversation bool
+		want         string
+	}{
+		{name: "ordinary turn keeps the configured command", want: "bash\x00-c\x00codex app-server"},
+		{name: "conversation turn enables questions", conversation: true, want: "bash\x00-c\x00codex app-server --enable default_mode_request_user_input"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			if test.conversation {
+				ctx = codex.WithConversationTurn(ctx)
+			}
+			cmd := buildCodexCommandFromConfig(ctx, " codex app-server ", "bash")
+			if got := strings.Join(cmd.Args, "\x00"); got != test.want {
+				t.Fatalf("Args = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestWithCodexQuestionFeature(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, command, want string
+	}{
+		{name: "app-server gains the feature", command: "codex app-server", want: "codex app-server --enable default_mode_request_user_input"},
+		{name: "explicit stdio keeps its args", command: "codex app-server --stdio", want: "codex app-server --stdio --enable default_mode_request_user_input"},
+		{name: "already enabled", command: "codex app-server --enable default_mode_request_user_input", want: "codex app-server --enable default_mode_request_user_input"},
+		{name: "already set through config", command: "codex app-server -c features.default_mode_request_user_input=false", want: "codex app-server -c features.default_mode_request_user_input=false"},
+		{name: "other commands untouched", command: "codex exec", want: "codex exec"},
+		{name: "empty", command: "", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := withCodexQuestionFeature(test.command); got != test.want {
+				t.Fatalf("withCodexQuestionFeature(%q) = %q, want %q", test.command, got, test.want)
+			}
+		})
+	}
+}
+
 func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
 	t.Parallel()
 
@@ -683,76 +734,79 @@ func TestStartupSnapshotMarksTrackerStateInitializing(t *testing.T) {
 func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	t.Parallel()
 
-	registry := projectpkg.NewRegistry()
-	healthy := startRefreshProject(t, "alpha")
-	waitForProjectDataSeq(t, healthy, 1)
-	mustSetProject(t, registry, healthy)
-
-	snapshotHub := hub.New[telemetry.Snapshot]()
-	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	done := make(chan struct{})
-	var seq atomic.Uint64
-	go func() {
-		defer close(done)
-		publishSnapshots(
-			ctx,
-			registry,
-			agentPoolSnapshotSourceStub{{Name: scheduler.DefaultPoolName, Used: 1, Capacity: 5, Generation: 1}},
-			snapshotHub,
-			&seq,
-			nil,
-			nil,
-			"http://localhost:4101",
-			nil,
-			5*time.Millisecond,
-			func() time.Time { return now },
-		)
-	}()
-
-	var (
-		snapshot telemetry.Snapshot
-		ok       bool
-	)
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		if snapshot, ok = snapshotHub.Latest(); ok {
-			break
+	// Keep startup and publication independent of host scheduling delays.
+	synctest.Test(t, func(t *testing.T) {
+		registry := projectpkg.NewRegistry()
+		healthy := startRefreshProject(t, "alpha")
+		synctest.Wait()
+		state, err := healthy.Orchestrator().State(t.Context())
+		if err != nil {
+			t.Fatalf("State() error = %v", err)
 		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	cancel()
-	<-done
+		if state.DataSeq < 1 {
+			t.Fatalf("startup DataSeq = %d, want >= 1", state.DataSeq)
+		}
+		mustSetProject(t, registry, healthy)
 
-	if !ok {
-		t.Fatal("publishSnapshots did not publish any snapshot")
-	}
-	if !snapshot.GeneratedAt.Equal(now) {
-		t.Fatalf("snapshot.GeneratedAt = %v, want %v", snapshot.GeneratedAt, now)
-	}
-	if snapshot.Project.DisplayName != "alpha" {
-		t.Fatalf("snapshot.Project.DisplayName = %q, want alpha", snapshot.Project.DisplayName)
-	}
-	if len(snapshot.Projects) != 1 {
-		t.Fatalf("snapshot.Projects len = %d, want 1", len(snapshot.Projects))
-	}
-	if snapshot.Projects[0].Project.ID != "alpha" || snapshot.Projects[0].Project.DisplayName != "alpha" {
-		t.Fatalf("snapshot.Projects[0].Project = %#v, want alpha metadata", snapshot.Projects[0].Project)
-	}
-	if snapshot.Projects[0].Project.Pool != scheduler.DefaultPoolName {
-		t.Fatalf("snapshot.Projects[0].Project.Pool = %q, want default", snapshot.Projects[0].Project.Pool)
-	}
-	if !reflect.DeepEqual(snapshot.AgentPools, []telemetry.AgentPool{{Name: scheduler.DefaultPoolName, Used: 1, Capacity: 5, Generation: 1}}) {
-		t.Fatalf("snapshot.AgentPools = %#v, want scheduler utilization", snapshot.AgentPools)
-	}
-	if snapshot.DashboardURL != "http://localhost:4101" {
-		t.Fatalf("snapshot.DashboardURL = %q, want dashboard URL", snapshot.DashboardURL)
-	}
-	if snapshot.Refresh.NextRefreshAt == nil {
-		t.Fatalf("snapshot.Refresh.NextRefreshAt = nil, want next refresh")
-	}
+		snapshotHub := hub.New[telemetry.Snapshot]()
+		now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		done := make(chan struct{})
+		var seq atomic.Uint64
+		go func() {
+			defer close(done)
+			publishSnapshots(
+				ctx,
+				registry,
+				agentPoolSnapshotSourceStub{{Name: scheduler.DefaultPoolName, Used: 1, Capacity: 5, Generation: 1}},
+				snapshotHub,
+				&seq,
+				nil,
+				nil,
+				"http://localhost:4101",
+				nil,
+				5*time.Millisecond,
+				func() time.Time { return now },
+				nil,
+			)
+		}()
+
+		synctest.Wait()
+		snapshot, ok := snapshotHub.Latest()
+		cancel()
+		<-done
+
+		if !ok {
+			t.Fatal("publishSnapshots did not publish any snapshot")
+		}
+		if !snapshot.GeneratedAt.Equal(now) {
+			t.Fatalf("snapshot.GeneratedAt = %v, want %v", snapshot.GeneratedAt, now)
+		}
+		if snapshot.Project.DisplayName != "alpha" {
+			t.Fatalf("snapshot.Project.DisplayName = %q, want alpha", snapshot.Project.DisplayName)
+		}
+		if len(snapshot.Projects) != 1 {
+			t.Fatalf("snapshot.Projects len = %d, want 1", len(snapshot.Projects))
+		}
+		if snapshot.Projects[0].Project.ID != "alpha" || snapshot.Projects[0].Project.DisplayName != "alpha" {
+			t.Fatalf("snapshot.Projects[0].Project = %#v, want alpha metadata", snapshot.Projects[0].Project)
+		}
+		if snapshot.Projects[0].Project.Pool != scheduler.DefaultPoolName {
+			t.Fatalf("snapshot.Projects[0].Project.Pool = %q, want default", snapshot.Projects[0].Project.Pool)
+		}
+		if !reflect.DeepEqual(snapshot.AgentPools, []telemetry.AgentPool{{Name: scheduler.DefaultPoolName, Used: 1, Capacity: 5, Generation: 1}}) {
+			t.Fatalf("snapshot.AgentPools = %#v, want scheduler utilization", snapshot.AgentPools)
+		}
+		if snapshot.DashboardURL != "http://localhost:4101" {
+			t.Fatalf("snapshot.DashboardURL = %q, want dashboard URL", snapshot.DashboardURL)
+		}
+		if snapshot.Refresh.NextRefreshAt == nil {
+			t.Fatalf("snapshot.Refresh.NextRefreshAt = nil, want next refresh")
+		}
+	})
 }
 
 func TestPublishSnapshotOnceAssignsMonotonicSeq(t *testing.T) {
@@ -1564,62 +1618,72 @@ func TestRepublishSnapshotsOnProjectEventsLogsPauseTransitions(t *testing.T) {
 func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
 	t.Parallel()
 
-	registry := projectpkg.NewRegistry()
-	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	updatedAt := now.Add(-7 * time.Minute)
-	pipelineIssue := connector.Issue{
-		ID:         "i-212",
-		Identifier: "digitaldrywood/detent#212",
-		Title:      "Add PR pipeline lanes",
-		State:      "Human Review",
-		UpdatedAt:  &updatedAt,
-		PullRequest: &connector.PullRequest{
-			Number:           218,
-			URL:              "https://github.com/digitaldrywood/detent/pull/218",
-			State:            "OPEN",
-			CIStatus:         "pending",
-			CodexReviewState: "P1",
-		},
-	}
-	project := newRefreshProjectWithConnector(t, "alpha", memory.New(memory.Config{
-		Issues: []connector.Issue{pipelineIssue},
-	}))
-	if err := project.Start(context.Background()); err != nil {
-		t.Fatalf("Project.Start() error = %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
-			t.Fatalf("Project.Stop() error = %v", err)
+	// Keep startup and publication independent of host scheduling delays.
+	synctest.Test(t, func(t *testing.T) {
+		registry := projectpkg.NewRegistry()
+		now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		updatedAt := now.Add(-7 * time.Minute)
+		pipelineIssue := connector.Issue{
+			ID:         "i-212",
+			Identifier: "digitaldrywood/detent#212",
+			Title:      "Add PR pipeline lanes",
+			State:      "Human Review",
+			UpdatedAt:  &updatedAt,
+			PullRequest: &connector.PullRequest{
+				Number:           218,
+				URL:              "https://github.com/digitaldrywood/detent/pull/218",
+				State:            "OPEN",
+				CIStatus:         "pending",
+				CodexReviewState: "P1",
+			},
+		}
+		project := newRefreshProjectWithConnector(t, "alpha", memory.New(memory.Config{
+			Issues: []connector.Issue{pipelineIssue},
+		}))
+		if err := project.Start(context.Background()); err != nil {
+			t.Fatalf("Project.Start() error = %v", err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+				t.Fatalf("Project.Stop() error = %v", err)
+			}
+		})
+		synctest.Wait()
+		state, err := project.Orchestrator().State(t.Context())
+		if err != nil {
+			t.Fatalf("State() error = %v", err)
+		}
+		if state.DataSeq < 1 {
+			t.Fatalf("startup DataSeq = %d, want >= 1", state.DataSeq)
+		}
+		mustSetProject(t, registry, project)
+
+		snapshotHub := hub.New[telemetry.Snapshot]()
+		var seq atomic.Uint64
+		if err := publishSnapshotOnce(context.Background(), registry, nil, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101", nil); err != nil {
+			t.Fatalf("publishSnapshotOnce() error = %v", err)
+		}
+
+		snapshot, ok := snapshotHub.Latest()
+		if !ok {
+			t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
+		}
+		if len(snapshot.Pipeline) != 1 {
+			t.Fatalf("Pipeline len = %d, want 1", len(snapshot.Pipeline))
+		}
+		got := snapshot.Pipeline[0]
+		if got.ID != "i-212" || got.State != "Human Review" || got.Title != "Add PR pipeline lanes" {
+			t.Fatalf("Pipeline[0] = %#v, want issue #212 in Human Review", got)
+		}
+		if got.UpdatedAt == nil || !got.UpdatedAt.Equal(updatedAt) {
+			t.Fatalf("Pipeline[0].UpdatedAt = %v, want %v", got.UpdatedAt, updatedAt)
+		}
+		if got.PullRequest == nil || got.PullRequest.Number != 218 || got.PullRequest.CIStatus != "pending" || got.PullRequest.CodexReviewState != "P1" {
+			t.Fatalf("Pipeline[0].PullRequest = %#v, want PR #218 pending with P1 review", got.PullRequest)
 		}
 	})
-	waitForProjectDataSeq(t, project, 1)
-	mustSetProject(t, registry, project)
-
-	snapshotHub := hub.New[telemetry.Snapshot]()
-	var seq atomic.Uint64
-	if err := publishSnapshotOnce(context.Background(), registry, nil, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101", nil); err != nil {
-		t.Fatalf("publishSnapshotOnce() error = %v", err)
-	}
-
-	snapshot, ok := snapshotHub.Latest()
-	if !ok {
-		t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
-	}
-	if len(snapshot.Pipeline) != 1 {
-		t.Fatalf("Pipeline len = %d, want 1", len(snapshot.Pipeline))
-	}
-	got := snapshot.Pipeline[0]
-	if got.ID != "i-212" || got.State != "Human Review" || got.Title != "Add PR pipeline lanes" {
-		t.Fatalf("Pipeline[0] = %#v, want issue #212 in Human Review", got)
-	}
-	if got.UpdatedAt == nil || !got.UpdatedAt.Equal(updatedAt) {
-		t.Fatalf("Pipeline[0].UpdatedAt = %v, want %v", got.UpdatedAt, updatedAt)
-	}
-	if got.PullRequest == nil || got.PullRequest.Number != 218 || got.PullRequest.CIStatus != "pending" || got.PullRequest.CodexReviewState != "P1" {
-		t.Fatalf("Pipeline[0].PullRequest = %#v, want PR #218 pending with P1 review", got.PullRequest)
-	}
 }
 
 func TestMergeSnapshotMergesInstanceScope(t *testing.T) {
@@ -2500,4 +2564,58 @@ func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHostGoBudgetUsesSharedHostLocation(t *testing.T) {
+	tests := []struct {
+		slots int
+		want  int
+	}{
+		{slots: 0, want: runtime.NumCPU()},
+		{slots: 6, want: 6},
+	}
+	for _, tt := range tests {
+		budget := hostGoBudget(tt.slots)
+		if budget.Slots != tt.want || budget.Dir != gobudget.HostDir() || budget.Executable == "" {
+			t.Fatalf("hostGoBudget(%d) = %+v, want %d slots in %s with an executable", tt.slots, budget, tt.want, gobudget.HostDir())
+		}
+	}
+}
+
+type runnerHeartbeatFunc func(context.Context) error
+
+func (f runnerHeartbeatFunc) Heartbeat(ctx context.Context) error {
+	return f(ctx)
+}
+
+func TestPublishSnapshotsReportsPendingRunner(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		registry := projectpkg.NewRegistry()
+		if err := registry.SetPending(globalconfig.Project{ID: "broken"}, projectpkg.RuntimeError{Message: "invalid workflow"}); err != nil {
+			t.Fatal(err)
+		}
+		snapshots := hub.New[telemetry.Snapshot]()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var calls atomic.Int32
+		reporter := runnerHeartbeatFunc(func(ctx context.Context) error {
+			calls.Add(1)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			publishSnapshots(ctx, registry, nil, snapshots, nil, nil, nil, "", nil, time.Second, time.Now, reporter)
+		}()
+		synctest.Wait()
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		snapshot, ok := snapshots.Latest()
+		if !ok || snapshot.Seq < 3 || calls.Load() != 1 {
+			t.Fatalf("pending runner telemetry: snapshot=%#v calls=%d", snapshot, calls.Load())
+		}
+		cancel()
+		<-done
+	})
 }

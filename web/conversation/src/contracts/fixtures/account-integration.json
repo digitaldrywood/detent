@@ -1,0 +1,25 @@
+{
+  "profile": "native",
+  "revision": "7",
+  "intake": "manual",
+  "projection": "summary",
+  "repository_enabled": true,
+  "repository": "getparable/parable",
+  "authority": {
+    "title": "detent",
+    "body": "detent",
+    "discussion": "detent",
+    "dependencies": "detent",
+    "authors": "detent",
+    "workflow": "detent",
+    "labels": "detent",
+    "assignees": "detent",
+    "priority": "detent",
+    "source_timestamps": "source",
+    "scheduling": "detent",
+    "progress": "detent",
+    "repository_policy": "trusted_repository_revision",
+    "github_merge": "github_branch_protections_and_fresh_checks",
+    "native_approval": "detent_only"
+  }
+}

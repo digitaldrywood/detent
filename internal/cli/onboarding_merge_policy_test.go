@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -63,6 +65,9 @@ func TestInspectOnboardingMergePolicy(t *testing.T) {
 				SourceRoot: root,
 				Repository: "digitaldrywood/detent",
 			}, onboardingMergePolicyInspectionDeps{
+				ciTriggerCheck: func(context.Context, string, workflowconfig.Config) doctorCheck {
+					return doctorCheck{Status: doctorWarn, Detail: "Full CI requires gate.ci_trigger_label: run-full-ci"}
+				},
 				loadWorkflow: workflowconfig.LoadWorkflow,
 				githubMergeSettings: func(_ context.Context, cfg workflowconfig.Config, repository string) (ghconnector.RepositoryMergeSettings, error) {
 					if repository != "digitaldrywood/detent" {
@@ -74,6 +79,13 @@ func TestInspectOnboardingMergePolicy(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("inspectOnboardingMergePolicy() error = %v", err)
+			}
+			var pretty bytes.Buffer
+			if err := writeOnboardingMergePolicyInspectionPretty(&pretty, result); err != nil {
+				t.Fatal(err)
+			}
+			if result.CITriggerCheck.Status != doctorWarn || !strings.Contains(pretty.String(), "Full CI requires gate.ci_trigger_label: run-full-ci") {
+				t.Fatalf("CI diagnostic lost: %s", pretty.String())
 			}
 			if result.SelectedMergeMethod != tt.wantMethod || effectiveMethod != tt.wantMethod {
 				t.Fatalf("selected methods = result %q, reader %q, want %q", result.SelectedMergeMethod, effectiveMethod, tt.wantMethod)

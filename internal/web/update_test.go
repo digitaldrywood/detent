@@ -152,3 +152,47 @@ func TestAPIStateReportsUpdateDrain(t *testing.T) {
 		})
 	}
 }
+
+func TestAPIStateUpdateProjectionStaysSmallForLargeFleet(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{0, 2} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			deps := testDeps(t)
+			snapshot := telemetry.Snapshot{
+				GeneratedAt: time.Now(),
+				Update:      telemetry.Update{State: "draining", ActiveAttempts: count},
+				Running:     make([]telemetry.Running, count),
+				Projects:    []telemetry.ProjectSnapshot{{Project: telemetry.Project{DisplayName: strings.Repeat("x", 1<<20)}}},
+			}
+			if err := deps.Hub.Publish(snapshot); err != nil {
+				t.Fatal(err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			full := httptest.NewRecorder()
+			server.Handler().ServeHTTP(full, httptest.NewRequest(http.MethodGet, "/api/v1/state", nil))
+			if full.Code != http.StatusOK || full.Body.Len() <= 1<<20 {
+				t.Fatalf("full state status=%d bytes=%d, want more than 1 MiB", full.Code, full.Body.Len())
+			}
+			projected := httptest.NewRecorder()
+			server.Handler().ServeHTTP(projected, httptest.NewRequest(http.MethodGet, "/api/v1/state?fields=update,counts", nil))
+			if projected.Code != http.StatusOK || projected.Body.Len() >= 1<<20 {
+				t.Fatalf("projected state status=%d bytes=%d, want less than 1 MiB", projected.Code, projected.Body.Len())
+			}
+			var got struct {
+				Update telemetry.Update `json:"update"`
+				Counts struct {
+					Running int `json:"running"`
+				} `json:"counts"`
+			}
+			if err := json.Unmarshal(projected.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Update.ActiveAttempts != count || got.Counts.Running != count || strings.Contains(projected.Body.String(), "projects") {
+				t.Fatalf("projected state = %s", projected.Body.String())
+			}
+		})
+	}
+}

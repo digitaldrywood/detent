@@ -577,7 +577,7 @@ test("board shows only health states needing attention", async ({
   await expect(bar).toHaveCount(1);
   await expect(bar).toHaveAttribute("data-board-alert-count", "2");
   await expect(bar).toHaveClass(/border-err/);
-  await expect(bar).toContainText("Project failure breaker (1 project)");
+  await expect(bar).toContainText("Project failure breaker active — 1 project");
   await expect(page.locator("#project-failure-breaker")).toHaveCount(0);
   await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
   await expect(page.locator("#backend-capacity-outage")).toHaveCount(0);

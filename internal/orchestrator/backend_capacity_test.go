@@ -1310,67 +1310,80 @@ func TestValidatorTransientOverloadReleasesCapacityProbe(t *testing.T) {
 
 func TestValidatorCapacityProbeFailureKeepsOutage(t *testing.T) {
 	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{name: "validator failure", err: errors.New("workspace setup failed")},
+		{name: "infrastructure failure", err: fmt.Errorf("%w: workspace setup failed", runpkg.ErrValidatorInfrastructure)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 
-	now := time.Date(2026, 7, 10, 2, 39, 0, 0, time.UTC)
-	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
-	validator := &backendCapacityTestValidator{
-		requests: make(chan ValidatorRequest, 1),
-		err:      errors.New("workspace setup failed"),
-	}
-	controller := backendCapacityTestController{scope: scope}
-	orch := &Orchestrator{
-		cfg:                     normalizeConfig(Config{}),
-		validator:               validator,
-		validatorCapacity:       controller,
-		validatorRuns:           map[string]Running{},
-		validatorResults:        map[string]validatorStageResult{},
-		validatorFailures:       map[string]validatorStageFailure{},
-		now:                     func() time.Time { return now },
-		validatorCapacityEvents: make(chan validatorCapacityEvent, 1),
-		done:                    make(chan struct{}),
-	}
-	state := newState(orch.cfg)
-	state.BackendOutages[scope.Key()] = BackendOutage{
-		Scope:      scope,
-		DetectedAt: now.Add(-44 * time.Minute),
-		ResumeAt:   now,
-	}
-	issue := connector.Issue{
-		ID:    "issue-validator-probe",
-		State: "In Progress",
-		PullRequest: &connector.PullRequest{
-			HeadSHA: "capacity-probe-head",
-		},
-	}
+			now := time.Date(2026, 7, 10, 2, 39, 0, 0, time.UTC)
+			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+			validator := &backendCapacityTestValidator{
+				requests: make(chan ValidatorRequest, 1),
+				err:      tt.err,
+			}
+			controller := backendCapacityTestController{scope: scope}
+			orch := &Orchestrator{
+				cfg:                     normalizeConfig(Config{}),
+				validator:               validator,
+				validatorCapacity:       controller,
+				validatorRuns:           map[string]Running{},
+				validatorResults:        map[string]validatorStageResult{},
+				validatorFailures:       map[string]validatorStageFailure{},
+				now:                     func() time.Time { return now },
+				validatorCapacityEvents: make(chan validatorCapacityEvent, 1),
+				done:                    make(chan struct{}),
+			}
+			state := newState(orch.cfg)
+			state.BackendOutages[scope.Key()] = BackendOutage{
+				Scope:      scope,
+				DetectedAt: now.Add(-44 * time.Minute),
+				ResumeAt:   now,
+			}
+			issue := connector.Issue{
+				ID:    "issue-validator-probe",
+				State: "In Progress",
+				PullRequest: &connector.PullRequest{
+					HeadSHA: "capacity-probe-head",
+				},
+			}
 
-	orch.startValidatorStage(t.Context(), &state, issue, now)
-	select {
-	case <-validator.requests:
-	case <-time.After(time.Second):
-		t.Fatal("validator did not run")
-	}
-	orch.validatorWG.Wait()
-	select {
-	case event := <-orch.validatorCapacityEvents:
-		orch.handleValidatorCapacityEvent(&state, event)
-	default:
-	}
+			orch.startValidatorStage(t.Context(), &state, issue, now)
+			select {
+			case <-validator.requests:
+			case <-time.After(time.Second):
+				t.Fatal("validator did not run")
+			}
+			orch.validatorWG.Wait()
+			select {
+			case event := <-orch.validatorCapacityEvents:
+				orch.handleValidatorCapacityEvent(&state, event)
+			default:
+			}
 
-	if _, ok := state.BackendOutages[scope.Key()]; !ok {
-		t.Fatal("validator capacity probe failure cleared the backend outage")
-	}
-	outage := state.BackendOutages[scope.Key()]
-	if outage.ProbeIssueID != "" {
-		t.Fatalf("ProbeIssueID = %q, want released probe", outage.ProbeIssueID)
-	}
-	if !outage.ResumeAt.Equal(now) {
-		t.Fatalf("ResumeAt = %s, want preserved provider time %s", outage.ResumeAt, now)
-	}
-	if want := now.Add(backendCapacityProbeDelayForAttempt(1)); !outage.NextProbeAt.Equal(want) {
-		t.Fatalf("NextProbeAt = %s, want %s", outage.NextProbeAt, want)
-	}
-	if len(orch.validatorFailures) != 1 {
-		t.Fatalf("validator failures = %#v, want one", orch.validatorFailures)
+			if _, ok := state.BackendOutages[scope.Key()]; !ok {
+				t.Fatal("validator capacity probe failure cleared the backend outage")
+			}
+			outage := state.BackendOutages[scope.Key()]
+			if outage.ProbeIssueID != "" {
+				t.Fatalf("ProbeIssueID = %q, want released probe", outage.ProbeIssueID)
+			}
+			if !outage.ResumeAt.Equal(now) {
+				t.Fatalf("ResumeAt = %s, want preserved provider time %s", outage.ResumeAt, now)
+			}
+			if want := now.Add(backendCapacityProbeDelayForAttempt(1)); !outage.NextProbeAt.Equal(want) {
+				t.Fatalf("NextProbeAt = %s, want %s", outage.NextProbeAt, want)
+			}
+			if got := len(orch.validatorFailures); got != 1 && !errors.Is(tt.err, runpkg.ErrValidatorInfrastructure) {
+				t.Fatalf("validator failures = %#v, want one", orch.validatorFailures)
+			}
+			if got := len(orch.validatorFailures); got != 0 && errors.Is(tt.err, runpkg.ErrValidatorInfrastructure) {
+				t.Fatalf("validator failures = %#v, want none for infrastructure failure", orch.validatorFailures)
+			}
+		})
 	}
 }
 

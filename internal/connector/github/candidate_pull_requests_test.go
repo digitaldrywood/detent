@@ -472,6 +472,10 @@ func testIndependentRefreshEvidence(t *testing.T, entry string) {
 				if r.Method != http.MethodPost {
 					restReads++
 					switch {
+					case strings.HasSuffix(r.URL.Path, "/protection/required_status_checks"):
+						write(map[string]any{})
+					case strings.HasSuffix(r.URL.Path, "/rules/branches/main"):
+						write([]any{})
 					case strings.HasSuffix(r.URL.Path, "/issues/1"):
 						write(map[string]any{"node_id": "I1", "number": 1, "body": issue["body"]})
 					case strings.HasSuffix(r.URL.Path, "/check-runs"):
@@ -641,6 +645,14 @@ func TestCandidatePRPartialCursor(t *testing.T) {
 	details := map[int]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/protection/required_status_checks") {
+			fmt.Fprint(w, `{}`)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/rules/branches/main") {
+			fmt.Fprint(w, `[]`)
+			return
+		}
 		if r.Method != http.MethodPost {
 			t.Errorf("unexpected REST %s", r.URL)
 			w.WriteHeader(http.StatusNotFound)

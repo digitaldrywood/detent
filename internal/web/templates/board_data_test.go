@@ -1251,7 +1251,7 @@ func TestBoardCardAlwaysRendersPullRequest(t *testing.T) {
 	}
 }
 
-func TestBoardCardIdentityStaysOnOneLine(t *testing.T) {
+func TestBoardCardProjectAndReferencesWrapWithoutClipping(t *testing.T) {
 	t.Parallel()
 
 	card := boardCardView{
@@ -3807,6 +3807,8 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 		`id="board-alert-failure-breaker"`,
 		`data-board-alert="project-failure-breaker"`,
 		"Project failure breaker active — 1 project",
+		"Run canary now",
+		`hx-post="/api/v1/failure-breaker/canary?project_id=detent"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("failure breaker banner missing %q:\n%s", want, html)
@@ -3818,6 +3820,7 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 		"Author beat visuals — 2026-07-10-detent-not-vibe-coding-short",
 		`href="https://example.test/items/video-1"`,
 		"Provider usage limit reached",
+		"Canary resumes",
 		"Backend: claude-code · kind claude_code · provider anthropic",
 		"Diagnostic class: runner_error:b6c174a86dfb",
 		"will not retry merely because the project canary is eligible",
@@ -3827,9 +3830,35 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 			t.Fatalf("failure breaker overlay missing detail %q:\n%s", want, html)
 		}
 	}
-	for _, unwanted := range []string{"Run canary now"} {
-		if strings.Contains(html, unwanted) {
-			t.Fatalf("failure breaker summary contains detail %q:\n%s", unwanted, html)
+	health := renderBoardComponent(t, HealthSnapshotV2(data))
+	for _, want := range []string{
+		`id="project-failure-breaker"`,
+		"Provider usage limit reached",
+		"Canary resumes",
+		"Run canary now",
+		`datetime="` + data.Snapshot.GeneratedAt.Add(time.Hour).Format(time.RFC3339) + `"`,
+	} {
+		if !strings.Contains(health, want) {
+			t.Fatalf("health breaker banner missing %q:\n%s", want, health)
+		}
+	}
+}
+
+func TestBoardAndHealthShowHostDiskExhaustionRetry(t *testing.T) {
+	t.Parallel()
+	data := boardTestData()
+	dueAt := data.Snapshot.GeneratedAt.Add(5 * time.Minute)
+	data.Snapshot.Queue = []telemetry.Queued{{Issue: telemetry.Issue{Identifier: "pyroapex#2589"}, Error: telemetry.WorkspaceDiskExhaustionMessage, WorkerHost: "build-host", QueueState: telemetry.QueueStateRetrying, DueAt: &dueAt}}
+	board := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{`data-board-alert="host-disk-full"`, "Host disk full", "build-host", "pyroapex#2589", "retry at " + dueAt.UTC().Format(time.RFC3339)} {
+		if !strings.Contains(board, want) {
+			t.Fatalf("board missing %q", want)
+		}
+	}
+	health := renderBoardComponent(t, HealthSnapshotV2(data))
+	for _, want := range []string{"Host disk is full", "Host disk", "build-host", "no space left on device"} {
+		if !strings.Contains(health, want) {
+			t.Fatalf("health missing %q", want)
 		}
 	}
 }
@@ -4893,5 +4922,32 @@ func TestBoardSymbolicBlockerDetail(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLatestBoardAttempts(t *testing.T) {
+	attempts := []telemetry.WorkAttempt{
+		{ProjectID: "one", IssueID: "1", AttemptID: 2},
+		{ProjectID: "one", IssueID: "1", AttemptID: 1},
+		{ProjectID: "two", IssueID: "1", AttemptID: 3},
+		{ProjectID: "one", Identifier: "repo#1", AttemptID: 4},
+		{ProjectID: "one", IssueID: "1", AttemptID: 2},
+		{},
+	}
+	got := latestBoardAttempts(attempts)
+	for _, tt := range []struct {
+		key   string
+		index int
+	}{
+		{"project:one:id:1", 0}, {"project:two:id:1", 2}, {"project:one:identifier:repo#1", 3},
+	} {
+		t.Run(tt.key, func(t *testing.T) {
+			if got[tt.key] != &attempts[tt.index] {
+				t.Fatalf("wrong latest attempt for %s", tt.key)
+			}
+		})
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries", len(got))
 	}
 }

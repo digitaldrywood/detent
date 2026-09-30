@@ -1,0 +1,40 @@
+package hubserver
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+)
+
+func TestRunnerOperationAllowed(t *testing.T) {
+	t.Parallel()
+	all := []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}
+	for _, test := range []struct {
+		name, method, path string
+		operations         []string
+		want               bool
+	}{
+		{name: "attempt diff with claim", method: http.MethodPost, path: nativeBase + "/attempts/:attempt/diff", operations: all, want: true},
+		{name: "attempt diff without claim", method: http.MethodPost, path: nativeBase + "/attempts/:attempt/diff", operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Heartbeat, runnerauth.Events}},
+		{name: "attempt diff read", method: http.MethodGet, path: nativeBase + "/attempts/:attempt/diff", operations: []string{runnerauth.Read}, want: true},
+		{name: "claims need claim", method: http.MethodPost, path: nativeBase + "/claims", operations: []string{runnerauth.Read}},
+		{name: "claims with claim", method: http.MethodPost, path: nativeBase + "/claims", operations: all, want: true},
+		{name: "work item change is collaboration", method: http.MethodPost, path: nativeBase + "/work-items/:item/changes", operations: []string{runnerauth.Collaborate}, want: true},
+		{name: "item events need events", method: http.MethodPost, path: nativeBase + "/work-items/:item/events", operations: []string{runnerauth.Collaborate}},
+		{name: "heartbeat", method: http.MethodPost, path: nativeBase + "/machines/:machine/heartbeat", operations: []string{runnerauth.Heartbeat}, want: true},
+		{name: "outside the native base", method: http.MethodPost, path: "/api/v2/organizations/:organization/members", operations: all},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			c := echo.New().NewContext(httptest.NewRequest(test.method, "/", nil), httptest.NewRecorder())
+			c.SetPath(test.path)
+			if got := runnerOperationAllowed(c, test.operations); got != test.want {
+				t.Fatalf("runnerOperationAllowed(%s %s, %v) = %t, want %t", test.method, test.path, test.operations, got, test.want)
+			}
+		})
+	}
+}

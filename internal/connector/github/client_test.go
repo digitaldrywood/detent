@@ -186,6 +186,95 @@ func TestClientGraphQLStopsLookupsAfterRateLimitResponse(t *testing.T) {
 	}
 }
 
+func TestClientGraphQLPrimaryExhaustionExpires(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		reserve   int64
+		secondary bool
+	}{
+		{name: "lookup only"},
+		{name: "lookup with reserve", reserve: 1000},
+		{name: "secondary deadline survives primary reset", secondary: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				resetAt := time.Now().Add(time.Minute)
+				calls := 0
+				client, err := NewClient(ClientConfig{
+					Endpoint:                   "https://primary-reset.test/graphql",
+					TokenSource:                StaticTokenSource("test-token"),
+					GraphQLMinRemainingReserve: tt.reserve,
+					HTTPClient: recoveryHTTPClient(func(_ *http.Request) (*http.Response, error) {
+						calls++
+						header := http.Header{}
+						header.Set("X-RateLimit-Limit", "5000")
+						header.Set("X-RateLimit-Remaining", "0")
+						header.Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+						body := `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded"}]}`
+						if calls > 1 {
+							header.Set("X-RateLimit-Remaining", "4256")
+							header.Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Add(time.Hour).Unix(), 10))
+							body = `{"data":{"viewer":{"login":"octocat"}}}`
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+					}),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				client.restBackoffs = newRESTBackoffRegistry()
+				const query = "query { viewer { login } }"
+				if err := client.GraphQL(t.Context(), query, nil, nil); !errors.Is(err, ErrRateLimited) {
+					t.Fatalf("initial exhaustion = %v", err)
+				}
+				if tt.secondary {
+					client.recordGraphQLRateLimitFailure(&StatusError{Err: ErrRateLimited, RateLimitKind: restRateLimitKindSecondaryThrottled, RetryAfter: 2 * time.Minute}, graphQLHeaderRateLimit{}, time.Now())
+				}
+				// Advance the fake clock through the primary reset, including its existing skew allowance.
+				for _, delay := range []time.Duration{30 * time.Second, 30 * time.Second, restRateLimitResetSkew} {
+					time.Sleep(delay)
+					err := client.GraphQL(t.Context(), query, nil, nil)
+					var status *StatusError
+					if !errors.As(err, &status) || !errors.Is(err, ErrRateLimited) || status.RetryAfter < 0 {
+						t.Fatalf("paused lookup = %#v, error %v", status, err)
+					}
+					deadline := resetAt.Add(restRateLimitResetSkew)
+					if tt.secondary {
+						deadline = resetAt.Add(time.Minute)
+					}
+					if want := time.Until(deadline); status.RetryAfter != want {
+						t.Fatalf("paused retry delay = %s, want %s", status.RetryAfter, want)
+					}
+					if calls != 1 {
+						t.Fatalf("paused HTTP calls = %d, want 1", calls)
+					}
+				}
+				time.Sleep(time.Nanosecond)
+				if tt.secondary {
+					err := client.GraphQL(t.Context(), query, nil, nil)
+					var status *StatusError
+					if !errors.As(err, &status) || status.RateLimitKind != restRateLimitKindSecondaryThrottled || status.RetryAfter != 2*time.Minute-time.Since(resetAt.Add(-time.Minute)) || calls != 1 {
+						t.Fatalf("secondary cooldown after primary reset = %#v, calls %d", status, calls)
+					}
+					time.Sleep(status.RetryAfter)
+				}
+				var got struct{ Viewer struct{ Login string } }
+				if err := client.GraphQL(t.Context(), query, nil, &got); err != nil {
+					t.Fatalf("lookup after reset = %v", err)
+				}
+				if calls != 2 || got.Viewer.Login != "octocat" {
+					t.Fatalf("calls = %d, result = %+v", calls, got)
+				}
+				quota, ok := client.GraphQLRateLimit()
+				if !ok || quota.Remaining != 4256 || client.GraphQLRateLimitStatus() != "" {
+					t.Fatalf("recovered quota = %+v, status = %q", quota, client.GraphQLRateLimitStatus())
+				}
+			})
+		})
+	}
+}
+
 func TestClientStopsLookupsAfterHeaderlessForbiddenRateLimitResponse(t *testing.T) {
 	t.Parallel()
 
@@ -1301,10 +1390,78 @@ func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
 	if got := restEndpointUsageCount(usage.Requests, "check runs"); got != 1 {
 		t.Fatalf("check runs usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
 	}
-	for _, want := range []string{`msg="github rest fanout deferred"`, "gate_branch=fanout_cap", "budget_scope=refresh", "fanout_count=1", "snapshot_age="} {
+	for _, want := range []string{`msg="github rest fanout cap reached (shared across endpoint families)"`, "gate_branch=fanout_cap", "budget_scope=refresh", "refused_endpoint_family=\"check runs\"", "fanout_count=1", "snapshot_age="} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("throttle log missing %q:\n%s", want, logs.String())
 		}
+	}
+}
+
+func TestRESTFanoutDeferralErrorText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		family string
+		cap    int64
+		want   string
+	}{
+		{name: "issue reads", family: "issue reads", cap: 80, want: "github rest fanout deferred: rest fanout cap 80 reached (shared across endpoint families; refused: issue reads)"},
+		{name: "pull request pages", family: " pull request pages ", cap: 2, want: "github rest fanout deferred: rest fanout cap 2 reached (shared across endpoint families; refused: pull request pages)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := &RESTFanoutDeferralError{EndpointFamily: tt.family, FanoutCap: tt.cap}
+			if got := err.Error(); got != tt.want {
+				t.Fatalf("Error() = %q, want %q", got, tt.want)
+			}
+			if !errors.Is(err, ErrRESTFanoutDeferred) {
+				t.Fatalf("errors.Is(%v, ErrRESTFanoutDeferred) = false", err)
+			}
+		})
+	}
+}
+
+func TestNewClientLogsEffectiveRESTFanoutCap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configured int64
+		wantCap    int64
+		wantSource string
+	}{
+		{name: "configured", configured: 80, wantCap: 80, wantSource: "configured"},
+		{name: "default", wantCap: 0, wantSource: "default"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			client, err := NewClient(ClientConfig{
+				TokenSource: StaticTokenSource("test-token"),
+				RESTPolicy:  RESTBudgetPolicy{FanoutMaxRequests: tt.configured},
+				Logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+			if got := client.restPolicy.FanoutMaxRequests; got != tt.wantCap {
+				t.Fatalf("effective fanout cap = %d, want %d", got, tt.wantCap)
+			}
+			var entry map[string]any
+			decoder := json.NewDecoder(&logs)
+			if err := decoder.Decode(&entry); err != nil {
+				t.Fatalf("decode construction log: %v", err)
+			}
+			if entry["msg"] != "github rest fanout cap" || entry["fanout_cap"] != float64(tt.wantCap) || entry["fanout_cap_source"] != tt.wantSource || entry["fanout_scope"] != "shared across endpoint families" {
+				t.Fatalf("construction log = %#v", entry)
+			}
+			if err := decoder.Decode(&entry); !errors.Is(err, io.EOF) {
+				t.Fatalf("extra construction log entry: %v", err)
+			}
+		})
 	}
 }
 
@@ -2727,6 +2884,7 @@ func (c staticHTTPClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 func jsonResponse(req *http.Request, status int, body string, headers http.Header) *http.Response {
+	headers = headers.Clone()
 	if headers == nil {
 		headers = http.Header{}
 	}

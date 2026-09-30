@@ -4,6 +4,8 @@
       "TestBehaviorEvidence"
     ],
     "./internal/orchestrator": [
+      "TestOperatorRejectionPromotion",
+      "TestOperatorRejectionRepairDispatch",
       "TestCompletedActiveReviewRequiresFinishedWork",
       "TestUnfinishedCompletionClassification",
       "TestCompletionRebaseProgress",
@@ -18,11 +20,19 @@
       "TestConfiguredTerminalRetryAfterStoreRestart",
       "TestConsecutiveRetryCycleCountAcrossServiceRestarts",
       "TestStartupDoesNotReclaimLiveWorkAttempts",
-      "TestHumanQuestionRestartAndConcurrentRequests",
-      "TestHumanQuestionReplyAuthorization",
-      "TestHumanQuestionIndependentRework",
+      "TestINV14DispatchQuestionTool",
+      "TestINV14LegacyQuestionRowDispatch",
+      "TestFirstHumanBlockerCompletionReachesBlocked",
+      "TestWorkpadHumanActionClearanceRecoversBlockedIssue",
       "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
       "TestPreTurnFailuresDrainInstance",
+      "TestClassifyWorkspaceForgeReadFailure",
+      "TestWorkspaceSSHRefusalDoesNotTripProjectBreaker",
+      "TestRecoverDurableWorkspaceGitReadWait",
+      "TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker",
+      "TestWorkspaceBreakerHonorsFailureCooldown",
+      "TestReadyMergeAtWorkerCapacity",
+      "TestCheckedMergeUnderForgeCondition",
       "TestPlanCompletionCoordinationDeferral",
       "TestPlanCompletionPublicationRecovery",
       "TestRecordedBlockerDispatchOwnership",
@@ -46,6 +56,7 @@
       "TestMachineIssueTool",
       "TestRunDispatchesQueuedRequestsWithoutPolling",
       "TestMergeIdleHeadDoesNotReserveSlot",
+      "TestMergeDispatchUsesMergingCapacity",
       "TestMergeWaitMetadataRemainsIndependent",
       "TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling",
       "TestQueuedDispatchPreservesRetry",
@@ -70,6 +81,7 @@
       "TestINV12BackendToolchainEnvironment"
     ],
     "./internal/store": [
+      "TestLegacyHumanQuestionReceiptsReadable",
       "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
     ],
     "./internal/release": [
@@ -86,6 +98,8 @@
     "./internal/invariants": [
       "TestRepositorySources",
       "TestRepositoryWorkflow",
+      "TestRepositoryHasNoPullRequestActions",
+      "TestPortabilityStressIsManualOnly",
       "TestSourceViolations",
       "TestWorkflowViolations",
       "TestMutationDocuments",
@@ -98,14 +112,17 @@
     "./internal/cli": [
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
       "TestPrepareWorkerCodexHomeExistingInstructions",
-      "TestDoctorMergeQueueRecordedHistory",
+      "TestDoctorInvariantEvidence",
+      "TestDoctorRespectsProjectCIPolicy",
+      "TestDoctorLocalGateCommitStatusProducer",
       "TestDoctorInvariantAdmission",
       "TestDoctorInvariantAdmissionBatches",
       "TestDoctorInvariantScopeClassification",
       "TestDoctorInvariantAdmissionRepeatedEntries",
       "TestDoctorInvariantAdmissionUnavailableEvidence",
       "TestINV12DoctorNativeCaches",
-      "TestINV12DoctorWorkspaceKinds"
+      "TestINV12DoctorWorkspaceKinds",
+      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns"
     ],
     "./internal/connector/github": [
       "TestRefreshBoardFilterCost",
@@ -143,9 +160,16 @@
     "./internal/workpad": [
       "TestMergedCompletionEvidence"
     ],
+    "./internal/web": [
+      "TestOperationsWorkpadHumanAction"
+    ],
     "./internal/web/templates": [
       "TestINV13BoardCardContent",
-      "TestINV13SheetObservations"
+      "TestINV13SheetObservations",
+      "TestBoardCardSignalBudget"
+    ],
+    "./internal/codex": [
+      "TestAppServerMarksOnlyConversationTurns"
     ]
   }
 }

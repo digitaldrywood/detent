@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -187,7 +188,7 @@ func TestDemoConfiguredAgents(t *testing.T) {
 			cfg := globalconfig.Config{}
 			cfg.Global.Agents = config.Agents{
 				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
-				Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true, Model: "demo-model"}},
+				Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true, Model: "private-fleet-model"}},
 				ModelSelection: config.ModelSelection{Enabled: new(false)},
 			}
 			workflow := config.Default()
@@ -243,5 +244,103 @@ func TestBoardConfiguredAgentsIdentifierKeys(t *testing.T) {
 	}
 	if len(got) != len(issues) {
 		t.Fatalf("got %d identities for %d issues", len(got), len(issues))
+	}
+}
+
+func TestBoardConfiguredAgentsCache(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		change func(*telemetry.Issue, *globalconfig.Config)
+		reuse  bool
+	}{
+		{"unchanged", func(*telemetry.Issue, *globalconfig.Config) {}, true},
+		{"unrelated title", func(i *telemetry.Issue, _ *globalconfig.Config) { i.Title = "new title" }, true},
+		{"body revision", func(i *telemetry.Issue, _ *globalconfig.Config) {
+			i.Description = "```detent-agent\nschema: 1\neffort: high\n```"
+		}, false},
+		{"state", func(i *telemetry.Issue, _ *globalconfig.Config) { i.State = "Rework" }, false},
+		{"labels", func(i *telemetry.Issue, _ *globalconfig.Config) { i.Labels[0] = "changed" }, false},
+		{"fields", func(i *telemetry.Issue, _ *globalconfig.Config) { i.Fields["team"] = "changed" }, false},
+		{"model override", func(i *telemetry.Issue, _ *globalconfig.Config) { i.ModelOverride = "override" }, false},
+		{"configuration", func(_ *telemetry.Issue, c *globalconfig.Config) { c.Global.Agents.Routes[0].Model = "new-model" }, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := globalconfig.Config{}
+			cfg.Global.Agents = config.Agents{
+				Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
+				Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true, Model: "original"}},
+				ModelSelection: config.ModelSelection{Enabled: new(false)},
+			}
+			s := &Server{globalConfigSource: func() globalconfig.Config { return cfg }}
+			issue := telemetry.Issue{ProjectID: "project", ID: "1", Labels: []string{"original"}, Fields: map[string]string{"team": "original"}}
+			snapshot := telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}}
+			s.boardConfiguredAgents(snapshot)
+			key := "project:project:id:1"
+			before := s.boardIdentities.entries[key]
+			if before == nil {
+				t.Fatal("missing initial resolution")
+			}
+			tt.change(&snapshot.BoardIssues[0], &cfg)
+			got := s.boardConfiguredAgents(snapshot)
+			after := s.boardIdentities.entries[key]
+			if (before == after) != tt.reuse {
+				t.Fatalf("cache reuse = %v, want %v", before == after, tt.reuse)
+			}
+			fresh := (&Server{globalConfigSource: func() globalconfig.Config { return cfg }}).boardConfiguredAgents(snapshot)
+			if !reflect.DeepEqual(got, fresh) {
+				t.Fatalf("cached result differs from fresh resolution: %v vs %v", got, fresh)
+			}
+			s.boardConfiguredAgents(telemetry.Snapshot{})
+			if len(s.boardIdentities.entries) != 0 {
+				t.Fatal("removed issues retained")
+			}
+		})
+	}
+}
+
+func TestBoardConfiguredAgentsAlternatingScopes(t *testing.T) {
+	cfg := globalconfig.Config{}
+	cfg.Global.Agents = config.Agents{
+		Backends:       []config.AgentBackend{{ID: "codex", Kind: config.AgentBackendCodex}},
+		Routes:         []config.AgentRoute{{Name: "default", Backend: "codex", Default: true, Model: "model"}},
+		ModelSelection: config.ModelSelection{Enabled: new(false)},
+	}
+	s := &Server{globalConfigSource: func() globalconfig.Config { return cfg }}
+	one := telemetry.Issue{ProjectID: "one", ID: "1"}
+	two := telemetry.Issue{ProjectID: "two", ID: "1"}
+	fleet := telemetry.Snapshot{BoardIssues: []telemetry.Issue{one, two}}
+	s.boardConfiguredAgents(fleet)
+	first := s.boardIdentities.entries["project:one:id:1"]
+	second := s.boardIdentities.entries["project:two:id:1"]
+	for _, tt := range []struct {
+		name, scope string
+		snapshot    telemetry.Snapshot
+	}{
+		{"project one", "one", telemetry.Snapshot{BoardIssues: []telemetry.Issue{one}}},
+		{"fleet after one", "", fleet},
+		{"project two", "two", telemetry.Snapshot{BoardIssues: []telemetry.Issue{two}}},
+		{"project one after two", "one", telemetry.Snapshot{BoardIssues: []telemetry.Issue{one}}},
+		{"fleet after both", "", fleet},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := s.boardConfiguredAgentsForProject(tt.snapshot, tt.scope)
+			if len(got) != len(tt.snapshot.BoardIssues) {
+				t.Fatal("identities escaped render scope")
+			}
+			if s.boardIdentities.entries["project:one:id:1"] != first || s.boardIdentities.entries["project:two:id:1"] != second {
+				t.Fatal("unchanged identity resolved again across scopes")
+			}
+		})
+	}
+	s.boardConfiguredAgentsForProject(telemetry.Snapshot{}, "one")
+	if s.boardIdentities.entries["project:one:id:1"] != nil {
+		t.Fatal("departed scoped issue retained")
+	}
+	if s.boardIdentities.entries["project:two:id:1"] != second {
+		t.Fatal("other project's identity evicted")
+	}
+	s.boardConfiguredAgents(telemetry.Snapshot{})
+	if len(s.boardIdentities.entries) != 0 {
+		t.Fatal("fleet refresh retained departed projects")
 	}
 }

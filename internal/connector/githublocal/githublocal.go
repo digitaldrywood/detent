@@ -139,6 +139,7 @@ var _ connector.PullRequestHeadLookup = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
 var _ connector.PullRequestReviewThreadHydrator = (*Connector)(nil)
 var _ connector.PullRequestLabelReapplier = (*Connector)(nil)
+var _ connector.CommitStatusPoster = (*Connector)(nil)
 var _ connector.PullRequestMergeQueue = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
 var _ connector.RESTRateLimitUsageReporter = (*Connector)(nil)
@@ -648,6 +649,22 @@ func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connec
 		return "", connector.ErrNotImplemented
 	}
 	return reader.PullRequestDiffFingerprint(ctx, issue)
+}
+
+func (c *Connector) PullRequestValidationDiff(ctx context.Context, issue connector.Issue) (connector.ValidationDiff, error) {
+	reader, ok := c.github.(connector.ValidationDiffReader)
+	if !ok {
+		return connector.ValidationDiff{}, connector.NewRetryableError("GitHub validator diff reader unavailable")
+	}
+	return reader.PullRequestValidationDiff(ctx, issue)
+}
+
+func (c *Connector) PostCommitStatus(ctx context.Context, repository, sha, statusContext, description string) error {
+	poster, ok := c.github.(connector.CommitStatusPoster)
+	if !ok {
+		return connector.ErrNotImplemented
+	}
+	return poster.PostCommitStatus(ctx, repository, sha, statusContext, description)
 }
 
 func (c *Connector) ReapplyPullRequestLabel(ctx context.Context, repository string, number int, label string, stagger time.Duration) error {

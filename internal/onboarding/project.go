@@ -33,13 +33,16 @@ type Step struct {
 }
 
 type Project struct {
-	LatestRun string                   `json:"latest_run,omitempty"`
-	Progress  Progress                 `json:"progress"`
-	Policy    *policy.Approval         `json:"policy,omitempty"`
-	Runners   []runnerauth.Eligibility `json:"runners"`
-	Artifacts []artifact.Binding       `json:"artifact_services"`
-	Steps     []Step                   `json:"steps"`
-	Ready     bool                     `json:"ready"`
+	LatestRun string           `json:"latest_run,omitempty"`
+	Progress  Progress         `json:"progress"`
+	Policy    *policy.Approval `json:"policy,omitempty"`
+	// ObservedPolicies are the distinct descriptors runners resolved and could
+	// not run, newest first; the approved policy is never among them.
+	ObservedPolicies []policy.ObservedPolicy  `json:"observed_policies,omitempty"`
+	Runners          []runnerauth.Eligibility `json:"runners"`
+	Artifacts        []artifact.Binding       `json:"artifact_services"`
+	Steps            []Step                   `json:"steps"`
+	Ready            bool                     `json:"ready"`
 }
 
 func (p *Project) Evaluate() {

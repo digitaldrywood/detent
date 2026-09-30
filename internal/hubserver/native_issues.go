@@ -25,14 +25,14 @@ func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope
 	err := query.QueryRowContext(ctx, `SELECT i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
  i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
  i.actor_json, i.provenance_json, i.native_created_at, i.native_updated_at, COALESCE(i.github_node_id, ''),
- i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0
+ i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(
 		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
 		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &provenance, &created, &updated, &externalID,
-		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies)
+		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived)
 	if err != nil {
 		return issue, 0, err
 	}
@@ -99,11 +99,42 @@ ORDER BY i.native_id`, internalID, scope.organization, scope.credential.Scope ==
 }
 
 func (s *Service) getNativeIssue(c echo.Context) error {
-	issue, _, err := readNativeIssue(c.Request().Context(), s.database.db, nativeRequestScope(c), c.Param("item"))
+	ctx := c.Request().Context()
+	scope := nativeRequestScope(c)
+	issue, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	// The change review surface is absent unless the caller asked for it, so
+	// the default resource is byte-for-byte what it was and only a caller
+	// that needs it pays for the extra reads.
+	included, err := nativeIssueChangeIncluded(c.QueryParam("include"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if included {
+		if issue.Change, err = readNativeIssueChange(ctx, s.database.db, scope, string(issue.WorkItemID)); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	return c.JSON(http.StatusOK, issue)
+}
+
+// nativeIssueChangeIncluded reads the work item resource's include query. The
+// resource supports one member, and an unknown one is refused rather than
+// ignored so a client typo is visible.
+func nativeIssueChangeIncluded(value string) (bool, error) {
+	included := false
+	for name := range strings.SplitSeq(value, ",") {
+		switch name = strings.TrimSpace(name); name {
+		case "":
+		case "change":
+			included = true
+		default:
+			return false, nativeInvalid("include supports change")
+		}
+	}
+	return included, nil
 }
 
 func validateNativeContent(title, body string, labels, assignees []string, priority *int) error {
@@ -154,6 +185,9 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 
 func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (any, error) {
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
+		return nil, err
+	}
+	if err := requireUnreservedLabels(ctx, request.Labels); err != nil {
 		return nil, err
 	}
 	if err := validateNativeProvenance(scope, request.Provenance); err != nil {
@@ -306,9 +340,9 @@ func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issu
 	if err != nil {
 		return issue, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE issues SET title = ?, body = ?, labels_json = ?, assignees_json = ?, revision = ?, updated_at = ?, native_updated_at = ?,
+	_, err = tx.ExecContext(ctx, `UPDATE issues SET title = ?, body = ?, labels_json = ?, assignees_json = ?, revision = ?, updated_at = ?, native_updated_at = ?, archived = ?,
 workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?)
-WHERE organization_id = ? AND project_id = ? AND native_id = ?`, issue.Title, issue.Body, labels, assignees, issue.Revision, formatHubTime(now), formatHubTime(now), scope.project, issue.State, scope.organization, scope.project, issue.WorkItemID)
+WHERE organization_id = ? AND project_id = ? AND native_id = ?`, issue.Title, issue.Body, labels, assignees, issue.Revision, formatHubTime(now), formatHubTime(now), issue.Archived, scope.project, issue.State, scope.organization, scope.project, issue.WorkItemID)
 	if err != nil {
 		return issue, err
 	}
@@ -347,6 +381,9 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 			fields = append(fields, "body")
 		}
 		if request.Labels != nil {
+			if err := requireUnreservedLabels(ctx, *request.Labels); err != nil {
+				return nil, err
+			}
 			issue.Labels = *request.Labels
 			fields = append(fields, "labels")
 		}
@@ -354,8 +391,10 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 			issue.Assignees = *request.Assignees
 			fields = append(fields, "assignees")
 		}
-		if request.Priority != nil {
-			issue.Priority = request.Priority
+		// A present patch either sets the level or clears it; an absent one
+		// leaves whatever the issue has (tracker.PriorityPatch).
+		if request.Priority.Present() {
+			issue.Priority = request.Priority.Level()
 			fields = append(fields, "priority")
 		}
 		if len(fields) == 0 {
@@ -398,7 +437,7 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 			}
 		}
 		if !allowed {
-			return nil, nativeInvalid("Workflow transition is not allowed")
+			return nil, &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity}
 		}
 		from := issue.State
 		issue.State = request.State

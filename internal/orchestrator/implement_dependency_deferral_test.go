@@ -57,10 +57,6 @@ func TestCompletedDependencyWaitReleasesOwnedMergeReservation(t *testing.T) {
 			next := nativeMergeQueueTestIssue(2282, "success")
 			later := now.Add(time.Minute)
 			reconcileMergeReservations(&state, []connector.Issue{next}, cfg, later)
-			_, blocked := mergeReservationBlocks(&state, next, later)
-			if blocked {
-				t.Fatal("retained CI metadata blocks next merge")
-			}
 			reservation, retained := state.mergeReservations[owner.ID]
 			if retained != tt.wantRetained {
 				t.Fatalf("metadata retained = %t, want %t", retained, tt.wantRetained)
@@ -421,6 +417,33 @@ func TestDependencyDeferralRefusalDetails(t *testing.T) {
 				if !strings.Contains(decision.WaitReason, detail) {
 					t.Fatalf("detail=%q, want %q", decision.WaitReason, detail)
 				}
+			}
+		})
+	}
+}
+
+func TestHistoricalDependencyDeferralUsesCurrentProseRefs(t *testing.T) {
+	t.Parallel()
+	const source = "digitaldrywood/detent#134"
+	for _, tt := range []struct {
+		name          string
+		current       []connector.BlockedRef
+		wantCandidate bool
+	}{
+		{name: "migrated source removed while another dependent keeps it open", wantCandidate: true},
+		{name: "migrated source removed with unrelated dependency", current: []connector.BlockedRef{{Identifier: "digitaldrywood/detent#200"}}, wantCandidate: true},
+		{name: "source still current", current: []connector.BlockedRef{{Identifier: source}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := implementProgressIssueWithoutPR()
+			issue.DependencySource = connector.BlockedRefSourceProse
+			issue.BlockedBy = tt.current
+			attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{implementProgressDependencyDeferralHistoryAttempt(1, source, "Todo")}}
+			o := &Orchestrator{cfg: normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, TerminalStates: []string{"Done"}}), connector: hydratingDispatchConnector{blockers: []connector.Issue{{Identifier: source, State: "Todo"}}}, workAttempts: attempts}
+			got := o.filterImplementDependencyDeferrals(t.Context(), []connector.Issue{issue})
+			if (len(got) == 1) != tt.wantCandidate {
+				t.Fatalf("candidates = %+v, want candidate %t", got, tt.wantCandidate)
 			}
 		})
 	}

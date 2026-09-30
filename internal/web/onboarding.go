@@ -760,10 +760,11 @@ or remove categories to match the project.
   <project-check-name>
 
 Treat this list as part of the project contract. Whenever you touch CI
-configuration or perform a review, verify that every declared stage exists,
-runs its mapped project tool, and passes on the current pull request head. Do
-not rely on Detent or detent doctor to infer required stages or inspect CI
-configuration.
+configuration or perform a review, verify that every declared stage exists and
+runs its mapped project tool. Require passing PR-head checks when jobs run
+there. For merge-group-only CI, report expected PR skips and require passing
+merge-group checks before merge. Do not rely on Detent or detent doctor to infer
+required stages or inspect CI configuration.
 
 ` + "```detent-status\n" + `schema: 1
 status: in_progress

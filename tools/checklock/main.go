@@ -34,7 +34,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	lockPath := flags.String("lock", "", "validation lock path")
 	waitTimeout := flags.Duration("wait-timeout", 15*time.Minute, "maximum wait without an owner handoff, output activity, or queue advancement")
 	maxWaitTimeout := flags.Duration("max-wait-timeout", 4*time.Hour, "maximum total registration and queue wait")
-	eventsPath := flags.String("events", "", "append local gate timing events as JSON lines")
+	eventsPath := flags.String("events", "", "append durable gate timing events as JSON lines")
 
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -72,20 +72,27 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	started := time.Now()
 	encodedCommand := []byte(strings.Join(command, "\x00"))
-	event := validationEvent{Schema: 1, PID: os.Getpid(), StartedAt: started, CommandHash: fmt.Sprintf("%x", sha256.Sum256(encodedCommand))}
+	event := newValidationEvent(started, fmt.Sprintf("%x", sha256.Sum256(encodedCommand)), stderr)
 	event.write(events, stderr, "waiting")
 
-	lock, waited, err := acquireValidationLockWithTimeouts(ctx, *lockPath, stderr, *waitTimeout, *maxWaitTimeout, validationPosition)
+	lock, waited, err := acquireValidationLockWithTimeouts(ctx, *lockPath, stderr, *waitTimeout, *maxWaitTimeout, event.observePosition(events, stderr))
 	if err != nil {
 		event.WaitSeconds = time.Since(started).Seconds()
 		event.write(events, stderr, "wait_failed")
 		fmt.Fprintf(stderr, "acquire validation lock: %v\n", err)
 		return 1
 	}
-	event.WaitSeconds = time.Since(started).Seconds()
+	acquiredAt := time.Now()
+	event.WaitSeconds = acquiredAt.Sub(started).Seconds()
+	closeLock := func() error {
+		err := lock.Close()
+		event.HoldSeconds = time.Since(acquiredAt).Seconds()
+		return err
+	}
 	if err := ctx.Err(); err != nil {
+		closeErr := closeLock()
 		event.write(events, stderr, "canceled")
-		fmt.Fprintf(stderr, "validation canceled before command start: %v\n", errors.Join(err, lock.Close()))
+		fmt.Fprintf(stderr, "validation canceled before command start: %v\n", errors.Join(err, closeErr))
 		return 1
 	}
 	if waited {
@@ -96,10 +103,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 	commandPath, commandPathErr := exec.LookPath(command[0])
 	if commandPathErr != nil {
+		closeErr := closeLock()
 		event.write(events, stderr, "failed")
 		fmt.Fprintln(stderr, "validation gate finished: result=failed; command could not start")
 		fmt.Fprintf(stderr, "resolve validation command: %v\n", commandPathErr)
-		if err := lock.Close(); err != nil {
+		if err := closeErr; err != nil {
 			fmt.Fprintf(stderr, "release validation lock: %v\n", err)
 		}
 		return 1
@@ -122,7 +130,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		event.CommandUserSeconds = cmd.ProcessState.UserTime().Seconds()
 		event.CommandSystemSeconds = cmd.ProcessState.SystemTime().Seconds()
 	}
-	closeErr := lock.Close()
+	closeErr := closeLock()
 	phase := "passed"
 	if commandErr != nil || closeErr != nil || ctx.Err() != nil {
 		phase = "failed"

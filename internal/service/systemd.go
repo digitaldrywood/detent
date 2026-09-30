@@ -10,32 +10,32 @@ import (
 	"time"
 )
 
-const systemdUnitName = "detent.service"
-
 type systemdManager struct {
 	cfg      Config
+	unit     string
 	userPath string
 	scope    string
 	path     string
 }
 
 func newSystemdManager(cfg Config) *systemdManager {
+	unit := SystemdUnit(cfg.Name)
 	userPath := cfg.UserSystemdPath
 	if strings.TrimSpace(userPath) == "" {
 		configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 		if configHome == "" {
 			configHome = filepath.Join(cfg.HomeDir, ".config")
 		}
-		userPath = filepath.Join(configHome, "systemd", "user", systemdUnitName)
+		userPath = filepath.Join(configHome, "systemd", "user", unit)
 	}
-	return &systemdManager{cfg: cfg, userPath: userPath, scope: "user", path: userPath}
+	return &systemdManager{cfg: cfg, unit: unit, userPath: userPath, scope: "user", path: userPath}
 }
 
 func (m *systemdManager) Info() ManagerInfo {
 	return ManagerInfo{
 		Name:           ManagerSystemd,
 		Scope:          m.scope,
-		Unit:           systemdUnitName,
+		Unit:           m.unit,
 		DefinitionPath: m.path,
 	}
 }
@@ -72,7 +72,7 @@ func (m *systemdManager) Inspect(ctx context.Context) (Inspection, error) {
 }
 
 func (m *systemdManager) inspectLoaded(ctx context.Context) (Inspection, bool, error) {
-	args := m.systemctlArgs("show", systemdUnitName, "--property=LoadState", "--property=ActiveState", "--property=SubState", "--property=MainPID")
+	args := m.systemctlArgs("show", m.unit, "--property=LoadState", "--property=ActiveState", "--property=SubState", "--property=MainPID")
 	output, err := m.cfg.RunCommand(ctx, "systemctl", args...)
 	if err != nil {
 		return Inspection{}, false, err
@@ -103,19 +103,19 @@ func (m *systemdManager) Install(ctx context.Context) (Definition, error) {
 	if _, err := m.cfg.RunCommand(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 		return Definition{}, err
 	}
-	if _, err := m.cfg.RunCommand(ctx, "systemctl", "--user", "enable", systemdUnitName); err != nil {
+	if _, err := m.cfg.RunCommand(ctx, "systemctl", "--user", "enable", m.unit); err != nil {
 		return Definition{}, err
 	}
 	return definition, nil
 }
 
 func (m *systemdManager) Start(ctx context.Context) error {
-	_, err := m.cfg.RunCommand(ctx, "systemctl", m.systemctlArgs("start", systemdUnitName)...)
+	_, err := m.cfg.RunCommand(ctx, "systemctl", m.systemctlArgs("start", m.unit)...)
 	return err
 }
 
 func (m *systemdManager) Restart(ctx context.Context) error {
-	if _, err := m.cfg.RunCommand(ctx, "systemctl", m.systemctlArgs("kill", "--kill-whom=main", "--signal=SIGTERM", systemdUnitName)...); err != nil {
+	if _, err := m.cfg.RunCommand(ctx, "systemctl", m.systemctlArgs("kill", "--kill-whom=main", "--signal=SIGTERM", m.unit)...); err != nil {
 		return err
 	}
 	if err := m.WaitStopped(ctx); err != nil {
@@ -131,11 +131,11 @@ func (m *systemdManager) WaitStopped(ctx context.Context) error {
 func (m *systemdManager) definitionLocation() (string, string, bool) {
 	userPaths := append([]string{m.userPath}, m.cfg.UserUnitPaths...)
 	if strings.TrimSpace(m.cfg.HomeDir) != "" {
-		userPaths = append(userPaths, filepath.Join(m.cfg.HomeDir, ".local", "share", "systemd", "user", systemdUnitName))
+		userPaths = append(userPaths, filepath.Join(m.cfg.HomeDir, ".local", "share", "systemd", "user", m.unit))
 	}
 	userPaths = append(userPaths,
-		filepath.Join("/etc", "systemd", "user", systemdUnitName),
-		filepath.Join("/usr", "lib", "systemd", "user", systemdUnitName),
+		filepath.Join("/etc", "systemd", "user", m.unit),
+		filepath.Join("/usr", "lib", "systemd", "user", m.unit),
 	)
 	for _, path := range userPaths {
 		if regularFile(path) {
@@ -145,9 +145,9 @@ func (m *systemdManager) definitionLocation() (string, string, bool) {
 	paths := m.cfg.SystemUnitPaths
 	if len(paths) == 0 {
 		paths = []string{
-			filepath.Join("/etc", "systemd", "system", systemdUnitName),
-			filepath.Join("/usr", "lib", "systemd", "system", systemdUnitName),
-			filepath.Join("/lib", "systemd", "system", systemdUnitName),
+			filepath.Join("/etc", "systemd", "system", m.unit),
+			filepath.Join("/usr", "lib", "systemd", "system", m.unit),
+			filepath.Join("/lib", "systemd", "system", m.unit),
 		}
 	}
 	for _, path := range paths {

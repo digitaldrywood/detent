@@ -1,9 +1,32 @@
 package securityaudit
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestBuildPromptOversizedDiffReportsMeasuredSize(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		diff      string
+		truncated bool
+		actual    int
+	}{
+		{name: "full diff", diff: "12345", actual: 5},
+		{name: "truncated diff", diff: "1234", truncated: true, actual: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := Snapshot{Repository: "owner/repo", PRNumber: 1, BaseSHA: "base", HeadSHA: "head", Diff: tc.diff, DiffTruncated: tc.truncated, DiffBytes: tc.actual}
+			_, err := BuildPrompt(snapshot, 4)
+			var sizeErr *DiffTooLargeError
+			if !errors.As(err, &sizeErr) || sizeErr.ActualBytes != tc.actual || sizeErr.LimitBytes != 4 {
+				t.Fatalf("BuildPrompt() error = %v, want actual=%d limit=4", err, tc.actual)
+			}
+		})
+	}
+}
 
 func TestBuildPromptSecurityScope(t *testing.T) {
 	t.Parallel()

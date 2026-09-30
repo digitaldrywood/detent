@@ -67,7 +67,8 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
-	if err := s.reserveHostedInvitation(c.Request().Context(), email); err != nil {
+	reserved, err := s.reserveHostedInvitationSeat(c.Request().Context(), email)
+	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
 			return s.hostedError(c, http.StatusTooManyRequests, limit.Error())
@@ -76,13 +77,13 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	}
 	invitation, err := s.config.Hosted.Provider.Invite(c.Request().Context(), credential.Hosted.OrganizationID, email, role, credential.Hosted.Subject)
 	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		return s.hostedInvitationFailure(c, email, err)
+		return s.hostedInvitationFailure(c, email, reserved, err)
 	}
 	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, role, formatHubTime(s.config.now()))
 	if err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be recorded")
 	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
 func (s *Service) hostedManagedMember(c echo.Context, credential apiCredential, removingOwner bool) (auth.Membership, error) {
@@ -124,7 +125,7 @@ func (s *Service) revokeHostedMember(c echo.Context) error {
 	if err := s.config.Hosted.Provider.RevokeMembership(c.Request().Context(), member.ID); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Local access is revoked. Provider revocation could not be confirmed; retry removal.")
 	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
 func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (resultErr error) {
@@ -170,7 +171,7 @@ func (s *Service) changeHostedRole(c echo.Context) error {
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_members SET role = ?,updated_at = ? WHERE user_id = ?", role, formatHubTime(s.config.now()), member.UserID); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be recorded")
 	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
 func (s *Service) changeHostedGrant(c echo.Context) error {
@@ -186,7 +187,7 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "The project grant could not be changed")
 	}
-	return c.Redirect(http.StatusSeeOther, "/organization")
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
 func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, user, project string, write, runner, revoke bool) (resultErr error) {
@@ -243,7 +244,7 @@ func (s *Service) createHostedProject(c echo.Context) error {
 		}
 		return s.hostedError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
 	}
-	return c.Redirect(http.StatusSeeOther, "/projects/"+project)
+	return c.Redirect(http.StatusSeeOther, s.hostedPath("/projects/"+project))
 }
 
 func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string) (project string, resultErr error) {
@@ -256,7 +257,7 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential}); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return "", err
 	}
 	err = tx.QueryRowContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id=p.id WHERE p.organization_id=? AND p.name=? AND g.user_id=? AND g.can_write=1`, s.config.Hosted.OrganizationID, name, credential.Hosted.Subject).Scan(&project)
@@ -275,7 +276,7 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 		return "", err
 	}
 	project = newNativeID("prj")
-	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
+	states := HostedProjectStates()
 	now := formatHubTime(s.config.now())
 	encoded, err := marshalNative(states)
 	if err != nil {
@@ -289,7 +290,8 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 			return "", err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write) VALUES (?,?,?,1)", credential.Hosted.Subject, s.config.Hosted.OrganizationID, project); err != nil {
+	manageRunner := credential.HostedRole == "owner" || credential.HostedRole == "admin"
+	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,1,?)", credential.Hosted.Subject, s.config.Hosted.OrganizationID, project, manageRunner); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,?,?)", credential.ID, s.config.Hosted.OrganizationID, project); err != nil {
@@ -299,4 +301,26 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 		return "", err
 	}
 	return project, tx.Commit()
+}
+
+// HostedProjectStates is the workflow a new hosted project starts with. A
+// completed run whose version the project's review policy already accepts,
+// the default unless the repository gate asks for a person, moves from In
+// Progress straight to Merging, where the runner that holds the project lands
+// it and the Hub finishes it in Done. Human Review is where a Change Request
+// waits for a person: when the project requires review, and when a landing
+// was refused. It neither ends nor dispatches the work, and it is not
+// operator-only, so the orchestrator can move a finished run there. A person
+// approves the change, which moves it to Merging, or sends it back to In
+// Progress. Human Review is the default auto_promote.source_state, which is
+// how the orchestrator names its review lane. Migrations 36, 38 and 39 move
+// projects created from the earlier templates onto this one.
+func HostedProjectStates() []tracker.NativeState {
+	return []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Merging", "Done"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}},
+		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+	}
 }

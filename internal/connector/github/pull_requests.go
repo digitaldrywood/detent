@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,6 +174,11 @@ func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []co
 			}
 		}
 		c.setPullRequestHydrationCursor(repo, nextCursor)
+	}
+	for i := range issues {
+		if err := c.attachRequiredBranchChecks(ctx, &issues[i]); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -362,6 +368,9 @@ func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issu
 		}
 	}
 	attachPullRequestToIssue(&issue, repo, pullRequest)
+	if err := c.attachRequiredBranchChecks(ctx, &issue); err != nil {
+		return issue, err
+	}
 	return issue, nil
 }
 
@@ -499,6 +508,107 @@ func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connec
 	return fingerprint, nil
 }
 
+// PullRequestValidationDiff collects one PR's files and patch between two
+// metadata reads. A moving head or inconsistent file response is retryable.
+func (c *Connector) PullRequestValidationDiff(ctx context.Context, issue connector.Issue) (connector.ValidationDiff, error) {
+	repo, number, ok := hydratedPullRequestRef(issue)
+	if !ok || issue.PullRequest == nil {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR identity is missing")
+	}
+	path := restPullRequestPath(repo, number)
+	var before, after restPullRequest
+	if err := c.client.REST(ctx, http.MethodGet, path, nil, &before); err != nil {
+		return connector.ValidationDiff{}, fmt.Errorf("fetch validator PR metadata: %w", err)
+	}
+	base, head := strings.TrimSpace(before.Base.SHA), strings.TrimSpace(before.Head.SHA)
+	if base == "" || head == "" || base != strings.TrimSpace(issue.PullRequest.BaseSHA) || head != strings.TrimSpace(issue.PullRequest.HeadSHA) {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR base/head differs from hydrated issue")
+	}
+	files, err := fetchRESTList[restPullRequestFile](ctx, c.client, restPullRequestFilesPath(repo, number))
+	if err != nil {
+		return connector.ValidationDiff{}, fmt.Errorf("fetch validator PR files: %w", err)
+	}
+	patch, truncated, _, err := c.client.RESTTextWithSize(ctx, path, "application/vnd.github.diff", 8<<20)
+	if err != nil {
+		return connector.ValidationDiff{}, fmt.Errorf("fetch validator PR patch: %w", err)
+	}
+	if truncated {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR patch exceeds provenance limit")
+	}
+	if err := c.client.REST(ctx, http.MethodGet, path, nil, &after); err != nil {
+		return connector.ValidationDiff{}, fmt.Errorf("refresh validator PR metadata: %w", err)
+	}
+	if before.Base.SHA != after.Base.SHA || before.Head.SHA != after.Head.SHA {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR head changed while collecting diff")
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Filename)
+		if file.Patch != "" && !strings.Contains(patch, file.Patch) {
+			return connector.ValidationDiff{}, connector.NewRetryableError("validator PR patch differs from file patches")
+		}
+	}
+	if !sameValidationFiles(paths, patch) {
+		return connector.ValidationDiff{}, connector.NewRetryableError("validator PR patch file list differs from PR files")
+	}
+	sum := sha256.Sum256([]byte(patch))
+	return connector.ValidationDiff{Repository: pullRequestRepoName(repo), PRNumber: number, BaseSHA: base, HeadSHA: head, Files: paths, Patch: patch, Digest: hex.EncodeToString(sum[:])}, nil
+}
+
+func sameValidationFiles(files []string, patch string) bool {
+	actual := map[string]bool{}
+	lines := strings.Split(patch, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "diff --git ") {
+			continue
+		}
+		path := ""
+		if _, right, found := strings.Cut(line, " \"b/"); found {
+			quoted := "\"b/" + right
+			unquoted, err := strconv.Unquote(quoted)
+			if err != nil || !strings.HasPrefix(unquoted, "b/") {
+				return false
+			}
+			path = strings.TrimPrefix(unquoted, "b/")
+		} else {
+			// Unquoted Git paths may contain " b/" themselves. Match both
+			// fields for ordinary changes; renamed paths need Git's explicit
+			// destination metadata in the same diff block.
+			for _, file := range files {
+				if line == "diff --git a/"+file+" b/"+file {
+					path = file
+					break
+				}
+				if !strings.HasPrefix(line, "diff --git a/") || !strings.HasSuffix(line, " b/"+file) {
+					continue
+				}
+				for j := i + 1; j < len(lines) && !strings.HasPrefix(lines[j], "diff --git "); j++ {
+					if lines[j] == "rename to "+file || lines[j] == "copy to "+file {
+						path = file
+						break
+					}
+				}
+				if path != "" {
+					break
+				}
+			}
+		}
+		if path == "" {
+			return false
+		}
+		actual[path] = true
+	}
+	if len(actual) != len(files) {
+		return false
+	}
+	for _, file := range files {
+		if !actual[file] {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Connector) SecurityAuditSnapshot(ctx context.Context, issue connector.Issue, maxDiffBytes int) (securityaudit.Snapshot, error) {
 	return c.securityAuditSnapshot(ctx, issue, maxDiffBytes, nil)
 }
@@ -553,7 +663,7 @@ func (c *Connector) securityAuditSnapshot(ctx context.Context, issue connector.I
 			previous = nil
 		}
 	}
-	diff, truncated, err := c.client.RESTText(ctx, diffPath, "application/vnd.github.diff", maxDiffBytes)
+	diff, truncated, diffBytes, err := c.client.RESTTextWithSize(ctx, diffPath, "application/vnd.github.diff", maxDiffBytes)
 	if err != nil {
 		return securityaudit.Snapshot{}, fmt.Errorf("fetch security audit pull request diff: %w", err)
 	}
@@ -627,6 +737,7 @@ func (c *Connector) securityAuditSnapshot(ctx context.Context, issue connector.I
 		BaseSHA:          strings.TrimSpace(before.Base.SHA),
 		HeadSHA:          strings.TrimSpace(before.Head.SHA),
 		Diff:             diff,
+		DiffBytes:        diffBytes,
 		DiffTruncated:    truncated,
 	}, nil
 }
@@ -798,6 +909,25 @@ func (c *Connector) checkWorkflowRerunsReady(ctx context.Context, repo pullReque
 		if !strings.EqualFold(strings.TrimSpace(run.Status), "completed") {
 			return connector.NewRetryableError(fmt.Sprintf("workflow run %d is not completed; deferring failed-job rerun", check.WorkflowRunID))
 		}
+	}
+	return nil
+}
+
+var commitSHAPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
+
+// PostCommitStatus records a successful commit status for sha. It only ever
+// writes success: a gate that did not pass posts nothing.
+func (c *Connector) PostCommitStatus(ctx context.Context, repository, sha, statusContext, description string) error {
+	repo, ok := pullRequestRepoFromName(repository)
+	sha = strings.TrimSpace(sha)
+	statusContext = strings.TrimSpace(statusContext)
+	if !ok || !commitSHAPattern.MatchString(sha) || statusContext == "" {
+		return fmt.Errorf("post github commit status: invalid repository %q, commit %q or context %q", strings.TrimSpace(repository), sha, statusContext)
+	}
+	var response restCommitStatus
+	body := map[string]any{"state": "success", "context": statusContext, "description": description}
+	if err := c.client.REST(ctx, http.MethodPost, restCreateCommitStatusPath(repo, sha), body, &response); err != nil {
+		return fmt.Errorf("post github commit status: %w", err)
 	}
 	return nil
 }

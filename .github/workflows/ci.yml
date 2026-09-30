@@ -1,44 +1,63 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  merge_group:
-    types: [checks_requested]
   schedule:
-    - cron: '27 9 * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      fail_job:
+        description: Force one job to fail after its normal checks
+        required: false
+        type: choice
+        default: none
+        options: [none, verify-fast]
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: scheduled-develop-validation
+  cancel-in-progress: false
 
 jobs:
-  pr-required-placeholders:
-    # Required checks are enforced in the merge queue (merge_group) and on main.
-    # GitHub refuses to enqueue a pull request whose required checks never
-    # reported, so pull_request events satisfy the four names instantly here.
-    if: github.event_name == 'pull_request'
-    strategy:
-      matrix:
-        check: ["Lint", "Verify (ubuntu-latest)", "Test Coverage", "Browser Visual"]
-    name: ${{ matrix.check }}
+  preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    outputs:
+      should_run: ${{ steps.scope.outputs.should_run }}
+      develop_sha: ${{ steps.scope.outputs.develop_sha }}
     steps:
-      - run: echo "Required checks run in the merge queue; nothing to do on pull requests."
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          develop_sha="$(git ls-remote origin refs/heads/develop | cut -f1)"
+          test -n "$develop_sha"
+          echo "develop_sha=$develop_sha" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo should_run=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for tag in $(git tag --points-at "$develop_sha" --list 'v*'); do
+            if git for-each-ref --format='%(contents)' "refs/tags/$tag" | rg -q 'detent-release-provenance:'; then
+              echo should_run=false >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo should_run=true >> "$GITHUB_OUTPUT"
+
   invariants:
-    if: github.event_name != 'pull_request'
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: Invariant Gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -47,11 +66,14 @@ jobs:
         run: make check-invariants
 
   lint:
-    if: github.event_name != 'pull_request'
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
 
       - uses: actions/setup-go@v6
         with:
@@ -78,27 +100,18 @@ jobs:
       - name: Run golangci-lint
         run: make lint
 
-  verify:
-    name: Verify (ubuntu-latest)
-    needs: [verify-fast, verify-race]
-    if: always() && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - name: Require every Verify job to succeed
-        env:
-          FAST_RESULT: ${{ needs.verify-fast.result }}
-          RACE_RESULT: ${{ needs.verify-race.result }}
-        run: test "$FAST_RESULT" = success && test "$RACE_RESULT" = success
-
   verify-fast:
-    if: github.event_name != 'pull_request'
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: Verify build and vet
     runs-on: ubuntu-latest
     # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:
@@ -107,6 +120,15 @@ jobs:
 
       - name: Verify committed generated sources
         run: make check-generated
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/conversation/package-lock.json
+
+      - name: Verify the Cloud client and its committed bundle
+        run: make check-app
 
       - name: Check integrated migration versions
         run: make check-migrations
@@ -120,8 +142,15 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Audit changed Go packages with NilAway
+        run: make nilaway-changed
+
       - name: Test
         run: make test
+
+      - name: Force acceptance probe failure
+        if: github.event_name == 'workflow_dispatch' && inputs.fail_job == 'verify-fast'
+        run: exit 1
 
       - name: Upload workspace test evidence
         if: always() && runner.os != 'Windows'
@@ -133,11 +162,11 @@ jobs:
           retention-days: 14
 
       - name: Repeat subprocess lifecycle readiness
-        if: github.event_name != 'pull_request'
         run: go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
 
   verify-race:
-    if: github.event_name != 'pull_request'
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: Verify race (${{ matrix.shard }})
     runs-on: ubuntu-latest
     # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
@@ -145,9 +174,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -170,16 +201,21 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: race-evidence-${{ matrix.shard }}
-          path: tmp/*-race-evidence
+          path: |
+            tmp/*-race-evidence
+            tmp/hub-race-evidence-*
           if-no-files-found: error
           retention-days: 14
 
   test-cover:
-    if: github.event_name != 'pull_request'
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: Test Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
 
       - uses: actions/setup-go@v6
         with:
@@ -190,11 +226,14 @@ jobs:
         run: make test-cover-packages
 
   security:
-    if: github.event_name != 'pull_request'
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: Security
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
 
       - uses: actions/setup-go@v6
         with:
@@ -204,14 +243,20 @@ jobs:
       - name: Run govulncheck and gosec
         run: make security
 
-  browser-visual:
-    if: github.event_name != 'pull_request'
-    name: Browser Visual
+  browser-visual-shard:
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
+    name: Browser Visual (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
           fetch-depth: 0
 
       - uses: actions/setup-go@v6
@@ -219,63 +264,30 @@ jobs:
           go-version: '1.26.6'
           cache: true
 
-      - name: Detect visual-sensitive changes
-        id: visual-changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          run_visual=true
-          if [ -n "${GITHUB_BASE_REF:-}" ]; then
-            git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
-            run_visual=false
-            while IFS= read -r changed_file; do
-              case "$changed_file" in
-                .github/workflows/ci.yml|.github/workflows/release.yml|.templui.json|go.mod|go.sum|package.json|package-lock.json|playwright.config.js|README.md|docs/ONBOARDING.md|static/*|tests/visual/*|cmd/detent/*|internal/config/*|internal/web/*|internal/cli/*.go|internal/devruntime/*)
-                  run_visual=true
-                  break
-                  ;;
-              esac
-            done < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
-          fi
-          echo "run_visual=$run_visual" >> "$GITHUB_OUTPUT"
-
       - uses: actions/setup-node@v6
-        if: steps.visual-changes.outputs.run_visual == 'true'
         with:
           node-version: '24'
           cache: npm
 
       - name: Install Node dependencies
-        if: steps.visual-changes.outputs.run_visual == 'true'
         run: npm ci
 
       - name: Install Playwright browsers
-        if: steps.visual-changes.outputs.run_visual == 'true'
         run: npx playwright install --with-deps chromium
 
       - name: Build Detent visual test binary
-        if: steps.visual-changes.outputs.run_visual == 'true'
         run: make build
 
       - name: Run full browser visual gate
-        if: steps.visual-changes.outputs.run_visual == 'true'
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
-        run: npm run test:visual
-
-      - name: Run browser smoke gate
-        if: steps.visual-changes.outputs.run_visual != 'true'
-        run: |
-          set -euo pipefail
-          mkdir -p tmp
-          go build -o tmp/detent ./cmd/detent
-          tmp/detent --help
+        run: npm run test:visual -- --shard=${{ matrix.shard }}/3
 
       - name: Upload browser visual evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-visual-evidence
+          name: browser-visual-evidence-${{ matrix.shard }}
           path: tmp/playwright-evidence
           if-no-files-found: ignore
           retention-days: 14
@@ -285,7 +297,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-visual-failure-artifacts
+          name: browser-visual-failure-artifacts-${{ matrix.shard }}
           path: |
             tmp/playwright-report
             tmp/playwright-results
@@ -293,7 +305,8 @@ jobs:
           retention-days: 14
 
   portability-verify:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: Portability Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Allow the 30m workspace suite plus other packages, setup, and evidence upload.
@@ -304,6 +317,8 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
 
       - name: Set up Go (uncached on macOS)
         uses: actions/setup-go@v6
@@ -362,11 +377,14 @@ jobs:
           retention-days: 14
 
   windows-core:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: Windows Core
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
 
       - uses: actions/setup-go@v6
         with:
@@ -380,7 +398,8 @@ jobs:
         run: .\tmp\detent.exe --help
 
   installer-smoke:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: Installer Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -389,6 +408,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
 
       - name: Resolve release installer version
         shell: bash
@@ -470,13 +491,15 @@ jobs:
           & $binary version
 
   goreleaser-snapshot:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
           fetch-depth: 0
 
       - uses: actions/setup-go@v6
@@ -493,9 +516,11 @@ jobs:
         run: minisign -G -W -s "$RUNNER_TEMP/detent-minisign.key" -p "$RUNNER_TEMP/detent-minisign.pub"
 
       - name: Prepare non-published snapshot provenance fixture
+        env:
+          CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
         run: |
           mkdir -p tmp
-          printf '{"schema":1,"repository":"%s","tag":"snapshot","commit":"%s","checks":[{"name":"snapshot packaging only","status":"completed","conclusion":"success"}]}\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" > tmp/detent_release_provenance.json
+          printf '{"schema":1,"repository":"%s","tag":"snapshot","commit":"%s","checks":[{"name":"snapshot packaging only","status":"completed","conclusion":"success"}]}\n' "$GITHUB_REPOSITORY" "$CI_DEVELOP_SHA" > tmp/detent_release_provenance.json
 
       - name: Run GoReleaser snapshot
         uses: goreleaser/goreleaser-action@v7
@@ -508,25 +533,23 @@ jobs:
           MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key
           MINISIGN_PASSWORD: ""
 
-  report-integration-failures:
-    name: Report integration failures
-    needs: [portability-verify, windows-core, installer-smoke, goreleaser-snapshot]
-    if: failure() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+  finalize:
+    name: Finalize scheduled validation
+    needs: [preflight, invariants, lint, verify-fast, verify-race, test-cover, security, browser-visual-shard, portability-verify, windows-core, installer-smoke, goreleaser-snapshot]
+    if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
-      actions: read
-      contents: write # Existing machine intake coordinates fingerprint publication via Git refs.
+      actions: write
+      contents: write
       issues: write
+      statuses: write
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.6'
-          cache: true
-      - name: Report failed jobs through machine intake
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
+      - name: Record result and publish validated tag
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/ci-jobs.json"
-          go run ./tools/cifailure < "$RUNNER_TEMP/ci-jobs.json"
+          CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
+        run: bash scripts/scheduled-ci-finish.sh

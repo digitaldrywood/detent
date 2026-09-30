@@ -33,6 +33,9 @@ type auditEvidenceResult struct {
 	ReviewerDigest     string                      `json:"reviewer_digest"`
 	AuthenticationMode string                      `json:"authentication_mode"`
 	ExitStatus         string                      `json:"exit_status"`
+	FailureReason      string                      `json:"failure_reason,omitempty"`
+	ActualBytes        int                         `json:"actual_bytes,omitempty"`
+	MaxDiffBytes       int                         `json:"max_diff_bytes,omitempty"`
 	OutputDigest       string                      `json:"output_digest"`
 	OutputBytes        int                         `json:"output_bytes"`
 	Verdict            string                      `json:"verdict"`
@@ -225,6 +228,9 @@ func newAuditEvidenceCommand(configPath *string, opts options) *cobra.Command {
 			result := auditEvidenceResultFromRun(run, dispositions)
 			return out.Write(func(writer io.Writer) error {
 				_, err := fmt.Fprintf(writer, "Audit run %d (%s)\nPR: %s#%d\nBase: %s\nHead: %s\nService: %s\nReviewer: %s (%s)\nAuthentication: %s\nExit: %s\nOutput: %s (%d bytes)\nVerdict: %s\nSummary: %s\n", result.RunID, result.InvocationID, result.Repository, result.PullRequest, result.BaseSHA, result.HeadSHA, result.ServiceIdentity, result.ReviewerVersion, result.ReviewerDigest, result.AuthenticationMode, result.ExitStatus, result.OutputDigest, result.OutputBytes, result.Verdict, result.Summary)
+				if err == nil && result.FailureReason == securityaudit.ReasonDiffTooLarge {
+					_, err = fmt.Fprintf(writer, "Failure: %s (actual %d bytes; security_audit.max_diff_bytes %d bytes)\n", result.FailureReason, result.ActualBytes, result.MaxDiffBytes)
+				}
 				return err
 			}, result)
 		},
@@ -241,7 +247,7 @@ func newAuditEvidenceCommand(configPath *string, opts options) *cobra.Command {
 }
 
 func auditEvidenceResultFromRun(run securityaudit.Run, dispositions []securityaudit.Disposition) auditEvidenceResult {
-	return auditEvidenceResult{
+	result := auditEvidenceResult{
 		RunID:              run.ID,
 		InvocationID:       run.InvocationID,
 		ProjectID:          run.ProjectID,
@@ -265,4 +271,10 @@ func auditEvidenceResultFromRun(run securityaudit.Run, dispositions []securityau
 		CompletedAt:        run.CompletedAt.UTC().Format(time.RFC3339Nano),
 		RecordedAt:         run.RecordedAt.UTC().Format(time.RFC3339Nano),
 	}
+	if size, ok := securityaudit.ParseDiffTooLargeFailure(run.Failure); ok && run.ExitStatus == securityaudit.ExitStatusFailed {
+		result.FailureReason = securityaudit.ReasonDiffTooLarge
+		result.ActualBytes = size.ActualBytes
+		result.MaxDiffBytes = size.LimitBytes
+	}
+	return result
 }

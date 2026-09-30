@@ -3,6 +3,7 @@ package runnerauth
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -22,6 +23,9 @@ func TestRoutingNormalizationAndValidation(t *testing.T) {
 		{"invalid state", Routing{DisplayName: "Builder", State: "paused"}, false},
 		{"negative capacity", Routing{DisplayName: "Builder", State: "active", CapacityLimit: -1}, false},
 		{"duplicate project", Routing{DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{"prj_a", "prj_a"}}, false},
+		{"authorized home", Routing{DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{"prj_a"}, HomeProjectIDs: []tracker.ProjectID{"prj_a"}}, true},
+		{"unauthorized home", Routing{DisplayName: "Builder", State: "active", HomeProjectIDs: []tracker.ProjectID{"prj_a"}}, false},
+		{"duplicate home", Routing{DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{"prj_a"}, HomeProjectIDs: []tracker.ProjectID{"prj_a", "prj_a"}}, false},
 		{"empty project", Routing{DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{""}}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -36,6 +40,53 @@ func TestRoutingNormalizationAndValidation(t *testing.T) {
 				if test.routing.Tags[0] != " Linux " {
 					t.Fatal("normalization mutated caller tags")
 				}
+			}
+		})
+	}
+}
+
+func TestRoutingSettingsValidation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		settings func(*Routing)
+		valid    bool
+	}{
+		{"defaults", func(*Routing) {}, true},
+		{"trusted", func(r *Routing) { r.IsolationTier = "native-trusted" }, true},
+		{"unknown tier", func(r *Routing) { r.IsolationTier = "root" }, false},
+		{"loopback service", func(r *Routing) { r.HostServices = []string{"tcp:127.0.0.1:8080"} }, true},
+		{"unix service", func(r *Routing) { r.HostServices = []string{"unix:/var/run/service.sock"} }, true},
+		{"non-loopback service", func(r *Routing) { r.HostServices = []string{"tcp:0.0.0.0:8080"} }, false},
+		{"docker socket", func(r *Routing) { r.HostServices = []string{"unix:/var/run/docker.sock"} }, false},
+		{"valid window", func(r *Routing) {
+			r.Availability = Availability{Timezone: "America/Chicago", Windows: []string{"Mon-Fri 09:00-17:00"}}
+		}, true},
+		{"unknown timezone", func(r *Routing) {
+			r.Availability = Availability{Timezone: "Nowhere/Unknown", Windows: []string{"Mon-Fri 09:00-17:00"}}
+		}, false},
+		{"zero window", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-09:00"}}
+		}, false},
+		{"overlapping windows", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00", "Wed-Wed 12:00-18:00"}}
+		}, false},
+		{"deadline", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, HardDeadline: "30m"}
+		}, true},
+		{"deadline without window", func(r *Routing) { r.Availability.HardDeadline = "30m" }, false},
+		{"negative deadline", func(r *Routing) {
+			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, HardDeadline: "-1m"}
+		}, false},
+		{"zero spillover", func(r *Routing) { r.Spillover = Spillover{Mode: "after", AfterMinutes: 0} }, true},
+		{"negative spillover", func(r *Routing) { r.Spillover = Spillover{Mode: "after", AfterMinutes: -1} }, false},
+		{"unknown spillover", func(r *Routing) { r.Spillover.Mode = "always" }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}
+			test.settings(&r)
+			if err := r.Normalized().Validate(); (err == nil) != test.valid {
+				t.Fatalf("Validate() = %v, want valid %v", err, test.valid)
 			}
 		})
 	}
@@ -94,6 +145,115 @@ func TestRunnerEligibility(t *testing.T) {
 			}
 			if len(got) != 1 || got[0].Code != test.code {
 				t.Fatalf("exclusions = %#v, want %s", got, test.code)
+			}
+		})
+	}
+}
+
+func TestRunnerHomeWorkStatus(t *testing.T) {
+	t.Parallel()
+	since := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name     string
+		home     bool
+		dry      *time.Time
+		mode     string
+		minutes  int
+		elapsed  time.Duration
+		want     string
+		eligible bool
+	}{
+		{"no homes", false, &since, "after", 0, time.Minute, "", false},
+		{"home work", true, nil, "after", 5, time.Minute, "Preferring home work", false},
+		{"waiting", true, &since, "after", 5, 4 * time.Minute, "Waiting for home work (4m)", false},
+		{"threshold", true, &since, "after", 5, 5 * time.Minute, "Spilled over", true},
+		{"never", true, &since, "never", 0, 5 * time.Minute, "Waiting for home work (5m)", false},
+		{"future clock", true, &since, "after", 0, -time.Minute, "Waiting for home work (0m)", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := Runner{HomeDrySince: test.dry, Routing: Routing{Spillover: Spillover{Mode: test.mode, AfterMinutes: test.minutes}}}
+			if test.home {
+				r.HomeProjectIDs = []tracker.ProjectID{"prj_a"}
+			}
+			now := since.Add(test.elapsed)
+			if got := r.HomeWorkStatus(now); got != test.want {
+				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+			if got := r.SpilloverEligible(now); got != test.eligible {
+				t.Fatalf("eligible = %v, want %v", got, test.eligible)
+			}
+		})
+	}
+}
+
+func TestRunnerAvailability(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, zone, window, now string
+		open                    bool
+		deadline                string
+	}{
+		{"empty", "", "", "2026-09-29T12:00:00Z", true, ""},
+		{"timezone", "America/Chicago", "Mon-Fri 09:00-17:00", "2026-09-29T15:00:00Z", true, "2026-09-29T22:30:00Z"},
+		{"closed", "America/Chicago", "Mon-Fri 09:00-17:00", "2026-09-29T22:00:00Z", false, "2026-09-29T22:30:00Z"},
+		{"overnight", "Asia/Tokyo", "Mon-Fri 22:00-06:00", "2026-09-29T18:00:00Z", true, "2026-09-29T21:30:00Z"},
+		{"spring DST", "America/Chicago", "Sat-Sat 22:00-06:00", "2026-03-08T07:30:00Z", true, "2026-03-08T11:30:00Z"},
+		{"fall DST", "America/Chicago", "Sat-Sat 22:00-06:00", "2026-11-01T06:30:00Z", true, "2026-11-01T12:30:00Z"},
+		{"continuous", "UTC", "Mon-Sun 00:00-24:00", "2026-09-29T12:00:00Z", true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now, err := time.Parse(time.RFC3339, tt.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := Availability{Timezone: tt.zone}
+			if tt.window != "" {
+				a.Windows = []string{tt.window}
+				a.HardDeadline = "30m"
+			}
+			status, err := a.Evaluate(now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Open != tt.open {
+				t.Fatalf("open = %t, want %t", status.Open, tt.open)
+			}
+			deadline, err := a.Deadline(now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.deadline == "" {
+				if !deadline.IsZero() {
+					t.Fatalf("unexpected deadline %v", deadline)
+				}
+			} else if deadline.UTC().Format(time.RFC3339) != tt.deadline {
+				t.Fatalf("deadline = %v, want %s", deadline, tt.deadline)
+			}
+			a.HardDeadline = ""
+			deadline, err = a.Deadline(now)
+			if err != nil || !deadline.IsZero() {
+				t.Fatalf("no deadline = %v, %v", deadline, err)
+			}
+		})
+	}
+}
+
+func TestRunnerStatus(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 29, 18, 0, 0, 0, time.UTC)
+	for _, health := range []string{"online", "offline", "revoked", "expired"} {
+		t.Run(health, func(t *testing.T) {
+			r := Runner{Health: health, Routing: Routing{Availability: Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}}}
+			want := health
+			if health == "online" {
+				want = "outside_hours"
+			}
+			if got := r.Status(now); got != want {
+				t.Fatalf("status = %s, want %s", got, want)
+			}
+			if got := r.Status(now.Add(-2 * time.Hour)); got != health {
+				t.Fatalf("inside status = %s", got)
 			}
 		})
 	}

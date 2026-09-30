@@ -149,6 +149,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
+		if rejected, err := o.operatorRejectedHead(ctx, issue); err != nil || rejected {
+			continue
+		}
 		if rework && !completedActiveIssueReadyForReview(issue, true, false) {
 			continue
 		}
@@ -157,6 +160,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issueID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		summary.SecurityAudit = securityAudit
+		summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if mergeWorkerIssue(issue) {
 			// Merging consumes only the audit verdict here; its other gates remain
@@ -490,6 +494,9 @@ func (o *Orchestrator) hydrateValidatorStagePullRequest(
 	if strings.TrimSpace(hydrated.ID) == "" || strings.TrimSpace(hydrated.ID) != strings.TrimSpace(issue.ID) {
 		return issue, false
 	}
+	if hydrated.PullRequest == nil || pullRequestHydrationBlocksProgress(hydrated.PullRequest) {
+		return issue, false
+	}
 	return hydrated, true
 }
 
@@ -679,7 +686,7 @@ func completedFromGateWaitAttempt(issue connector.Issue, attempt store.WorkAttem
 }
 
 func completionGateWaitEvidence(reason string, issue connector.Issue) connector.Issue {
-	if strings.TrimSpace(reason) != completedReworkGateWaitReason {
+	if strings.TrimSpace(reason) != completedReworkGateWaitReason && !issueHasOpenPullRequest(issue) {
 		return connector.Issue{}
 	}
 	return cloneIssue(issue)
@@ -775,8 +782,28 @@ func autoPromoteActiveGatePendingIssue(
 	}
 	autoCfg = normalizeAutoPromoteConfig(autoCfg)
 	operationalCompletionAccepted := completedOperationalCompletionAccepted(issue, completed.CompletionKind)
+	if completed.successfulAttemptPersisted && gateRequiresPullRequest(autoCfg.Gate) && !operationalCompletionAccepted &&
+		!completedActiveGateWaitCurrentHead(completed, issue) {
+		return false
+	}
 	return completedActiveFinalStateReviewEligible(completed.FinalState, autoCfg.SourceState) &&
 		completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(autoCfg.Gate), operationalCompletionAccepted)
+}
+
+func completedActiveGateWaitCurrentHead(completed Completed, issue connector.Issue) bool {
+	previous := completed.gateWaitEvidence
+	if strings.TrimSpace(previous.ID) == "" {
+		previous = completed.Issue
+	}
+	if normalizeState(previous.State) != normalizeState(issue.State) ||
+		previous.PullRequest == nil || issue.PullRequest == nil ||
+		pullRequestNumber(previous) <= 0 || pullRequestNumber(previous) != pullRequestNumber(issue) ||
+		!strings.EqualFold(pullRequestRepository(previous), pullRequestRepository(issue)) ||
+		strings.TrimSpace(previous.PullRequest.HeadSHA) == "" ||
+		strings.TrimSpace(previous.PullRequest.HeadSHA) != strings.TrimSpace(issue.PullRequest.HeadSHA) {
+		return false
+	}
+	return issue.StageUpdatedAt == nil || completed.CompletedAt.IsZero() || !issue.StageUpdatedAt.After(completed.CompletedAt)
 }
 
 func autoPromoteActiveGateTrackedIssue(
@@ -1250,6 +1277,12 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
+	// A hub-native project's Merging lane holds reviewed Change Requests the
+	// runner lands; there is no pull request whose state could make them
+	// stale, so this reconciliation, which reads PR state, does not apply.
+	if o.nativeWorkflow() {
+		return nil
+	}
 	transitioned := map[string]struct{}{}
 	o.recordMergeQueueEntries(state, issues, now, "tracker")
 	consumedRepositories := activeMergeWorkerRepositories(state)
@@ -2063,17 +2096,12 @@ func mergeWorkerHeadReady(issue connector.Issue, cfg Config) bool {
 func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues []connector.Issue, now time.Time) []connector.Issue {
 	o.reconcileMergeReservations(state, issues, now)
 	candidates := []connector.Issue{}
-	consumedRepositories := activeMergeWorkerRepositories(state)
 	for _, issue := range staleMergingQueueIssues(issues, o.cfg, state, now) {
 		issueID := strings.TrimSpace(issue.ID)
-		repository := nativeMergeQueueRepositoryKey(issue)
 		if mergeWorkerCIFailed(issue.PullRequest) {
 			continue
 		}
 		if staleMergingPullRequestDispatchActive(state, issueID) {
-			continue
-		}
-		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) {
 			continue
 		}
 		if !staleMergingIssueReadyForDispatch(issue, o.cfg) {
@@ -2084,7 +2112,6 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 			continue
 		}
 		candidates = append(candidates, cloneIssue(issue))
-		consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 	}
 	return candidates
 }
@@ -2473,6 +2500,23 @@ func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueI
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
+	// An active run owns this head until it finishes. Avoid hydrating the PR
+	// again on every tick while that run is in progress.
+	if key := validatorStageIdentityForIssue(issue).Key; key != "" {
+		o.validatorMu.Lock()
+		_, running := o.validatorRuns[key]
+		o.validatorMu.Unlock()
+		if running {
+			return
+		}
+	}
+	if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
+		var ok bool
+		issue, ok = o.hydrateValidatorStagePullRequest(ctx, issue)
+		if !ok {
+			return
+		}
+	}
 	identity := validatorStageIdentityForIssue(issue)
 	if identity.Key == "" {
 		if o.logger != nil {
@@ -2569,19 +2613,54 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		defer o.validatorWG.Done()
 		defer progress.close()
 
-		result, err := o.validator.Validate(ctx, ValidatorRequest{
-			Issue:            issue,
-			StartedAt:        now.UTC(),
-			SelectorContext:  selectorContext,
-			OnActivityUpdate: o.activityUpdateHandler(ctx, issue),
-			OnUsageUpdate:    func(update runpkg.UsageUpdate) error { return progress.observe(ctx, update) },
-		})
+		var diff *connector.ValidationDiff
+		var diffErr error
+		if reader, ok := o.connector.(connector.ValidationDiffReader); ok {
+			var snapshot connector.ValidationDiff
+			snapshot, diffErr = reader.PullRequestValidationDiff(ctx, issue)
+			if diffErr == nil {
+				diff = &snapshot
+			}
+		}
+		var result gate.ValidatorResult
+		err := diffErr
+		if diffErr != nil && !connector.IsRetryable(diffErr) {
+			err = fmt.Errorf("%w: %w", runpkg.ErrValidatorInfrastructure, diffErr)
+		}
+		if err == nil {
+			result, err = o.validator.Validate(ctx, ValidatorRequest{
+				Issue:            issue,
+				Diff:             diff,
+				StartedAt:        now.UTC(),
+				SelectorContext:  selectorContext,
+				OnActivityUpdate: o.activityUpdateHandler(ctx, issue),
+				OnUsageUpdate:    func(update runpkg.UsageUpdate) error { return progress.observe(ctx, update) },
+			})
+			if err == nil && diff != nil && (result.Repository != diff.Repository || result.PRNumber != diff.PRNumber || result.BaseSHA != diff.BaseSHA || result.HeadSHA != diff.HeadSHA || result.DiffDigest != diff.Digest) {
+				err = connector.NewRetryableError("validator verdict provenance differs from reviewed PR diff")
+			}
+		}
 
 		completedAt := o.clockNow().UTC()
 		o.validatorMu.Lock()
 		if err != nil {
 			o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
 			delete(o.validatorRuns, identity.Key)
+			if errors.Is(err, runpkg.ErrValidatorInfrastructure) {
+				o.validatorMu.Unlock()
+				if capacityProbeKey != "" {
+					o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
+						Scope:         capacityScope,
+						ProbeErr:      err,
+						CapacityProbe: true,
+						CompletedAt:   completedAt,
+					})
+				}
+				if o.logger != nil {
+					o.logger.Error("validator infrastructure failure", "issue_id", identity.IssueID, "head_sha", identity.HeadSHA, "error", err)
+				}
+				return
+			}
 			if capacityErr, ok := backendcapacity.As(err); ok {
 				if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
 					failure := o.validatorFailures[identity.Key]
@@ -2618,8 +2697,13 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			attempt := o.validatorFailures[identity.Key].Attempt + 1
 			retryAt := completedAt.Add(validatorStageRetryDelay(retryConfig, attempt))
 			failure := validatorStageFailure{Attempt: attempt, NextRetryAt: retryAt, Error: err.Error()}
-			exhausted := attempt >= validatorConfig.MaxAttempts
-			failureResult := validatorFailureResult(err, attempt, validatorConfig.MaxAttempts)
+			retryableInput := connector.IsRetryable(err)
+			exhausted := attempt >= validatorConfig.MaxAttempts && !retryableInput
+			maxAttempts := validatorConfig.MaxAttempts
+			if retryableInput && maxAttempts <= attempt {
+				maxAttempts = attempt + 1
+			}
+			failureResult := validatorFailureResult(err, attempt, maxAttempts)
 			if exhausted {
 				delete(o.validatorFailures, identity.Key)
 				o.validatorResults[identity.Key] = validatorStageResult{Result: failureResult}
@@ -2631,7 +2715,11 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			if !exhausted {
 				nextRetryAt = &retryAt
 			}
-			o.recordValidatorStageOutcome(ctx, issue, identity, failureResult, attempt, nextRetryAt, completedAt)
+			recordedAttempts := attempt
+			if retryableInput && recordedAttempts >= validatorConfig.MaxAttempts {
+				recordedAttempts = max(validatorConfig.MaxAttempts-1, 0)
+			}
+			o.recordValidatorStageOutcome(ctx, issue, identity, failureResult, recordedAttempts, nextRetryAt, completedAt)
 			if o.logger != nil {
 				attrs := []any{
 					"issue_id", strings.TrimSpace(issue.ID),
@@ -2666,6 +2754,27 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 				CapacityProbe: true,
 				CompletedAt:   completedAt,
 			})
+		}
+		if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
+			if current, ok := o.hydrateValidatorStagePullRequest(ctx, issue); ok {
+				if validatorStageIdentityForIssue(current).Key != identity.Key {
+					// The reviewed diff no longer describes the PR. Let the next
+					// tick validate its current identity instead of storing a verdict.
+					o.validatorMu.Lock()
+					o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
+					delete(o.validatorRuns, identity.Key)
+					o.validatorMu.Unlock()
+					return
+				}
+			} else {
+				// The authoritative head is unavailable. Leave the verdict absent so
+				// the existing validation path can try again on the next tick.
+				o.validatorMu.Lock()
+				o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
+				delete(o.validatorRuns, identity.Key)
+				o.validatorMu.Unlock()
+				return
+			}
 		}
 		o.recordValidatorVerdict(ctx, issue, identity, result, completedAt)
 
@@ -2744,6 +2853,12 @@ func validatorResultComment(result gate.ValidatorResult) string {
 	var b strings.Builder
 	b.WriteString("Validator verdict: ")
 	b.WriteString(strings.TrimSpace(result.Verdict))
+	if result.Repository != "" {
+		fmt.Fprintf(&b, "\n- reviewed PR: %s#%d", result.Repository, result.PRNumber)
+		fmt.Fprintf(&b, "\n- base SHA: %s\n- head SHA: %s\n- diff SHA-256: %s", result.BaseSHA, result.HeadSHA, result.DiffDigest)
+		b.WriteString("\n- reviewed files: ")
+		b.WriteString(strings.Join(result.DiffFiles, ", "))
+	}
 	if result.Score > 0 {
 		b.WriteString("\n- score: ")
 		b.WriteString(fmt.Sprintf("%.2f", result.Score))
@@ -2790,9 +2905,12 @@ func pullRequestNumber(issue connector.Issue) int {
 }
 
 type validatorStageIdentity struct {
-	Key     string
-	IssueID string
-	HeadSHA string
+	Key        string
+	IssueID    string
+	HeadSHA    string
+	BaseSHA    string
+	Repository string
+	PRNumber   int
 }
 
 func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentity {
@@ -2807,10 +2925,21 @@ func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentit
 	if headSHA == "" {
 		return validatorStageIdentity{}
 	}
+	baseSHA := strings.TrimSpace(issue.PullRequest.BaseSHA)
+	repository := strings.TrimSpace(issue.PRRepository)
+	if repository == "" {
+		identifier := strings.TrimSpace(issue.Identifier)
+		if cut := strings.IndexByte(identifier, '#'); cut > 0 {
+			repository = identifier[:cut]
+		}
+	}
 	return validatorStageIdentity{
-		Key:     issueID + ":" + headSHA,
-		IssueID: issueID,
-		HeadSHA: headSHA,
+		Key:        fmt.Sprintf("%s:%s:%d:%s:%s", issueID, repository, pullRequestNumber(issue), baseSHA, headSHA),
+		IssueID:    issueID,
+		HeadSHA:    headSHA,
+		BaseSHA:    baseSHA,
+		Repository: repository,
+		PRNumber:   pullRequestNumber(issue),
 	}
 }
 
@@ -2863,6 +2992,9 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		}
 		return validatorStageResult{}, false
 	}
+	if verdict.Repository == "" || verdict.Repository != identity.Repository || verdict.PRNumber == nil || *verdict.PRNumber != int64(identity.PRNumber) || verdict.BaseSHA == "" || verdict.BaseSHA != identity.BaseSHA || verdict.HeadSHA != identity.HeadSHA || (verdict.Submitted && verdict.DiffDigest == "") {
+		return validatorStageResult{}, false
+	}
 	validatorConfig := gate.Effective(o.cfg.AutoPromote.Gate).Validator
 	if !verdict.Submitted && strings.EqualFold(strings.TrimSpace(verdict.Verdict), gate.ValidatorVerdictError) && verdict.FailureAttempts < validatorConfig.MaxAttempts {
 		nextRetryAt := o.clockNow().UTC()
@@ -2873,8 +3005,8 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		if o.validatorFailures == nil {
 			o.validatorFailures = map[string]validatorStageFailure{}
 		}
-		failure := o.validatorFailures[identity.Key]
-		if verdict.FailureAttempts > failure.Attempt {
+		failure, found := o.validatorFailures[identity.Key]
+		if !found || verdict.FailureAttempts > failure.Attempt {
 			o.validatorFailures[identity.Key] = validatorStageFailure{
 				Attempt:     verdict.FailureAttempts,
 				NextRetryAt: nextRetryAt,
@@ -2886,11 +3018,17 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 	}
 	return validatorStageResult{
 		Result: gate.ValidatorResult{
-			Submitted: verdict.Submitted,
-			Verdict:   verdict.Verdict,
-			Score:     verdict.Score,
-			Summary:   verdict.Summary,
-			Findings:  gateFindingsFromStore(verdict.Findings),
+			Submitted:  verdict.Submitted,
+			Verdict:    verdict.Verdict,
+			Score:      verdict.Score,
+			Summary:    verdict.Summary,
+			Findings:   gateFindingsFromStore(verdict.Findings),
+			Repository: verdict.Repository,
+			PRNumber:   identity.PRNumber,
+			BaseSHA:    verdict.BaseSHA,
+			HeadSHA:    verdict.HeadSHA,
+			DiffDigest: verdict.DiffDigest,
+			DiffFiles:  append([]string(nil), verdict.DiffFiles...),
 		},
 		Commented: verdict.Commented,
 	}, true
@@ -2921,13 +3059,18 @@ func (o *Orchestrator) recordValidatorStageOutcome(
 	if recordedAt.IsZero() {
 		recordedAt = o.clockNow().UTC()
 	}
+	prNumber := int64(identity.PRNumber)
 	if err := o.validatorMemo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
 		ProjectID:       o.workflowMetricsProjectID(),
 		IssueID:         identity.IssueID,
 		HeadSHA:         identity.HeadSHA,
 		Identifier:      issue.Identifier,
 		IssueURL:        issue.URL,
-		PRNumber:        workflowMetricsPRNumber(issue),
+		PRNumber:        &prNumber,
+		Repository:      identity.Repository,
+		BaseSHA:         identity.BaseSHA,
+		DiffDigest:      result.DiffDigest,
+		DiffFiles:       append([]string(nil), result.DiffFiles...),
 		Submitted:       result.Submitted,
 		Verdict:         result.Verdict,
 		Score:           result.Score,
@@ -3566,6 +3709,9 @@ func autoPromoteComment(
 	b.WriteString("\n\n")
 	b.WriteString("- reason: ")
 	b.WriteString(string(decision.Reason))
+	if decision.Reason == AutoPromoteReasonSecurityAuditFailed && summary.SecurityAudit.Reason == securityaudit.ReasonDiffTooLarge {
+		fmt.Fprintf(&b, "\n- security_audit: diff_too_large; actual %d bytes exceeds security_audit.max_diff_bytes %d bytes", summary.SecurityAudit.ActualBytes, summary.SecurityAudit.MaxDiffBytes)
+	}
 	if summary.PullRequestURL != "" {
 		b.WriteString("\n- pull request: ")
 		b.WriteString(summary.PullRequestURL)

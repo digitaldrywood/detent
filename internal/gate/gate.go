@@ -2,6 +2,7 @@ package gate
 
 import (
 	"encoding/base64"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -40,19 +41,24 @@ const (
 )
 
 type Config struct {
-	Kind                         string              `yaml:"kind"`
-	Run                          string              `yaml:"run"`
-	ApprovalLabel                string              `yaml:"approval_label"`
-	AutomatedReview              string              `yaml:"automated_review"`
-	RequireAutomatedReview       *bool               `yaml:"require_automated_review"`
-	RequiredStatusChecks         []string            `yaml:"required_status_checks"`
-	CITriggerLabel               string              `yaml:"ci_trigger_label"`
-	CITriggerLabelStaggerSeconds *int                `yaml:"ci_trigger_label_stagger_seconds"`
-	CIFailureAction              string              `yaml:"ci_failure_action"`
-	TransientCIRetryLimit        *int                `yaml:"transient_ci_retry_limit"`
-	Validator                    ValidatorConfig     `yaml:"validator"`
-	SecurityAudit                SecurityAuditConfig `yaml:"security_audit"`
-	Artifact                     ArtifactConfig      `yaml:"artifact"`
+	Kind                         string   `yaml:"kind"`
+	Run                          string   `yaml:"run"`
+	ApprovalLabel                string   `yaml:"approval_label"`
+	AutomatedReview              string   `yaml:"automated_review"`
+	RequireAutomatedReview       *bool    `yaml:"require_automated_review"`
+	RequiredStatusChecks         []string `yaml:"required_status_checks"`
+	CITriggerLabel               string   `yaml:"ci_trigger_label"`
+	CITriggerLabelStaggerSeconds *int     `yaml:"ci_trigger_label_stagger_seconds"`
+	CIFailureAction              string   `yaml:"ci_failure_action"`
+	TransientCIRetryLimit        *int     `yaml:"transient_ci_retry_limit"`
+	// LocalStatus is the commit status context Detent posts, with state
+	// success, for a pull request head after it ran the command gate on
+	// exactly that head itself. Empty posts nothing. It must not also be a
+	// required status check, which is evaluated before the merge lane runs.
+	LocalStatus   string              `yaml:"local_status" json:"LocalStatus,omitempty"`
+	Validator     ValidatorConfig     `yaml:"validator"`
+	SecurityAudit SecurityAuditConfig `yaml:"security_audit"`
+	Artifact      ArtifactConfig      `yaml:"artifact"`
 }
 
 type ArtifactConfig struct {
@@ -92,6 +98,7 @@ type Summary struct {
 	PullRequestPresent bool
 	PullRequestURL     string
 	CIStatus           string
+	QueueEligibleCI    bool
 	ReviewState        string
 	ReviewPending      bool
 	P1Findings         []Finding
@@ -110,11 +117,17 @@ type Finding struct {
 }
 
 type ValidatorResult struct {
-	Submitted bool
-	Verdict   string
-	Score     float64
-	Summary   string
-	Findings  []Finding
+	Submitted  bool
+	Verdict    string
+	Score      float64
+	Summary    string
+	Findings   []Finding
+	Repository string
+	PRNumber   int
+	BaseSHA    string
+	HeadSHA    string
+	DiffDigest string
+	DiffFiles  []string
 }
 
 type EvaluationOptions struct {
@@ -206,6 +219,7 @@ func Effective(cfg Config) Config {
 	cfg.AutomatedReview = NormalizeAutomatedReview(cfg.AutomatedReview)
 	cfg.RequiredStatusChecks = NormalizeRequiredStatusChecks(cfg.RequiredStatusChecks)
 	cfg.CITriggerLabel = normalizeLabel(cfg.CITriggerLabel)
+	cfg.LocalStatus = strings.TrimSpace(cfg.LocalStatus)
 	if cfg.CITriggerLabel != "" && cfg.CITriggerLabelStaggerSeconds == nil {
 		cfg.CITriggerLabelStaggerSeconds = newInt(DefaultCITriggerLabelStaggerSeconds)
 	}
@@ -226,6 +240,7 @@ func Effective(cfg Config) Config {
 	switch cfg.Kind {
 	case KindHumanReview:
 		cfg.Run = ""
+		cfg.LocalStatus = ""
 		cfg.AutomatedReview = ""
 		cfg.RequireAutomatedReview = nil
 		if cfg.ApprovalLabel == "" {
@@ -233,6 +248,7 @@ func Effective(cfg Config) Config {
 		}
 	case KindArtifact:
 		cfg.Run = ""
+		cfg.LocalStatus = ""
 		cfg.AutomatedReview = ""
 		cfg.RequireAutomatedReview = nil
 	default:
@@ -385,6 +401,17 @@ func Validate(prefix string, cfg Config) []string {
 			break
 		}
 	}
+	if status := strings.TrimSpace(cfg.LocalStatus); status != "" {
+		if NormalizeKind(cfg.Kind) != KindCommand && NormalizeKind(cfg.Kind) != "" {
+			problems = append(problems, prefix+".local_status requires kind command")
+		}
+		if len(status) > 100 || strings.ContainsAny(status, "\r\n\t") {
+			problems = append(problems, prefix+".local_status must be a single-line status context of at most 100 characters")
+		}
+		if slices.Contains(NormalizeRequiredStatusChecks(cfg.RequiredStatusChecks), status) {
+			problems = append(problems, prefix+".local_status must not be listed in "+prefix+".required_status_checks: Detent posts it in the merge lane, after the pre-merge gate")
+		}
+	}
 	problems = append(problems, validateValidator(prefix+".validator", cfg.Validator)...)
 	problems = append(problems, validateSecurityAudit(prefix+".security_audit", cfg.SecurityAudit)...)
 	problems = append(problems, validateArtifact(prefix+".artifact", cfg.Artifact)...)
@@ -428,10 +455,10 @@ func InstructionsForGitHubHost(cfg Config, hostname string) string {
 			"```\n\n" +
 			"Allowed pass statuses: " + strings.Join(cfg.Artifact.PassStatuses, ", ") + ". Allowed wait statuses: " + strings.Join(cfg.Artifact.WaitStatuses, ", ") + ". Allowed rework statuses: " + strings.Join(cfg.Artifact.ReworkStatuses, ", ") + "."
 	default:
-		instructions := "Run `" + cfg.Run + "` from the workspace root; require green current-head CI before promotion. " +
+		instructions := "Run `" + cfg.Run + "` from the workspace root; require eligible current-head checks before promotion. Skipped is not a test pass. For merge-group-only CI, require passing merge-group checks before merge. " +
 			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) + ciTriggerLabelInstructions(cfg, hostname) +
 			"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation; otherwise rerun `" + cfg.Run + "`. " +
-			"Watch CI with REST backoff. Record quiet-window wait, local gate/CI durations, slow checks, and post-merge main CI in Workpad prose."
+			"Use REST backoff for CI. Record quiet-window, gate/CI, slow-check, and post-merge main-CI timings in Workpad."
 
 		switch AutomatedReviewMode(cfg) {
 		case AutomatedReviewRequired:
@@ -519,7 +546,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 		return decision(ActionSkip, ReasonMissingPullRequest)
 	}
 	ciStatus := normalizedCIStatus(summary.CIStatus)
-	if ciStatus != "green" {
+	if ciStatus != "green" && (ciStatus != "pending" || !summary.QueueEligibleCI) {
 		out := decision(ciFailureAction(cfg, summary.CIStatus), ReasonCINotGreen)
 		out.CIStatus = ciStatus
 		return out
@@ -535,7 +562,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
-	if summary.ReviewPending || (automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState) && !opts.AutomatedReviewWaitExpired) {
+	if !opts.AutomatedReviewWaitExpired && (summary.ReviewPending || (automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState))) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {

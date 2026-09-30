@@ -134,6 +134,16 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	restPolicy := normalizeRESTBudgetPolicy(cfg.RESTPolicy)
+	fanoutCapSource := "default"
+	if cfg.RESTPolicy.FanoutMaxRequests > 0 {
+		fanoutCapSource = "configured"
+	}
+	logger.Info("github rest fanout cap",
+		"fanout_cap", restPolicy.FanoutMaxRequests,
+		"fanout_cap_source", fanoutCapSource,
+		"fanout_scope", "shared across endpoint families",
+	)
 
 	return &Client{
 		endpoint:            endpoint,
@@ -142,7 +152,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		tokenSource:         cfg.TokenSource,
 		httpClient:          httpClient,
 		graphQLMinReserve:   max(cfg.GraphQLMinRemainingReserve, 0),
-		restPolicy:          normalizeRESTBudgetPolicy(cfg.RESTPolicy),
+		restPolicy:          restPolicy,
 		restDebugLogging:    cfg.RESTDebugLogging,
 		logger:              logger,
 		restBackoffs:        defaultRESTBackoffs,
@@ -297,39 +307,45 @@ func (c *Client) RESTPage(ctx context.Context, path string, out any) (string, er
 }
 
 func (c *Client) RESTText(ctx context.Context, path, accept string, maxBytes int) (string, bool, error) {
-	return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true)
+	text, truncated, _, err := c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true, false)
+	return text, truncated, err
 }
 
-func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept string, maxBytes int, allowTokenRefresh bool) (string, bool, error) {
+// RESTTextWithSize retains at most maxBytes while counting the complete response.
+func (c *Client) RESTTextWithSize(ctx context.Context, path, accept string, maxBytes int) (string, bool, int, error) {
+	return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, true, true)
+}
+
+func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept string, maxBytes int, allowTokenRefresh, countSize bool) (string, bool, int, error) {
 	if maxBytes <= 0 {
-		return "", false, errors.New("maximum response bytes must be positive")
+		return "", false, 0, errors.New("maximum response bytes must be positive")
 	}
 	token, err := c.tokenSource.Token(ctx)
 	if err != nil {
-		return "", false, fmt.Errorf("resolve github token: %w", err)
+		return "", false, 0, fmt.Errorf("resolve github token: %w", err)
 	}
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return "", false, ErrMissingToken
+		return "", false, 0, ErrMissingToken
 	}
 	backoffKey := c.restSharedBackoffKey(token)
 	credentialIdentity := c.restCredentialIdentity(token)
 	c.rememberRESTBackoffKey(backoffKey)
 	now := time.Now()
 	if err := c.restBackoffError(backoffKey, now); err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
 	if err := c.restBudgetPolicyError(ctx, credentialIdentity, http.MethodGet, path, false, now); err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
 
 	url, err := c.restURL(path)
 	if err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", false, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+		return "", false, 0, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", strings.TrimSpace(accept))
@@ -341,9 +357,9 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", false, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), ctxErr)
+			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), ctxErr)
 		}
-		return "", false, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: %w", ErrTransient, err))
+		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -353,7 +369,7 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
 	if err != nil {
-		return "", false, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
+		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
 	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
@@ -363,15 +379,23 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 		responseErr := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		c.logRESTStatusError(ctx, http.MethodGet, path, family, resp.StatusCode, responseErr)
 		if c.refreshAfterAuthFailure(ctx, responseErr, allowTokenRefresh) {
-			return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, false)
+			return c.restTextWithTokenRefresh(ctx, path, accept, maxBytes, false, countSize)
 		}
-		return "", false, c.trackerReadStatusError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), resp.StatusCode, responseErr)
+		return "", false, 0, c.trackerReadStatusError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), resp.StatusCode, responseErr)
 	}
 	truncated := len(raw) > maxBytes
+	size := len(raw)
+	if truncated && countSize {
+		rest, err := io.Copy(io.Discard, resp.Body)
+		if err != nil {
+			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: count response: %w", ErrTransient, err))
+		}
+		size += int(rest)
+	}
 	if truncated {
 		raw = raw[:maxBytes]
 	}
-	return string(raw), truncated, nil
+	return string(raw), truncated, size, nil
 }
 
 func (c *Client) restProbe(ctx context.Context, method string, path string, body any) (restProbeResult, error) {
@@ -747,7 +771,11 @@ func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now ti
 		return nil
 	}
 	if status == connector.GraphQLRateLimitStatusExhausted {
-		return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL rate-limit response is in backoff")
+		if !graphQLRateLimitSnapshotExpired(rateLimit, now) {
+			return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL rate-limit response is in backoff")
+		}
+		// Let lookup-only clients refresh the budget after the exhausted window ends.
+		c.graphQLRateLimitStatus = ""
 	}
 	if reserve > 0 && hasRateLimit && rateLimit.Limit > 0 && rateLimit.Remaining <= reserve && !graphQLRateLimitSnapshotExpired(rateLimit, now) {
 		return graphQLLookupPausedError(rateLimit, now, "GitHub GraphQL remaining budget is reserved for shared work")
@@ -756,9 +784,9 @@ func (c *Client) graphQLLookupBackoffError(queryType string, lookup bool, now ti
 }
 
 func graphQLLookupPausedError(rateLimit connector.GraphQLRateLimit, now time.Time, body string) error {
-	retryAfter := rateLimit.RetryAfter
-	if retryAfter <= 0 && rateLimit.ResetAt.After(now) {
-		retryAfter = rateLimit.ResetAt.Sub(now)
+	retryAfter := max(rateLimit.RetryAfter, 0)
+	if !rateLimit.ResetAt.IsZero() {
+		retryAfter = max(rateLimit.ResetAt.Add(restRateLimitResetSkew).Sub(now), 0)
 	}
 	return &StatusError{
 		StatusCode:    http.StatusTooManyRequests,
@@ -1034,7 +1062,7 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 	c.restRequests[requestKey] = request
 	message := "github rest reserve floor held"
 	if branch == restBudgetGateFanoutCap {
-		message = "github rest fanout deferred"
+		message = "github rest fanout cap reached (shared across endpoint families)"
 		c.restFanoutDeferred = true
 	} else {
 		c.restReserveHeld = true
@@ -1044,6 +1072,7 @@ func (c *Client) recordRESTBudgetThrottleLocked(credentialIdentity string, metho
 		"method", strings.ToUpper(strings.TrimSpace(method)),
 		"path", path,
 		"endpoint_family", family,
+		"refused_endpoint_family", family,
 		"budget_scope", budgetScope,
 		"credential_identity", credentialIdentity,
 		"resource", rateLimit.Resource,

@@ -20,18 +20,20 @@ type onboardingMergePolicyInspectionConfig struct {
 }
 
 type onboardingMergePolicyInspectionResult struct {
-	AllowAutoMerge           bool   `json:"allow_auto_merge"`
-	Repository               string `json:"repository"`
-	SelectedMergeMethod      string `json:"selected_merge_method"`
-	SelectedMethodEnabled    bool   `json:"selected_method_enabled"`
-	AdditionalMethodsEnabled bool   `json:"additional_methods_enabled"`
-	AllowMergeCommit         bool   `json:"allow_merge_commit"`
-	AllowSquashMerge         bool   `json:"allow_squash_merge"`
-	AllowRebaseMerge         bool   `json:"allow_rebase_merge"`
-	SelectionSource          string `json:"selection_source"`
+	CITriggerCheck           doctorCheck `json:"ci_trigger_check"`
+	AllowAutoMerge           bool        `json:"allow_auto_merge"`
+	Repository               string      `json:"repository"`
+	SelectedMergeMethod      string      `json:"selected_merge_method"`
+	SelectedMethodEnabled    bool        `json:"selected_method_enabled"`
+	AdditionalMethodsEnabled bool        `json:"additional_methods_enabled"`
+	AllowMergeCommit         bool        `json:"allow_merge_commit"`
+	AllowSquashMerge         bool        `json:"allow_squash_merge"`
+	AllowRebaseMerge         bool        `json:"allow_rebase_merge"`
+	SelectionSource          string      `json:"selection_source"`
 }
 
 type onboardingMergePolicyInspectionDeps struct {
+	ciTriggerCheck      func(context.Context, string, workflowconfig.Config) doctorCheck
 	loadWorkflow        func(string) (workflowconfig.Workflow, error)
 	githubMergeSettings func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error)
 }
@@ -111,9 +113,17 @@ func inspectOnboardingMergePolicy(
 	if err != nil {
 		return onboardingMergePolicyInspectionResult{}, fmt.Errorf("read %s merge settings: %w", repository, err)
 	}
+	if deps.ciTriggerCheck == nil {
+		deps.ciTriggerCheck = func(ctx context.Context, repository string, cfg workflowconfig.Config) doctorCheck {
+			cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+			cfg.Tracker.Repository = repository
+			return checkDoctorCITriggerShape(ctx, repository, cfg, defaultDoctorDeps())
+		}
+	}
 	selected := effective.Deliverable.EffectiveMergeMethod()
 	return onboardingMergePolicyInspectionResult{
 		AllowAutoMerge:           settings.AllowAutoMerge,
+		CITriggerCheck:           deps.ciTriggerCheck(ctx, repository, effective),
 		Repository:               repository,
 		SelectedMergeMethod:      selected,
 		SelectedMethodEnabled:    doctorRepositoryMergeMethodEnabled(settings, selected),
@@ -163,5 +173,9 @@ func writeOnboardingMergePolicyInspectionPretty(w io.Writer, result onboardingMe
 		result.AllowRebaseMerge,
 		result.AllowAutoMerge,
 	)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "ci_trigger_check: %s — %s\n", result.CITriggerCheck.Status, result.CITriggerCheck.Detail)
 	return err
 }

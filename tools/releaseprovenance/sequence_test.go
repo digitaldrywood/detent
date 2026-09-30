@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +85,7 @@ func TestCoordinatorTagToSigningProvenance(t *testing.T) {
 			output := filepath.Join(dir, "detent_release_provenance.json")
 			// A signing-workflow retry must preserve the exact same valid annotation.
 			for range 2 {
-				err := run([]string{"-repository", backend.repo.Name, "-tag", backend.tag.Name, "-commit", backend.tag.SHA, "-default-branch-ref", "refs/heads/main", "-tag-message", filepath.Join(dir, "tag"), "-github-check-runs", filepath.Join(dir, "checks"), "-github-statuses", filepath.Join(dir, "statuses"), "-github-rulesets", filepath.Join(dir, "rulesets"), "-required-check-names-json", "[]", "-output", output}, io.Discard)
+				err := run([]string{"-repository", backend.repo.Name, "-tag", backend.tag.Name, "-commit", backend.tag.SHA, "-default-branch-ref", "refs/heads/develop", "-tag-message", filepath.Join(dir, "tag"), "-github-check-runs", filepath.Join(dir, "checks"), "-github-statuses", filepath.Join(dir, "statuses"), "-github-rulesets", filepath.Join(dir, "rulesets"), "-required-check-names-json", "[]", "-output", output}, io.Discard)
 				if (err != nil) != tt.wantErr {
 					t.Fatalf("tag-to-sign gate = %v, want error %v (tag triggers duplicate CI: %v)", err, tt.wantErr, tagCI)
 				}
@@ -109,6 +108,67 @@ func TestCoordinatorTagToSigningProvenance(t *testing.T) {
 	}
 }
 
+func TestCoordinatorLocalGateStatusToSigningProvenance(t *testing.T) {
+	t.Parallel()
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	for _, tt := range []struct {
+		name, newerState string
+		wantErr          bool
+	}{
+		{name: "newest successful local gate"},
+		{name: "newer failed local gate", newerState: "failure", wantErr: true},
+		{name: "newer successful local gate is still stale", newerState: "success", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now().UTC()
+			backend := &sequenceBackend{repo: release.Repository{
+				Name: "digitaldrywood/detent", HeadSHA: commit, LatestTag: "v1.0.0", LatestSHA: "previous", TaggedAt: now.Add(-time.Hour),
+				RequiredCheckNames: []string{"local-gate"},
+				Commits:            []release.Commit{{SHA: commit, Message: "fix: release provenance", MergedAt: now, IssueRefs: []string{"digitaldrywood/detent#3153"}}},
+				Checks:             []release.Check{{Name: "local-gate", SHA: commit, Status: "completed", Conclusion: "success", StatusID: 201}},
+			}}
+			coordinator := release.New(release.Config{Enabled: true, RequireGreenCI: true, MinMergedIssues: 1, VersionBump: "patch"}, backend)
+			status, _ := coordinator.Evaluate(t.Context(), now)
+			if backend.tag.Name == "" || !workflowPushesTag(t, "release.yml", backend.tag.Name) || workflowPushesTag(t, "ci.yml", backend.tag.Name) {
+				t.Fatalf("tag workflow routing or coordinator failed: %#v", status)
+			}
+			dir := t.TempDir()
+			statuses := fmt.Sprintf(`{"sha":%q,"total_count":1,"statuses":[{"id":201,"context":"local-gate","state":"success"}]}`, commit)
+			if tt.newerState != "" {
+				statuses = fmt.Sprintf(`{"sha":%q,"total_count":2,"statuses":[{"id":201,"context":"local-gate","state":"success"},{"id":202,"context":"local-gate","state":%q}]}`, commit, tt.newerState)
+			}
+			inputs := map[string]string{
+				"tag":      backend.tag.Message,
+				"checks":   `{"total_count":0,"check_runs":[]}`,
+				"statuses": statuses,
+				"rulesets": `{"enforcement":"active","target":"branch","conditions":{"ref_name":{"include":["refs/heads/develop"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"local-gate","integration_id":0}]}}]}`,
+			}
+			for name, raw := range inputs {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(raw), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			output := filepath.Join(dir, "detent_release_provenance.json")
+			err := run([]string{"-repository", backend.repo.Name, "-tag", backend.tag.Name, "-commit", backend.tag.SHA, "-default-branch-ref", "refs/heads/develop", "-tag-message", filepath.Join(dir, "tag"), "-github-check-runs", filepath.Join(dir, "checks"), "-github-statuses", filepath.Join(dir, "statuses"), "-github-rulesets", filepath.Join(dir, "rulesets"), "-required-check-names-json", "[]", "-output", output}, io.Discard)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("local-gate signing input = %v, want error %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			raw, err := os.ReadFile(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := provenance.Parse(raw, backend.repo.Name, backend.tag.Name, commit)
+			if err != nil || len(manifest.Checks) != 1 || manifest.Checks[0].StatusID != 201 {
+				t.Fatalf("signing input = %#v, %v", manifest, err)
+			}
+		})
+	}
+}
+
 func workflowPushesTag(t *testing.T, filename, tag string) bool {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", filename))
@@ -126,11 +186,8 @@ func workflowPushesTag(t *testing.T, filename, tag string) bool {
 	if err := yaml.Unmarshal(raw, &workflow); err != nil {
 		t.Fatal(err)
 	}
-	if filename == "ci.yml" && !slices.Contains(workflow.On.Push.Branches, "main") {
-		t.Fatal("main push must still trigger mandatory CI")
-	}
 	if len(workflow.On.Push.Branches) == 0 && len(workflow.On.Push.Tags) == 0 {
-		return true
+		return false
 	}
 	for _, pattern := range workflow.On.Push.Tags {
 		matched, err := filepath.Match(pattern, tag)

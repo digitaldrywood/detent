@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,68 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
+
+func TestAutoPromoteSkippedPRChecksOnlyWithNativeQueue(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 23, 18, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name          string
+		lane          string
+		available     bool
+		checkStatus   string
+		conclusion    string
+		inspectedHead string
+		wantPromoted  bool
+	}{
+		{name: "completed skipped checks with queue", available: true, checkStatus: "completed", conclusion: "skipped", wantPromoted: true},
+		{name: "completed In Progress handoff with queue", lane: "In Progress", available: true, checkStatus: "completed", conclusion: "skipped", wantPromoted: true},
+		{name: "completed skipped checks without queue", checkStatus: "completed", conclusion: "skipped"},
+		{name: "running check", available: true, checkStatus: "in_progress"},
+		{name: "failed check", available: true, checkStatus: "completed", conclusion: "failure"},
+		{name: "stale inspection head", available: true, checkStatus: "completed", conclusion: "skipped", inspectedHead: "old-head"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			lane := tt.lane
+			if lane == "" {
+				lane = "Human Review"
+			}
+			cfg := normalizeConfig(Config{
+				AutoPromote: AutoPromoteConfig{
+					Enabled: true, SourceState: "Human Review", PassState: "Merging", ReworkState: "Rework",
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+				},
+				ActiveStates: []string{"In Progress", "Human Review", "Merging"}, TerminalStates: []string{"Done"},
+			})
+			issue := nativeMergeQueueTestIssue(3013, "pending")
+			issue.State = lane
+			if lane == "In Progress" {
+				issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
+			}
+			issue.PullRequest.Checks = []connector.PullRequestCheck{{Name: "Verify", Status: tt.checkStatus, Conclusion: tt.conclusion}}
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Verify", Status: "pending"}}
+			tracker := &nativeMergeQueueConnector{
+				autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}},
+				available:                     &tt.available, inspectedHead: tt.inspectedHead,
+			}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			if lane == "In Progress" {
+				state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted, CompletedAt: now.Add(-time.Minute)}
+				if !autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
+					t.Fatal("completed In Progress issue was not selected for gate wait")
+				}
+			}
+			orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			promoted := len(tracker.updates) == 1 && tracker.updates[0].state == "Merging"
+			if promoted != tt.wantPromoted {
+				t.Fatalf("updates = %#v, want promoted %t", tracker.updates, tt.wantPromoted)
+			}
+		})
+	}
+}
 
 func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t *testing.T) {
 	t.Parallel()
@@ -36,6 +99,11 @@ func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t
 			CIStatus:       "success",
 			HeadSHA:        fmt.Sprintf("head-%d", number),
 		})
+		if index == 0 {
+			issues[index].PullRequest.CIStatus = "pending"
+			issues[index].PullRequest.Checks = []connector.PullRequestCheck{{Name: "Test", Status: "completed", Conclusion: "skipped"}}
+			issues[index].PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "pending"}}
+		}
 		issues[index].State = "Merging"
 		issues[index].Identifier = fmt.Sprintf("digitaldrywood/detent#%d", number)
 		issues[index].PRRepository = "digitaldrywood/detent"
@@ -1668,6 +1736,94 @@ func TestNativeMergeQueueWithdrawalDoesNotBlockDone(t *testing.T) {
 			}
 			if tt.dequeueErr != nil && !strings.Contains(logs.String(), tt.dequeueErr.Error()) {
 				t.Fatalf("missing withdrawal error: %s", &logs)
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueNeutralChecks(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		status     string
+		conclusion string
+		want       bool
+	}{
+		{name: "completed neutral permits enqueue", status: "completed", conclusion: "neutral", want: true},
+		{name: "running neutral does not permit enqueue", status: "in_progress", conclusion: "neutral"},
+		{name: "queued neutral does not permit enqueue", status: "queued", conclusion: "neutral"},
+		{name: "failed additional check", status: "completed", conclusion: "failure"},
+		{name: "cancelled additional check", status: "completed", conclusion: "cancelled"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := nativeMergeQueueTestIssue(401, "pending")
+			issue.PullRequest.Checks = []connector.PullRequestCheck{
+				{Name: "Test", Status: "completed", Conclusion: "skipped"},
+				{Name: "Review", Status: tt.status, Conclusion: tt.conclusion},
+			}
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "pending"}}
+			if got := nativeMergeQueueCandidate(issue, nativeMergeQueueTestConfig(Config{})); got != tt.want {
+				t.Fatalf("candidate = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNativeMergeQueueSkippedChecks(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		status     string
+		conclusion string
+		missing    bool
+		want       bool
+	}{
+		{name: "skipped required checks permit enqueue", status: "completed", conclusion: "skipped", want: true},
+		{name: "running required check", status: "in_progress"},
+		{name: "failed required check", status: "completed", conclusion: "failure"},
+		{name: "cancelled required check", status: "completed", conclusion: "cancelled"},
+		{name: "missing required context", status: "completed", conclusion: "skipped", missing: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := nativeMergeQueueTestIssue(401, "pending")
+			issue.PullRequest.Checks = []connector.PullRequestCheck{
+				{Name: "Test", Status: tt.status, Conclusion: tt.conclusion},
+				{Name: "Review", Status: "completed", Conclusion: "success"},
+				{Name: "external", Status: "success", Conclusion: "success"},
+			}
+			name := "Test"
+			if tt.missing {
+				name = "Missing"
+			}
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: name, Status: "pending"}}
+			if got := nativeMergeQueueCandidate(issue, nativeMergeQueueTestConfig(Config{})); got != tt.want {
+				t.Fatalf("candidate = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAttemptTriageSkippedChecks(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		aggregate  string
+		conclusion string
+		want       string
+	}{
+		{"unrun head with green aggregate", "pass", "skipped", "CI: `not fully verified (checks skipped; aggregate: pass)`"},
+		{"unrun required head", "pending", "skipped", "CI: `not fully verified (checks skipped; aggregate: pending)`"},
+		{"real successful run", "pass", "success", "CI: `pass`"},
+		{"real failed run", "fail", "failure", "CI: `fail`"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := nativeMergeQueueTestIssue(401, tt.aggregate)
+			for _, name := range []string{"Lint", "Verify (ubuntu-latest)", "Test Coverage", "Browser Visual"} {
+				issue.PullRequest.Checks = append(issue.PullRequest.Checks, connector.PullRequestCheck{Name: name, Status: "completed", Conclusion: tt.conclusion})
+			}
+			evidence := attemptTriageObservedEvidence(issue, time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC))
+			if !strings.Contains(evidence, tt.want) {
+				t.Fatalf("evidence = %s, want %s", evidence, tt.want)
 			}
 		})
 	}

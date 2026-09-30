@@ -4631,6 +4631,8 @@ func TestWithRuntimeGitHubToken(t *testing.T) {
 		{name: "environment override", kind: TrackerGitHub, global: "global-token", override: "$WORKER_TOKEN", want: "$WORKER_TOKEN"},
 		{name: "gh override", kind: TrackerGitHub, global: "global-token", override: "gh", want: "gh"},
 		{name: "no credentials", kind: TrackerMemory},
+		{name: "native default", kind: TrackerHubNative, global: "global-token"},
+		{name: "native explicit override", kind: TrackerHubNative, global: "global-token", override: "worker-token", want: "worker-token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

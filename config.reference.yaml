@@ -1035,6 +1035,8 @@
 #   ci_failure_action: "rework"
 #   # gate.transient_ci_retry_limit | type: integer | default: 2 | required: No | validation: must be greater than or equal to 0
 #   transient_ci_retry_limit: 2
+#   # gate.local_status | type: string | default: none | required: No | validation: None
+#   local_status: null
 #   # gate.validator | type: object | default: see child fields | required: No | validation: None
 #   validator:
 #     # gate.validator.enabled | type: boolean | default: false | required: No | validation: None

@@ -30,6 +30,9 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 // planner remains usable for previews that cannot perform remote reads.
 func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
 	planner := o.dispatchPlanner()
+	planner.operatorRejectedHead = func(issue connector.Issue) (bool, error) {
+		return o.operatorRejectedHead(ctx, issue)
+	}
 	planner.recordedBlockers = func(issue connector.Issue, state *State, now time.Time) (recordedBlockerEvaluation, error) {
 		issue, err := o.refreshDependencyAutoUnblockComments(ctx, issue)
 		if err != nil {
@@ -558,11 +561,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if reason := humanDependencyWaitReason(issue.BlockedBy); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
 	}
-	if waiting, err := o.humanQuestionWaiting(ctx, &issue); err != nil {
-		return dispatchIssueOutcome{reason: "human_question_unavailable", waitReason: err.Error()}
-	} else if waiting {
-		return dispatchIssueOutcome{reason: "human_question_wait", waitReason: "waiting for a reply on the original issue"}
-	}
 	if !o.beginDispatchStart() {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
 	}
@@ -584,7 +582,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || ciUnavailableRetry(state, issue.ID)) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureCIUnavailable}
 	}
-	if forgeAvailabilityBlocks(state, issue, queuedRetry, o.cfg.ForgeHost, now) {
+	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, queuedRetry, now) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
 	}
 	if workerGitHubMonitorBlocks(state, issue.ID, queuedRetry, now) {
@@ -593,7 +591,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) {
+	if !projectFailureBreakerAllowsDispatch(state, now) && !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
 	}
 	o.observeHostPressure(ctx, state, o.clockNow())
@@ -683,7 +681,9 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}
 	mergeControlEligible := allowMergeControl && !modelPermitRequired && queuedRetry.MergePrecheck == nil && o.dispatchPlanner().readyMergeControlCandidate(state, issue)
-	mergeControl := mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0
+	mergeControl := mergeControlEligible && (o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
+		o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) ||
+		o.dispatchPlanner().forgeReadAllowsMerge(state, issue))
 	if !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 		return dispatchIssueOutcome{reason: dispatchSkipProjectCapacityFull}
 	}
@@ -775,7 +775,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 		return dispatchIssueOutcome{reason: recoveryReason}
 	}
-	canary, allowed := tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
+	canary, allowed := false, true
+	if !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
+		canary, allowed = tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
+	}
 	if !allowed {
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
@@ -1026,7 +1029,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if runMode == runpkg.RunModeTriage {
 		request.TriageContext = triageContext
 	} else {
-		o.attachHumanQuestionTool(&request)
 		o.attachMachineIssueTool(&request)
 	}
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
@@ -1106,7 +1108,9 @@ func dispatchStartTransitionState(issue connector.Issue, mode string, activeStat
 }
 
 func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue connector.Issue) string {
-	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && o.cfg.MergeFastPathEnabled {
+	// A hub-native item in the landing lane is a reviewed Change Request the
+	// runner lands with plain git; there is no fast path to enable.
+	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && (o.cfg.MergeFastPathEnabled || o.nativeWorkflow()) {
 		return runpkg.RunModeMerge
 	}
 	// Conflict repair uses the merge precheck and verified fallback even before

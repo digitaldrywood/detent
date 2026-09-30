@@ -9,26 +9,26 @@ import (
 	"strings"
 )
 
-const launchdLabel = "com.digitaldrywood.detent"
-
 type launchdManager struct {
-	cfg  Config
-	path string
+	cfg   Config
+	label string
+	path  string
 }
 
 func newLaunchdManager(cfg Config) *launchdManager {
+	label := LaunchdLabel(cfg.Name)
 	path := cfg.LaunchdPlistPath
 	if strings.TrimSpace(path) == "" {
-		path = filepath.Join(cfg.HomeDir, "Library", "LaunchAgents", launchdLabel+".plist")
+		path = filepath.Join(cfg.HomeDir, "Library", "LaunchAgents", label+".plist")
 	}
-	return &launchdManager{cfg: cfg, path: path}
+	return &launchdManager{cfg: cfg, label: label, path: path}
 }
 
 func (m *launchdManager) Info() ManagerInfo {
 	return ManagerInfo{
 		Name:           ManagerLaunchd,
 		Scope:          "user",
-		Unit:           launchdLabel,
+		Unit:           m.label,
 		DefinitionPath: m.path,
 	}
 }
@@ -103,7 +103,7 @@ func (m *launchdManager) domain() string {
 }
 
 func (m *launchdManager) target() string {
-	return m.domain() + "/" + launchdLabel
+	return m.domain() + "/" + m.label
 }
 
 func launchdPlist(cfg Config) string {
@@ -116,7 +116,7 @@ func launchdPlist(cfg Config) string {
 		`<plist version="1.0">`,
 		`<dict>`,
 		`  <key>Label</key>`,
-		`  <string>` + launchdLabel + `</string>`,
+		`  <string>` + LaunchdLabel(cfg.Name) + `</string>`,
 		`  <key>ProgramArguments</key>`,
 		`  <array>`,
 		`    <string>` + escape(cfg.BinaryPath) + `</string>`,

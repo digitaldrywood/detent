@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/efficiency"
@@ -428,7 +429,7 @@ func (s *Server) demoDashboardData(ctx context.Context, scenario demoScenario) t
 		ConnectorName:    s.connector.Name(),
 		DashboardURL:     s.dashboardURL,
 		Snapshot:         snapshot,
-		ConfiguredAgents: s.boardConfiguredAgents(snapshot),
+		ConfiguredAgents: demoConfiguredAgents(snapshot),
 		Projects:         demofixtures.ProjectsForVariant(scenario.Variant),
 		Kanban:           demoKanbanData(scenario, ""),
 		Assets:           s.assets.templatePaths(),
@@ -474,7 +475,7 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 		ConnectorName:             s.connector.Name(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scoped,
-		ConfiguredAgents:          s.boardConfiguredAgents(scoped),
+		ConfiguredAgents:          demoConfiguredAgents(scoped),
 		Projects:                  projects,
 		Kanban:                    demoKanbanData(scenario, project.ID),
 		Assets:                    s.assets.templatePaths(),
@@ -1029,4 +1030,14 @@ func demoSSEViewForScenario(scenario demoScenario) string {
 		}
 	}
 	return ""
+}
+
+// Demo cards use fixture identities regardless of the operator's configuration.
+func demoConfiguredAgents(snapshot telemetry.Snapshot) map[string]agentidentity.Identity {
+	issues := boardIdentityIssues(snapshot)
+	identities := make(map[string]agentidentity.Identity, len(issues))
+	for key := range issues {
+		identities[key] = agentidentity.Configured("demo", "codex", "demo", "code", "demo-model", "", "low", "", time.Time{})
+	}
+	return identities
 }

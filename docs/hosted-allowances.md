@@ -1,14 +1,42 @@
-# Hosted pilot allowances
+# Hosted capacity allowances
 
 Hosted identity enables organization entitlements in the owning Hub database.
 Local and self-hosted Hubs do not create assignments, query a billing service, or
 apply hosted restrictions. No Stripe account, subscription, or card is necessary
-for the free base plan. This delivery does not launch billing or set public prices.
+for the permanent Free base plan. Model-provider charges remain separate from hosting.
+
+## Capacity catalog
+
+| Plan | USD per organization/month | Projects | Unarchived issues |
+| --- | ---: | ---: | ---: |
+| Free | 0 | 1 | 200 |
+| Starter | 49 | 5 | 2,000 |
+| Growth | 149 | 25 | 10,000 |
+| Scale | 399 | 100 | 50,000 |
+
+Omitted or empty `entitlements` selects this catalog with immutable version-1
+IDs `free`, `starter`, `growth`, and `scale`. Enterprise is custom and has no
+self-serve price. Free signup needs no card, Stripe customer, or subscription.
+Free permits project/issue exploration and refuses AI execution, including
+ordinary Luna coordinator chat and issue-linked runner claims. Paid hosting
+contains no bundled AI-dollar allowance; customer-provider funding still applies.
+An explicitly scoped execution grant can authorize complimentary execution.
+
+Quotas count stored projects and unarchived native issues across the organization.
+Issue creation, imports, and restore use the existing atomic mutation transaction.
+At or above a downgraded quota, existing data, reading, export, billing, archiving,
+and safe in-flight completion remain available. Archiving frees capacity without
+deleting history. New allocations and restore must fit the current capacity.
+Membership and concurrent-work quantities are measured but never tier admission
+limits, including on legacy plans. Runner, host, policy, and provider safety limits
+continue to apply independently. Other service-protection limits are common to
+the approved tiers rather than paid concurrency or seat entitlements.
 
 ## Configuration and plan versions
 
-Add `entitlements` to the hosted identity YAML. These example quantities are
-pilot configuration, not permanent free allowances or a cost promise:
+An explicit catalog replaces the default and must retain any referenced legacy
+versions. The following is the legacy pilot catalog, retained for compatibility;
+use the default capacity catalog for new deployments:
 
 ```yaml
 entitlements:
@@ -32,15 +60,15 @@ entitlements:
         ingested_events: 10000
         collaboration_bytes: 67108864
         history_records: 10000
-    - id: pilot_extended
+    - id: comp_team
       version: 1
-      features: [collaboration, native_execution, github_integration]
+      features: [collaboration, native_execution, github_integration, hosted_artifacts]
       allowances:
         members: 20
         projects: 20
         repositories: 20
         registered_runners: 20
-        connected_runners: 10
+        connected_runners: 20
         concurrent_work: 10
         api_mutations: 20000
         ingested_events: 20000
@@ -48,7 +76,13 @@ entitlements:
         history_records: 20000
 ```
 
-Omitting the entire section selects the first plan and pilot settings shown above.
+Omitting the entire section, or leaving it empty (`entitlements: {}`), selects
+exactly this catalog and these pilot settings. Any key inside the section, even
+`plans: []`, makes it an explicit catalog that must validate:
+every organization starts on `pilot_free`, and `comp_team` exists only to be
+granted as complimentary access. `comp_team` doubles the `pilot_free` allowances
+and adds `hosted_artifacts`; its artifact allowances stay zero until an operator
+configures them (see below). Both sets of numbers are provisional.
 Within an explicit plan, omitted allowances are zero and omitted features are
 disabled. Negative values, unknown names and unsupported configuration bounds
 are rejected. Windows are whole multiples of 60 seconds, at most one day;
@@ -94,11 +128,15 @@ remain in the owning organization database and never enter routine analytics.
   "expected_revision": 1,
   "action": "grant",
   "grant_id": "pilot_access",
-  "plan": {"id": "pilot_extended", "version": 1},
+  "plan": {"id": "comp_team", "version": 1},
   "scope": ["projects", "concurrent_work"],
   "reason": "Approved pilot access"
 }
 ```
+
+`GET` on the same path with the same credential returns the organization's base
+and effective plan, current revision, configured plans, and every grant with its
+recorded reason and administrator identity. No other credential can read it.
 
 Grant `starts_at` defaults to transaction time; optional `expires_at` uses an
 RFC3339 timestamp after the start. A `revoke` command names `grant_id` and a
@@ -108,6 +146,27 @@ derived access when Stripe billing is disabled. With
 [hosted subscription billing](hosted-billing.md) configured, authoritative
 Stripe reconciliation owns subscription-derived access and these two commands
 are rejected. Complimentary grants remain independent of payment records.
+
+### Granting from the platform console
+
+On the shared entry, list the staff who may grant complimentary plans in
+`entitlement_administrators` (see the [shared entry example](examples/hub/README.md#shared-entry)).
+Each address must also be in `staff_emails`, and the key requires
+`allocation.entitlement_admin_token_env`; the entry refuses to start otherwise.
+Only those administrators see the plan column in `/platform`. For each ready
+organization it shows the base plan, the effective plan and active grants (plan,
+scope, start, expiry, reason, granted by), a **Grant complimentary plan** action
+(plan, optional expiry date, required reason) and **Revoke** per grant (required
+reason). Other staff, support sessions and customers are refused by the entry.
+
+The entry reads and changes the plan server-side through the tenant's private
+socket, presenting the allocation's entitlement credential; the credential never
+reaches the browser. It forwards the console's `idempotency_key` and
+`expected_revision`, grants the whole chosen plan (every feature and nonzero
+allowance), and records each applied change in the registry's append-only
+`entitlement_changes` table with the staff email, organization, plan, expiry and
+reason. A stale revision is shown as "someone changed this organization's plan;
+reload and try again".
 
 Resolution at the allocation transaction's clock sample is:
 
@@ -125,10 +184,10 @@ Resolution at the allocation transaction's clock sample is:
 
 | Allowance | Consumption and enforcement |
 | --- | --- |
-| Members | Locally active memberships plus unexpired invitation seat reservations. A successful join consumes its reservation. Invitation failure releases it; otherwise it expires. Provider-side membership alone cannot bypass local admission. |
+| Members | Locally active memberships plus unexpired invitations, measured for operation only. No seat-based plan limit applies. |
 | Projects/repositories | Stored allocations in the dedicated tenant Hub. Their creation/binding transaction must fit the allowance. |
 | Registered/connected runners | Non-revoked runner registrations, including legacy machine identities without a runner registration; connection means a heartbeat strictly newer than the configured cutoff. New enrollments and reconnecting idle runners cannot grow the count beyond the limit. |
-| Concurrent work | Unreleased leases whose expiry is strictly after the transaction clock. The existing fenced lease is the reservation; failed transactions, explicit release and expiry free capacity. An idempotent claim is checked before allocating again. |
+| Concurrent work | Unreleased leases whose expiry is strictly after the transaction clock. No plan concurrency limit applies. Operational runner and host capacity still apply. |
 | API mutations | Accepted allocation-changing transactions per configured UTC window. Matching native command retries do not consume another unit. Reads, billing, renew/release and completion/checkpoint events remain available. |
 | Ingested events | Newly stored collaboration events per window. Native retries and ordered duplicate event sequences do not add an event. |
 | Collaboration bytes | UTF-8 bytes of issue text/labels/assignees, comments, versions, event payload/actor records, idempotency responses, attempts, artifact references and import snapshots. This is logical retained payload, not disk billing. Database/WAL bytes are separately reported. |
@@ -200,3 +259,30 @@ Allocation/grant records, audit records and customer collaboration history are
 durable records, distinct from bounded operational telemetry. This change does
 not silently purge customer history, alter public retention promises, configure
 WorkOS, enable a production artifact service or launch paid billing.
+
+## Compatibility and cost drivers
+
+Starting with the capacity catalog retains existing base assignments, grants,
+subscription deadlines, stored plan JSON, and Stripe price-to-plan bindings.
+Legacy `pilot_free` and `comp_team` versions remain available. Once the capacity
+catalog is installed, their resolved capacity includes at least Starter's 2,000
+unarchived issues and retains any larger legacy project quota. Their stored
+records and paid-price bindings stay immutable; plan runner/repository count
+ceilings are removed in this compatibility view. Existing pilot organizations
+keep complimentary execution access and are labeled as legacy access.
+Changing catalogs does not purchase, cancel, or change a subscription. Never
+repoint the existing $49 test price: retain its exact versioned-plan mapping.
+Existing custom catalogs must include their historical referenced versions when
+adopting new versions. Base changes and scoped grants use the audited entitlement
+administrator; Stripe reconciliation continues to own subscription access.
+
+The existing owner billing usage export (`/api/cloud/billing`) adds `cost_drivers`:
+active/unarchived and archived native issue counts, separate database and WAL
+bytes, current-window request count and request/response bytes, reported artifact
+retained/reserved bytes, reported relay bytes, and separately attributable Hub
+coordinator AI tokens, turns, and estimated USD cost for the displayed period.
+Unmeasured storage/relay inputs, absent request samples, and incompletely priced
+AI cost are JSON `null`, meaning unknown. A missing WAL file is measured as zero.
+Request bytes are known only when every sampled request declared its body length.
+Metrics contain counts and estimates, never customer content or credentials.
+These inputs support operator review; #2308 owns operating-cost measurements.

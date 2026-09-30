@@ -111,13 +111,14 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		return true
 	}
 	var metadata struct {
+		Cancellation    *runpkg.CancellationCause   `json:"cancellation"`
 		BlockerEvidence []telemetry.BlockerEvidence `json:"blocker_evidence"`
 		Fence           struct {
 			Excluded bool `json:"excluded_from_worker_outcomes"`
 		} `json:"historical_completion_fence"`
 	}
 	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
-		if metadata.Fence.Excluded {
+		if metadata.Fence.Excluded || attempt.TerminalState == store.WorkAttemptTerminalCancelled && metadata.Cancellation.IsAvailabilityInterruption() {
 			return true
 		}
 		for _, evidence := range metadata.BlockerEvidence {
@@ -421,8 +422,15 @@ func attemptTriageObservedEvidence(issue connector.Issue, observedAt time.Time) 
 	if pr == nil {
 		return ""
 	}
+	ciEvidence := pr.CIStatus
+	for _, check := range pr.Checks {
+		if strings.EqualFold(strings.TrimSpace(check.Conclusion), "skipped") {
+			ciEvidence = "not fully verified (checks skipped; aggregate: " + pr.CIStatus + ")"
+			break
+		}
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n\n### PR evidence observed at %s\nHead: `%s`; mergeable state: `%s`; CI: `%s`; unresolved threads: %d.\nThe worker explanation above predates this observation.\n", observedAt.UTC().Format(time.RFC3339), pr.HeadSHA, pr.MergeableState, pr.CIStatus, len(pr.UnresolvedReviewThreads))
+	fmt.Fprintf(&b, "\n\n### PR evidence observed at %s\nHead: `%s`; mergeable state: `%s`; CI: `%s`; unresolved threads: %d.\nThe worker explanation above predates this observation.\n", observedAt.UTC().Format(time.RFC3339), pr.HeadSHA, pr.MergeableState, ciEvidence, len(pr.UnresolvedReviewThreads))
 	for _, check := range pr.Checks {
 		fmt.Fprintf(&b, "- Check %q (run %d): status=%q, conclusion=%q; observed at %s.\n", check.Name, check.ID, check.Status, check.Conclusion, observedAt.UTC().Format(time.RFC3339))
 	}

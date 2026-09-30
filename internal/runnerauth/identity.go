@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -35,6 +36,12 @@ type EnrollmentRequest struct {
 	TTLSeconds    int64               `json:"ttl_seconds"`
 }
 
+// Unbound reports a token-first enrollment: the host generates its IDs later
+// and presents them when it redeems the token.
+func (r EnrollmentRequest) Unbound() bool {
+	return r.Binding == Binding{} && !r.SharedMachine
+}
+
 type Enrollment struct {
 	ID        string    `json:"id"`
 	Token     string    `json:"token"`
@@ -42,6 +49,7 @@ type Enrollment struct {
 }
 
 type Redemption struct {
+	BackendIsolation isolation.Report `json:"backend_isolation,omitempty"`
 	Binding
 	Credential   string `json:"credential"`
 	Hostname     string `json:"hostname"`

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -232,6 +235,48 @@ func TestHostedPlanCommandsAndPermissions(t *testing.T) {
 	}
 }
 
+func TestHostedPlanReportRequiresEntitlementAdministrator(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	config := hostedTestPlans(t, f.service, nil)
+	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
+	path := "/api/v2/organizations/org_security/entitlements"
+	until := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	grant := hostedPlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects", "hosted_artifacts"}, ExpiresAt: &until, Reason: "design partner"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
+	for _, test := range []struct {
+		name     string
+		response func() int
+		want     int
+	}{
+		{"owner session", func() int { return f.request(t, owner, http.MethodGet, path, nil).Code }, http.StatusForbidden},
+		{"hub admin token", func() int {
+			return performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil).Code
+		}, http.StatusForbidden},
+		{"entitlement administrator", func() int {
+			return performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil).Code
+		}, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.response(); got != test.want {
+				t.Fatalf("status = %d, want %d", got, test.want)
+			}
+		})
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
+	var report hostedEntitlementReport
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Revision != 2 || report.Base != config.Base || report.EffectiveBase != config.Base || len(report.Plans) != 2 || len(report.Grants) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	recorded := report.Grants[0]
+	if recorded.ID != "comp_report" || recorded.Reason != "design partner" || recorded.GrantedBy != "test-operator" || recorded.GrantedAt == nil || recorded.ExpiresAt == nil || !recorded.ExpiresAt.Equal(until) || recorded.Plan != config.Plans[1].PlanReference {
+		t.Fatalf("grant = %+v", recorded)
+	}
+}
+
 func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
@@ -272,10 +317,12 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 	group.Wait()
 	close(results)
 	var winner outcome
+	var leases []tracker.Lease
 	winners := 0
 	for result := range results {
 		if result.err == nil {
 			winner = result
+			leases = append(leases, result.lease)
 			winners++
 			continue
 		}
@@ -284,7 +331,7 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 			t.Errorf("claim error: %v", result.err)
 		}
 	}
-	if winners != 1 {
+	if winners != contenders {
 		t.Fatalf("got %d winners", winners)
 	}
 	again, err := f.service.Tracker().Claim(t.Context(), requests[winner.index])
@@ -307,6 +354,13 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 	if _, err := f.service.Tracker().Renew(t.Context(), tracker.RenewRequest{LeaseID: winner.lease.ID, FencingToken: winner.lease.FencingToken, TTL: time.Minute}); err != nil {
 		t.Fatalf("downgrade prevented safe renewal: %v", err)
 	}
+	for _, lease := range leases {
+		if lease.ID != winner.lease.ID {
+			if err := f.service.Tracker().Release(t.Context(), tracker.ReleaseRequest{LeaseID: lease.ID, FencingToken: lease.FencingToken, Reason: "work_item_hydration_failed"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	for i := range 2 {
 		err := f.service.Tracker().Release(t.Context(), tracker.ReleaseRequest{LeaseID: winner.lease.ID, FencingToken: winner.lease.FencingToken, Reason: "work_item_hydration_failed"})
 		if i == 0 && err != nil || i == 1 && !errors.Is(err, tracker.ErrStaleFencingToken) {
@@ -324,12 +378,14 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := requests[(winner.index+1)%contenders]
+	next.SessionID = "restored-session"
 	lease, err := f.service.Tracker().Claim(t.Context(), next)
 	if err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(time.Minute)
 	next = requests[(winner.index+2)%contenders]
+	next.SessionID = "expired-session"
 	if _, err := f.service.Tracker().Claim(t.Context(), next); err != nil {
 		t.Fatalf("exact expiry retained capacity: %v", err)
 	}
@@ -376,7 +432,7 @@ func TestHostedMutationQuotaRollbackAndRetry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, metric := range []string{"http_requests", "http_duration_microseconds", "http_response_bytes"} {
+			for _, metric := range []string{"http_requests", "http_duration_microseconds", "http_response_bytes", "http_request_bytes", "http_request_bytes_known"} {
 				delete(before.Usage, metric)
 				delete(after.Usage, metric)
 			}
@@ -494,8 +550,7 @@ func TestHostedConcurrentProjectsAndInvitationSeats(t *testing.T) {
 						return
 					}
 					response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{
-						"idempotency_key": fmt.Sprintf("project%d", i), "name": fmt.Sprintf("project%d", i),
-						"states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}},
+						"idempotency_key": fmt.Sprintf("project%d", i), "name": fmt.Sprintf("project%d", i), "grant_access": true,
 					})
 					results <- response.Code
 				})
@@ -505,14 +560,18 @@ func TestHostedConcurrentProjectsAndInvitationSeats(t *testing.T) {
 			close(results)
 			winners := 0
 			for status := range results {
-				if status == http.StatusOK {
+				if status == http.StatusOK || status == http.StatusCreated {
 					winners++
 				} else if status != http.StatusTooManyRequests {
 					t.Errorf("allocation status = %d", status)
 				}
 			}
-			if winners != 2 {
-				t.Fatalf("%d allocations passed the remaining allowance of 2", winners)
+			want := 2
+			if kind == "invitation" {
+				want = 8
+			}
+			if winners != want {
+				t.Fatalf("%s allocations = %d, want %d", kind, winners, want)
 			}
 		})
 	}
@@ -601,5 +660,393 @@ func TestHostedPlanPages(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHostedPlanReportListsOnlyActiveGrants(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		after func(t *testing.T, f *hostedSecurityFixture, path string, clock *leaseTestClock)
+	}{
+		{name: "revoked", after: func(t *testing.T, f *hostedSecurityFixture, path string, _ *leaseTestClock) {
+			revoke := hostedPlanCommand{ID: "report-revoke", Action: "revoke", ExpectedRevision: 2, GrantID: "comp_report", Reason: "partnership ended"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, revoke), http.StatusNoContent)
+		}},
+		{name: "expired", after: func(_ *testing.T, _ *hostedSecurityFixture, _ string, clock *leaseTestClock) {
+			clock.value = clock.value.Add(2 * time.Hour)
+		}},
+		{name: "not started", after: func(_ *testing.T, _ *hostedSecurityFixture, _ string, clock *leaseTestClock) {
+			clock.value = clock.value.Add(-time.Hour)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			config := hostedTestPlans(t, f.service, nil)
+			clock := &leaseTestClock{value: time.Now().UTC()}
+			f.service.database.now = clock.Now
+			path := "/api/v2/organizations/org_security/entitlements"
+			until := clock.value.Add(time.Hour).Truncate(time.Second)
+			grant := hostedPlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, ExpiresAt: &until, Reason: "design partner"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
+			test.after(t, &f, path, clock)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var report hostedEntitlementReport
+			if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Grants) != 0 {
+				t.Fatalf("report grants = %+v, want none", report.Grants)
+			}
+		})
+	}
+}
+
+func TestHostedEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		plans *HostedPlansConfig
+		zero  bool
+	}{
+		{name: "absent", zero: true},
+		{name: "empty mapping", plans: &HostedPlansConfig{}, zero: true},
+		{name: "empty plan list", plans: &HostedPlansConfig{Plans: []HostedPlan{}}, zero: true},
+		{name: "windows only", plans: &HostedPlansConfig{WindowSeconds: 3600}},
+		{name: "base only", plans: &HostedPlansConfig{Base: PlanReference{ID: "pilot_free", Version: 1}}},
+		{name: "default catalog", plans: func() *HostedPlansConfig { c := pilotHostedPlans(); return &c }()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := test.plans.IsZero(); got != test.zero {
+				t.Fatalf("IsZero() = %v, want %v", got, test.zero)
+			}
+			f := newHostedSecurityFixture(t)
+			cfg := *f.service.config.Hosted
+			cfg.Billing = nil
+			cfg.Plans = test.plans
+			err := ValidateHostedConfig(&cfg)
+			if test.zero {
+				if err != nil || cfg.Plans != nil {
+					t.Fatalf("ValidateHostedConfig() = %v, plans = %+v; want default catalog", err, cfg.Plans)
+				}
+				return
+			}
+			if test.name == "default catalog" {
+				if err != nil {
+					t.Fatalf("ValidateHostedConfig() = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("partial entitlements accepted")
+			}
+		})
+	}
+}
+
+func TestHostedPlansConfigDecodesStrictly(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, body string
+		wantErr    bool
+		written    bool
+	}{
+		{name: "valid catalog", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowances: {projects: 3}}\n", written: true},
+		{name: "empty section", body: "{}\n"},
+		{name: "alias to an anchor outside the section", body: "base: *free\nplans:\n  - {id: free, version: 1}\n", written: true},
+		{name: "merge key from an anchor outside the section", body: "base: {<<: *free}\n", written: true},
+		{name: "misspelled nested key", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowences: {projects: 3}}\n", wantErr: true},
+		{name: "unknown plan reference key", body: "base: {id: free, release: 1}\n", wantErr: true},
+		{name: "misspelled section key", body: "windows_seconds: 3600\n", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			decoder := yaml.NewDecoder(strings.NewReader("free: &free {id: free, version: 1}\nentitlements:\n" + indentYAML(test.body)))
+			decoder.KnownFields(true)
+			var document struct {
+				Free         PlanReference     `yaml:"free"`
+				Entitlements HostedPlansConfig `yaml:"entitlements"`
+			}
+			err := decoder.Decode(&document)
+			config := document.Entitlements
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("Decode() = %+v, want an unknown-field error", config)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.written != test.written {
+				t.Fatalf("written = %t, want %t", config.written, test.written)
+			}
+		})
+	}
+}
+
+func indentYAML(body string) string {
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = "  " + line
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func TestHostedPlansConfigRejectsAliasCycles(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, document string
+		wantErr        bool
+	}{
+		{name: "self-referential section", document: "entitlements: &e {base: *e}\n", wantErr: true},
+		{name: "cycle through a plan", document: "entitlements:\n  plans:\n    - &p {id: free, version: 1, features: [*p]}\n", wantErr: true},
+		{name: "one anchor used twice", document: "free: &free {id: free, version: 1}\nentitlements:\n  base: *free\n  plans:\n    - {<<: *free}\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var document struct {
+				Free         PlanReference     `yaml:"free"`
+				Entitlements HostedPlansConfig `yaml:"entitlements"`
+			}
+			done := make(chan error, 1)
+			go func() { done <- yaml.Unmarshal([]byte(test.document), &document) }()
+			select {
+			case err := <-done:
+				if (err != nil) != test.wantErr {
+					t.Fatalf("Unmarshal() error = %v, want error %t", err, test.wantErr)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("decoding did not finish")
+			}
+		})
+	}
+}
+
+func TestCapacityCatalog(t *testing.T) {
+	f := newHostedSecurityFixture(t)
+	cfg := f.service.config
+	cfg.DatabasePath = filepath.Join(t.TempDir(), "capacity.db")
+	hosted := *cfg.Hosted
+	hosted.Plans = nil
+	cfg.Hosted = &hosted
+	f.service = openTestService(t, cfg)
+	for _, test := range []struct {
+		id               string
+		projects, issues int64
+		execution        bool
+	}{
+		{"free", 1, 200, false}, {"starter", 5, 2000, true}, {"growth", 25, 10000, true}, {"scale", 100, 50000, true},
+	} {
+		t.Run(test.id, func(t *testing.T) {
+			plan, err := readHostedPlan(t.Context(), f.service.database.db, PlanReference{ID: test.id, Version: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Allowances["projects"] != test.projects || plan.Allowances["unarchived_issues"] != test.issues || slices.Contains(plan.Features, "native_execution") != test.execution {
+				t.Fatalf("catalog = %#v", plan)
+			}
+		})
+	}
+	var customers int
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_accounts").Scan(&customers); err != nil {
+		t.Fatal(err)
+	}
+	if customers != 0 || f.service.billing != nil {
+		t.Fatal("Free signup created billing state")
+	}
+	entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entitlement.EffectiveBase.ID != "free" {
+		t.Fatalf("new organization plan = %#v", entitlement.EffectiveBase)
+	}
+	fleetUsage, err := f.service.hostedFleetUsage(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"members", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
+		if _, limited := fleetUsage.Allowances[name]; limited {
+			t.Fatalf("unrestricted fleet allowance %s reported a limit", name)
+		}
+	}
+	if fleetUsage.Allowances["projects"].Limit != 1 || fleetUsage.Allowances["unarchived_issues"].Limit != 200 {
+		t.Fatalf("fleet capacity = %#v", fleetUsage.Allowances)
+	}
+	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
+	response := f.request(t, owner, http.MethodGet, "/organization/billing", nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	if !strings.Contains(response.Body.String(), "Free access requires no card") {
+		t.Fatal("Free billing page omitted the cardless policy")
+	}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := f.service.database.checkHostedClaim(t.Context(), tx, time.Now()); err == nil || !strings.Contains(err.Error(), "Free") {
+		t.Fatalf("Free claim refusal = %v", err)
+	}
+}
+
+func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
+	f := newHostedSecurityFixture(t)
+	d := f.service.database
+	var original string
+	if err := d.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_plans WHERE id='pilot_free' AND version=1").Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "legacy-grant", Action: "grant", ExpectedRevision: 1, GrantID: "legacy", Plan: PlanReference{ID: "comp_team", Version: 1}, Scope: []string{"projects", "native_execution"}, Reason: "existing complimentary access"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	var retained string
+	if err := d.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_plans WHERE id='pilot_free' AND version=1").Scan(&retained); err != nil {
+		t.Fatal(err)
+	}
+	entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained != original || entitlement.Base.ID != "pilot_free" || len(entitlement.Grants) != 1 || entitlement.Allowances["projects"] != 20 || entitlement.Allowances["unarchived_issues"] != 2000 || !slices.Contains(entitlement.Features, "native_execution") {
+		t.Fatalf("legacy migration = %#v", entitlement)
+	}
+	for _, resource := range []string{"members", "concurrent_work"} {
+		if _, limited := entitlement.Allowances[resource]; limited {
+			t.Fatalf("legacy still limits %s", resource)
+		}
+	}
+}
+
+func TestCapacityCostDriversUnknownInputs(t *testing.T) {
+	f := newHostedSecurityFixture(t)
+	f.seedIssue(t, 1)
+	f.seedIssue(t, 2)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE number=2"); err != nil {
+		t.Fatal(err)
+	}
+	entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	drivers, err := f.service.hostedCostDrivers(t.Context(), entitlement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drivers.ActiveIssues != 1 || drivers.ArchivedIssues != 1 || drivers.DatabaseBytes == nil || drivers.WALBytes == nil {
+		t.Fatalf("drivers=%#v", drivers)
+	}
+	if drivers.RequestBytes != nil || drivers.ResponseBytes != nil || drivers.ArtifactRetainedBytes != nil || drivers.RelayBytes != nil {
+		t.Fatalf("unknown inputs reported as measured: %#v", drivers)
+	}
+	raw, err := json.Marshal(drivers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sentinel := range []string{"private-title", "private-body", testHubAdminToken, "prj_security"} {
+		if strings.Contains(string(raw), sentinel) {
+			t.Fatalf("cost drivers disclosed %s", sentinel)
+		}
+	}
+	for _, test := range []struct {
+		name     string
+		observed int64
+		known    bool
+	}{{"unobserved", 0, false}, {"measured zero", 1, true}} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_artifact_usage(singleton,service_id,usage_json,observed_at) VALUES(1,'service_capacity','{}',?) ON CONFLICT(singleton) DO UPDATE SET observed_at=excluded.observed_at", test.observed); err != nil {
+				t.Fatal(err)
+			}
+			entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			drivers, err := f.service.hostedCostDrivers(t.Context(), entitlement)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (drivers.ArtifactRetainedBytes != nil) != test.known || (drivers.ArtifactReservedBytes != nil) != test.known {
+				t.Fatalf("artifact measurement = %#v", drivers)
+			}
+		})
+	}
+}
+
+func TestCapacityGrantPreservesUnrestrictedResources(t *testing.T) {
+	f := newHostedSecurityFixture(t)
+	config := capacityHostedPlans()
+	grant := HostedPlan{PlanReference: PlanReference{ID: "capacity_grant", Version: 1}, Allowances: map[string]int64{"projects": 9, "repositories": 1, "registered_runners": 1, "connected_runners": 1}}
+	config.Plans = append(config.Plans, grant)
+	d := f.service.database
+	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &config}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-base", Action: "base", ExpectedRevision: 1, Plan: config.Base, Reason: "capacity access"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-grant", Action: "grant", ExpectedRevision: 2, GrantID: "capacity", Plan: grant.PlanReference, Scope: []string{"projects", "repositories", "registered_runners", "connected_runners"}, Reason: "additional capacity"}); err != nil {
+		t.Fatal(err)
+	}
+	entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entitlement.Allowances["projects"] != 9 {
+		t.Fatalf("project grant = %#v", entitlement.Allowances)
+	}
+	for _, resource := range []string{"repositories", "registered_runners", "connected_runners"} {
+		if _, limited := entitlement.Allowances[resource]; limited {
+			t.Fatalf("grant introduced a %s restriction", resource)
+		}
+	}
+}
+
+func TestCapacityLegacyMetadataKeepsImmutablePlan(t *testing.T) {
+	f := newHostedSecurityFixture(t)
+	cfg := *f.service.config.Hosted
+	cfg.Plans = nil
+	cfg.PlanID = "pilot_free"
+	cfg.StorageQuotaBytes = 64 << 20
+	cfg.EventQuota = 10000
+	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entitlement.Base.ID != "pilot_free" || entitlement.Allowances["projects"] != 10 || !slices.Contains(entitlement.Features, "native_execution") {
+		t.Fatalf("legacy metadata lost access: %#v", entitlement)
+	}
+}
+
+func TestCapacityFreeNativeClaimRefusal(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "free-native")
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	issue := f.create(t, "Free exploration")
+	worker := f.worker(t, "free-worker")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "free-machine", "hostname": "free-machine", "version": "test", "capacity": 1}), http.StatusOK)
+	d := f.service.database
+	d.hostedOrganization = f.project.OrganizationID
+	if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: "free-machine", SessionID: "free-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+	requireNativeStatus(t, response, http.StatusTooManyRequests)
+	if !strings.Contains(response.Body.String(), "Free") || !strings.Contains(response.Body.String(), "Upgrade") {
+		t.Fatalf("claim refusal=%s", response.Body.String())
+	}
+	var leases int
+	if err := d.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&leases); err != nil {
+		t.Fatal(err)
+	}
+	if leases != 0 {
+		t.Fatal("Free dispatch allocated a lease")
 	}
 }

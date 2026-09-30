@@ -235,6 +235,17 @@ func (c *Connector) CloseIssue(ctx context.Context, issueID string) error {
 		"state":        "closed",
 		"state_reason": "completed",
 	}, &response); err != nil {
+		var status *StatusError
+		if errors.As(err, &status) && status.StatusCode == http.StatusUnprocessableEntity {
+			current, readErr := c.fetchRESTIssueRaw(ctx, ref)
+			if readErr == nil && current.NodeID == strings.TrimSpace(issueID) &&
+				strings.EqualFold(current.State, "closed") && strings.EqualFold(strings.TrimSpace(current.StateReason), "completed") {
+				return nil
+			}
+			if readErr != nil {
+				return errors.Join(fmt.Errorf("close github issue: %w", err), readErr)
+			}
+		}
 		return fmt.Errorf("close github issue: %w", err)
 	}
 	if strings.TrimSpace(response.NodeID) == "" || !strings.EqualFold(response.State, "closed") {

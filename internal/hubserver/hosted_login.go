@@ -21,6 +21,7 @@ const hostedTransactionCookie = "detent_hosted_login"
 type hostedTransaction struct {
 	State, Verifier, Organization, SupportActor, SupportSession string
 	InvitationToken, TokenHash                                  string
+	ExpiresAt                                                   time.Time
 }
 
 func (s *Service) hostedSetCookie(c echo.Context, name, value, path string, expires time.Time) {
@@ -57,24 +58,24 @@ func (s *Service) newHostedTransaction(c echo.Context, organization, actor, sess
 		return hostedTransaction{}, err
 	}
 	s.hostedSetCookie(c, hostedTransactionCookie, token, "/auth/oidc", expires)
-	return hostedTransaction{State: state, Verifier: verifier, Organization: organization, SupportActor: actor, SupportSession: session, TokenHash: apikey.HashToken(token)}, nil
+	return hostedTransaction{State: state, Verifier: verifier, Organization: organization, SupportActor: actor, SupportSession: session, TokenHash: apikey.HashToken(token), ExpiresAt: expires}, nil
 }
 
 func (s *Service) startHostedLogin(c echo.Context) error {
 	organization, err := s.hostedProviderOrganization(c.Request().Context())
 	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "login_start", Reason: "organization_unavailable"})
 	}
 	if c.QueryParam("staff") == "1" || c.QueryParam("unscoped") == "1" {
 		organization = ""
 	}
 	transaction, err := s.newHostedTransaction(c, organization, "", "")
 	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "login_start", Reason: "transaction_failed"})
 	}
 	u, err := url.Parse(s.config.Hosted.Provider.AuthorizationURL(transaction.State, transaction.State, transaction.Verifier))
 	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "login_start", Reason: "authorization_url_invalid"})
 	}
 	query := u.Query()
 	if organization != "" {
@@ -98,48 +99,89 @@ func (s *Service) consumeHostedTransaction(c echo.Context) (hostedTransaction, e
 func (s *Service) completeHostedLogin(c echo.Context) error {
 	s.hostedMutationMu.Lock()
 	defer s.hostedMutationMu.Unlock()
+	const invalidLink = "This sign-in link is invalid or has already been used"
+	denial := auth.HostedDenial{Flow: "login_callback", ProviderError: c.QueryParam("error")}
 	transaction, err := s.consumeHostedTransaction(c)
-	if err != nil || c.QueryParam("error") != "" {
-		return s.hostedError(c, http.StatusUnauthorized, "This sign-in link is invalid or has already been used")
+	if err != nil {
+		denial.Reason = "transaction_missing"
+		return s.hostedDenied(c, http.StatusUnauthorized, invalidLink, denial)
+	}
+	if c.QueryParam("error") != "" {
+		denial.Reason = "provider_error"
+		return s.hostedDenied(c, http.StatusUnauthorized, invalidLink, denial)
 	}
 	if transaction.SupportActor == "" {
-		if transaction.Verifier == "" || subtle.ConstantTimeCompare([]byte(transaction.State), []byte(c.QueryParam("state"))) != 1 {
-			return s.hostedError(c, http.StatusUnauthorized, "This sign-in link is invalid or has already been used")
+		if transaction.Verifier == "" {
+			denial.Reason = auth.HostedReasonPKCEMissing
+			return s.hostedDenied(c, http.StatusUnauthorized, invalidLink, denial)
+		}
+		if subtle.ConstantTimeCompare([]byte(transaction.State), []byte(c.QueryParam("state"))) != 1 {
+			denial.Reason = "state_mismatch"
+			return s.hostedDenied(c, http.StatusUnauthorized, invalidLink, denial)
 		}
 	} else {
+		denial.Flow = "support_callback"
 		staff, _, staffErr := s.hostedSession(c)
 		if staffErr != nil || staff.Identity.SupportActor != "" || staff.Identity.SessionID != transaction.SupportSession || !strings.EqualFold(staff.Email, transaction.SupportActor) || !hostedEmailListed(s.config.Hosted.SupportActors, staff.Email) {
-			return s.hostedError(c, http.StatusForbidden, "Start support access from your authorized staff session")
+			denial.Reason, denial.Email = "support_session_mismatch", staff.Email
+			return s.hostedDenied(c, http.StatusForbidden, "Start support access from your authorized staff session", denial)
 		}
 	}
 	identity, err := s.config.Hosted.Provider.Exchange(c.Request().Context(), c.QueryParam("code"), transaction.Verifier, transaction.State)
-	if err != nil || identity.Hosted == nil || !identity.EmailVerified || identity.Hosted.Subject != identity.Subject {
-		return s.hostedError(c, http.StatusUnauthorized, "Your identity could not be verified")
+	denial.Err, denial.Email = err, identity.Email
+	switch {
+	case err != nil:
+	case identity.Hosted == nil:
+		denial.Reason = "identity_incomplete"
+	case !identity.EmailVerified:
+		denial.Reason = auth.HostedReasonEmailUnverified
+	case identity.Hosted.Subject != identity.Subject:
+		denial.Reason = auth.HostedReasonSubjectMismatch
 	}
-	if identity.Hosted.SupportActor != transaction.SupportActor || transaction.Organization != "" && identity.Hosted.OrganizationID != transaction.Organization {
-		return s.hostedError(c, http.StatusForbidden, "This identity belongs to a different organization or support session")
+	if err != nil || denial.Reason != "" {
+		return s.hostedDenied(c, http.StatusUnauthorized, "Your identity could not be verified", denial)
+	}
+	if identity.Hosted.SupportActor != transaction.SupportActor {
+		denial.Reason = auth.HostedReasonSupportActorInvalid
+	} else if transaction.Organization != "" && identity.Hosted.OrganizationID != transaction.Organization {
+		denial.Reason = auth.HostedReasonOrganizationMismatch
+	}
+	if denial.Reason != "" {
+		return s.hostedDenied(c, http.StatusForbidden, "This identity belongs to a different organization or support session", denial)
 	}
 	if transaction.SupportActor != "" && (!auth.ValidSupportReason(identity.Hosted.SupportReason) || !hostedEmailListed(s.config.Hosted.SupportActors, transaction.SupportActor)) {
-		return s.hostedError(c, http.StatusForbidden, "Support access is not authorized")
+		denial.Reason = "support_denied"
+		return s.hostedDenied(c, http.StatusForbidden, "Support access is not authorized", denial)
 	}
 	if err := s.bootstrapHostedMember(c.Request().Context(), identity); err != nil {
-		return s.hostedError(c, http.StatusForbidden, "Organization membership could not be verified")
+		denial.Reason, denial.Err = "membership_unverified", err
+		return s.hostedDenied(c, http.StatusForbidden, "Organization membership could not be verified", denial)
 	}
 	if transaction.InvitationToken != "" {
-		if identity.Hosted.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, identity.Email) || s.acceptHostedInvitationFor(c.Request().Context(), identity, transaction.InvitationToken) != nil {
-			return s.hostedError(c, http.StatusForbidden, "This invitation is unavailable or was sent to a different account")
+		var invitationErr error
+		if identity.Hosted.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, identity.Email) {
+			invitationErr = auth.ErrHostedIdentity
+		} else {
+			invitationErr = s.acceptHostedInvitationFor(c.Request().Context(), identity, transaction.InvitationToken)
+		}
+		if invitationErr != nil {
+			denial.Reason, denial.Err = "invitation_invalid", invitationErr
+			return s.hostedDenied(c, http.StatusForbidden, "This invitation is unavailable or was sent to a different account", denial)
 		}
 	}
 	if err := s.hostedAudit(c.Request().Context(), identity.Hosted, "session_started", "/auth/oidc/callback", "", http.StatusOK); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
+		denial.Reason = "audit_failed"
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
 	}
 	token, session, err := s.hostedSessions.CreateIdentitySession(c.Request().Context(), identity)
 	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
+		denial.Reason = "session_store_failed"
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
 	}
 	if cookie, err := c.Cookie(hostedCookie); err == nil {
 		if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_sessions SET revoked_at = ? WHERE token_hash = ?", formatHubTime(s.config.now()), apikey.HashToken(cookie.Value)); err != nil {
-			return s.hostedError(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
+			denial.Reason = "session_store_failed"
+			return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
 		}
 	}
 	s.hostedSetCookie(c, hostedCookie, token, "/", session.ExpiresAt)
@@ -175,17 +217,29 @@ func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Ident
 	return s.storeHostedMember(ctx, identity, membership, providerOrganization.Name)
 }
 
-func (s *Service) startHostedSupport(c echo.Context) error {
+func (s *Service) beginHostedSupport(c echo.Context) (auth.Session, hostedTransaction, int, string, string) {
 	session, _, err := s.hostedSession(c)
-	if err != nil || session.Identity.SupportActor != "" || !hostedEmailListed(s.config.Hosted.SupportActors, session.Email) {
-		return s.hostedError(c, http.StatusForbidden, "This account cannot start support access")
+	if err != nil {
+		return session, hostedTransaction{}, http.StatusForbidden, "This account cannot start support access", auth.HostedReasonSessionNotFound
+	}
+	if session.Identity.SupportActor != "" || !hostedEmailListed(s.config.Hosted.SupportActors, session.Email) {
+		return session, hostedTransaction{}, http.StatusForbidden, "This account cannot start support access", "support_denied"
 	}
 	organization, err := s.hostedProviderOrganization(c.Request().Context())
 	if err != nil || organization == "" {
-		return s.hostedError(c, http.StatusForbidden, "Select an allocated organization before starting support access")
+		return session, hostedTransaction{}, http.StatusForbidden, "Select an allocated organization before starting support access", "organization_unavailable"
 	}
-	if _, err := s.newHostedTransaction(c, organization, session.Email, session.Identity.SessionID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable")
+	transaction, err := s.newHostedTransaction(c, organization, session.Email, session.Identity.SessionID)
+	if err != nil {
+		return session, hostedTransaction{}, http.StatusServiceUnavailable, "Support access is temporarily unavailable", "transaction_failed"
+	}
+	return session, transaction, http.StatusOK, "", ""
+}
+
+func (s *Service) startHostedSupport(c echo.Context) error {
+	session, _, status, message, reason := s.beginHostedSupport(c)
+	if status != http.StatusOK {
+		return s.hostedDenied(c, status, message, auth.HostedDenial{Flow: "support_start", Reason: reason, Email: session.Email})
 	}
 	return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "support", CanSupport: true, Title: "Start temporary support access", Email: session.Email, Notice: "Open the selected organization in the WorkOS dashboard and impersonate the customer using reason customer-request, account-recovery, or troubleshooting. Return in this browser within ten minutes."})
 }
@@ -203,7 +257,7 @@ func (s *Service) logoutHosted(c echo.Context) error {
 		}
 	}
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_sessions SET revoked_at = ? WHERE token_hash = ?", formatHubTime(s.config.now()), hash); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Sign-out is temporarily unavailable")
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-out is temporarily unavailable", auth.HostedDenial{Flow: "logout", Reason: "session_revoke_failed"})
 	}
 	s.hostedSetCookie(c, hostedCookie, "", "/", time.Unix(1, 0))
 	s.hostedSetCookie(c, hostedTransactionCookie, "", "/auth/oidc", time.Unix(1, 0))
@@ -211,7 +265,11 @@ func (s *Service) logoutHosted(c echo.Context) error {
 		auditErr := s.hostedAudit(c.Request().Context(), session.Identity, "session_ended", "/logout", "", http.StatusOK)
 		providerErr := s.config.Hosted.Provider.RevokeSession(c.Request().Context(), session.Identity.SessionID)
 		if auditErr != nil || providerErr != nil {
-			return s.hostedError(c, http.StatusServiceUnavailable, "You are signed out of this Hub. Provider sign-out could not be confirmed; close the support dashboard and retry provider sign-out.")
+			reason := "provider_revoke_failed"
+			if providerErr == nil {
+				reason = "audit_failed"
+			}
+			return s.hostedDenied(c, http.StatusServiceUnavailable, "You are signed out of this Hub. Provider sign-out could not be confirmed; close the support dashboard and retry provider sign-out.", auth.HostedDenial{Flow: "logout", Reason: reason, Err: providerErr, Email: session.Email})
 		}
 	}
 	return c.Redirect(http.StatusSeeOther, "/login")
@@ -254,13 +312,13 @@ func (s *Service) createHostedOrganization(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
 }
 
-func (s *Service) switchHostedOrganization(c echo.Context) error {
+func (s *Service) hostedSwitchDestination(c echo.Context, organization string) (string, string) {
 	session, _, err := s.hostedSession(c)
 	if err != nil || session.Identity.SupportActor != "" {
-		return s.hostedError(c, http.StatusForbidden, "Exit support access before switching organizations")
+		return "", "Exit support access before switching organizations"
 	}
 	for _, destination := range s.config.Hosted.Directory {
-		if destination.OrganizationID != c.FormValue("organization") {
+		if destination.OrganizationID != organization {
 			continue
 		}
 		memberships, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), session.Identity.Subject, destination.WorkOSOrganizationID)
@@ -269,20 +327,43 @@ func (s *Service) switchHostedOrganization(c echo.Context) error {
 		}
 		for _, membership := range memberships {
 			if membership.Status == "active" && membership.UserID == session.Identity.Subject && membership.OrganizationID == destination.WorkOSOrganizationID {
-				return c.Redirect(http.StatusSeeOther, destination.PublicURL+"/auth/oidc/start")
+				return destination.PublicURL + "/auth/oidc/start", ""
 			}
 		}
 	}
-	return s.hostedError(c, http.StatusForbidden, "The selected organization is unavailable to this account")
+	return "", "The selected organization is unavailable to this account"
+}
+
+func (s *Service) switchHostedOrganization(c echo.Context) error {
+	next, message := s.hostedSwitchDestination(c, c.FormValue("organization"))
+	if next == "" {
+		return s.hostedError(c, http.StatusForbidden, message)
+	}
+	return c.Redirect(http.StatusSeeOther, next)
+}
+
+func (s *Service) acceptHostedInvitationToken(c echo.Context, token string) (string, auth.HostedDenial) {
+	denial := auth.HostedDenial{Flow: "invitation_join"}
+	session, _, err := s.hostedSession(c)
+	if err != nil {
+		denial.Reason = auth.HostedReasonSessionNotFound
+		return "Sign in with the invited account to join this organization", denial
+	}
+	denial.Email = session.Email
+	if session.Identity.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+		denial.Reason = "staff_session"
+		return "Sign in with the invited account to join this organization", denial
+	}
+	if err := s.acceptHostedInvitationFor(c.Request().Context(), auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, token); err != nil {
+		denial.Reason, denial.Err = "invitation_invalid", err
+		return "This invitation is expired, already used, or intended for another account or organization", denial
+	}
+	return "", denial
 }
 
 func (s *Service) acceptHostedInvitation(c echo.Context) error {
-	session, _, err := s.hostedSession(c)
-	if err != nil || session.Identity.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-		return s.hostedError(c, http.StatusForbidden, "Sign in with the invited account to join this organization")
-	}
-	if err := s.acceptHostedInvitationFor(c.Request().Context(), auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, c.FormValue("token")); err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This invitation is expired, already used, or intended for another account or organization")
+	if message, denial := s.acceptHostedInvitationToken(c, c.FormValue("token")); message != "" {
+		return s.hostedDenied(c, http.StatusForbidden, message, denial)
 	}
 	return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
 }
@@ -329,25 +410,31 @@ func (s *Service) acceptHostedInvitationFor(ctx context.Context, identity auth.I
 
 func (s *Service) startHostedInvitation(c echo.Context) error {
 	token := c.QueryParam("invitation_token")
+	denial := auth.HostedDenial{Flow: "invitation_start", Reason: "invitation_invalid"}
 	if token == "" || len(token) > 512 {
-		return s.hostedError(c, http.StatusForbidden, "This invitation is unavailable")
+		return s.hostedDenied(c, http.StatusForbidden, "This invitation is unavailable", denial)
 	}
 	invitation, err := s.config.Hosted.Provider.Invitation(c.Request().Context(), token)
 	organization, orgErr := s.hostedProviderOrganization(c.Request().Context())
 	if err != nil || orgErr != nil || invitation.OrganizationID != organization {
-		return s.hostedError(c, http.StatusForbidden, "This invitation belongs to a different organization or is no longer available")
+		denial.Err = err
+		if err == nil {
+			denial.Reason = auth.HostedReasonOrganizationMismatch
+		}
+		return s.hostedDenied(c, http.StatusForbidden, "This invitation belongs to a different organization or is no longer available", denial)
 	}
 	var count int
 	err = s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM hosted_invitations WHERE id = ? AND organization_id = ? AND email = ? AND accepted_user_id = ''", invitation.ID, s.config.Hosted.OrganizationID, strings.ToLower(invitation.Email)).Scan(&count)
 	if err != nil || count != 1 {
-		return s.hostedError(c, http.StatusForbidden, "This invitation is unavailable")
+		return s.hostedDenied(c, http.StatusForbidden, "This invitation is unavailable", denial)
 	}
+	denial.Reason = "transaction_failed"
 	transaction, err := s.newHostedTransaction(c, "", "", "")
 	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
 	}
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_transactions SET invitation_token = ? WHERE token_hash = ?", token, transaction.TokenHash); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable")
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
 	}
 	return c.Redirect(http.StatusSeeOther, s.config.Hosted.Provider.AuthorizationURL(transaction.State, transaction.State, transaction.Verifier))
 }
