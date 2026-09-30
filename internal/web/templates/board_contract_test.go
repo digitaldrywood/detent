@@ -199,3 +199,68 @@ func TestBoardCardIdentifierIdentity(t *testing.T) {
 		})
 	}
 }
+
+// Catches wrong-stage defaults and mixed observed/configured model-effort pairs.
+func TestSheetModelEffort(t *testing.T) {
+	for _, tt := range []struct {
+		name, state, role, model, effort, source string
+		observedRole                             string
+		running, attempted, activeAttempt        bool
+	}{
+		{name: "never attempted plan", state: "Todo", role: "plan", model: "configured-plan", effort: "low", source: "configured default"},
+		{name: "queued build", state: "Todo", role: "code", model: "configured-code", effort: "high", source: "configured default"},
+		{name: "running plan", state: "In Progress", role: "plan", running: true, observedRole: "plan", model: "observed-plan", effort: "medium", source: "current attempt"},
+		{name: "running validation", state: "In Progress", role: "validator", running: true, observedRole: "validator", model: "observed-validator", effort: "medium", source: "current attempt"},
+		{name: "active attempt without session row", state: "In Progress", role: "validator", attempted: true, activeAttempt: true, observedRole: "validator", model: "observed-validator", effort: "medium", source: "current attempt"},
+		{name: "waiting after plan", state: "In Progress", role: "code", attempted: true, observedRole: "plan", model: "configured-code", effort: "high", source: "configured default"},
+		{name: "next validation", state: "Human Review", role: "validator", attempted: true, observedRole: "code", model: "configured-validator", effort: "medium", source: "configured default"},
+		{name: "previous build", state: "In Progress", role: "code", attempted: true, observedRole: "code", model: "observed-code", effort: "medium", source: "last attempt"},
+		{name: "done retains last stage", state: "Done", role: "code", attempted: true, observedRole: "merge", model: "observed-merge", effort: "medium", source: "last attempt"},
+		{name: "unknown values", state: "Blocked", source: "configured default", model: "unknown", effort: "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := telemetry.Issue{ProjectID: "project", ID: "issue", Identifier: "owner/repo#1"}
+			card := projectKanbanCard{ProjectID: issue.ProjectID, IssueID: issue.ID, Identifier: issue.Identifier, Stage: tt.state}
+			key := BoardIssueKey(issue)
+			configuredEffort := map[string]string{"plan": "low", "code": "high", "validator": "medium"}[tt.role]
+			configuredModel := ""
+			if tt.role != "" {
+				configuredModel = "configured-" + tt.role
+			}
+			data := DashboardData{ConfiguredStageAgents: map[string]agentidentity.Identity{key: agentidentity.Configured("backend", "codex", "", tt.role, configuredModel, "", configuredEffort, "", time.Time{})}}
+			observed := agentidentity.Configured("backend", "codex", "", tt.observedRole, "observed-"+tt.observedRole, "", "medium", "", time.Time{})
+			if tt.attempted {
+				data.Snapshot.WorkAttempts = []telemetry.WorkAttempt{{AttemptID: 1, ProjectID: issue.ProjectID, IssueID: issue.ID, RuntimeIdentity: observed}}
+				if tt.activeAttempt {
+					data.Snapshot.WorkAttempts[0].Status = "running"
+				}
+			}
+			if tt.running {
+				issue.RuntimeIdentity = observed
+				data.Snapshot.Running = []telemetry.Running{{Issue: issue}}
+			}
+			stageRole := tt.role
+			if tt.source == "last attempt" || tt.running || tt.activeAttempt {
+				stageRole = tt.observedRole
+			}
+			stage := map[string]string{"plan": "Plan", "code": "Build", "validator": "Validate", "merge": "Merge"}[stageRole]
+			if stage == "" {
+				stage = "Build"
+			}
+			want := stage + ": " + tt.model + " · " + tt.effort + " (" + tt.source + ")"
+			if got := sheetModelEffort(data, card); got != want {
+				t.Fatalf("selection = %q, want %q", got, want)
+			}
+			rendered := renderBoardComponent(t, BoardCardSheetCore(data, card, false))
+			stateAt := strings.Index(rendered, `data-sheet-row="State"`)
+			rowAt := strings.Index(rendered, `data-sheet-row="Model / Effort"`)
+			if stateAt < 0 {
+				t.Fatal("sheet has no State row")
+			}
+			nextRow := strings.Index(rendered[stateAt+len(`data-sheet-row="State"`):], `data-sheet-row=`) + stateAt + len(`data-sheet-row="State"`)
+			if rowAt < 0 || rowAt != nextRow || !strings.Contains(rendered, want) || strings.Contains(rendered, "Configured effort") {
+				t.Fatalf("sheet selection row misplaced or duplicated: %s", rendered)
+			}
+		})
+	}
+}
