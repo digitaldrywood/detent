@@ -478,6 +478,11 @@ completed-run transition reason, merge-revocation destination, and the central
 lane writer. These changes consolidate Human Review routing under the project
 setting; they add no reason code or recovery mechanism.
 
+Scheduled validation repair (#3447) refreshes the completion-transition
+fingerprint after reviewing #3281's use of the existing auto-promote decision
+reason when human review is disabled. The orchestrator remains the sole lane
+writer; no transition reason or runtime behavior changes in this repair.
+
 Runner credential expiry (#3382) no longer rejects the existing renewal
 operation for the same enrolled runner and organization. The host keeps its
 credential and machine binding across stops longer than 24 hours. Ordinary
@@ -511,8 +516,10 @@ workspace paths, and effective prompts remain policy inputs requiring the existi
 administrator approval. Source identity and administrator-authorized runner
 requirements still match exactly; no mismatch bypass or recovery path is added.
 `TestRunnerPolicyUpgradeKeepsApprovedID` pins a v0.117.1 approval with an explicit
-workspace root so worker scratch paths cannot change the fixture, and covers
-the recorded unchanged-definition upgrade failure and explicit changes.
+workspace root and execution shells so host defaults cannot change the fixture.
+It rejects the v0.117.1 approval after #3281's intentional review-default change,
+then pins the post-change approval to check equivalent absent/default host and
+check settings and reject explicit policy changes (#3447).
 
 Runner availability (#3169) reuses weekly-window evaluation and the existing
 runner-capacity exclusion: runners report zero capacity outside the cached

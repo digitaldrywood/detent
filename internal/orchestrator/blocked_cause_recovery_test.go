@@ -2552,7 +2552,7 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 		{name: "CI failing", mutate: func(issue *connector.Issue, _ time.Time) {
 			issue.PullRequest.CIStatus = "failure"
 		}},
-		{name: "audit not yet run", audit: "missing", wantMerging: true},
+		{name: "audit not yet run", audit: "missing"},
 		{name: "audit findings", audit: "findings"},
 		{name: "human question", mutate: func(issue *connector.Issue, _ time.Time) {
 			issue.WorkpadSignal.Status = workpad.StatusBlocked
