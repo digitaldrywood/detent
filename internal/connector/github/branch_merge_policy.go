@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -210,6 +211,12 @@ func (c *Connector) attachRequiredBranchChecks(ctx context.Context, issue *conne
 	ciStatus := pr.CIStatus
 	if branchPolicyOnly {
 		enriched.RequiredCheckFailures = nil
+		enriched.RunningChecks = slices.DeleteFunc(slices.Clone(pr.RunningChecks), func(name string) bool {
+			return !slices.Contains(policy.RequiredStatusChecks, name)
+		})
+		enriched.UnstartedChecks = slices.DeleteFunc(slices.Clone(pr.UnstartedChecks), func(check connector.PullRequestCheck) bool {
+			return !slices.Contains(policy.RequiredStatusChecks, check.Name)
+		})
 		if ciStatus != "fail" && ciStatus != "failure" && ciStatus != "red" && ciStatus != "error" {
 			ciStatus = "success"
 		}

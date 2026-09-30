@@ -12075,6 +12075,8 @@ func TestReportsDailyDigestReconcilesSeededDay(t *testing.T) {
 		"50%",
 		"$0.80",
 		"1 reattached · 0 fresh",
+		"Release history is unavailable; external releases are not observed.",
+		"Lifetime unknown dwell",
 		`data-digest-project="detent"`,
 	} {
 		if !strings.Contains(html, want) {
