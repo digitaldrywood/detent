@@ -581,6 +581,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		raw = cached.body
 		headers := mergeRESTHeaders(cached.headers, resp.Header)
 		if out == nil {
+			c.touchRESTConditionalEntry(method, path, cached.etag)
 			return headers, nil
 		}
 		if len(raw) == 0 {
@@ -589,6 +590,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		if err := json.Unmarshal(raw, out); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 		}
+		c.touchRESTConditionalEntry(method, path, cached.etag)
 		return headers, nil
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
