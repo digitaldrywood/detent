@@ -1,5 +1,32 @@
 ## Codex Workpad
 
+Rework handoff for #3407 / PR #3444, attempt 7305 / generation 14, 2026-09-30.
+
+Plan and result: retain and publish recovered merge `62f0c920de563a984dce72476d72f54fe671a398`. Inspected every first-parent changed path: `.detent/notes.md` resolves the historical handoffs; the three `internal/workspace` test files are inherited from develop and exactly match it. No stray artifacts or manual source changes. Fetched develop `3ce76fc185cf1d090eacaa27779ac77cfc84587c` is already an ancestor. Full issue diff reviewed: bootstrap, its focused regression fixture, onboarding section, and notes only. The three implementation files exactly match published PR head `94450862beb9f5996c5ba08fb46ece3441698b3e`.
+
+Key files: `scripts/sprite-runner-bootstrap.sh`, `scripts/sprite_runner_bootstrap_test.py`, `docs/cloud-onboarding.md`. No generated inputs, invariant changes, additional mechanisms or dependencies. No out-of-scope findings. The assigned worktree/branch satisfy isolation; all scratch stays under the provided TMPDIR. Live dogfood on port 4000 was untouched.
+
+Current-source diagnostics: all three Python unittest methods passed in 7.495s; Bash syntax, ShellCheck and both issue-diff/worktree whitespace inspections passed. Target ancestry passed. No source edits followed the diagnostics; this commit updates notes only. Run configured `true` on this committed head immediately before publishing; exact head, gate duration, publication and final feedback/check evidence belong in the canonical issue Workpad. No full suite, coverage/race suite, CI wait or local status. No quiet window, PR CI or merge-group workflow applies; merge/post-merge timings are not applicable in Rework.
+
+PR #3444 remains open and ready against develop and references Fixes #3407. Initial feedback inspection found no reviews or threads; the review bot reported its usage limit without findings. Current-head check rollup was absent, an expected skip with no test credit. No tracker lane labels or status fields are written; merging remains orchestrator-owned.
+
+Required runtime acceptance remains unresolved: historical fresh-Sprite installation, service restart, actual isolated-Hub online connection, one-runner identity/config preservation and checkpoint restore evidence cover the unchanged implementation. They do not establish provider-authenticated Cloud Todo-to-pushed-branch acceptance. No Hub-issued enrollment command or designated Cloud test project is supplied. Provider and git access must be usable by that test Sprite. Keep the reviewed ready PR; do not report the issue complete until that acceptance is recorded.
+
+Skill draft: no — existing bootstrap documentation and routine recovery guidance cover this work.
+
+```detent-status
+schema: 1
+status: blocked
+fields:
+  completion_work_attempt_id: "7305"
+  completion_generation: "14"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: "Needs you: provide a designated Cloud test project and Hub-issued Sprite enrollment through a private credential channel, with provider/git access, or supply recorded evidence that a Todo issue routed to its fresh Sprite reaches a pushed branch."
+```
+
+# Historical recovered merge handoff
+
 Merge fallback for #3407 / PR #3444, 2026-09-30.
 
 Plan and result: merged freshly fetched develop `3ce76fc185cf1d090eacaa27779ac77cfc84587c` into source-clean published PR head `94450862beb9f5996c5ba08fb46ece3441698b3e` without rebasing. The published head is preserved as the first parent. PR #3444 is open against develop on the assigned branch and includes Fixes #3407. No merge or rebase was in progress at session start or after the process restart.
@@ -12,7 +39,7 @@ Validation: no tests, lint, vet, builds, local gate (including `true`), CI check
 
 Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. Hosted Cloud issue-to-push acceptance remains the documented manual step from the implementation handoff. No push, PR merge, issue-state change, or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
