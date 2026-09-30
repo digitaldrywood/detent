@@ -129,7 +129,7 @@ func TestGateWaitHelpersTolerateMissingState(t *testing.T) {
 	if attempts, err := orch.recentAgentTerminalAttempts(ctx, connector.Issue{}); err != nil || len(attempts) != 0 {
 		t.Fatalf("attempts=%v err=%v", attempts, err)
 	}
-	if autoPromoteCompletedFinalState(nil, "issue") != "" || autoPromoteOperationalCompletionAccepted(nil, "issue") || autoPromoteReviewWaitExpired(nil, "issue", AutoPromoteConfig{}, time.Now()) || autoPromoteIssueCompleted(nil, "issue") {
+	if autoPromoteCompletedFinalState(nil, "issue") != "" || autoPromoteOperationalCompletionAccepted(nil, connector.Issue{ID: "issue"}) || autoPromoteReviewWaitExpired(nil, "issue", AutoPromoteConfig{}, time.Now()) || autoPromoteIssueCompleted(nil, "issue") {
 		t.Fatal("absent state supplied completion evidence")
 	}
 	if autoPromoteActiveGatePendingIssue(connector.Issue{}, nil, Config{}, AutoPromoteConfig{}) {
@@ -583,7 +583,7 @@ func TestAutoPromoteValidatorEnabledAllowsOperationalCompletion(t *testing.T) {
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	state := newState(cfg)
-	state.Completed[issue.ID] = Completed{CompletionKind: workpad.CompletionOperational}
+	state.Completed[issue.ID] = Completed{Issue: issue, CompletionKind: workpad.CompletionOperational}
 
 	result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
 

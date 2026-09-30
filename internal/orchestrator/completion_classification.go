@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -15,6 +16,16 @@ import (
 func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, running Running, finalState string, pullRequestUpdated bool) implementCompletionProgressDecision {
 	decision := o.evaluateImplementCompletionCandidate(ctx, running, finalState, pullRequestUpdated)
 	if strings.TrimSpace(finalState) != FinalStateCompleted || decision.DependencyDeferral {
+		return decision
+	}
+	if decision.CompletionKind == workpad.CompletionOperational {
+		signal, _ := autoPromoteIssueWorkpadSignal(decision.Issue)
+		if operationalCompletionAttributed(signal) && !workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
+			decision.Reason = implementProgressOutcomeNoProgress
+			decision.ProgressKinds = nil
+			decision.CompletionKind = ""
+		}
 		return decision
 	}
 	if completionWorkpadUnfinished(decision.Issue) {
@@ -31,6 +42,40 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, 
 	decision.ProgressKinds = nil
 	decision.CompletionKind = ""
 	return decision
+}
+
+type operationalCompletionReceipt struct {
+	Generation uint64          `json:"generation"`
+	Signal     *workpad.Signal `json:"signal"`
+}
+
+func operationalCompletionAttributed(signal *workpad.Signal) bool {
+	return signal != nil && (signal.Fields[workpad.FieldCompletionAttempt] != "" || signal.Fields[workpad.FieldCompletionGeneration] != "")
+}
+
+func operationalCompletionEvidenceCurrent(accepted, current connector.Issue) bool {
+	before, _ := autoPromoteIssueWorkpadSignal(accepted)
+	after, _ := autoPromoteIssueWorkpadSignal(current)
+	return before != nil && after != nil && maps.Equal(before.Fields, after.Fields)
+}
+
+func operationalCompletionReceiptMatches(issue connector.Issue, attempt store.WorkAttempt) bool {
+	signal, _ := autoPromoteIssueWorkpadSignal(issue)
+	var metadata struct {
+		Receipt *operationalCompletionReceipt `json:"operational_completion_receipt"`
+	}
+	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) != nil {
+		return false
+	}
+	if metadata.Receipt == nil {
+		// Unattributed legacy receipts retain their original timing check. Never
+		// infer the generation of a newly attributed claim from old metadata.
+		return !operationalCompletionAttributed(signal) && signal != nil && signal.RecordedAt != nil &&
+			!signal.RecordedAt.IsZero() && !attempt.CompletedAt.Before(*signal.RecordedAt)
+	}
+	receipt := metadata.Receipt
+	return signal != nil && receipt.Signal != nil && maps.Equal(signal.Fields, receipt.Signal.Fields) &&
+		(!operationalCompletionAttributed(signal) || workpad.CurrentAttemptCompletion(signal, attempt.ID, receipt.Generation))
 }
 
 func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, running Running, decision implementCompletionProgressDecision) bool {
