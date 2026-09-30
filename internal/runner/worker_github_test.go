@@ -1043,7 +1043,8 @@ func TestWorkerGitHubCLIAuthStatus(t *testing.T) {
 }
 
 func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
-	t.Parallel()
+	// Keep real gh startup outside the parallel helper-process fixtures. The
+	// production probe deadline still applies, including on hosted Windows.
 	if _, err := exec.LookPath("gh"); err != nil {
 		t.Skip("gh is not installed")
 	}
@@ -1131,6 +1132,9 @@ func TestWorkerGitHubClassificationWaitsForSharedCooldown(t *testing.T) {
 		{"existing shared cooldown", 403, `{"message":"You have exceeded a secondary rate limit"}`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			// Repetitions share the process registry, but synctest resets time.
+			// Both clients still share this invocation's credential and cooldown.
+			token := t.TempDir()
 			synctest.Test(t, func(t *testing.T) {
 				started := time.Now()
 				calls := 0
@@ -1144,7 +1148,7 @@ func TestWorkerGitHubClassificationWaitsForSharedCooldown(t *testing.T) {
 					}
 					return workerGitHubPrincipalResponse(), nil
 				})
-				policy := workerGitHubPolicy{Enabled: true, CredentialMode: workerGitHubCredentialUnclassified, Token: t.Name(), GraphQLURL: "https://github.test/graphql", HTTPClient: client}
+				policy := workerGitHubPolicy{Enabled: true, CredentialMode: workerGitHubCredentialUnclassified, Token: token, GraphQLURL: "https://github.test/graphql", HTTPClient: client}
 				if tt.existing {
 					shared, err := githubconnector.NewClient(githubconnector.ClientConfig{Endpoint: policy.GraphQLURL, TokenSource: githubconnector.StaticTokenSource(policy.Token), HTTPClient: client})
 					if err != nil {

@@ -34,6 +34,29 @@ sets `go test -p`, `GOMAXPROCS` for the test binaries, `golangci-lint
 usable for the others. Raise it for a solo run with `TEST_PROCS=8 make test`.
 Plain `go test ./...` outside `make` has no cap.
 
+Portability Stress is a manually dispatched macOS/Windows diagnostic workflow.
+Its suites run on separate hosted runners through
+`bash scripts/portability-stress.sh <suite>`, with `GOMAXPROCS=4`, bounded test
+parallelism, and evidence under the supplied `TMPDIR`, `TMP`, or `TEMP`.
+The CLI, runner, and checklock suites retain ten race repetitions; the other
+suites retain the complete race package selection, including one more run of
+those three packages. Windows also retains twenty SQLite lifecycle repetitions.
+Hubserver uses the same three disjoint test partitions as the Makefile, with
+two parallel tests per partition. Orchestrator and workspace run separately;
+the remaining packages run one at a time through the existing evidence tool.
+
+The Windows diagnostic job in run `36678733180` took 4933.681 seconds for ten
+CLI repetitions and 1205.368 seconds for checklock. Their package budgets are
+120 and 45 minutes, with job budgets of 150 and 60 minutes respectively.
+Runner has a 45-minute package budget. Hubserver partitions have 45-minute
+budgets after the unpartitioned suite exceeded 30 minutes on both platforms;
+orchestrator and remaining packages have 30-minute budgets, and workspace
+retains its existing 15-minute budget. Job budgets leave time for setup and
+evidence upload. These bound cumulative suite work; individual production
+deadlines and test workloads remain unchanged. Hosted resource contention is
+still a hypothesis. Uploaded JSON events include run/pause/cont timestamps for
+diagnosing queue time separately from execution time.
+
 Packages that own transport, hub, watcher, orchestrator, and runner goroutines
 also run `go.uber.org/goleak` from package-level tests, so `go test ./...`,
 race tests, and `make check` fail on unexpected goroutines. Add goleak ignores
