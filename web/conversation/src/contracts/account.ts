@@ -724,3 +724,12 @@ export const decodeIntegration = Schema.decodeUnknownSync(ProjectIntegration);
 export const decodePolicy = Schema.decodeUnknownSync(PolicyApproval);
 
 export { ApiError };
+
+/** Provider secret presence; credentials are write-only. */
+export const ProjectSecretStatus = Schema.Struct({
+ kind: Schema.String,
+ present: Schema.Boolean,
+ organization_slug: Schema.optional(Schema.String),
+ key_version: Schema.optional(Schema.Number),
+});
+export type ProjectSecretStatus = typeof ProjectSecretStatus.Type;

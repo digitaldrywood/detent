@@ -1,4 +1,34 @@
-# Issue #3445 handoff
+# Issue #3445 merge fallback handoff — 2026-09-30
+
+- PR #3465 is open against `develop` on the assigned isolated branch and includes `Fixes #3445`. Source-clean starting local HEAD and fetched published PR head match `10ef2151e8f179508e262e62a598d1f7a0ff9ad0`; no merge or rebase was in progress. Verified prior #3445 handoff against that commit's scoped lint repair and context regression; its diagnostics are historical only.
+- Merged freshly fetched target `0721153854edcd0bd1fecd81edc90edbfc1853ba` into the published PR head without rebasing, preserving published history.
+- Conflicts: `.detent/notes.md` and `internal/runner/activity_profile_test.go`. Retained the PR's context-aware recorder call and context persistence assertions together with develop's nonnil recorder assertion. Preserved both sides' historical handoffs. Other files merged automatically; no unrelated edits or out-of-scope findings.
+- Key issue files remain `internal/runner/activity_profile.go`, its fixtures and callers, and the typed native-issue creation paths in `internal/hubserver`. No generated inputs or invariant enforcement changed through resolution.
+
+## Codex Workpad
+
+Plan and result: finish and commit the resolved target merge, then return immediately with a source-clean workspace.
+
+Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks or validation waits run in this session. No validation success claimed for the resolved head. Prior diagnostics below apply only to their recorded heads; gate/CI and post-merge timings are unmeasured.
+
+Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No push, PR merge, issue-state change or tracker lane write performed here.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7232"
+  completion_generation: "100"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+These records concern earlier heads or other issues; their validation and completion metadata do not apply to the current resolved head or authorize validation or publication in this session.
+
+# Issue #3445 historical implementation handoff
 
 - Reproduced all seven findings from scheduled Lint job 110035612634 / run 36758716559 against clean develop 640b8abc10f0adb4ad580d1835b349796062130e using golangci-lint v2.9.0 built with Go 1.26.6. Focused runner/hubserver lint exited 1 with the same two contextcheck, two errcheck, one nilnil, and two staticcheck findings.
 - Key files: `internal/runner/activity_profile.go` accepts the run context and checkpoints through a two-second `context.WithoutCancel` timeout; implementation/validation callers and fixtures supply their contexts. The validation-phase switch and delayed span pointer remove staticcheck findings. Read-only file cleanup has a scoped errcheck explanation.
@@ -9,6 +39,17 @@
 - Skill draft: no — existing Go and toolchain-alignment guidance covers this focused lint repair.
 
 # Historical notes from develop
+
+# Issue #3446 implementation handoff
+
+- Reproduced all five scheduled NilAway findings from job 110035612674 / run 36758716559 on starting develop 640b8abc10f0adb4ad580d1835b349796062130e. Build and Vet passed in that run; NilAway was the failing step. Local pinned audit exited 1, with the same primary findings and grouped native-landing dereferences.
+- Key files: internal/hubclient/{scheduler_test.go,native_change_test.go,native_landing_test.go}, internal/runner/activity_profile_test.go, scripts/nilaway-baseline.json. Existing tests now assert nonnil connector/execution/recorder values before dereferencing and exact machine report counts before indexing. Removed the retired native-change suppression; no replacement or new suppression.
+- Pinned diagnostics: Go 1.26.6, GOMAXPROCS=4, NilAway v0.0.0-20260612163715-2d8907f431ca over internal/hubclient and internal/runner passes with zero diagnostics (5.8s). Five affected test names pass with -p 4 -count=1 and DETENT_API_TOKEN cleared (hubclient 1.681s, runner 0.464s; 16.3s command). Focused go vet -p 4 over both packages passes (12.7s). git diff --check passes.
+- No production behavior, invariant enforcement, generated inputs, UI, or mechanism changed. No duplicate tests added: assertions extend existing fixtures; the pinned audit reproduces the recorded failure. No full gates, coverage, race suites, Actions reruns, or CI waiting.
+- Configured gate is true, to run on the final committed head before push. PR publication, current-head feedback/check evidence and completion for attempt 7217 / generation 85 belong to the canonical issue Workpad. Next scheduled validation confirms the integrated repair and closes the issue; lane transitions and merge remain orchestrator-owned.
+- No dependencies or out-of-scope findings. Skill draft: no — existing focused NilAway diagnostics and fixture assertions cover this routine repair.
+
+## Historical handoffs
 
 # Issue #2976 merge fallback handoff (attempt 7212, generation 80)
 
@@ -1863,3 +1904,13 @@ fields:
   completion_cleanliness_resolution: committed
 blockers: []
 human_action: null
+
+# Issue #3408 implementation
+
+- Key files: `internal/hubsecrets/envelope.go`, Hub `project_secrets.go` / `project_sprites.go`, migration 50, Hub serve environment loading and `hub secrets rotate`, account `SpritesCard.tsx`.
+- Per-project envelope encryption uses independent AES-256-GCM data keys, row-bound AAD and version-authenticated wrapping. Presence-only metadata; owner/admin writes recheck authority after validation. No token-bearing native command receipts. Offline rotation uses the existing database ownership lock and rolls back all rows/audits on failure.
+- Focused crypto, provider validation, role/lifecycle, startup and multi-row rotation rollback diagnostics pass, along with existing schema/migration/member checks. All 80 selected account/policy/Sprites UI tests, frontend typechecking and Go vet pass. `make generate` completed and generated app assets are included. Chrome verified set, replace, remove, input clearing, no value in rendered text and viewer controls, with synthetic provider credentials on ephemeral ports. Desktop and narrow (Chrome minimum 500px) layouts were inspected; isolated previews stopped cleanly. Final publication evidence belongs in the canonical issue Workpad.
+- No invariant enforcement change, new operational mechanism, or out-of-scope findings. The issue explicitly authorizes the secret store, settings card and rotation command. Live Detent on port 4000 is untouched.
+- Skill draft: no — standard envelope encryption, focused fixtures and existing preview procedures need no new reusable method.
+
+- Rebased onto develop a80b71009. Renumbered this unpublished migration to 50 because develop already landed linked-issue migration 49; no shipped database has used this branch's former migration 49. Retained develop notes and regenerated the conflicted bundle from combined sources. Prior browser evidence covers the unchanged card. Resolved-source focused Go crypto/Hub/CLI diagnostics, schema/migration checks, vet, frontend typechecking and all 80 selected UI tests passed after this rebase. Canonical issue Workpad carries exact pushed-head gate and review/check evidence.

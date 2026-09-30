@@ -12,6 +12,7 @@ import (
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubgithub"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 )
@@ -79,6 +80,7 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 	cmd.AddCommand(newHubIssueCommand(lookupEnv))
 	cmd.AddCommand(newHubRecoveryCommands(lookupEnv)...)
 	cmd.AddCommand(newHubSharedMigrationCommand(lookupEnv))
+	cmd.AddCommand(newHubSecretsCommand(lookupEnv))
 	return cmd
 }
 
@@ -131,6 +133,10 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 			githubWebhookSecretEnv = strings.TrimSpace(githubWebhookSecretEnv)
 			if githubWebhookSecretEnv != "" && !validEnvName(githubWebhookSecretEnv) {
 				return NewValidationError("Hub GitHub webhook secret environment variable name is invalid", "Use an environment variable name such as DETENT_HUB_GITHUB_WEBHOOK_SECRET.", nil)
+			}
+			secretKeys, err := hubsecrets.FromEnvironment(lookupEnv)
+			if err != nil {
+				return err
 			}
 			hosted, _, err := readHostedConfig(hostedConfigPath, lookupEnv)
 			if err != nil {
@@ -186,6 +192,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 				TLSKeyFile:                 strings.TrimSpace(tlsKeyFile),
 				TrustedProxy:               trustedProxy,
 				InitialAdminToken:          []byte(adminToken),
+				SecretKeys:                 secretKeys,
 				BusyTimeout:                busyTimeout,
 				ShutdownTimeout:            shutdownTimeout,
 				GitHubWebhookSecret:        []byte(strings.TrimSpace(lookupEnv(githubWebhookSecretEnv))),
