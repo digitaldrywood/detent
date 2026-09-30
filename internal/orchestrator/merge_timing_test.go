@@ -1,6 +1,9 @@
 package orchestrator
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
@@ -8,6 +11,102 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
+
+func TestMergeCompletedLogAttributesDurations(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		syncBase     bool
+		waitForCI    bool
+		ciBeforeSlot bool
+		wantSlotWait int64
+		wantBaseSync int64
+		wantCIWait   int64
+		wantDirect   bool
+	}{
+		{name: "direct", wantDirect: true, wantSlotWait: 120},
+		{name: "synced", syncBase: true, wantBaseSync: 180, wantSlotWait: 120},
+		{name: "CI waited", waitForCI: true, wantCIWait: 120, wantDirect: true, wantSlotWait: 120},
+		{name: "CI waited before slot", ciBeforeSlot: true, wantCIWait: 60, wantDirect: true, wantSlotWait: 60},
+		{name: "synced then CI waited", syncBase: true, waitForCI: true, wantBaseSync: 180, wantCIWait: 120, wantSlotWait: 120},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs bytes.Buffer
+			orch := &Orchestrator{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+			state := newState(normalizeConfig(Config{}))
+			issue := connector.Issue{
+				ID:             "issue-3047",
+				Identifier:     "digitaldrywood/detent#3047",
+				State:          "Merging",
+				StageUpdatedAt: &start,
+				PullRequest:    &connector.PullRequest{Number: 3050, State: "OPEN", HeadSHA: "old-head", MergeableState: "clean"},
+			}
+			if tt.syncBase {
+				issue.PullRequest.MergeableState = "behind"
+			}
+			if tt.ciBeforeSlot {
+				orch.recordMergeQueueEntered(&state, issue, start, "test")
+				reconcileMergeWorkerCurrentHeadCIWait(&state, issue, start.Add(30*time.Second))
+				finishMergeWorkerCurrentHeadCIWait(&state, issue, start.Add(90*time.Second))
+			}
+			orch.markMergeStarted(&state, issue, start.Add(2*time.Minute))
+			if tt.syncBase {
+				issue.PullRequest.HeadSHA = "new-head"
+				issue.PullRequest.MergeableState = "clean"
+				orch.markMergeStarted(&state, issue, start.Add(5*time.Minute))
+			}
+			if tt.waitForCI {
+				waitStart := start.Add(3 * time.Minute)
+				if tt.syncBase {
+					waitStart = start.Add(6 * time.Minute)
+				}
+				reconcileMergeWorkerCurrentHeadCIWait(&state, issue, waitStart)
+				reconcileMergeWorkerCurrentHeadCIWait(&state, issue, waitStart.Add(time.Minute))
+				finishMergeWorkerCurrentHeadCIWait(&state, issue, waitStart.Add(2*time.Minute))
+				orch.markMergeStarted(&state, issue, waitStart.Add(2*time.Minute))
+			}
+			completedAt := start.Add(6 * time.Minute)
+			if tt.waitForCI {
+				completedAt = completedAt.Add(2 * time.Minute)
+			}
+			if tt.syncBase && tt.waitForCI {
+				completedAt = completedAt.Add(3 * time.Minute)
+			}
+			orch.recordMergeCompleted(&state, issue, completedAt, "Done")
+
+			var completion map[string]any
+			for scanner := bufio.NewScanner(&logs); scanner.Scan(); {
+				var entry map[string]any
+				if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+					t.Fatal(err)
+				}
+				if entry["msg"] == "merge_completed" {
+					completion = entry
+					break
+				}
+			}
+			if completion == nil {
+				t.Fatalf("merge_completed absent from logs: %s", logs.String())
+			}
+			for key, want := range map[string]any{
+				"slot_wait_seconds": float64(tt.wantSlotWait),
+				"base_sync_seconds": float64(tt.wantBaseSync),
+				"ci_wait_seconds":   float64(tt.wantCIWait),
+				"direct_merge":      tt.wantDirect,
+			} {
+				if got := completion[key]; got != want {
+					t.Errorf("%s = %v, want %v", key, got, want)
+				}
+			}
+		})
+	}
+}
 
 func TestRecordMergeQueueEnteredResetsTerminalAttempt(t *testing.T) {
 	t.Parallel()

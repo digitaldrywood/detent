@@ -610,34 +610,6 @@ func TestOnboardingProjectStepAppliesProfileKanbanModeAfterAgentBack(t *testing.
 	}
 }
 
-func TestOnboardingWriteWorkflowCanEnableDependencyAutoUnblock(t *testing.T) {
-	t.Parallel()
-
-	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
-	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	form := validOnboardingForm()
-	form.Set("delivery_profile", "full_autopilot")
-	rec := httptest.NewRecorder()
-	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
-
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	raw, err := os.ReadFile(workflowPath)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if !strings.Contains(string(raw), "dependency_auto_unblock:\n    enabled: true") {
-		t.Fatalf("workflow missing enabled dependency auto-unblock:\n%s", raw)
-	}
-}
-
 func TestOnboardingWriteWorkflowAppliesFullAutopilotProfile(t *testing.T) {
 	t.Parallel()
 

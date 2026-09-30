@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -466,7 +467,7 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "shared-host", DisplayName: "Shared runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
+	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "shared-host", DisplayName: "Shared runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", issued.Token, redemption), http.StatusCreated)
 	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-run"}, Title: "Private run", State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)

@@ -199,6 +199,9 @@ func requireRunnerUpdate(result sql.Result, err error) error {
 	if err != nil {
 		return err
 	}
+	if result == nil {
+		return nativeNotFound()
+	}
 	count, err := result.RowsAffected()
 	if err != nil {
 		return err
@@ -220,6 +223,9 @@ func (s *Service) redeemRunnerEnrollment(c echo.Context) error {
 	}
 	if !request.Valid() || !runnerauth.ValidCredential(request.Credential) || token == request.Credential || strings.TrimSpace(request.Hostname) == "" || len(request.Hostname) > 200 || len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, nativeInvalid("Host identity, a separate generated credential, hostname, version and nonnegative capacity are required"))
+	}
+	if err := request.BackendIsolation.Validate(); err != nil {
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
 	return s.runnerTransaction(c, http.StatusCreated, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		var id, operations, created, expires, actor string
@@ -252,6 +258,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.MachineID, request.Hostname, req
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.RunnerID, identity.OrganizationID, binding.MachineID, binding.RunnerID, id, operations, formatHubTime(now), request.DisplayName, request.Capacity, request.Capacity, request.OS, request.Architecture, formatHubTime(now)); err != nil {
+			return nil, err
+		}
+		if err := updateRunnerIsolationReport(ctx, tx, nativeScope{organization: identity.OrganizationID, credential: apiCredential{ID: binding.RunnerID, Runner: identity}}, request.BackendIsolation); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO token_grants (token_id, organization_id, project_id) SELECT ?, organization_id, project_id FROM runner_enrollment_projects WHERE enrollment_id = ?`, binding.RunnerID, id); err != nil {

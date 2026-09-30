@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,8 +22,13 @@ import (
 )
 
 type runnerCredentialSource struct {
-	mu   sync.Mutex
-	path string
+	problems         []runnerauth.Problem
+	settingsRejected bool
+	routingMu        sync.Mutex
+	routing          *runnerauth.RoutingSnapshot
+	routingChanged   chan struct{}
+	mu               sync.Mutex
+	path             string
 }
 
 func runnerOrganizationPath(organization tracker.OrganizationID) (string, error) {
@@ -169,7 +176,7 @@ func EnrollRunner(ctx context.Context, path string, organization tracker.Organiz
 		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
 			return identity, err
 		}
-		request := runnerauth.Redemption{Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
+		request := runnerauth.Redemption{BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
 		if err := client.runnerRequest(ctx, enrollment, http.MethodPost, base+"/runner-enrollments/redeem", request, &identity); err != nil {
 			return identity, err
 		}
@@ -209,19 +216,48 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 }
 
 func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) error {
+	capacity := machine.Capacity
+	if c.client.runner != nil {
+		availability, err := c.client.runner.availability()
+		if err != nil {
+			machine.Capacity = 0
+		} else {
+			status, err := availability.Evaluate(time.Now())
+			if err != nil {
+				return err
+			}
+			if !status.Open {
+				machine.Capacity = 0
+			}
+		}
+	}
+	return c.heartbeatMachine(ctx, machine, capacity, true)
+}
+
+func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, capacity int, refresh bool) error {
 	capabilities, isolation := machine.workspaceReport()
+	problems := machine.Problems
+	var rejected bool
+	if c.client.runner != nil {
+		problems, rejected = c.client.runner.heartbeatProblems(ctx, machine)
+	}
 	request := struct {
-		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
-		DisplayName     string                    `json:"display_name"`
-		Capacity        int                       `json:"capacity"`
-		Version         string                    `json:"version"`
-		OS              string                    `json:"os"`
-		Architecture    string                    `json:"architecture"`
+		Problems         []runnerauth.Problem      `json:"problems"`
+		ProtocolMajor    int                       `json:"protocol_major,omitempty"`
+		SettingsRejected bool                      `json:"settings_rejected,omitempty"`
+		BackendIsolation isolationpolicy.Report    `json:"backend_isolation"`
+		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
+		DisplayName      string                    `json:"display_name"`
+		Capacity         int                       `json:"capacity"`
+		Version          string                    `json:"version"`
+		OS               string                    `json:"os"`
+		Architecture     string                    `json:"architecture"`
 		// The workspace claim gate matches these against a workspace's
 		// requires set and checks the heartbeat that carried them is fresh.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
-	}{machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
+		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
+	}{problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
 	if c.client.runner == nil {
 		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 	}
@@ -229,8 +265,72 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 	if err := c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, &snapshot); err != nil {
 		return err
 	}
-	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
-		slog.Default().Warn("runner routing cache not updated", "error", err)
+	snapshot.Routing = snapshot.Routing.Normalized()
+	identity, err := runnerauth.Load(c.client.runner.path)
+	if err != nil {
+		return err
 	}
+	if snapshot.RunnerID != identity.Identity.RunnerID || snapshot.Revision < 1 {
+		return errors.Join(ErrUnavailable, errors.New("hub returned an unexpected runner routing identity"))
+	}
+	if err := snapshot.Routing.Validate(); err != nil {
+		c.client.runner.rejectSettings(true)
+		return errors.Join(ErrUnavailable, err)
+	}
+	c.client.runner.setRouting(snapshot)
+	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
+		c.client.runner.rejectSettings(true)
+		slog.Default().Warn("runner routing cache not updated", "error", err)
+	} else {
+		c.client.runner.rejectSettings(false)
+	}
+	status, err := snapshot.Routing.Availability.Evaluate(time.Now())
+	if err != nil {
+		return err
+	}
+	reported := capacity
+	if !status.Open {
+		reported = 0
+	}
+	if refresh && reported != machine.Capacity {
+		machine.Capacity = reported
+		return c.heartbeatMachine(ctx, machine, capacity, false)
+	}
+
 	return nil
+}
+
+func (r *runnerCredentialSource) setRouting(snapshot runnerauth.RoutingSnapshot) {
+	snapshot.Routing.Availability.Windows = slices.Clone(snapshot.Routing.Availability.Windows)
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	previous := r.routing
+	if previous != nil && (previous.Routing.Availability.Timezone != snapshot.Routing.Availability.Timezone || previous.Routing.Availability.HardDeadline != snapshot.Routing.Availability.HardDeadline || !slices.Equal(previous.Routing.Availability.Windows, snapshot.Routing.Availability.Windows)) {
+		if r.routingChanged != nil {
+			close(r.routingChanged)
+		}
+		r.routingChanged = make(chan struct{})
+	}
+	r.routing = &snapshot
+}
+
+func (r *runnerCredentialSource) availability() (runnerauth.Availability, error) {
+	availability, _, err := r.availabilityState()
+	return availability, err
+}
+
+func (r *runnerCredentialSource) availabilityState() (runnerauth.Availability, <-chan struct{}, error) {
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	if r.routing == nil {
+		snapshot, err := runnerauth.LoadRoutingCache(r.path)
+		if err != nil {
+			return runnerauth.Availability{}, nil, errors.Join(ErrUnavailable, err)
+		}
+		r.routing = &snapshot
+	}
+	if r.routingChanged == nil {
+		r.routingChanged = make(chan struct{})
+	}
+	return r.routing.Routing.Availability, r.routingChanged, nil
 }

@@ -4,12 +4,57 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func TestCleanupIssueOrder(t *testing.T) {
+	t.Parallel()
+	unordered := []connector.Issue{{ID: "c"}, {ID: "a"}, {ID: "b"}}
+	tests := []struct {
+		name   string
+		issues []connector.Issue
+		cursor string
+		want   []string
+	}{
+		{name: "nil issues"},
+		{name: "empty issues", issues: []connector.Issue{}, cursor: "b"},
+		{name: "single issue", issues: []connector.Issue{{ID: "b"}}, cursor: "b", want: []string{"b"}},
+		{name: "before first", issues: unordered, cursor: "", want: []string{"a", "b", "c"}},
+		{name: "at first", issues: unordered, cursor: "a", want: []string{"b", "c", "a"}},
+		{name: "between issues", issues: unordered, cursor: "bb", want: []string{"c", "a", "b"}},
+		{name: "at last", issues: unordered, cursor: "c", want: []string{"a", "b", "c"}},
+		{name: "after last", issues: unordered, cursor: "z", want: []string{"a", "b", "c"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issues := slices.Clone(tt.issues)
+			before := slices.Clone(issues)
+			ordered := cleanupIssueOrder(issues, tt.cursor)
+			var ids []string
+			for _, issue := range ordered {
+				ids = append(ids, issue.ID)
+			}
+			if !slices.Equal(ids, tt.want) {
+				t.Fatalf("cleanupIssueOrder() IDs = %v, want %v", ids, tt.want)
+			}
+			if !reflect.DeepEqual(issues, before) {
+				t.Fatal("cleanupIssueOrder() changed the input")
+			}
+			if len(ordered) > 0 {
+				ordered[0].ID = "changed"
+				if !reflect.DeepEqual(issues, before) {
+					t.Fatal("cleanupIssueOrder() result aliases the input")
+				}
+			}
+		})
+	}
+}
 
 func finishTestWorkspaceCleanup(t *testing.T, o *Orchestrator, state *State) {
 	t.Helper()

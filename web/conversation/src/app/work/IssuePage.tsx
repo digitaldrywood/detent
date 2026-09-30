@@ -408,7 +408,7 @@ function IssueSurface({
   );
 
   const moves = React.useMemo(
-    () => (data === null ? [] : transitionsFrom(data.project, data.issue.state)),
+    () => (data === null || data.issue.archived ? [] : transitionsFrom(data.project, data.issue.state)),
     [data],
   );
 
@@ -433,11 +433,14 @@ function IssueSurface({
         reload();
       } catch (cause) {
         apply(before);
-        const conflict = cause instanceof WorkApiError && cause.conflict;
+        const activeWork = what === "archive this issue" && cause instanceof WorkApiError && cause.code === "lease_conflict";
+        const conflict = cause instanceof WorkApiError && cause.conflict && !activeWork;
         toastManager.add({
           type: conflict ? "warning" : "error",
           title: conflict ? "This issue changed while you were reading it" : `Could not ${what}`,
-          description: conflict
+          description: activeWork
+            ? "Finish or stop active work and release its claim before archiving."
+            : conflict
             ? "Your change was not applied. The issue has been reloaded with what the hub has now."
             : cause instanceof Error
               ? cause.message
@@ -555,6 +558,11 @@ function IssueSurface({
       conversation={conversation}
       viewerPrincipalId={client.bootstrap.actor.principal_id}
       preferenceChoices={client.bootstrap.preferences}
+      onArchive={() => void mutate(
+        (revision) => http.setArchived({ projectId, itemId: workItemId,
+          key: newWorkKey("archive"), expectedRevision: revision, archived: !item.archived }),
+        item.archived ? "restore this issue" : "archive this issue",
+      )}
       onMove={(state) =>
         void mutate(
           (revision) =>
@@ -673,6 +681,7 @@ interface IssueBodyProps {
   readonly conversation: ConversationBridge | null;
   readonly viewerPrincipalId: string;
   readonly preferenceChoices: PreferenceChoices | undefined;
+  readonly onArchive: () => void;
   readonly onMove: (state: string) => void;
   readonly onPriority: (name: string | null) => void;
   readonly onLabels: (labels: readonly string[]) => void;
@@ -939,11 +948,19 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
         >
           <header>
             <p className="font-mono text-muted-foreground text-xs" data-testid="issue-identifier">
-              {item.projectName} {issueNumber(item.identifier, item.number)}
+              {item.projectName} {issueNumber(item.identifier, item.number)}{item.archived ? " · Archived" : ""}
             </p>
             <h1 className="mt-1.5 text-balance font-semibold text-2xl leading-tight tracking-[-0.01em]">
               {item.title}
             </h1>
+            {props.canWrite && data.project.profile === "native" ? (
+              <Button size="sm" variant="outline" className="mt-3" data-testid="issue-archive"
+                disabled={props.saving || data.attempts.some((attempt) => attempt.status === "running")}
+                title={data.attempts.some((attempt) => attempt.status === "running") ? "Finish or stop active work before archiving" : undefined}
+                onClick={props.onArchive}>
+                {item.archived ? "Restore issue" : "Archive issue"}
+              </Button>
+            ) : null}
           </header>
 
           {/* With the panel open the sidebar yields its width, so the facts it

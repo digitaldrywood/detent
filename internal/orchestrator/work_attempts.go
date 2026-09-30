@@ -75,7 +75,6 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 		}
 		o.recoverWorkspaceBranchHolds(ctx, state, recent, now)
 		o.recoverGitHubRESTCapacityWaits(ctx, state, recent, now)
-		o.recoverWorkerGitHubMonitorWaits(ctx, state, recent, now)
 		o.recoverWorkerGitHubTokenResolutionWaits(ctx, state, recent, now)
 	}
 	if waits, ok := o.workAttempts.(store.ForgeAvailabilityWaitStore); ok {
@@ -892,9 +891,6 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 	}
 	if state != nil && len(state.ForgeUnavailable) > 0 {
 		snapshot["forge_unavailable"] = forgeUnavailableSnapshots(state.ForgeUnavailable)
-	}
-	if state != nil && len(state.GitHubMonitors) > 0 {
-		snapshot["worker_github_budget_monitor_unavailable"] = workerGitHubMonitorSnapshots(state.GitHubMonitors)
 	}
 	if state != nil && len(state.DispatchRecoveries) > 0 {
 		snapshot["dispatch_recoveries"] = dispatchRecoveriesCapacitySnapshot(state.DispatchRecoveries, pool.Name, pool.Capacity)

@@ -184,8 +184,8 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	if run == nil {
 		t.Fatal("buildRunner() = nil, want non-nil runner")
 	}
-	if _, ok := run.(*runnerpkg.Runner); !ok {
-		t.Fatalf("buildRunner() = %T, want *runner.Runner", run)
+	if _, ok := run.(*sshRunner); !ok {
+		t.Fatalf("buildRunner() = %T, want SSH-capable runner", run)
 	}
 }
 
@@ -663,8 +663,12 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	if captured.Runner == nil {
 		t.Fatal("project dependencies Runner = nil, want non-nil injected runner")
 	}
-	if _, ok := captured.Runner.(*runnerpkg.Runner); !ok {
-		t.Fatalf("injected Runner = %T, want *runner.Runner", captured.Runner)
+	run, ok := captured.Runner.(*sshRunner)
+	if !ok {
+		t.Fatalf("injected Runner = %T, want *sshRunner", captured.Runner)
+	}
+	if run.Runner == nil {
+		t.Fatal("SSH runner has no local runner")
 	}
 }
 
@@ -770,6 +774,7 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 				nil,
 				5*time.Millisecond,
 				func() time.Time { return now },
+				nil,
 			)
 		}()
 
@@ -2579,4 +2584,42 @@ func TestHostGoBudgetUsesSharedHostLocation(t *testing.T) {
 			t.Fatalf("hostGoBudget(%d) = %+v, want %d slots in %s with an executable", tt.slots, budget, tt.want, gobudget.HostDir())
 		}
 	}
+}
+
+type runnerHeartbeatFunc func(context.Context) error
+
+func (f runnerHeartbeatFunc) Heartbeat(ctx context.Context) error {
+	return f(ctx)
+}
+
+func TestPublishSnapshotsReportsPendingRunner(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		registry := projectpkg.NewRegistry()
+		if err := registry.SetPending(globalconfig.Project{ID: "broken"}, projectpkg.RuntimeError{Message: "invalid workflow"}); err != nil {
+			t.Fatal(err)
+		}
+		snapshots := hub.New[telemetry.Snapshot]()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var calls atomic.Int32
+		reporter := runnerHeartbeatFunc(func(ctx context.Context) error {
+			calls.Add(1)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			publishSnapshots(ctx, registry, nil, snapshots, nil, nil, nil, "", nil, time.Second, time.Now, reporter)
+		}()
+		synctest.Wait()
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		snapshot, ok := snapshots.Latest()
+		if !ok || snapshot.Seq < 3 || calls.Load() != 1 {
+			t.Fatalf("pending runner telemetry: snapshot=%#v calls=%d", snapshot, calls.Load())
+		}
+		cancel()
+		<-done
+	})
 }

@@ -110,7 +110,7 @@ func parseNativeIssueIncludes(value string) (bool, error) {
 }
 
 func (s *Service) listNativeIssues(c echo.Context) error {
-	if err := validateNativeQuery(c.QueryParams(), "state", "label", "assignee", "priority", "include"); err != nil {
+	if err := validateNativeQuery(c.QueryParams(), "state", "label", "assignee", "priority", "include", "archived"); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	includeWorkspace, err := parseNativeIssueIncludes(c.QueryParam("include"))
@@ -125,6 +125,15 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 	query := `SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGER)`
 	args := []any{scope.organization, scope.project, cursor.After}
+	switch c.QueryParam("archived") {
+	case "", "false":
+		query += " AND i.archived = 0"
+	case "true":
+		query += " AND i.archived = 1"
+	case "all":
+	default:
+		return s.nativeAPIError(c, nativeInvalid("archived must be true, false or all"))
+	}
 	if !includeWorkspace {
 		// Workspace items hold a worktree open for a person's surfaces, not
 		// project work (decisions section 18.1): the board would otherwise

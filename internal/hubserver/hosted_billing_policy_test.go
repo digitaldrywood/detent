@@ -79,7 +79,18 @@ func TestHostedBillingDowngradePreservesGrantsAndData(t *testing.T) {
 func TestHostedBillingPreservesRunningLease(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
-	plans := hostedTestPlans(t, f.service, map[string]int64{"concurrent_work": 0})
+	plans := hostedTestPlans(t, f.service, nil)
+	plans.Plans[0].Version++
+	plans.Plans[0].Features = slices.DeleteFunc(slices.Clone(plans.Plans[0].Features), func(feature string) bool { return feature == "native_execution" })
+	plans.Base = plans.Plans[0].PlanReference
+	hosted := *f.service.config.Hosted
+	hosted.Plans = &plans
+	if err := f.service.database.configureHostedPlans(t.Context(), &hosted); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "free-base", Action: "base", ExpectedRevision: 1, Plan: plans.Base, Reason: "Free has no execution"}); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	f.service.config.Hosted.Plans = &plans
 	cfg := &HostedBillingConfig{Prices: []HostedBillingPrice{{PriceID: "price_fixture", Plan: plans.Plans[1].PlanReference}}, AccountID: "acct_fixture", CustomerID: "cus_fixture"}
@@ -234,7 +245,7 @@ func TestHostedBillingWorkerShutdown(t *testing.T) {
 func TestHostedBillingPageStates(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct{ name, status, invoice, want string }{
-		{"free", "free", "", "Free access requires no card"},
+		{"complimentary base", "free", "", "Your existing plan access is complimentary"},
 		{"subscribed", "active", "paid", "Subscribed"},
 		{"canceled", "canceled", "", "Canceled"},
 		{"failed", "past_due", "open", "Payment failed"},

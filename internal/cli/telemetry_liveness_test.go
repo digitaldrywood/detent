@@ -108,7 +108,7 @@ func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
 					done := make(chan struct{})
 					go func() {
 						defer close(done)
-						publishSnapshots(ctx, registry, nil, snapshots, &seq, nil, totals, "", nil, time.Second, time.Now)
+						publishSnapshots(ctx, registry, nil, snapshots, &seq, nil, totals, "", nil, time.Second, time.Now, nil)
 					}()
 					defer func() {
 						cancel()

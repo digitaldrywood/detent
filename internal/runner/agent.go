@@ -142,6 +142,8 @@ type Dependencies struct {
 }
 
 type Runner struct {
+	sleepInhibitor            func(context.Context, func()) (func(), error)
+	sleepFailures             int
 	mu                        sync.RWMutex
 	promptHistory             map[string]sessionPrompt
 	projectID                 string
@@ -271,6 +273,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		workerReapGrace:           deps.WorkerReapGrace,
 		reapWorkerProcess:         deps.ReapWorkerProcess,
 		reapWorkspaceProcesses:    deps.ReapWorkspaceProcesses,
+		sleepInhibitor:            inhibitSleep,
 		cleanupWorkerArtifacts:    workspace.CleanupOwnedPath,
 		waitWorkerArtifactCleanup: waitForPathRemovalRetry,
 		sessionLimit:              deps.sessionLimit,
@@ -2095,7 +2098,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	afterRunPending = false
 	req.retainCheckpoint = result.Checkpoint != nil && turnErr != nil
-	if req.Admission != nil && errors.Is(turnErr, ErrWorkerProcessReap) {
+	if errors.Is(turnErr, ErrWorkerProcessReap) {
+		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+		_, preserveErr := r.PreserveWorkspace(preserveCtx, req.Issue)
+		cancel()
+		turnErr = errors.Join(turnErr, preserveErr)
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_admission_workspace_retained",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			telemetry.DetentSessionIDKey, sessionID,
@@ -2104,7 +2111,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		)
 	} else {
 		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
-			return result, errors.Join(turnErr, err)
+			turnErr = errors.Join(turnErr, err)
 		}
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
@@ -2120,13 +2127,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if turnErr != nil {
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-		finishContext := ctx
-		if cooperativeStopError(turnErr) {
-			finishContext = context.WithoutCancel(ctx)
-		}
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(finishContext, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
+			r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
@@ -3003,6 +3006,8 @@ func budgetRefusalFromDecision(issue connector.Issue, refusal budget.Refusal) *B
 }
 
 func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+	release := r.keepAwake(ctx)
+	defer release()
 	if ctx == nil {
 		ctx = context.Background()
 	}

@@ -17,6 +17,7 @@ func (s *Service) bindNativeRepository(c echo.Context) error {
 		tracker.Mutation
 		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 		Repository       string           `json:"repository"`
+		Source           string           `json:"source,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -24,6 +25,12 @@ func (s *Service) bindNativeRepository(c echo.Context) error {
 	owner, name, valid := splitRepositoryFullName(request.Repository)
 	if !valid {
 		return s.nativeAPIError(c, nativeInvalid("Repository must be owner/name"))
+	}
+	if request.Source == "runner_checkout" {
+		return s.bindRunnerCheckoutRepository(c, request.Mutation, request.ExpectedRevision, owner+"/"+name)
+	}
+	if request.Source != "" {
+		return s.nativeAPIError(c, nativeInvalid("Repository source is invalid"))
 	}
 	if s.config.ReconcileBackend == nil {
 		return s.nativeAPIError(c, nativeInvalid("GitHub repository transport is not configured"))

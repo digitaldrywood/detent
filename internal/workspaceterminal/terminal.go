@@ -351,14 +351,13 @@ func (t *Terminal) Resize(cols, rows int) error {
 }
 
 // Close ends the terminal: SIGHUP to the shell's process group, then SIGKILL
-// after KillGrace, then the PTY itself.
+// after KillGrace if any process survives.
 //
 // The signal goes to the group rather than to the shell, for the reason the
 // exec channel kills a group: a shell that started a build or a server and is
 // then killed on its own leaves the real work running in a worktree nobody is
-// left to stop it from. The PTY is closed last, because closing it first would
-// take the shell's controlling terminal away before it had a chance to act on
-// the hangup.
+// left to stop it from. After sending the hangup, closing the PTY releases a
+// shell blocked on terminal input so it can finish handling the signal.
 //
 // Close is safe to call more than once and from more than one goroutine; only
 // the first call signals anything.
@@ -385,6 +384,7 @@ func (t *Terminal) Close() {
 	if err := hangup(t.cmd); err != nil {
 		t.logger.Debug("workspace.terminal_hangup_failed", "error", err)
 	}
+	t.closeFile()
 	// The shell leaving is not enough: a child that ignored the hangup keeps
 	// running in the group after its shell has gone. Close returns early only
 	// once the whole group is gone, and otherwise kills the group when the
@@ -400,11 +400,9 @@ func (t *Terminal) Close() {
 			if err := kill(t.cmd); err != nil {
 				t.logger.Debug("workspace.terminal_kill_failed", "error", err)
 			}
-			t.closeFile()
 			return
 		case <-poll.C:
 			if t.ended() && !groupAlive(t.pid) {
-				t.closeFile()
 				return
 			}
 		}

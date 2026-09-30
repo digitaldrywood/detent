@@ -345,7 +345,7 @@ func TestWorkspaceRelayRecordsATerminalSession(t *testing.T) {
 		t.Fatalf("recordings = %d, want one per terminal stream", len(recordings))
 	}
 	recording := recordings[0]
-	if recording.Isolation != workspacesession.IsolationContainer {
+	if recording.Isolation != workspacesession.IsolationSandbox {
 		t.Fatalf("recording isolation = %q, want the level the organization set", recording.Isolation)
 	}
 	lines := strings.Split(strings.TrimSpace(recording.Cast), "\n")

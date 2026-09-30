@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -112,7 +113,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := Machine{ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 2, Version: "test"}
+	machine := Machine{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 2, Version: "test"}
 	if _, err := EnrollRunner(t.Context(), path, organization, enrollment.Token, machine); err != nil {
 		t.Fatal(err)
 	}

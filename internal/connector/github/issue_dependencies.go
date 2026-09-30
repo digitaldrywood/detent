@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -168,7 +170,7 @@ func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connec
 	// Fetch comment evidence only when GitHub reports comments that are not
 	// already loaded. It is diagnostic input, never dependency authority.
 	if issue.CommentCount > len(issue.Comments) {
-		comments, err := c.fetchIssueComments(ctx, ref)
+		comments, err := c.dependencyCommentEvidence(ctx, ref, issue.UpdatedAt)
 		if err != nil {
 			return fmt.Errorf("fetch dependency comment evidence: %w", err)
 		}
@@ -177,6 +179,40 @@ func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connec
 	}
 	applyNativeDependencyEvidence(issue, ref.Owner+"/"+ref.Name, nativeRefs)
 	return nil
+}
+
+type dependencyCommentEvidence struct {
+	updatedAt time.Time
+	comments  []issueComment
+}
+
+// Cache comments, not resolved dependency states: native relations remain fresh
+// and Workpad interpretation still uses the current issue body on every read.
+func (c *Connector) dependencyCommentEvidence(ctx context.Context, ref issueRef, updatedAt *time.Time) ([]issueComment, error) {
+	if updatedAt == nil || updatedAt.IsZero() {
+		return c.fetchIssueComments(ctx, ref)
+	}
+	revision := *updatedAt
+	c.mu.RLock()
+	cached, ok := c.dependencyComments[ref]
+	c.mu.RUnlock()
+	if ok && cached.updatedAt.Equal(revision) {
+		return slices.Clone(cached.comments), nil
+	}
+	comments, err := c.fetchIssueComments(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.dependencyComments == nil {
+		c.dependencyComments = make(map[issueRef]dependencyCommentEvidence)
+	}
+	// An older in-flight snapshot must not evict a newer revision.
+	if current, exists := c.dependencyComments[ref]; !exists || !current.updatedAt.After(revision) {
+		c.dependencyComments[ref] = dependencyCommentEvidence{updatedAt: revision, comments: slices.Clone(comments)}
+	}
+	c.mu.Unlock()
+	return comments, nil
 }
 
 // Both transports retain current body declarations alongside authoritative

@@ -1,7 +1,9 @@
 ---
 name: provider-impersonation-browser-binding
-description: Integrate provider-initiated support impersonation without weakening normal login or turning support identity into an administrator bypass.
-when_to_use: Use when an identity provider redirects support impersonation directly to a callback without the ordinary application's state or PKCE transaction.
+aliases:
+  - provider-fixture-account-continuity
+description: Integrate provider-initiated support impersonation and preserve browser fixture identities across application-session changes.
+when_to_use: Use when an identity provider redirects support impersonation directly to a callback without the ordinary application's state or PKCE transaction, or invitation, membership, or grant browser fixtures return to the wrong actor after sign-in.
 ---
 
 # Provider-initiated impersonation
@@ -35,3 +37,23 @@ when_to_use: Use when an identity provider redirects support impersonation direc
    staff access, effective viewer restrictions and CSRF header confusion. Inspect
    native form state in a browser; a render-only test can miss Boolean attribute
    semantics that silently change a selected permission.
+
+## Preserve provider fixture account continuity
+
+Use this case when invitation, membership, or grant browser evidence unexpectedly returns to a privileged account after provider sign-in.
+
+- Model the provider's selected account separately from the application's session.
+  A revoked or rotated app cookie must not select a default privileged actor.
+- Keep explicit account selection restricted to known synthetic identities in
+  the test preview. Continue through the real application's state, code exchange
+  and session handling.
+- Add table-driven cases for privileged and restricted actors: select the actor,
+  invalidate the app session, sign in again and assert the returned identity.
+- Verify permissions after invitation acceptance and grant changes. A successful
+  page load alone does not prove which actor completed the journey.
+- Use a fixture mailbox for provider messages. Access a running service through
+  its owned interfaces instead of opening its exclusively owned database.
+- Capture both denied access before a grant and allowed access afterward, while
+  checking that privileged controls remain absent for the restricted actor.
+- Exclude captures made under the wrong identity and regenerate them after the
+  fixture correction. Keep all identities and messages synthetic.

@@ -297,7 +297,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 
 func TestNativeRunEventRejectsInvalidUsage(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "usage-invalid")
+	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
 	worker := f.worker(t, "worker")
