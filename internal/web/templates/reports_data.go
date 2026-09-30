@@ -59,6 +59,7 @@ type DailyDigestDayData struct {
 	DominantErrorClass   string
 	IssuesFiled          int64
 	IssuesShipped        int64
+	UnknownDwellSeconds  int64
 	ReleasesTagged       int64
 	Efficiency           efficiency.RollupWindow
 	Projects             []DailyDigestProjectData

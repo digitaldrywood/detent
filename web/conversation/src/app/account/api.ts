@@ -22,6 +22,7 @@ import {
   PlanReport,
   PolicyApproval,
   ProjectIntegration,
+  ProjectSecretStatus,
   ProjectsResponse,
   RunnerEnrollment,
   SupportResponse,
@@ -223,6 +224,12 @@ export function makeAccountApi(options: AccountApiOptions) {
       }),
 
     // --- Project settings ---------------------------------------------------
+    spritesSecret: (projectId: string) =>
+      send(ProjectSecretStatus, "GET", `${project(projectId)}/secrets/fly_sprites_token`),
+    setSpritesSecret: (projectId: string, token: string) =>
+      send(ProjectSecretStatus, "PUT", `${project(projectId)}/secrets/fly_sprites_token`, { token }),
+    removeSpritesSecret: (projectId: string) =>
+      send(ProjectSecretStatus, "DELETE", `${project(projectId)}/secrets/fly_sprites_token`),
     integration: (projectId: string) =>
       send(ProjectIntegration, "GET", `${project(projectId)}/integration`),
     /**

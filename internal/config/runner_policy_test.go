@@ -21,9 +21,10 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Reproduce the approved effective configuration: the opt-out label was a
-	// default in v0.117.1 and must now be configured explicitly to retain it.
-	workflow.Config.Agent.AutoPromote.OptoutLabel = "requires-human-review"
+	// The historical snapshot used Unix execution defaults. Pin them so the
+	// approval comparison also runs on Windows.
+	workflow.Config.Codex.Shell = "sh"
+	workflow.Config.Hooks.Shell = "sh"
 	// Captured with v0.117.1's config and gate sources. Unlike rebuilding the
 	// approval from today's Config type, these constants catch new digest inputs.
 	approved := policy.Descriptor{
@@ -48,12 +49,14 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		{"absent host selection", func(w *Workflow) { w.Config.Worker.HostSelection = "" }, true},
 		{"empty host caps", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{} }, true},
 		{"empty required checks", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{} }, true},
-		{"explicit enabled human review", func(w *Workflow) { w.Config.Review.Human = true }, false},
-		{"removed optout label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "" }, false},
+		{"historical opt-out label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "requires-human-review" }, true},
+		{"zero human review", func(w *Workflow) { w.Config.Review = Review{} }, true},
 		{"explicit host preference", func(w *Workflow) { w.Config.Worker.HostSelection = "preference" }, false},
 		{"explicit host cap", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{"local": 2} }, false},
 		{"explicit local status", func(w *Workflow) { w.Config.Gate.LocalStatus = "local-gate" }, false},
 		{"explicit required check", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{"build"} }, false},
+		{"explicit human review", func(w *Workflow) { w.Config.Review.Human = true }, false},
+		{"custom opt-out label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "custom-review" }, false},
 		{"explicit gate command", func(w *Workflow) { w.Config.Gate.Run = "true" }, false},
 		{"explicit workspace root", func(w *Workflow) { w.Config.Workspace.Root = "other-workspaces" }, false},
 		{"effective prompt", func(w *Workflow) { w.Prompt += "Different instructions." }, false},
@@ -61,6 +64,7 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := workflow
 			test.change(&candidate)
+			optoutLabel := candidate.Config.Agent.AutoPromote.OptoutLabel
 			current, err := ResolvePolicy(candidate)
 			if err != nil {
 				t.Fatal(err)
@@ -71,7 +75,33 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 			if err := current.Match(approved); (err == nil) != test.match {
 				t.Fatalf("upgraded policy match = %v, want match %t (config digest %s)", err, test.match, current.ConfigDigest)
 			}
+			if candidate.Config.Agent.AutoPromote.OptoutLabel != optoutLabel {
+				t.Fatal("policy resolution changed the runtime opt-out label")
+			}
 		})
+	}
+}
+
+func TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit(t *testing.T) {
+	t.Parallel()
+	workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
+		WorkflowPath: "WORKFLOW.md",
+		Workflow:     []byte("---\ntracker:\n  kind: github\n  api_key: example-token\n  repository: example/repo\n  github_status_source: label\n---\nRun the work.\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow.Config.Gate.SecurityAudit.Enabled = true
+	current, err := ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Match(approved) == nil || !current.Gates.SecurityAudit {
+		t.Fatal("explicit security audit matched the policy without an audit")
 	}
 }
 

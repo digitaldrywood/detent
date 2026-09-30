@@ -180,4 +180,12 @@ func TestTerminalCloseInputHelper(t *testing.T) {
 	if _, err := os.Stdin.Read(input[:]); err == nil {
 		t.Fatal("terminal input stayed open after the hangup")
 	}
+	// The PTY is closed now. testing's coverage teardown writes to stdout and
+	// exits 2 if that write fails, even though the terminal read was released.
+	// Keep the replacement open until this helper process exits.
+	output, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = output
 }

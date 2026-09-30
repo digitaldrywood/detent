@@ -85,15 +85,19 @@ func TestActivityObservationAttributionAndGaps(t *testing.T) {
 
 type activityCheckpointProbe struct {
 	SessionStore
-	started  chan struct{}
-	release  chan struct{}
-	profiles chan store.WorkflowPhaseEvent
+	started      chan struct{}
+	release      chan struct{}
+	profiles     chan store.WorkflowPhaseEvent
+	checkContext func(context.Context)
 }
 
-func (p *activityCheckpointProbe) SaveWorkflowActivityProfile(_ context.Context, id int64, event store.WorkflowPhaseEvent, profile workflowmetrics.ActivityProfile) (int64, error) {
+func (p *activityCheckpointProbe) SaveWorkflowActivityProfile(ctx context.Context, id int64, event store.WorkflowPhaseEvent, profile workflowmetrics.ActivityProfile) (int64, error) {
 	if id == 0 {
 		close(p.started)
 		<-p.release
+	}
+	if p.checkContext != nil {
+		p.checkContext(ctx)
 	}
 	data, err := json.Marshal(profile)
 	if err != nil {
@@ -105,20 +109,43 @@ func (p *activityCheckpointProbe) SaveWorkflowActivityProfile(_ context.Context,
 }
 
 func TestActivityRecorderDoesNotWaitForPersistence(t *testing.T) {
+	type attributionKey struct{}
+	ctx, cancel := context.WithCancel(context.WithValue(t.Context(), attributionKey{}, "run-attribution"))
+	defer cancel()
+	var checkpoints atomic.Int64
 	probe := &activityCheckpointProbe{started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 2)}
+	probe.checkContext = func(ctx context.Context) {
+		checkpoints.Add(1)
+		if got := ctx.Value(attributionKey{}); got != "run-attribution" {
+			t.Errorf("checkpoint attribution = %v", got)
+		}
+		if err := ctx.Err(); err != nil {
+			t.Errorf("checkpoint canceled with the run: %v", err)
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("checkpoint has no bounded deadline")
+		}
+	}
 	r := &Runner{store: probe, projectID: "test", now: time.Now, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	recorder := r.startActivityProfile(RunRequest{Issue: connector.Issue{ID: "1"}, WorkAttemptID: 3390, Generation: 23}, 42, t.TempDir(), config.Workflow{Prompt: "Run go test ./foo"}, "implementation")
+	recorder := r.startActivityProfile(ctx, RunRequest{Issue: connector.Issue{ID: "1"}, WorkAttemptID: 3390, Generation: 23}, 42, t.TempDir(), config.Workflow{Prompt: "Run go test ./foo"}, "implementation")
+	if recorder == nil {
+		t.Fatal("activity profile did not start for the persistence probe")
+	}
 	<-probe.started
 	recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "large", Command: strings.Repeat("private", 2048)}, time.Now(), "", time.Time{})
 	for range 300 {
 		recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "same", Tool: "Bash", Command: "go test ./foo"}, time.Now(), "head", time.Now())
 	}
+	cancel()         // Both pending and final writes must outlive run cancellation.
 	recorder.close() // returns while the telemetry consumer is blocked in storage
 	if recorder.dropped.Load() != 45 {
 		t.Fatalf("drops=%d", recorder.dropped.Load())
 	}
 	close(probe.release)
 	<-recorder.done
+	if got := checkpoints.Load(); got != 2 {
+		t.Fatalf("checkpoints = %d, want initial and final writes", got)
+	}
 	<-probe.profiles
 	final := <-probe.profiles
 	var p workflowmetrics.ActivityProfile
@@ -145,7 +172,7 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 				t.Fatal(err)
 			}
 			r := &Runner{store: probe, projectID: "fixture", now: func() time.Time { return at.Add(time.Duration(offset.Load())) }, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-			recorder := r.startActivityProfile(RunRequest{Issue: connector.Issue{ID: "fixture-issue"}, WorkAttemptID: 42, Generation: 2}, 43, workspace, config.Workflow{Prompt: "Run go test ./internal/fixture"}, stage)
+			recorder := r.startActivityProfile(t.Context(), RunRequest{Issue: connector.Issue{ID: "fixture-issue"}, WorkAttemptID: 42, Generation: 2}, 43, workspace, config.Workflow{Prompt: "Run go test ./internal/fixture"}, stage)
 			<-probe.profiles // initial durable coverage boundary
 			for i, command := range []string{"cat AGENTS.md", "go test ./internal/fixture", "go test ./internal/fixture", "git diff", "git rebase origin/develop", "gh api repos/fixture/repo/pulls/1/merge", "sleep 1"} {
 				item := strconv.Itoa(i)

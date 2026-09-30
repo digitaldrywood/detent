@@ -113,7 +113,7 @@ func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, 
 	if !found {
 		return "", nativeInvalid("The project has no dispatchable workflow state for a workspace session")
 	}
-	created, err := createNativeIssueTx(allowWorkspaceLabel(ctx), tx, scope, tracker.CreateIssue{
+	issue, err := createNativeIssueTx(allowWorkspaceLabel(ctx), tx, scope, tracker.CreateIssue{
 		Title:  workspaceItemTitle(record.ID),
 		Body:   workspaceItemBody(record),
 		State:  state,
@@ -121,10 +121,6 @@ func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, 
 	}, now)
 	if err != nil {
 		return "", err
-	}
-	issue, ok := created.(tracker.NativeIssue)
-	if !ok {
-		return "", fmt.Errorf("unexpected workspace issue result %T", created)
 	}
 	item := string(issue.WorkItemID)
 	if err := insertWorkspaceItem(ctx, tx, workspaceItemRecord{

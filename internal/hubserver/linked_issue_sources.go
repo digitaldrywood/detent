@@ -19,7 +19,7 @@ func readLinkedIssueSource(ctx context.Context, query nativeQueryer, id string) 
 	var raw sql.NullString
 	err := query.QueryRowContext(ctx, "SELECT source_url, snapshot_json FROM linked_issue_sources WHERE work_item_id = ?", id).Scan(&source.URL, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // No linked source is valid for an ordinary native issue.
 	}
 	if err != nil {
 		return nil, err
@@ -34,20 +34,20 @@ func readLinkedIssueSource(ctx context.Context, query nativeQueryer, id string) 
 	return &source, nil
 }
 
-func createLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (any, error) {
+func createLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
 	canonical, repository, number, err := tracker.ParseGitHubIssueURL(strings.TrimSpace(request.GitHubIssueURL))
 	if err != nil {
-		return nil, nativeInvalid(err.Error())
+		return tracker.NativeIssue{}, nativeInvalid(err.Error())
 	}
 	if request.Provenance != nil {
-		return nil, nativeInvalid("Linked issues obtain provenance during runner intake")
+		return tracker.NativeIssue{}, nativeInvalid("Linked issues obtain provenance during runner intake")
 	}
 	integration, err := readProjectIntegration(ctx, tx, scope)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	if integration.Profile != "native" || !strings.EqualFold(repository, integration.Repository) {
-		return nil, nativeInvalid("GitHub issue must belong to this native project's attached repository")
+		return tracker.NativeIssue{}, nativeInvalid("GitHub issue must belong to this native project's attached repository")
 	}
 	key := "github:" + canonical
 	var existing string
@@ -58,23 +58,22 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 		return issue, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	titleSupplied, bodySupplied := request.Title != "", request.Body != ""
 	if !titleSupplied {
 		request.Title = fmt.Sprintf("GitHub issue %s#%d", repository, number)
 	}
 	request.GitHubIssueURL = ""
-	created, err := createNativeIssueTx(ctx, tx, scope, request, now)
+	issue, err := createNativeIssueTx(ctx, tx, scope, request, now)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
-	issue := created.(tracker.NativeIssue)
 	if _, err := tx.ExecContext(ctx, "UPDATE issues SET native_source_key = ? WHERE native_id = ?", key, issue.WorkItemID); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO linked_issue_sources (work_item_id, source_url, title_supplied, body_supplied) VALUES (?, ?, ?, ?)", issue.WorkItemID, canonical, titleSupplied, bodySupplied); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	issue.LinkedSource = &tracker.LinkedIssueSource{URL: canonical, Status: "pending"}
 	issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: "github", Kind: "issue", ID: canonical})
