@@ -7,8 +7,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 var ErrWorkspacePreserved = errors.New("workspace retained for recovery")
@@ -342,23 +345,96 @@ func (l *LocalGit) PublishWorkInProgress(ctx context.Context, issue Issue) error
 	if err != nil {
 		return err
 	}
-	if _, err := runGitAt(ctx, preserved.Path, "add", "--all", "--", ".", ":!.detent", ":!tmp"); err != nil {
-		return err
-	}
-	changed, err := runGitAt(ctx, preserved.Path, "diff", "--cached", "--name-only")
+	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(changed) != "" {
-		if _, err := runGitAt(ctx, preserved.Path, "commit", "-m", "chore: preserve unfinished runner work"); err != nil {
+	plan, err := l.PrepareCheckpoint(ctx, info, issue)
+	if err != nil {
+		return err
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	git := checkpointGit(preserved.Path, procgroup.Environment{})
+	head, err := git(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	head = strings.TrimSpace(head)
+	changed, err := git(ctx, "diff", "--name-only", "--no-renames", "-z", "HEAD", "--")
+	if err != nil {
+		return err
+	}
+	untracked, err := git(ctx, "ls-files", "--others", "--exclude-standard", "-z", "--")
+	if err != nil {
+		return err
+	}
+	dirty := []string{}
+	for _, path := range strings.Split(strings.TrimSuffix(changed+untracked, "\x00"), "\x00") {
+		if path == "" || slices.ContainsFunc(detentHandoffDiffExcludes, func(exclude string) bool {
+			return path == exclude || strings.HasSuffix(exclude, "/") && strings.HasPrefix(path, exclude)
+		}) {
+			continue
+		}
+		if !checkpointPathAllowed(path) {
+			return fmt.Errorf("%w: excluded path %q", ErrCheckpointUnsafe, path)
+		}
+		stat, err := os.Lstat(filepath.Join(preserved.Path, filepath.FromSlash(path)))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err == nil && !stat.Mode().IsRegular() {
+			return fmt.Errorf("%w: unfinished work must contain regular files", ErrCheckpointUnsafe)
+		}
+		dirty = append(dirty, path)
+	}
+	paths := slices.Clone(dirty)
+	commits, err := git(ctx, "rev-list", plan.BaseSHA+".."+head)
+	if err != nil {
+		return err
+	}
+	for _, commit := range strings.Fields(commits) {
+		changed, err := git(ctx, "diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", "-m", "-z", commit)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00")...)
+	}
+	if err := checkpointHistory(ctx, git, plan.BaseSHA, head, paths); err != nil {
+		return err
+	}
+	if len(dirty) != 0 {
+		if _, err := git(ctx, append([]string{"add", "--"}, dirty...)...); err != nil {
+			return err
+		}
+		for _, path := range dirty {
+			if err := checkpointBlob(ctx, git, ":", path); err != nil {
+				return err
+			}
+		}
+		if _, err := git(ctx, append([]string{"commit", "--only", "-m", "chore: preserve unfinished runner work", "--"}, dirty...)...); err != nil {
 			return err
 		}
 	}
-	head, err := runGitAt(ctx, preserved.Path, "rev-parse", "HEAD")
+	head, err = git(ctx, "rev-parse", "HEAD")
 	if err != nil {
 		return err
 	}
-	branch := "wip/" + preserved.Branch + "-" + strings.TrimSpace(head)
-	_, err = runGitAt(ctx, preserved.Path, "push", "origin", "HEAD:refs/heads/"+branch)
-	return err
+	head = strings.TrimSpace(head)
+	if err := checkpointHistory(ctx, git, plan.BaseSHA, head, paths); err != nil {
+		return err
+	}
+	branch := "wip/" + preserved.Branch + "-" + head
+	if _, err := git(ctx, "-c", "push.followTags=false", "push", "--recurse-submodules=no", "origin", head+":refs/heads/"+branch); err != nil {
+		return err
+	}
+	remote, err := git(ctx, "ls-remote", "--refs", "origin", "refs/heads/"+branch)
+	fields := strings.Fields(remote)
+	if err != nil || len(fields) != 2 || fields[0] != head || fields[1] != "refs/heads/"+branch {
+		return errors.Join(fmt.Errorf("%w: unfinished work publication could not be verified", ErrCheckpointUnsafe), err)
+	}
+	return nil
 }

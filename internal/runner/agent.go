@@ -2097,7 +2097,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	afterRunPending = false
 	req.retainCheckpoint = result.Checkpoint != nil && turnErr != nil
-	if req.Admission != nil && errors.Is(turnErr, ErrWorkerProcessReap) {
+	if errors.Is(turnErr, ErrWorkerProcessReap) {
+		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+		_, preserveErr := r.PreserveWorkspace(preserveCtx, req.Issue)
+		cancel()
+		turnErr = errors.Join(turnErr, preserveErr)
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_admission_workspace_retained",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			telemetry.DetentSessionIDKey, sessionID,

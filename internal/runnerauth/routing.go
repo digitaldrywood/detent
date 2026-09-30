@@ -299,8 +299,27 @@ func (a Availability) Deadline(started time.Time) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	if !status.Open || status.NextClose.IsZero() {
+	if status.NextClose.IsZero() {
 		return time.Time{}, nil
+	}
+	if !status.Open {
+		cursor := started.AddDate(0, 0, -8)
+		var closeTime time.Time
+		for cursor.Before(started) {
+			previous, err := a.Evaluate(cursor)
+			if err != nil {
+				return time.Time{}, err
+			}
+			if previous.NextClose.IsZero() || previous.NextClose.After(started) {
+				break
+			}
+			closeTime = previous.NextClose
+			cursor = closeTime
+		}
+		if closeTime.IsZero() {
+			return time.Time{}, nil
+		}
+		return closeTime.Add(delay), nil
 	}
 	return status.NextClose.Add(delay), nil
 }

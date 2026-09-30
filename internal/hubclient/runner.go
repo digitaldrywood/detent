@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,10 +21,11 @@ import (
 )
 
 type runnerCredentialSource struct {
-	routingMu sync.Mutex
-	routing   *runnerauth.RoutingSnapshot
-	mu        sync.Mutex
-	path      string
+	routingMu      sync.Mutex
+	routing        *runnerauth.RoutingSnapshot
+	routingChanged chan struct{}
+	mu             sync.Mutex
+	path           string
 }
 
 func runnerOrganizationPath(organization tracker.OrganizationID) (string, error) {
@@ -261,9 +263,7 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 	if err := snapshot.Routing.Validate(); err != nil {
 		return errors.Join(ErrUnavailable, err)
 	}
-	c.client.runner.routingMu.Lock()
-	c.client.runner.routing = &snapshot
-	c.client.runner.routingMu.Unlock()
+	c.client.runner.setRouting(snapshot)
 	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
 		slog.Default().Warn("runner routing cache not updated", "error", err)
 	}
@@ -283,15 +283,37 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 	return nil
 }
 
+func (r *runnerCredentialSource) setRouting(snapshot runnerauth.RoutingSnapshot) {
+	snapshot.Routing.Availability.Windows = slices.Clone(snapshot.Routing.Availability.Windows)
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	previous := r.routing
+	if previous != nil && (previous.Routing.Availability.Timezone != snapshot.Routing.Availability.Timezone || previous.Routing.Availability.HardDeadline != snapshot.Routing.Availability.HardDeadline || !slices.Equal(previous.Routing.Availability.Windows, snapshot.Routing.Availability.Windows)) {
+		if r.routingChanged != nil {
+			close(r.routingChanged)
+		}
+		r.routingChanged = make(chan struct{})
+	}
+	r.routing = &snapshot
+}
+
 func (r *runnerCredentialSource) availability() (runnerauth.Availability, error) {
+	availability, _, err := r.availabilityState()
+	return availability, err
+}
+
+func (r *runnerCredentialSource) availabilityState() (runnerauth.Availability, <-chan struct{}, error) {
 	r.routingMu.Lock()
 	defer r.routingMu.Unlock()
 	if r.routing == nil {
 		snapshot, err := runnerauth.LoadRoutingCache(r.path)
 		if err != nil {
-			return runnerauth.Availability{}, errors.Join(ErrUnavailable, err)
+			return runnerauth.Availability{}, nil, errors.Join(ErrUnavailable, err)
 		}
 		r.routing = &snapshot
 	}
-	return r.routing.Routing.Availability, nil
+	if r.routingChanged == nil {
+		r.routingChanged = make(chan struct{})
+	}
+	return r.routing.Routing.Availability, r.routingChanged, nil
 }

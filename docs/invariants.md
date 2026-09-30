@@ -424,7 +424,11 @@ runner-capacity exclusion: runners report zero capacity outside the cached
 window and do not claim new work locally. Active jobs retain lease authority
 and finish normally. An optional deadline after the window closes cancels the
 agent through its existing execution context, preserves and publishes unfinished
-work to a WIP branch, and reports interruption through `Finish`. A failed WIP
+work to a WIP branch after confirmed worker shutdown, and reports interruption
+through `Finish` without consuming failure retries. Publication reuses checkpoint
+path, content, and history checks; a final checkpoint records the published head
+under retained lease authority. Routing updates refresh the deadline in the
+existing execution guard. A failed WIP
 push retains local work and is logged as an instance failure. Sleep inhibition
 is held during jobs and released when they finish. “Outside hours” is a plain
 fleet status derived from the stored window; stale heartbeat, revoked, and

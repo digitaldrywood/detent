@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -404,7 +406,7 @@ func TestNativeAvailabilityDeadline(t *testing.T) {
 				time.Sleep(time.Second)
 				synctest.Wait()
 				if deadline {
-					if !errors.Is(context.Cause(guarded), context.DeadlineExceeded) {
+					if !errors.Is(context.Cause(guarded), context.Canceled) {
 						t.Fatalf("cause = %v", context.Cause(guarded))
 					}
 					if errors.Is(execution.Validate(guarded), runner.ErrExecutionAuthorityUnavailable) {
@@ -415,6 +417,91 @@ func TestNativeAvailabilityDeadline(t *testing.T) {
 				}
 				if err := execution.Finish(context.WithoutCancel(guarded), "interrupted"); err != nil {
 					t.Fatal(err)
+				}
+			})
+		})
+	}
+}
+
+func TestNativeAvailabilityDeadlineRefresh(t *testing.T) {
+	for _, change := range []string{"remove", "extend", "add", "shorten", "closed"} {
+		t.Run(change, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				identityPath := filepath.Join(t.TempDir(), "private", "runner.json")
+				file, err := runnerauth.Initialize(identityPath, "https://hub.example.test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				descriptor := clientTestPolicy()
+				transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					body, err := json.Marshal(policy.Approval{Policy: descriptor})
+					if strings.HasSuffix(request.URL.Path, "/validate") {
+						body, err = json.Marshal(runnerauth.Runner{Binding: file.Identity.Binding, OrganizationID: file.Identity.OrganizationID})
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, err
+				})
+				client, err := New(Config{URL: file.HubURL, TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: transport}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				file.Identity.OrganizationID = "org_test"
+				file.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+				client.runner = &runnerCredentialSource{path: identityPath}
+				if err := runnerauth.Save(client.runner.path, file); err != nil {
+					t.Fatal(err)
+				}
+				now := time.Now().UTC()
+				closeTime := now.Truncate(time.Minute).Add(time.Minute)
+				availability := runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun " + now.Add(-time.Minute).Format("15:04") + "-" + closeTime.Format("15:04")}, HardDeadline: "30s"}
+				if change == "add" {
+					availability.HardDeadline = ""
+				}
+				if change == "shorten" {
+					availability.Windows[0] = "Mon-Sun " + now.Add(-time.Minute).Format("15:04") + "-" + closeTime.Add(3*time.Minute).Format("15:04")
+				}
+				client.runner.setRouting(runnerauth.RoutingSnapshot{Routing: runnerauth.Routing{Availability: availability}})
+				scheduler, err := NewScheduler(client, SchedulerConfig{Machine: Machine{ID: file.Identity.MachineID, Hostname: "host", Version: "test", Capacity: 1}, HeartbeatInterval: time.Second, LeaseTTL: 10 * time.Minute})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				claim := nativeClaim{source: &NativeConnector{client: native}, lease: tracker.NativeLease{WorkItemID: "wi_test", ID: "lease", FencingToken: 1, PolicyID: descriptor.ID}, deadline: now.Add(10 * time.Minute)}
+				scheduler.nativeClaims["wi_test"] = claim
+				scheduler.claimPolicies["wi_test"] = claimPolicy{project: "project", descriptor: descriptor}
+				scheduler.nativeProjects["project"] = claim.source
+				execution := scheduler.RunExecution("wi_test")
+				guarded, stop, err := execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stop()
+				synctest.Wait()
+				time.Sleep(30 * time.Second)
+				switch change {
+				case "remove":
+					availability.HardDeadline = ""
+				case "extend":
+					availability.Windows[0] = "Mon-Sun " + now.Add(-time.Minute).Format("15:04") + "-" + closeTime.Add(3*time.Minute).Format("15:04")
+				case "add":
+					availability.HardDeadline = "30s"
+				case "shorten":
+					availability.Windows[0] = "Mon-Sun " + now.Add(-time.Minute).Format("15:04") + "-" + closeTime.Format("15:04")
+				case "closed":
+					availability.Windows[0] = "Mon-Sun " + now.Add(-2*time.Minute).Format("15:04") + "-" + now.Format("15:04")
+				}
+				client.runner.setRouting(runnerauth.RoutingSnapshot{Routing: runnerauth.Routing{Availability: availability}})
+				synctest.Wait()
+				time.Sleep(time.Until(closeTime.Add(30 * time.Second)))
+				synctest.Wait()
+				wantStopped := change != "remove" && change != "extend"
+				if (guarded.Err() != nil) != wantStopped {
+					t.Fatalf("stopped = %v, want %t", guarded.Err(), wantStopped)
+				}
+				if wantStopped && !errors.Is(context.Cause(guarded), context.Canceled) {
+					t.Fatalf("interruption cause = %v", context.Cause(guarded))
 				}
 			})
 		})

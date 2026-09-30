@@ -485,6 +485,13 @@ func TestLocalGitPublishWorkInProgress(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(info.Path, "unfinished.go"), []byte("package unfinished\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.MkdirAll(filepath.Join(info.Path, ".detent", "skills"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, ".detent", "skills", "work.md"), []byte("Unfinished project skill\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "add", "--", ".detent/skills/work.md")
 			if !remoteAvailable {
 				runGit(t, info.Path, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unavailable"))
 			}
@@ -504,9 +511,64 @@ func TestLocalGitPublishWorkInProgress(t *testing.T) {
 				if !strings.Contains(refs, head+" refs/heads/wip/") {
 					t.Fatalf("WIP refs = %s", refs)
 				}
+				if content := runGit(t, remote, "show", head+":.detent/skills/work.md"); !strings.Contains(content, "Unfinished project skill") {
+					t.Fatalf("project skill = %q", content)
+				}
+				state, err := backend.RecoveryState(t.Context(), info, issue)
+				if err != nil || state.UnpushedCommits != 0 || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
+					t.Fatalf("published recovery state = %#v, %v", state, err)
+				}
 				if err := backend.PublishWorkInProgress(t.Context(), issue); err != nil {
 					t.Fatal(err)
 				}
+			}
+		})
+	}
+}
+
+func TestWorkInProgressRejectsSensitiveContent(t *testing.T) {
+	for _, tt := range []struct {
+		name, path, content string
+		committed           bool
+	}{
+		{"sensitive path", ".env", "example", false},
+		{"sensitive content", "config.go", "-----BEGIN PRIVATE KEY-----", false},
+		{"sensitive history", "config.go", "-----BEGIN PRIVATE KEY-----", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "deadline-sensitive"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "config", "user.name", "Test")
+			runGit(t, info.Path, "config", "user.email", "test@example.com")
+			if err := os.WriteFile(filepath.Join(info.Path, tt.path), []byte(tt.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tt.path == ".env" {
+				runGit(t, info.Path, "add", "--force", "--", tt.path)
+			}
+			if tt.committed {
+				runGit(t, info.Path, "add", tt.path)
+				runGit(t, info.Path, "commit", "-m", "example unfinished work")
+			}
+			if err := backend.PublishWorkInProgress(t.Context(), issue); !errors.Is(err, ErrCheckpointUnsafe) {
+				t.Fatalf("publication error = %v", err)
+			}
+			if refs := runGit(t, remote, "for-each-ref", "--format=%(refname)", "refs/heads/wip/"); strings.TrimSpace(refs) != "" {
+				t.Fatalf("sensitive WIP was published: %s", refs)
+			}
+			if _, err := os.Stat(filepath.Join(info.Path, tt.path)); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

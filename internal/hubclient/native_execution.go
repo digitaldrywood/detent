@@ -116,10 +116,6 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		return ctx, func() {}, err
 	}
 	bound := context.WithValue(ctx, nativeMutationAuthorityKey{}, nativeMutationAuthority{scope: e.claim.source.client.base(), lease: e.claim.lease})
-	deadlineStop := func() {}
-	if !e.claim.availabilityDeadline.IsZero() {
-		bound, deadlineStop = context.WithDeadline(bound, e.claim.availabilityDeadline)
-	}
 	guarded, cancel := context.WithCancelCause(bound)
 	e.mu.Lock()
 	e.cancel = cancel
@@ -127,11 +123,38 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		var routingChanged <-chan struct{}
 		for {
+			if source := e.scheduler.client.runner; source != nil {
+				availability, changed, err := source.availabilityState()
+				if err != nil {
+					cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, err))
+					return
+				}
+				if changed != routingChanged {
+					deadline, err := availability.Deadline(e.scheduler.now())
+					if err != nil {
+						cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, err))
+						return
+					}
+					e.mu.Lock()
+					e.claim.availabilityDeadline = deadline
+					e.mu.Unlock()
+					routingChanged = changed
+				}
+			}
 			remaining := e.remaining()
 			if remaining <= 0 {
 				cancel(runner.ErrExecutionAuthorityUnavailable)
 				return
+			}
+			if deadline := e.AvailabilityDeadline(); !deadline.IsZero() {
+				untilDeadline := deadline.Sub(e.scheduler.now())
+				if untilDeadline <= 0 {
+					cancel(context.Canceled)
+					return
+				}
+				remaining = min(remaining, untilDeadline)
 			}
 			timer := time.NewTimer(remaining)
 			select {
@@ -139,10 +162,12 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 				timer.Stop()
 				return
 			case <-timer.C:
+			case <-routingChanged:
+				timer.Stop()
 			}
 		}
 	}()
-	return guarded, func() { cancel(context.Canceled); deadlineStop(); <-done }, nil
+	return guarded, func() { cancel(context.Canceled); <-done }, nil
 }
 
 func (e *nativeExecution) unavailable(err error) error {
@@ -158,7 +183,7 @@ func (e *nativeExecution) unavailable(err error) error {
 
 func (e *nativeExecution) Validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		if errors.Is(context.Cause(ctx), context.DeadlineExceeded) && !e.claim.availabilityDeadline.IsZero() && !e.scheduler.now().Before(e.claim.availabilityDeadline) {
+		if deadline := e.AvailabilityDeadline(); errors.Is(context.Cause(ctx), context.Canceled) && !deadline.IsZero() && !e.scheduler.now().Before(deadline) {
 			return err
 		}
 		return e.unavailable(err)
@@ -342,5 +367,7 @@ func (e *nativeExecution) flush(ctx context.Context) error {
 }
 
 func (e *nativeExecution) AvailabilityDeadline() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.claim.availabilityDeadline
 }
