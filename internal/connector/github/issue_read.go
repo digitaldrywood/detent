@@ -500,6 +500,9 @@ func (c *Connector) FetchRefreshIssues(
 	observedStates []string,
 	hint connector.IssueFilterHint,
 ) connector.RefreshIssueResult {
+	if c.usesLabelStatus() {
+		return c.fetchLabelRefreshIssues(ctx, candidateStates, observedStates, hint)
+	}
 	if c.statusSource != GitHubStatusSourceProjectV2 {
 		candidates, err := c.FetchCandidateIssuesByStatesWithFilter(ctx, candidateStates, hint)
 		result := connector.RefreshIssueResult{Candidates: candidates, CandidateError: err}
@@ -514,7 +517,89 @@ func (c *Connector) FetchRefreshIssues(
 }
 
 func (c *Connector) CombinedRefreshEnabled() bool {
-	return c != nil && c.statusSource == GitHubStatusSourceProjectV2
+	return c != nil && (c.statusSource == GitHubStatusSourceProjectV2 || c.usesLabelStatus())
+}
+
+func (c *Connector) fetchLabelRefreshIssues(ctx context.Context, candidateStates, observedStates []string, hint connector.IssueFilterHint) connector.RefreshIssueResult {
+	matches := refreshSelector(hint)
+	candidateStates = normalizeStateList(candidateStates, nil)
+	observedStates = normalizeStateList(observedStates, nil)
+	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
+	issues, err := c.fetchLabelIssuesByStates(ctx, allStates, 0)
+	if err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	var selected, fallback []connector.Issue
+	var indexes, fallbackIndexes []int
+	var nodes []githubIssueNode
+	for i, issue := range issues {
+		if !matches(issue) || stateInList(issue.State, c.terminalStates) || !(stateInList(issue.State, candidateStates) || stateInList(issue.State, c.activeStates) || stateInList(issue.State, hint.SchedulerStates)) {
+			continue
+		}
+		selected = append(selected, issue)
+		indexes = append(indexes, i)
+		ref, ok := issueRefFromIdentifier(issue.Identifier)
+		if ok {
+			nodes = append(nodes, githubIssueNode{ID: issue.ID, Number: ref.Number, CandidateState: issue.State, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}})
+		}
+	}
+	evidence := c.candidateEvidence(ctx, nodes, true)
+	for i, issue := range selected {
+		if node, ok := evidence[issue.ID]; ok {
+			selected[i], err = c.applySchedulerEvidence(issue, node)
+			if err != nil {
+				return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+			}
+		} else {
+			fallback = append(fallback, issue)
+			fallbackIndexes = append(fallbackIndexes, i)
+		}
+	}
+	if err := c.populateBlockerReasons(ctx, fallback); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	if err := c.hydrateBlockedByRefs(ctx, fallback); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	for i, index := range fallbackIndexes {
+		selected[index] = fallback[i]
+	}
+	if err := c.resolveBlockedByProjectState(ctx, selected); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	var candidates, statuses []connector.Issue
+	var candidateIndexes, statusIndexes []int
+	for i, issue := range selected {
+		if stateInList(issue.State, observedStates) && pullRequestStatusPolicy(issue.State, false) != pullRequestStatusSkip {
+			statuses = append(statuses, issue)
+			statusIndexes = append(statusIndexes, i)
+		} else if stateInList(issue.State, candidateStates) {
+			candidates = append(candidates, issue)
+			candidateIndexes = append(candidateIndexes, i)
+		}
+	}
+	if err := c.hydrateRefreshPullRequests(ctx, candidates, evidence, true); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	if err := c.hydrateRefreshPullRequests(ctx, statuses, evidence, false); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	for i, index := range candidateIndexes {
+		selected[index] = candidates[i]
+	}
+	for i, index := range statusIndexes {
+		selected[index] = statuses[i]
+	}
+	for i, index := range indexes {
+		issues[index] = selected[i]
+	}
+	eligible := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if matches(issue) {
+			eligible = append(eligible, issue)
+		}
+	}
+	return connector.RefreshIssueResult{Candidates: issuesInStates(eligible, candidateStates), Statuses: issuesInStates(eligible, observedStates), LaneSignalCandidates: issues}
 }
 
 func (c *Connector) fetchProjectRefreshIssues(
