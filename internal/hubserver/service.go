@@ -78,6 +78,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := database.checkProjectSecretKeys(ctx, cfg.SecretKeys); err != nil {
+		return nil, errors.Join(err, database.Close())
+	}
 	if !cfg.CredentialMaintenance {
 		if err := database.ensureInitialAdminToken(ctx, cfg.InitialAdminToken); err != nil {
 			return nil, errors.Join(err, database.Close())

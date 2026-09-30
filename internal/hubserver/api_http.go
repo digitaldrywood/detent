@@ -47,6 +47,7 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 		s.registerHostedRoutes(e)
 	}
 	s.registerNativeRoutes(e)
+	s.registerProjectSecretRoutes(e)
 	s.registerRunnerRoutes(e)
 	s.registerConversationRoutes(e)
 	read := s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin)
