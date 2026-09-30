@@ -17,6 +17,7 @@ import (
 )
 
 type NativeClient struct {
+	githubBatch  func(context.Context, tracker.GitHubBatchTask) error
 	client       *Client
 	organization tracker.OrganizationID
 	project      tracker.ProjectID

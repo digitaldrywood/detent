@@ -1034,3 +1034,34 @@ external provider consumers still require fresh observations and local provider
 error handling. Fleet details show reports, shared usage and waiting reasons;
 run details show the selected role/backend/model/account and reason. `detent
 doctor` reports the same capacity view. There is no additional global banner.
+
+### Selective onboarding issue intake
+
+Native projects can import selected GitHub issues with runner credentials and
+GitHub transport disabled on Hub. Associate a matching runner checkout first.
+`GET /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake`
+returns `batch` (nullable) and configured `lanes`. Administrator mutations use
+`POST` to the same path with `idempotency_key`, `revision`, and `action`:
+
+- `discover`: choose `runner_id`, optional `labels` and explicit `include_closed`.
+  Default is open issues. The assigned runner reads one page of at most 100
+  issues using GraphQL and publishes previews through its existing heartbeat.
+- `more`: request the next preview page, up to 1,000 previews per intake. Narrow
+  larger sets with labels. Selecting all matching requires loading all pages.
+- `apply`: provide selected `numbers` and `destination`. A configured
+  non-dispatchable, nonterminal lane is the default; dispatchable destinations
+  require `allow_dispatch: true`. Source URL and node identity deduplicate
+  linked issues and older imports. Existing issues are skipped without changes.
+- `retry`: resume failed discovery/items, optionally on another `runner_id`.
+  Reported source retry deadlines must have elapsed. Completed items are retained.
+
+The runner publishes one complete snapshot or an incomplete-context diagnostic
+per selected item to the worker-only `/onboarding/issue-intake/result` endpoint.
+Snapshot, provenance, comments and completion checkpoint commit together;
+native edits retain field ownership. At most 20 comment pages are read per
+issue. Context exceeding that bound remains incomplete. Rate limits stop
+unstarted items until an explicit retry; no idle GitHub polling occurs. The
+wizard refreshes progress only on request. Reopening setup resumes the persisted
+selection and results. Intake performs no GitHub writes. New authoring and
+landing continue through native Hub operations, including the existing Done
+transaction; any later explicit source action keeps its own write authorization.

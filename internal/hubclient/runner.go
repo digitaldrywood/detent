@@ -297,6 +297,9 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		return c.heartbeatMachine(ctx, machine, capacity, false)
 	}
 
+	if snapshot.GitHubIntake != nil && c.githubBatch != nil {
+		return c.githubBatch(ctx, *snapshot.GitHubIntake)
+	}
 	return nil
 }
 
