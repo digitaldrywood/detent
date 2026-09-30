@@ -132,6 +132,7 @@ type Connector struct {
 	unstartedThreshold  time.Duration
 	dependencySource    string
 	dependencyCaps      map[string]nativeDependencyCapability
+	dependencyComments  map[issueRef]dependencyCommentEvidence
 	statusCache         *statusCache
 	issueFields         *issueFieldCache
 	projectCache        *projectCache

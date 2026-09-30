@@ -1479,6 +1479,15 @@ is not an authorized resurrection.
 
 ## INV-10 — Priority only picks the next job
 
+Project dispatch evaluates candidates in the existing priority order, with at
+most the initial free project slots plus eight candidates of lookahead per pass
+(#3190). Failed hydration, dependency waits, due retries, and rejected dispatches
+consume that same evaluation allowance; they cannot trigger a full-queue tracker
+scan. Local label rejections and project-capacity skips need no evaluation.
+The existing merge-control path remains available when project slots are full.
+This bounds readiness discovery; it does not reserve or hold global capacity,
+and discovered ready work still uses the existing global acquisition lifecycle.
+
 **Statement:** Priority picks the next job. Nothing else.
 
 - If a task can be started, start one. Always. Free capacity is never held,
