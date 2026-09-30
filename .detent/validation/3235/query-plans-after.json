@@ -1,0 +1,272 @@
+[
+  {
+    "query": "ListRecentSchedulerDecisions",
+    "rows": 50,
+    "seconds": 0.002,
+    "plan": [
+      "SCAN scheduler_decisions USING INDEX scheduler_decisions_at_idx"
+    ],
+    "rchar": 110697,
+    "write_bytes": 0
+  },
+  {
+    "query": "ListIssueSchedulerDecisions",
+    "rows": 0,
+    "seconds": 0.001,
+    "plan": [
+      "SEARCH scheduler_decisions USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 3",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH decision_by_id USING INDEX scheduler_decisions_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH decision_by_identifier USING COVERING INDEX scheduler_decisions_identifier_idx (identifier=? AND project_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH decision_by_url USING COVERING INDEX scheduler_decisions_issue_url_idx (issue_url=? AND project_id=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 45161,
+    "write_bytes": 0
+  },
+  {
+    "query": "IssueTokenSpend",
+    "rows": 0,
+    "seconds": 0.001,
+    "plan": [
+      "SEARCH codex_sessions USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 3",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH session_by_id USING COVERING INDEX codex_sessions_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_identifier USING COVERING INDEX codex_sessions_identifier_idx (identifier=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_url USING COVERING INDEX codex_sessions_issue_url_idx (issue_url=?)",
+      "USE TEMP B-TREE FOR GROUP BY"
+    ],
+    "rchar": 36969,
+    "write_bytes": 0
+  },
+  {
+    "query": "GetLatestIssueAgentSession",
+    "rows": 0,
+    "seconds": 0.0,
+    "plan": [
+      "SEARCH codex_sessions USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 3",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH session_by_id USING COVERING INDEX codex_sessions_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_identifier USING COVERING INDEX codex_sessions_identifier_idx (identifier=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_url USING COVERING INDEX codex_sessions_issue_url_idx (issue_url=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 105,
+    "write_bytes": 0
+  },
+  {
+    "query": "GetLatestIssueAgentResumeState",
+    "rows": 0,
+    "seconds": 0.0,
+    "plan": [
+      "SEARCH codex_sessions USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 3",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH session_by_id USING COVERING INDEX codex_sessions_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_identifier USING COVERING INDEX codex_sessions_identifier_idx (identifier=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_url USING COVERING INDEX codex_sessions_issue_url_idx (issue_url=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 105,
+    "write_bytes": 0
+  },
+  {
+    "query": "ListIssueWorkAttempts",
+    "rows": 0,
+    "seconds": 0.001,
+    "plan": [
+      "SEARCH work_attempts USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 3",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH attempt_by_id USING INDEX work_attempts_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH attempt_by_identifier USING COVERING INDEX work_attempts_project_identifier_idx (identifier=? AND project_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH attempt_by_url USING COVERING INDEX work_attempts_project_issue_url_idx (issue_url=? AND project_id=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 36969,
+    "write_bytes": 0
+  },
+  {
+    "query": "IssueSpendSince",
+    "rows": 1,
+    "seconds": 0.0,
+    "plan": [
+      "SEARCH usage_events USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 2",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH usage_by_id USING COVERING INDEX usage_events_project_issue_day_idx (issue_id=? AND project_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH usage_by_identifier USING COVERING INDEX usage_events_project_identifier_day_idx (identifier=? AND project_id=?)",
+      "SEARCH session USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+      "SEARCH attempt USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+    ],
+    "rchar": 24682,
+    "write_bytes": 0
+  },
+  {
+    "query": "IssueWorkflowTimelineRows",
+    "rows": 1,
+    "seconds": 0.001,
+    "plan": [
+      "SEARCH event USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 3",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH by_id USING INDEX workflow_phase_events_issue_idx (issue_id=?)",
+      "UNION ALL",
+      "SEARCH by_identifier USING COVERING INDEX workflow_phase_events_project_identifier_idx (identifier=? AND project_id=?)",
+      "UNION ALL",
+      "SEARCH by_url USING COVERING INDEX workflow_phase_events_project_issue_url_idx (issue_url=? AND project_id=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 28778,
+    "write_bytes": 0
+  },
+  {
+    "query": "ListIssueActivityEvents",
+    "rows": 1,
+    "seconds": 0.001,
+    "plan": [
+      "CO-ROUTINE issue_events",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH scheduler_decisions USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 3",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH decision_by_id USING COVERING INDEX scheduler_decisions_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH decision_by_identifier USING COVERING INDEX scheduler_decisions_identifier_idx (identifier=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH decision_by_url USING COVERING INDEX scheduler_decisions_issue_url_idx (issue_url=?)",
+      "UNION ALL",
+      "SEARCH workflow_phase_events USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 7",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH event_by_id USING COVERING INDEX workflow_phase_events_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH event_by_identifier USING COVERING INDEX workflow_phase_events_project_identifier_idx (identifier=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH event_by_url USING COVERING INDEX workflow_phase_events_project_issue_url_idx (issue_url=?)",
+      "UNION ALL",
+      "SEARCH work_attempts USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 11",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH attempt_by_id USING COVERING INDEX work_attempts_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH attempt_by_identifier USING COVERING INDEX work_attempts_project_identifier_idx (identifier=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH attempt_by_url USING COVERING INDEX work_attempts_project_issue_url_idx (issue_url=?)",
+      "UNION ALL",
+      "SEARCH work_attempts USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 15",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH attempt_by_id USING COVERING INDEX work_attempts_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH attempt_by_identifier USING COVERING INDEX work_attempts_project_identifier_idx (identifier=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH attempt_by_url USING COVERING INDEX work_attempts_project_issue_url_idx (issue_url=?)",
+      "UNION ALL",
+      "SEARCH session USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 19",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH session_by_id USING COVERING INDEX codex_sessions_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_identifier USING COVERING INDEX codex_sessions_identifier_idx (identifier=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_url USING COVERING INDEX codex_sessions_issue_url_idx (issue_url=?)",
+      "SEARCH attempt USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+      "UNION ALL",
+      "SEARCH session USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 23",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH session_by_id USING COVERING INDEX codex_sessions_issue_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_identifier USING COVERING INDEX codex_sessions_identifier_idx (identifier=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH session_by_url USING COVERING INDEX codex_sessions_issue_url_idx (issue_url=?)",
+      "SEARCH attempt USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+      "UNION ALL",
+      "SEARCH usage_events USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 26",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH usage_by_id USING COVERING INDEX usage_events_project_issue_day_idx (issue_id=?)",
+      "UNION USING TEMP B-TREE",
+      "SEARCH usage_by_identifier USING COVERING INDEX usage_events_project_identifier_day_idx (identifier=?)",
+      "SCAN issue_events",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 106,
+    "write_bytes": 0
+  },
+  {
+    "query": "WorkflowPhaseDurationRows",
+    "rows": 5,
+    "seconds": 0.126,
+    "plan": [
+      "SEARCH workflow_phase_events USING INDEX workflow_phase_events_finished_at_idx (finished_at>?)"
+    ],
+    "rchar": 5607530,
+    "write_bytes": 0
+  },
+  {
+    "query": "WorkflowPhaseFlowRows",
+    "rows": 2,
+    "seconds": 0.009,
+    "plan": [
+      "SEARCH event USING INDEX workflow_phase_events_finished_at_idx (finished_at>?)"
+    ],
+    "rchar": 5611627,
+    "write_bytes": 0
+  },
+  {
+    "query": "LifetimeTotals",
+    "rows": 1,
+    "seconds": 0.218,
+    "plan": [
+      "SCAN codex_sessions",
+      "SCALAR SUBQUERY 1",
+      "SCAN detent_runs"
+    ],
+    "rchar": 13410412,
+    "write_bytes": 0
+  },
+  {
+    "query": "ListPendingForgeAvailabilityWaits",
+    "rows": 0,
+    "seconds": 0.006,
+    "plan": [
+      "SEARCH waiting USING INDEX work_attempts_active_project_idx (project_id=? AND completed_at>?)",
+      "CORRELATED SCALAR SUBQUERY 1",
+      "SEARCH newer USING INDEX work_attempts_active_project_idx (project_id=? AND completed_at>?)",
+      "USE TEMP B-TREE FOR RIGHT PART OF ORDER BY"
+    ],
+    "rchar": 385132,
+    "write_bytes": 0
+  }
+]

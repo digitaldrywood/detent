@@ -443,10 +443,16 @@ func (s *sqliteStore) ListRecentSchedulerDecisions(ctx context.Context, query Sc
 	if limit <= 0 {
 		limit = defaultSchedulerDecisionLimit
 	}
-	rows, err := s.queries.ListRecentSchedulerDecisions(ctx, sqlc.ListRecentSchedulerDecisionsParams{
-		FilterProjectID: strings.TrimSpace(query.ProjectID),
-		Limit:           int64(limit),
-	})
+	var rows []sqlc.SchedulerDecision
+	var err error
+	if projectID := strings.TrimSpace(query.ProjectID); projectID != "" {
+		rows, err = s.queries.ListRecentProjectSchedulerDecisions(ctx, sqlc.ListRecentProjectSchedulerDecisionsParams{
+			ProjectID: projectID,
+			Limit:     int64(limit),
+		})
+	} else {
+		rows, err = s.queries.ListRecentSchedulerDecisions(ctx, int64(limit))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("listing scheduler decisions: %w", err)
 	}
