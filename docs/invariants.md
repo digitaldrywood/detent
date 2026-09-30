@@ -74,16 +74,14 @@ appended prose, durable allowance accounting, and ready-PR controls. This
 consolidates existing completion evidence without adding a mechanism.
 
 A persisted successful completion with a complete Workpad and ready PR remains
-owned by the existing active-lane gate while current-head CI is pending. Stranded
-active recovery excludes that completion instead of sending its open PR to
-Rework only while the PR identity and head still match the completion-time
-snapshot. A replacement head or an ended attempt without completion still
-recovers its open PR to Rework. The gate promotes a green matching head to
-Merging. This preserves the single
-orchestrator lane writer and removes an overlapping recovery decision (#3073).
-`TestCompletedReadyPullRequestEntersMergeGate` and
-`TestRecoverStrandedActiveIssues` cover the recorded completion and recovery
-sequence.
+owned by the existing active-lane gate until the matching head is eligible for
+Merging. A replacement head or an ended
+attempt without completion remains in In Progress for normal dispatch; elapsed
+time without a worker is diagnostic only. The stranded-active sweep no longer
+writes a Todo or Rework lane transition (#3238), removing its competing lane
+decision. `TestCompletedReadyPullRequestEntersMergeGate` and
+`TestTickDispatchesPlanApprovedIssueAfterLongRefresh` cover completion and
+next-cycle dispatch.
 
 An operator rejects a reviewed PR by moving its card to Rework, including through
 the dashboard. The existing lane history records the PR identity and hydrated
@@ -163,7 +161,7 @@ excluded identity contributes to the aggregate skip count; only open cards in
 configured active, non-terminal lanes record a per-card scheduler decision
 (#2916). `TestTickAuthorizationDeclineMixedLanes` covers mixed lanes, custom
 active states, terminal overlap, closed cards, and duplicate retained inputs. `TestTickAuthorizationBeforeRecovery` covers mixed instance labels across
-stranded recovery, stale Todo PR reconciliation, blocked recovery, and both
+stale Todo PR reconciliation, blocked recovery, and both
 dependency sweep orderings. `TestTickAuthorizationSelectorSemantics` preserves
 nested selectors, identity/field predicates, and declined retry cleanup.
 
@@ -420,6 +418,90 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Runner isolation (#3168) replaces the undeliverable default `container` declaration
+with `sandbox` and extends existing claim compatibility to backend-probed tiers.
+Missing or withdrawn tier reports use the existing no-compatible-work result;
+no new reason code, recovery path, lane writer, or configuration key is introduced.
+Backend policy mapping fails closed instead of retrying as a native process.
+The existing lease owns execution isolation; the mutable routing cache is removed
+from backend enforcement rather than adding another cache revision guard.
+Claude verifies effective policy on its worker before sending a model prompt.
+`TestRunnerIsolationClaims`, `TestRunnerIsolationHeartbeatWithdrawsTier`,
+`TestProbeBackendTiers`, and each backend's `TestIsolationSettings` cover dispatch,
+withdrawal, failed probes, and policy mapping. Raw workspace terminals still report
+their actual `user` isolation independently of agent sandbox support.
+
+Runner availability (#3169) reuses weekly-window evaluation and the existing
+runner-capacity exclusion: runners report zero capacity outside the cached
+window and do not claim new work locally. Active jobs retain lease authority
+and finish normally. An optional deadline after the window closes cancels the
+agent through its existing execution context, preserves and publishes unfinished
+work to a WIP branch after confirmed worker shutdown, and reports interruption
+through `Finish` without consuming failure retries. Publication reuses checkpoint
+path, content, and history checks; a final checkpoint records the published head
+under retained lease authority. Routing updates refresh the deadline in the
+existing execution guard. A failed WIP
+push retains local work and is logged as an instance failure. Sleep inhibition
+is held during jobs and released when they finish. “Outside hours” is a plain
+fleet status derived from the stored window; stale heartbeat, revoked, and
+expired states take precedence. This adds no lane writer, recovery loop, or
+exclusion reason.
+
+Home-project spillover (#3170, human-approved) is claim-time eligibility using
+one nullable `home_dry_since` timestamp per runner. Home projects are a subset
+of administrator-authorized projects; spillover never widens grants or selectors.
+Only dispatchable Todo/Rework home work counts, after dependency, policy,
+selector, lease, and provider checks. Claims retain normal ordering among home
+projects, clear the timestamp when home work is available, and start it only
+when home work runs dry. General work becomes eligible after the configured
+idle period. Active work finishes without preemption; workspace sessions do not
+participate. There is no background loop or capacity reservation for home work.
+`TestRunnerHomeClaims` and `TestRunnerHomeReturnAndOrdering` enforce this behavior.
+
+Runner problems (#3171, human-approved) are contextual diagnostics, never
+dispatch reason codes. Heartbeats replace the runner-reported `problems` list;
+each problem carries a stable code, message, fix hint, and first-seen time.
+Continuing codes retain their first-seen time, and omitted problems clear.
+The existing instance telemetry loop also triggers the enrolled runner's
+throttled heartbeat, so diagnostics remain reachable when every project fails
+to start. Heartbeat requests do not block local telemetry publication.
+The runner reports unavailable tiers, missing backends, unreachable host
+services, invalid local settings, and sleep-inhibition failures without sending
+local command output or service addresses in generated diagnostic messages.
+The Hub derives unservable home work from the existing isolation advertisement,
+rejected routing settings from the runner's application result, and unsupported
+versions from the native protocol major (an omitted major remains compatible
+with older heartbeats). Hub conditions clear when they no longer hold.
+Problems raise `needs_attention` above online, outside hours, and offline;
+revoked and expired credential states retain precedence. Separate connection
+health preserves the existing offline dispatch exclusion. Diagnostics never
+change grants, capacity, selectors, leases, or advertised isolation tiers.
+Only needs-attention rows produce an alert signal. Outside hours, offline
+outside the window, draining, and spillover remain plain statuses. The fleet
+header links its nonzero attention count to a filtered list; messages and fix
+hints remain on runner cards, with no global banner. Hosted readers do not see
+home-project diagnostics for home assignments outside their project access.
+`TestRunnerProblemsHeartbeat`, `TestRunnerHubProblems`, `TestMergeProblems`,
+`TestIsolationProblems`, and `TestKeepAwakeProblems` cover replacement,
+aggregation, timestamp stability, recovery, and dispatch independence.
+
+Dispatch ordering (#3298) consolidates urgency into the existing comparator.
+Merging remains first when the project config places it first; other lanes
+compare tracker priority and configured label rank before lane rank, then retain
+unblocker, age, and identifier ties.
+A Todo hotfix can therefore precede ordinary Rework without a separate selector,
+capacity change, configuration key, or new mechanism. `TestSortIssuesForDispatch`
+covers cross-lane urgency, normalized Merging precedence, and equal-priority lane
+ties; the existing safety boundary fuzz seeds remain required.
+
+The stranded-active lane recovery is removed (#3238). In Progress remains an
+active dispatch candidate after a long refresh, and the existing completion
+transition owns finished attempts. The diagnostic snapshot still reports the
+idle interval; `stranded_active_recovery` is removed from the transition-reason
+allowlist so the deleted lane writer cannot be restored under that reason.
+`TestTickDispatchesPlanApprovedIssueAfterLongRefresh` covers the reported
+approval-to-dispatch sequence.
 
 Operator rejection (#2943) consolidates promotion eligibility with existing lane
 history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate
@@ -721,11 +803,6 @@ publication pending. A merge discovered during hydration uses the existing merge
 lifecycle; missing or running audit and validator stages leave publication pending
 while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
 no new lane reason, allowance reset, or recovery mechanism is introduced.
-Session-brake completions preserve the worker's bounded final assistant message
-in existing work-attempt metadata for allowance triage (#2993). The reviewed
-`handleSessionBrake` fingerprint changes only for that evidence write; its lane
-target and reason remain unchanged. `TestSessionBrakeReleasesSlotRecordsCauseAndParks`
-covers the stored message alongside the existing transition evidence.
 Idle Rework PRs enter the existing promotion evaluation without a worker completion
 record (#2688). Promotion reuses the merge worker readiness predicate and live PR
 hydration; unresolved threads and known audit failures still prevent promotion.
@@ -815,6 +892,15 @@ interval advances even when local work remains.
 residual, direct, and branch cleanup;
 `TestResidualCleanupProtectsFinalizingTerminalWorkers` covers terminal worker
 ownership until its completion event.
+
+For a terminal native issue whose Change Request has a recorded landing,
+cleanup also accepts a clean worktree and branch still at that landing's head.
+This covers squash commits, which cannot prove delivery through branch ancestry.
+Later commits, uncommitted files, nonterminal issues, and issues without a
+recorded landing retain the existing protection. The normal reaper removes the
+landed workspace and clears its cleanup failure; no new sweep or retention
+state is introduced (#3234). `TestLocalGitCleanupRecordedLanding` and
+`TestRunnerReapSquashLandedNativeWorkspace` cover this narrower decision.
 
 The operator-approved September 14 retention scope (#2681, INV-11 approval
 recorded in the issue) extends this same reaper sweep: completed workspaces
@@ -1151,6 +1237,21 @@ from Merging, but withdrawal failure does not block the lane write (#2826). Its 
 without altering reason forwarding; operator destinations and reasons remain
 intact, covered by `TestNativeMergeQueueReviewReworkAfterEnqueue`.
 
+Native issue archive (#3267) preserves workflow state and all issue, comment,
+attempt, change, version, and audit records. Archive refuses live ownership
+using the existing lease lifecycle (expired or released attempts are interrupted), and archived issues are
+excluded from tracker and claim candidates. Restore allocates an unarchived
+issue through the existing hosted transaction, as do native creation and import
+pages. Hosted usage counts native unarchived issues per organization across
+projects, including terminal issues; over-limit reads, exports, and reductions
+remain available. Archive reuses the completion mutation exemptions for its
+retained audit records. Catalogs predating the issue allowance default to 200
+without rewriting immutable plan versions. Self-hosted databases have no quota.
+`TestNativeArchiveLifecycle`, `TestNativeArchiveActiveWork`,
+`TestHostedIssueAllowanceBoundaries`, `TestHostedIssueArchiveAndDowngrade`,
+`TestHostedIssueConcurrentAllocation`, and `TestHostedIssueImportAllocation`
+exercise these boundaries without adding a brake, lease, or recovery mechanism.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.
@@ -1226,13 +1327,24 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — Local pull-request validation and scheduled release evidence
 
-**Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
-`merge_group`, and no branch ruleset requires a status check. Each pull request
-runs `make check-fast` in its own worktree before merge. The target takes no
-shared validation lock and supports concurrent worktrees. Short tests skip
-shared databases and ports. Focused tests and vet remain available during edits.
+**Scope:** This is the Detent repository's development policy. Managed projects
+choose their own workflow triggers, required checks, validation commands, and
+release policies. Detent honors each project's configuration and branch rules;
+PR CI, merge-group CI, and required status checks remain supported.
 
-GitHub Actions schedules the full suite hourly from the default `main` branch.
+**Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
+`merge_group`, and no branch ruleset requires a status check. Pull requests do
+not wait for CI or local validation gates before push or merge. The self-hosted
+project uses the existing no-op command `true` and publishes no local status.
+
+`make check-fast`, focused tests, and vet remain available for optional
+diagnostics. When invoked, checks preserve failures. The local tools take no
+shared validation lock and support concurrent worktrees: lint uses
+`--allow-parallel-runners`, and each client test command uses at most two workers
+while retaining file isolation and all tests. These tools do not become merge
+requirements.
+
+GitHub Actions schedules the full suite hourly from the repository's default branch.
 Preflight pins the current `develop` SHA and skips when that commit already has
 a validated release tag. Every full-suite job runs on the pinned commit. A green
 run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
@@ -1291,15 +1403,19 @@ changing identity format or duplicate handling.
 
 ## INV-8 — No strict freshness protection
 
-**Statement:** No strict up-to-date branch protection is allowed on branches Detent merges into.
+**Scope:** This is the Detent repository's branch protection policy. Managed
+projects may require strict freshness; Detent honors their branch rules.
+
+**Statement:** This repository does not require strict up-to-date branch protection on branches Detent merges into.
 
 **Why:** Strict freshness invalidated already-tested heads after other merges
 and fed the measured repeated rebase/CI loop.
 
-**Enforcement:** The repository-policy doctor check reads live branch protection
-and fails strict freshness (`TestDoctorInvariantEvidence`). Repository tests
-cannot guarantee live branch settings. The operator must inspect configured
-merged-into branches; do not claim this rule is universally enforced by local CI.
+**Enforcement:** Doctor reports live branch protection as project evidence,
+without treating strict freshness as a failure. `TestDoctorRespectsProjectCIPolicy`
+prevents this repository's CI and protection policy from becoming global advice.
+Repository tests cannot guarantee live branch settings. The operator must inspect
+this repository's merged-into branches; local CI does not enforce live settings.
 
 **Change:** Edit INV-8 in the same PR with the intended protection semantics and
 live verification plan; code changes never imply permission to edit settings.
@@ -1333,6 +1449,16 @@ is not an authorized resurrection.
 - When a slot frees, dispatch the highest-ranked READY request; if none of the
   higher-ranked projects has anything ready, dispatch whatever is ready.
 - The system never cancels, stops, or preempts running work. Only a user cancels work.
+
+Hosted organization subscriptions price project and unarchived-issue capacity,
+never seats or concurrent agent work (#3268). The Hub removes plan membership
+and concurrent-work admission limits while preserving independent runner/host
+capacity and provider safety limits. Free refuses new AI turns at the existing
+execution feature boundary, including Luna coordinator chat and native claims;
+downgrades preserve safe completion. `TestCapacityCatalog`,
+`TestCoordinatorFreeRefusesLuna`, `TestCapacityPaidPlanChanges`, and
+`TestHostedConcurrentClaimsDowngradeRelease` cover this boundary. No new scheduler
+mechanism, reason code, reservation, or recovery loop is introduced.
 
 **Why:** Priority cancellation discarded running attempts, while selected-slot
 reservations refused ready work even with real global capacity available.
@@ -1508,6 +1634,12 @@ toolchain tolerates) but never relocates it, never keys it per project or per
 attempt, and never introduces a configuration key that does either. Per-attempt
 isolation is limited to `TMPDIR`/`TMP`/`TEMP`.
 
+Sandbox isolation (#3168) grants normal backend turns access to the existing
+native Go build and module caches without relocating them. Restricted Codex turns
+keep cache writes and network access disabled. Claude resolves its subprocess
+temporary directory inside the existing worker scratch directory.
+`TestBackendAppliesRunnerIsolation` covers normal and restricted cache grants.
+
 Detent's former per-attempt and per-project Go caches duplicated a content-addressed,
 concurrency-safe host cache. Two Detent-owned caches of about 750 GB on one host,
 plus the operator's copy, filled the disk and took twelve CI runners down. The
@@ -1532,7 +1664,9 @@ and read-only diagnostics. All are registered in the invariant manifest.
 Doctor reports native Go cache paths and readable sizes once per host, the last completed
 reaper trim (or “not recorded”), and warns about legacy `.detent/cache` roots in
 the workspace root or workdirs, including former per-attempt cache components
-under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
+under `.detent/worker-tmp` and under each workdir's worker scratch root in the
+OS temp directory (`detent-worker-scratch/`), where attempt scratch lives so
+toolchain churn stays out of file-watched workspace trees. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
 The native build cache defaults to 10% of total cache-volume capacity with the
 existing 48-hour age trim; explicit bounds win, and unavailable capacity falls

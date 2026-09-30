@@ -119,6 +119,9 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 				if (err != nil) != test.wantError {
 					t.Fatalf("CheckProjectPolicy() error = %v, want error %v", err, test.wantError)
 				}
+				if test.reports > 0 && !connector.IsRetryable(err) {
+					t.Fatalf("unapproved policy should keep retrying: %v", err)
+				}
 			}
 			if len(reported) != test.reports {
 				t.Fatalf("reports = %d, want %d", len(reported), test.reports)

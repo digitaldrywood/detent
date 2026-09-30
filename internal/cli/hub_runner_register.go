@@ -45,6 +45,10 @@ type runnerRegisteredCheck struct {
 }
 
 func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, startService runnerServiceStarter) *cobra.Command {
+	return newHubRunnerRegisterCommandWithPrivateLocation(version, lookupEnv, startService, runnerPrivateLocation)
+}
+
+func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot string
 	var capacity int
 	var service bool
@@ -68,7 +72,7 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 			if capacity < 1 {
 				return errors.New("--capacity must be at least 1")
 			}
-			paths, err := resolveRunnerPaths(configPath, workspaceRoot)
+			paths, err := resolveRunnerPaths(configPath, workspaceRoot, privateLocation)
 			if err != nil {
 				return err
 			}
@@ -85,7 +89,14 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 			if err := prepareRunnerIdentity(paths.identity, base, org); err != nil {
 				return err
 			}
-			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev")})
+			configuration := globalconfig.Config{}
+			if _, err := os.Lstat(paths.config); err == nil {
+				configuration, err = globalconfig.Read(paths.config)
+				if err != nil {
+					return err
+				}
+			}
+			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev"), BackendIsolation: probeRunnerIsolation(cmd.Context(), configuration)})
 			if err != nil {
 				return err
 			}
@@ -239,7 +250,7 @@ type runnerPaths struct {
 	workspaces string
 }
 
-func resolveRunnerPaths(configPath, workspaceRoot string) (runnerPaths, error) {
+func resolveRunnerPaths(configPath, workspaceRoot string, privateLocation func(string) error) (runnerPaths, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return runnerPaths{}, err
@@ -254,7 +265,7 @@ func resolveRunnerPaths(configPath, workspaceRoot string) (runnerPaths, error) {
 		return runnerPaths{}, errors.New("--config and --workspace-root must be absolute paths")
 	}
 	identity := filepath.Join(filepath.Dir(configPath), "identity.json")
-	if err := runnerPrivateLocation(identity); err != nil {
+	if err := privateLocation(identity); err != nil {
 		return runnerPaths{}, err
 	}
 	return runnerPaths{config: filepath.Clean(configPath), identity: identity, workspaces: filepath.Clean(workspaceRoot)}, nil

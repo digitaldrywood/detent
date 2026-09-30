@@ -10,13 +10,16 @@ import (
 
 func sortIssuesForDispatch(issues []connector.Issue, dispatchStatePriority []string, dispatchLabelPriority []string, prioritizeUnblockers bool) {
 	ranker := dispatchpriority.New(dispatchStatePriority, dispatchLabelPriority)
+	mergingFirst := len(dispatchStatePriority) > 0 && normalizeState(dispatchStatePriority[0]) == normalizeState(autoPromoteMergingState)
 
 	sort.SliceStable(issues, func(i, j int) bool {
 		left := issues[i]
 		right := issues[j]
 
-		if leftRank, rightRank := ranker.State(left.State), ranker.State(right.State); leftRank != rightRank {
-			return leftRank < rightRank
+		leftMerging := mergingFirst && normalizeState(left.State) == normalizeState(autoPromoteMergingState)
+		rightMerging := mergingFirst && normalizeState(right.State) == normalizeState(autoPromoteMergingState)
+		if leftMerging != rightMerging {
+			return leftMerging
 		}
 		if leftRank, rightRank := dispatchpriority.Priority(left.Priority), dispatchpriority.Priority(right.Priority); leftRank != rightRank {
 			return leftRank < rightRank
@@ -28,6 +31,9 @@ func sortIssuesForDispatch(issues []connector.Issue, dispatchStatePriority []str
 		}
 		if leftLabeled && leftLabel.Rank != rightLabel.Rank {
 			return leftLabel.Rank < rightLabel.Rank
+		}
+		if leftRank, rightRank := ranker.State(left.State), ranker.State(right.State); leftRank != rightRank {
+			return leftRank < rightRank
 		}
 		if prioritizeUnblockers && !leftLabeled && left.UnblockerCount != right.UnblockerCount {
 			return left.UnblockerCount > right.UnblockerCount

@@ -55,7 +55,7 @@ type Config struct {
 	// success, for a pull request head after it ran the command gate on
 	// exactly that head itself. Empty posts nothing. It must not also be a
 	// required status check, which is evaluated before the merge lane runs.
-	LocalStatus   string              `yaml:"local_status"`
+	LocalStatus   string              `yaml:"local_status" json:"LocalStatus,omitempty"`
 	Validator     ValidatorConfig     `yaml:"validator"`
 	SecurityAudit SecurityAuditConfig `yaml:"security_audit"`
 	Artifact      ArtifactConfig      `yaml:"artifact"`

@@ -37,7 +37,7 @@ func TestMachineCallRefusesOversizedTenantAnswers(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = service.Close() })
-			organization := Organization{ID: "org_limit", ProviderID: "porg_limit", Name: "Limit", Endpoint: "unix:/tenants/org_limit.sock", Generation: 1}
+			organization := Organization{ID: "org_limit", ProviderID: "porg_limit", Name: "Limit", Endpoint: testSocketEndpoint("org_limit.sock"), Generation: 1}
 			status, body, err := service.machineCall(t.Context(), organization, http.MethodGet, "/api/v2/organizations/org_limit/entitlements", nil, "token")
 			if test.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "exceeds") {

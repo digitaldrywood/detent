@@ -17,6 +17,7 @@ import { useAccountBootstrap } from "./context.ts";
 import { DetentCloudLogo } from "./Login.tsx";
 import { newKey } from "./idempotency.ts";
 import { withoutBasePath } from "../../runtime/basePath.ts";
+import { usePageTitle } from "../pageTitle.ts";
 
 /**
  * Which organization the session is being started against. The path wins
@@ -262,6 +263,7 @@ export function SupportCard(props: SupportCardProps): React.ReactElement {
  * refused, which is the ordinary case.
  */
 export function SupportRoute(): React.ReactElement {
+  usePageTitle("Support");
   const bootstrap = useAccountBootstrap();
   return (
     <SupportCard

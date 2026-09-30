@@ -348,6 +348,50 @@ func TestManagerRetriesTransientConnectorFactoryFailure(t *testing.T) {
 	}
 }
 
+func TestManagerRetriesPendingPolicyApproval(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	retryStarted := make(chan struct{})
+	releaseRetry := make(chan struct{})
+	var calls int
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			calls++
+			if calls == 1 {
+				return nil, errors.Join(project.ErrProjectDefinition, connector.NewRetryableError("policy_mismatch: approval pending"))
+			}
+			return newManagerTestProject(t, cfg, nil)
+		},
+		RetrySleep: func(ctx context.Context, _ time.Duration) error {
+			close(retryStarted)
+			select {
+			case <-releaseRetry:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-retryStarted
+	if pending, ok := manager.Registry().Pending("alpha"); !ok || pending.RetryStopped || pending.NextRetryAt.IsZero() {
+		t.Fatalf("pending approval should retry: %#v, %t", pending, ok)
+	}
+	close(releaseRetry)
+	manager.Wait()
+	if running, ok := manager.Registry().Get("alpha"); !ok || !running.Running() {
+		t.Fatalf("approved project did not recover: %#v, %t", running, ok)
+	}
+}
+
 func TestManagerKeepsPermanentConnectorFactoryFailureTerminal(t *testing.T) {
 	t.Parallel()
 

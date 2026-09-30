@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -64,6 +66,42 @@ func (f nativeFixture) create(t *testing.T, name string) tracker.NativeIssue {
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, response, &issue)
 	return issue
+}
+
+func TestNativeWorkflowRefusalCode(t *testing.T) {
+	for _, hosted := range []bool{false, true} {
+		name := "local"
+		if hosted {
+			name = "hosted"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newNativeFixture(t, nil, "", "workflow-refusal-"+name)
+			issue := f.create(t, "workflow-refusal")
+			response := performHubAPIRequest(t, f.service, http.MethodPost,
+				f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", f.token,
+				tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "disallowed-move"}, ExpectedRevision: issue.Revision, State: "Todo", Reason: "user_requested"})
+			failure := requireNativeCode(t, response, http.StatusUnprocessableEntity, "transition_not_allowed")
+			if failure.Message != "Workflow transition is not allowed" {
+				t.Fatalf("message = %q", failure.Message)
+			}
+			if got := readWorkItem(t, f, issue.WorkItemID, ""); got.State != issue.State || got.Revision != issue.Revision {
+				t.Fatalf("issue changed after refused move: %#v", got)
+			}
+			if !hosted {
+				return
+			}
+			recorded := httptest.NewRecorder()
+			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/workflow", nil), recorded)
+			service := &Service{config: Config{Hosted: &HostedConfig{}}}
+			if err := service.nativeAPIError(context, &nativeError{Code: failure.Code, Message: failure.Message, status: http.StatusUnprocessableEntity}); err != nil {
+				t.Fatal(err)
+			}
+			redacted := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, "transition_not_allowed")
+			if redacted.Message != "The requested operation is unavailable" {
+				t.Fatalf("hosted message = %q", redacted.Message)
+			}
+		})
+	}
 }
 
 func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {

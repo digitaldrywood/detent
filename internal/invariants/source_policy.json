@@ -37,7 +37,6 @@
     "spend_since_progress_circuit_breaker",
     "stale_todo_pr_recovered",
     "state_transition",
-    "stranded_active_recovery",
     "terminal_attempt_without_work_product",
     "token_ceiling_circuit_breaker"
   ],
@@ -57,7 +56,7 @@
     "internal/orchestrator/run_completion.go:commentObservedLaneTransition": "54fa914f9a030bc27f892d931186ca6f949d6ae2aac8430c233046ff9672769c",
     "internal/orchestrator/run_completion.go:reworkMergeWorkerResult": "467470a31fd6a9635b5dbebe26c3c4199d927337eac1bc694ef65643d23708f1",
     "internal/orchestrator/run_completion.go:blockExhaustedMergeWorker": "0981e1d3abe67d6bfe7fd7af979f19359d227bd3d086e783ec179d8b30efc3c2",
-    "internal/orchestrator/session_brake.go:handleSessionBrake": "6261a8e9a79e49daa8609b784d8aca8ba9c7d8b4044eeb26d03a5d4d796a4ecb",
+    "internal/orchestrator/session_brake.go:handleSessionBrake": "05b52a01c479dbcd9708aef906647d69421b7e36583d80cc69555cec683dd445",
     "internal/orchestrator/terminal_attempt_retry.go:parkRetryCycleLimit": "ff4ce86596af529d2c597a6abf4e87bad6d6b6b163fa955bd61fab5e97f2d0b5",
     "internal/orchestrator/workflow_metrics.go:updateIssueState": "d295ff8d7e86737e7c477c2cee5277f32d0e5821094a0dcbce188878f136bb30",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByID": "072e7213f3009b9d2bea4458af718434a8f7f9497b306490e51ad4d20b26c8fd",

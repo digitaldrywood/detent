@@ -333,7 +333,10 @@ global:
     pressure_some_avg10_threshold: 80
     degraded_max_concurrent_agents: 0
     poll_interval_ms: 1000
+    go_build_budget: 0
 ```
+
+`go_build_budget` is the host-wide number of Go compile, link, asm, cgo, and vet processes that all worker attempts may run at once. The default of `0` uses the host's CPU count. For workers whose workspace root has a `go.mod`, Detent sets `GOFLAGS=-toolexec=<detent go budget wrapper>`, so every `go build`, `go test`, `go vet`, and `go install` a worker runs, including commands the agent types itself, waits for a free slot before each tool process starts. The same environment sets `-p` and `GOMAXPROCS` to a quarter of the budget (at least `1`) so each go command's package parallelism and test binaries stay within the host's share. Flags the host environment already sets in `GOFLAGS` are kept, and an explicit `-p` or `-toolexec` wins. The budget only queues tool processes; it never fails, parks, or cancels work, and it runs unqueued if its slot directory cannot be prepared. Workspaces without a `go.mod` keep their environment unchanged. The shared `GOCACHE` is unchanged and build and test cache hits are preserved. Changing this value requires a restart.
 
 `degraded_max_concurrent_agents` is an opt-in host-wide progress floor for IO
 and CPU pressure. Its default of `0` preserves the conservative hard stop. Set

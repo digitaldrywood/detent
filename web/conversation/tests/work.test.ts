@@ -325,7 +325,11 @@ describe("moving an issue", () => {
         expectedRevision: issue.revision,
         state: "Done",
       }),
-    ).rejects.toMatchObject({ status: 422 });
+    ).rejects.toMatchObject({
+      status: 422,
+      code: "transition_not_allowed",
+      message: "This status change is not allowed by the project's workflow.",
+    });
   });
 
   it("refuses a stale revision with a conflict that names no revision", async () => {

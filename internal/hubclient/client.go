@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -47,14 +48,16 @@ type Client struct {
 }
 
 type Machine struct {
-	ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
-	ID              tracker.MachineID         `json:"id"`
-	Hostname        string                    `json:"hostname"`
-	DisplayName     string                    `json:"display_name,omitempty"`
-	Capabilities    map[string]any            `json:"capabilities,omitempty"`
-	Capacity        int                       `json:"capacity"`
-	Version         string                    `json:"version"`
-	LastHeartbeatAt time.Time                 `json:"last_heartbeat_at,omitempty"`
+	Problems         []runnerauth.Problem      `json:"-"`
+	BackendIsolation isolationpolicy.Report    `json:"-"`
+	ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
+	ID               tracker.MachineID         `json:"id"`
+	Hostname         string                    `json:"hostname"`
+	DisplayName      string                    `json:"display_name,omitempty"`
+	Capabilities     map[string]any            `json:"capabilities,omitempty"`
+	Capacity         int                       `json:"capacity"`
+	Version          string                    `json:"version"`
+	LastHeartbeatAt  time.Time                 `json:"last_heartbeat_at,omitempty"`
 	// WorkspaceCapabilities and WorkspaceIsolation are what this runner can
 	// serve for a workspace session. The hub reads the report from the same
 	// row it stamps the heartbeat on, so the two travel together.

@@ -12,10 +12,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/cli"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/shadow"
 )
 
 func main() {
+	if gobudget.IsWrapperInvocation(os.Args[0]) {
+		os.Exit(gobudget.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
 	exitCode, restartBinary := runCLIResult(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
 	if exitCode == cli.ExitSuccess && restartBinary != "" {
 		if err := restartProcess(restartBinary, os.Args, os.Environ()); err != nil {

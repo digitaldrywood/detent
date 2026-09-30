@@ -546,7 +546,7 @@ func (s *Service) appBootstrapPlan(ctx context.Context) *appBootstrapPlan {
 	}
 	return &appBootstrapPlan{
 		ID:           entitlement.EffectiveBase.ID,
-		Name:         fmt.Sprintf("%s · version %d", entitlement.EffectiveBase.ID, entitlement.EffectiveBase.Version),
+		Name:         entitlement.Name,
 		Source:       entitlement.Source,
 		WindowEndsAt: entitlement.WindowEndsAt.UTC().Format(time.RFC3339),
 	}

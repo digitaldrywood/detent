@@ -562,6 +562,56 @@ otherwise authorized compatible runner; an unknown ID/tag matches none and retur
 a structured reason. Renaming preserves routing. Disabled, drained, offline or
 unauthorized runners cannot receive new claims; no selector is silently widened.
 
+Runners report the probed isolation tiers of every configured backend at enrollment,
+registration, and each heartbeat. Agent claims require every reported backend to
+support the runner's administrator-selected tier, which defaults to `sandbox`.
+Missing reports and failed probes match no sandbox work. Reports belong to the
+logical runner, including when several runners share a host. A heartbeat replaces
+the report, so unavailable support is withdrawn rather than retained. Workspace
+shell capabilities remain separate: a native PTY reports `user`, never `sandbox`.
+
+Codex maps sandbox work to a named permission profile equivalent to
+`workspace-write`, with explicit worktree and Detent
+runtime and existing native Go-cache writable roots, no implicit system temporary-directory grant, and its
+limited network proxy. Claude enables its sandbox, fails if unavailable, disables
+unsandboxed retries and excluded commands, limits network destinations, and denies
+reads of SSH, AWS, and macOS keychain directories. Sandbox runs expose only
+Bash, Read, Glob, and Grep, with MCP disabled, so file writes and network access
+pass through the shell sandbox. Backend launches apply the
+isolation policy stored on the existing lease within the claim transaction.
+Heartbeats and routing-cache updates cannot change an active claim's policy.
+Missing claim policy fails execution. Claude verifies effective settings on the
+actual worker through its control protocol before sending a task prompt; managed
+settings that weaken the policy prevent startup.
+`native-trusted` explicitly disables the backend sandbox. Neither tier is a
+container or microVM guarantee. The workspace terminal default is `sandbox`;
+explicit legacy `container` and `user` settings remain readable.
+
+Network grants cover the model APIs, GitHub, and Go, npm, Python, and Rust package
+registries. Unix host services are granted by exact path. TCP host-service grants
+are unsupported in `sandbox`, because these backend settings cannot constrain
+localhost access to an exact port; such runners must not advertise sandbox support
+for that configuration. Probes conservatively require Codex 0.159.2 or newer and
+Claude Code 2.1.285 or newer on macOS, plus working OS sandbox support. Claude
+Linux is not advertised until its optional Unix socket filter can be proven;
+its version alone does not establish socket isolation. Heartbeat probes share a
+bounded aggregate budget and run outside the scheduler mutex. Unsupported hosts
+or configurations retain only the tiers they can deliver; there is no downgrade.
+
+Runner home projects are an administrator-selected subset of authorized project
+access, stored as `home_project_ids`; an empty list keeps ordinary selection.
+At claim time the Hub prefers the first dispatchable Todo/Rework home issue in
+normal queue order, preserving dependencies, approved policies, selectors,
+active leases, and provider eligibility. Planning and other open cards do not
+keep a runner waiting. One nullable `home_dry_since` timestamp starts when home
+work runs dry and clears when eligible home work returns. With spillover `after
+N`, ordinary authorized project work becomes eligible after N idle minutes;
+`never` keeps the runner waiting. Project-scoped claims cannot steal work from
+another project, and active general jobs finish without preemption. The fleet
+row shows home projects and the sampled claim-time status: preferring home work,
+waiting for home work, or spilled over. No background loop or home-work capacity
+reservation is introduced.
+
 Actual enrollment binds logical runners to a machine. Checked-in runner profiles
 declare requirements, not physical registrations. Self-reported capabilities and
 tags cannot grant access or privileged labels. Multiple runners on one machine

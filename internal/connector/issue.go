@@ -6,6 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -48,6 +49,7 @@ type LaneSignalStatus struct {
 }
 
 type Issue struct {
+	IsolationPolicy    *isolation.Policy  `json:"-" yaml:"-"`
 	LaneSignalStatuses []LaneSignalStatus `json:"-" yaml:"-"`
 
 	PublicationReused bool                 `json:"-" yaml:"-"`

@@ -302,12 +302,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched,
 		artifactWaitTransitions.transitioned,
 	)
-	timing.step("recover_stranded_active_issues")
-	fetched = filterReconciledTickIssues(
-		state,
-		fetched,
-		o.recoverStrandedActiveIssues(ctx, state, fetched.candidates, now),
-	)
 	timing.next("rate_limits")
 	restCycle := o.captureConnectorRESTRateLimits(state, now)
 	o.logRESTRateLimitCycle(restCycle)

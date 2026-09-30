@@ -783,10 +783,11 @@ test.describe("decisions.md §10 corrections", () => {
     await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
     const id = currentConversation(page);
     await expect(page.getByTestId("user-turn").last()).toContainText("Count my history");
+    await expect(page.getByTestId("assistant-turn").last()).toContainText("Hello, world.");
 
-    const snapshot = await hubAPI(page, "GET", conversationPath(id));
-    const count = snapshot.payload.conversation.message_count;
-    expect(count).toBe(1);
+    const messageCount = async () => (await hubAPI(page, "GET", conversationPath(id))).payload.conversation.message_count;
+    await expect.poll(messageCount).toBe(2);
+    const count = await messageCount();
 
     await openCreateLinkedIssue(page);
     const form = page.getByRole("dialog", { name: "Create linked issue" });
@@ -921,6 +922,36 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors).toEqual([]);
   });
 
+  test("offers Luna with low and medium reasoning in general chat", async ({ page }) => {
+    await openChat(page);
+    const surface = page;
+    await surface.getByTestId("composer-model").click();
+    const model = page.getByTestId("composer-model-option-gpt-6-luna");
+    await expect(model).toBeVisible();
+    await model.click();
+    await surface.getByTestId("composer-effort").click();
+    await expect(page.getByRole("option", { name: /Low/ })).toBeVisible();
+    await expect(page.getByRole("option", { name: /Medium/ })).toBeVisible();
+    await expect(page.getByRole("option", { name: /High/ })).toHaveCount(0);
+    await expect(page.getByTestId("composer-effort-default-low")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await surface.getByTestId("composer-model").click();
+    await page.getByTestId("composer-model-option-auto").click();
+    const linked = await openLinkedConversation(page);
+    await linked.getByTestId("composer-model").click();
+    await expect(page.getByTestId("composer-model-option-gpt-6-luna")).toHaveCount(0);
+  });
+
+  test("limits a new general chat to Luna", async ({ page }) => {
+    await openChat(page);
+    await page.getByTestId("composer-model").click();
+    await expect(page.getByTestId("composer-model-option-gpt-6-luna")).toBeVisible();
+    await expect(page.getByTestId(/^composer-model-option-/)).toHaveCount(2);
+    await page.keyboard.press("Escape");
+    await page.getByTestId("composer-effort").click();
+    await expect(page.getByRole("option", { name: /High/ })).toHaveCount(0);
+  });
+
   test("offers the runners' model catalogue and the access choices", async () => {
     test.skip(true, "The hub bootstrap publishes no model or access choices on main: the runner catalogue slice of #2635 is not ported.");
   });
@@ -1051,6 +1082,27 @@ test.describe("decisions.md §10 corrections", () => {
     // And that bundle is the one the shell loads.
     const shell = await page.request.get(hub.fixture.chat);
     expect(await shell.text()).toContain("/static/app/conversation/app.js");
+  });
+
+  test("serves the Detent favicon on Hub routes", async ({ page }) => {
+    await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
+    for (const route of ["/chat", "/work"]) {
+      await page.goto(`${hub.fixture.url}${route}`, { waitUntil: "domcontentloaded" });
+      for (const icon of [
+        { rel: "icon", type: "image/svg+xml", sizes: null, file: "favicon.svg" },
+        { rel: "icon", type: "image/png", sizes: "32x32", file: "favicon-32.png" },
+        { rel: "apple-touch-icon", type: null, sizes: "180x180", file: "apple-touch-icon.png" },
+      ]) {
+        const link = page.locator(`head link[rel="${icon.rel}"][href$="/${icon.file}"]`);
+        await expect(link).toHaveCount(1);
+        if (icon.type) await expect(link).toHaveAttribute("type", icon.type);
+        if (icon.sizes) await expect(link).toHaveAttribute("sizes", icon.sizes);
+        const href = await link.getAttribute("href");
+        const response = await page.request.get(new URL(href, page.url()).toString());
+        expect(response.status()).toBe(200);
+        expect(response.headers()["content-type"]).toContain(icon.type ?? "image/png");
+      }
+    }
   });
 
   // §10.14, restated for the one frontend (§11). There are no hosted Templ
@@ -2252,4 +2304,45 @@ test.describe("the footer's update check", () => {
     await expect(page).toHaveURL(/\/settings\/runners$/, { timeout: 20_000 });
     expect(errors).toEqual([]);
   });
+});
+
+
+test("archives native work, finds retained history, and restores from the archived list", async ({ page }, testInfo) => {
+  const errors = watchConsole(page);
+  await openChat(page);
+  const project = `/projects/${hub.fixture.project_id}`;
+  const created = await hubAPI(page, "POST", `${project}/work-items`, {
+    idempotency_key: `archive-browser-${Date.now()}`,
+    title: "Retain completed archive history",
+    body: "This issue remains readable after archive.",
+    state: "Done",
+  });
+  expect(created.status).toBe(200);
+  const item = created.payload.work_item_id;
+  await page.goto(new URL(`/work/i/${item}`, hub.fixture.url).toString());
+  await expect(page.getByRole("button", { name: "Archive issue", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Archive issue", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Restore issue", exact: true })).toBeEnabled();
+  await expect(page.getByTestId("issue-identifier")).toContainText("Archived");
+  await expect(page.getByText("This issue remains readable after archive.", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("archived-issue.png") });
+  const history = await hubAPI(page, "GET", `${project}/work-items/${item}/history`);
+  expect(history.status).toBe(200);
+  expect(JSON.stringify(history.payload)).toContain('"operation":"archive"');
+  await page.goto(new URL(`/work/p/${hub.fixture.project_id}?view=list`, hub.fixture.url).toString());
+  await expect(page.getByText("Retain completed archive history", { exact: true })).toHaveCount(0);
+  await page.getByTestId("work-archived").click();
+  await expect(page.getByText("Retain completed archive history", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/archived=true/);
+  await page.reload();
+  await expect(page.getByTestId("work-archived")).toHaveAttribute("aria-pressed", "true");
+  await page.screenshot({ path: testInfo.outputPath("archived-list.png") });
+  await page.getByText("Retain completed archive history", { exact: true }).click();
+  await page.getByRole("button", { name: "Restore issue", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Archive issue", exact: true })).toBeEnabled();
+  await expect(page.getByTestId("issue-identifier")).not.toContainText("Archived");
+  const restored = await hubAPI(page, "GET", `${project}/work-items/${item}`);
+  expect(restored.payload.archived).toBe(false);
+  expect(restored.payload.state).toBe("Done");
+  expect(errors).toEqual([]);
 });

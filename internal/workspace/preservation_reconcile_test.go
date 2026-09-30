@@ -203,7 +203,7 @@ func TestCleanupVerifiesLiveRemoteCommits(t *testing.T) {
 					}
 				case "branch":
 					runGit(t, info.Path, "checkout", "--detach", "origin/main")
-					deleted, err := backend.deleteBranch(t.Context(), info.Branch, false)
+					deleted, err := backend.deleteBranch(t.Context(), info.Branch, false, Issue{})
 					if deleted != safe || (safe && err != nil) {
 						t.Fatalf("safe=%v, deleted=%v, err=%v", safe, deleted, err)
 					}
