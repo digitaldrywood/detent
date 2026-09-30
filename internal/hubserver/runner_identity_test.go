@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -36,7 +37,7 @@ func prepareRunner(t *testing.T, f nativeFixture, operations ...string) runnerFi
 	var enrollment runnerauth.Enrollment
 	decodeHubResponse(t, response, &enrollment)
 	return runnerFixture{nativeFixture: f, binding: binding, enrollment: enrollment, base: base,
-		redemption: runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}}
+		redemption: runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}}
 }
 
 func (r *runnerFixture) enroll(t *testing.T) {
