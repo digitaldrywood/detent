@@ -1244,6 +1244,7 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
+	Draft           bool               `json:"draft,omitempty"`
 	HeadCommittedAt *time.Time         `json:"head_committed_at"`
 	Checks          []PullRequestCheck `json:"checks,omitempty"`
 
