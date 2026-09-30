@@ -49,6 +49,7 @@ type ConversationConfig struct {
 }
 
 type ConversationUsage struct {
+	OccurredAt     time.Time
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	ConversationID string
@@ -140,6 +141,9 @@ type conversationControlRouter interface {
 }
 
 func newConversationService(server *Service, cfg ConversationConfig) *conversationService {
+	if cfg.UsageSink == nil {
+		cfg.UsageSink = server.database
+	}
 	service := &conversationService{
 		server: server,
 		store:  newConversationStore(server.database.db),

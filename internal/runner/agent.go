@@ -4401,6 +4401,10 @@ func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 	}
 }
 
+func NewTokenUsageNormalizer(resumed bool) func(AgentTokenUsage) AgentTokenUsage {
+	return newSessionTokenUsage(resumed).normalize
+}
+
 type sessionTokenUsage struct {
 	resumed  bool
 	baseline *AgentTokenCounts

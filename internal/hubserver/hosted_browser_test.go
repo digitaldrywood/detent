@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -686,6 +687,12 @@ func TestHostedBrowserPreview(t *testing.T) {
 	}
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_USAGE") != "" {
+		err := f.service.database.RecordConversationUsage(t.Context(), ConversationUsage{OrganizationID: "org_browser_preview", ProjectID: tracker.ProjectID(f.project), ConversationID: f.conversation, TurnID: "preview-chat-usage", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: 1_000_000, CachedInputTokens: 400_000, OutputTokens: 100_000, ReasoningOutputTokens: 30_000}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER") != "" {
 		binding := runnerauth.NewBinding()
 		base := browserHostedOrganizationBase
