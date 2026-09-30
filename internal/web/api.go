@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 const (
@@ -1486,7 +1487,7 @@ func workflowTimelineResponse(timeline store.WorkflowTimeline) workflowTimelineA
 			EndpointFamily:        event.EndpointFamily,
 		})
 	}
-	return workflowTimelineAPIResponse{Events: events}
+	return workflowTimelineAPIResponse{Events: events, Activity: workflowmetrics.ActivityAudits(timeline.Events, apiNow())}
 }
 
 func issueDescription(description string) *string {
@@ -1986,7 +1987,8 @@ type usageModelAPIResponse struct {
 }
 
 type workflowTimelineAPIResponse struct {
-	Events []workflowPhaseEventAPIResponse `json:"events"`
+	Events   []workflowPhaseEventAPIResponse `json:"events"`
+	Activity []workflowmetrics.ActivityAudit `json:"activity"`
 }
 
 type workflowPhaseEventAPIResponse struct {
