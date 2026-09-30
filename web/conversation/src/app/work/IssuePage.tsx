@@ -38,6 +38,7 @@ import type { ConversationDetail } from "../../runtime/state/conversationState.t
 import { isStreaming } from "../../runtime/state/conversationState.ts";
 import { ConversationView, useShell } from "../App.tsx";
 import { newCommandKey, useClient } from "../client.ts";
+import { usePageTitle } from "../pageTitle.ts";
 import { ChatWorkspace, useWorkspacePanel } from "../components/ChatWorkspace.tsx";
 import { Markdown } from "../components/Markdown.tsx";
 import { canInterrupt, executionCopy, expectedOwner, isActive } from "../lib/execution.ts";
@@ -380,6 +381,10 @@ function IssueSurface({
       conversationId: conversation?.id ?? null,
     });
   }, [conversation?.id, data]);
+  usePageTitle(
+    item === null ? "Issue" : `Issue ${issueNumber(item.identifier, item.number)}: ${item.title}`,
+    item?.projectName ?? project?.name,
+  );
 
   const moves = React.useMemo(
     () => (data === null ? [] : transitionsFrom(data.project, data.issue.state)),

@@ -116,7 +116,7 @@ app-dev:
 # The build is deterministic (fixed output names, no hashes, no timestamps),
 # which is what makes the diff check meaningful.
 check-app:
-	@if [ -f "$(APP_DIR)/package.json" ]; then \
+	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
 		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
 		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run && npm run build); \
 		git diff --exit-code -- static/app/conversation || { \
@@ -233,7 +233,7 @@ visual-e2e-update: build
 	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test --update-snapshots
 
 lint: $(GOLANGCI_LINT)
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=15m
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --timeout=15m
 
 $(GOLANGCI_LINT):
 	@mkdir -p "$(GOLANGCI_LINT_DIR)"
