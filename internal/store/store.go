@@ -112,7 +112,14 @@ type DailyDigestWindow struct {
 	To   time.Time
 }
 
+// DailyDigestDay separates calendar-window runtime usage from the lifetime
+// receipt metrics of its unique verified shipped cohort. Efficiency.Issues is
+// receipt coverage, which can be smaller than IssuesShipped.
 type DailyDigestDay struct {
+	IssuesShipped        int64
+	ShippedByProject     map[string]int64
+	Efficiency           efficiency.RollupWindow
+	UnknownDwellSeconds  int64
 	Date                 string
 	Sessions             int64
 	InputTokens          int64

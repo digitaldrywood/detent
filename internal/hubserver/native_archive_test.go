@@ -24,13 +24,9 @@ func seedArchiveIssues(t *testing.T, service *Service, scope nativeScope, count 
 	defer tx.Rollback()
 	issues := make([]tracker.NativeIssue, 0, count)
 	for i := range count {
-		created, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("Seed %d", i), Body: "Preserved body", State: state}, time.Now())
+		issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("Seed %d", i), Body: "Preserved body", State: state}, time.Now())
 		if err != nil {
 			t.Fatal(err)
-		}
-		issue, ok := created.(tracker.NativeIssue)
-		if !ok {
-			t.Fatalf("created %T", created)
 		}
 		issues = append(issues, issue)
 	}
