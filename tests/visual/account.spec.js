@@ -259,7 +259,7 @@ test("the first-run wizard reports the hub's four onboarding steps", async ({ pa
 
   const steps = page.getByRole("list", { name: "Setup steps" }).getByRole("listitem");
   await expect(steps).toHaveCount(4);
-  await expect(steps.first()).toContainText("Repository configuration");
+  await expect(steps.first()).toContainText("Execution runner");
   // Exactly one step is the current one, and it is reachable from the keyboard.
   await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
   expect(await tabTo(page, "Continue")).toBe(true);
@@ -305,7 +305,7 @@ for (const viewport of [
 
     // Every step stays reachable from the tabs.
     await tabs.nth(0).click();
-    await expect(page.getByRole("heading", { level: 1, name: "Repository configuration" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Execution runner" })).toBeVisible();
     await expectNoSeriousAxeViolations(page, `/projects/:project/setup (${viewport.name})`);
     expect(errors, "console errors on the wizard").toEqual([]);
   });
@@ -389,7 +389,7 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
   // capacity and projects, never for runner or machine IDs.
   await expect(dialog.getByLabel("Runner id")).toHaveCount(0);
   await dialog.getByLabel("Name").fill("Build host");
-  await dialog.getByLabel("Runs at once", { exact: true }).fill("2");
+  await dialog.getByLabel("Concurrent work items", { exact: true }).fill("2");
   await expectNoSeriousAxeViolations(page, "the enrollment dialog");
 
   await dialog.getByRole("button", { name: "Create command" }).click();
