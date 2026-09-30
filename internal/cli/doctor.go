@@ -1192,10 +1192,12 @@ func doctorOptions(opts options) options {
 	return opts
 }
 
+var defaultInspectCaches = toolcache.Inspect
+
 func (d doctorDeps) withDefaults() doctorDeps {
 	defaults := defaultDoctorDeps()
 	if d.inspectCaches == nil {
-		d.inspectCaches = toolcache.Inspect
+		d.inspectCaches = defaultInspectCaches
 	}
 	if d.codexStorage == nil {
 		d.codexStorage = defaults.codexStorage

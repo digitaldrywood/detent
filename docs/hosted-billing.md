@@ -14,11 +14,35 @@ design requires local and self-hosted Hubs to reject hosted billing configuratio
 self-hosting without `--hosted-config` already runs independently; separating that
 flag's WorkOS/policy coupling is follow-up work, not a shipped auth-mode switch.
 
+## Capacity prices in Stripe test mode
+
+The default catalog offers Free ($0), Starter ($49), Growth ($149), and Scale
+($399) per organization per month. Enterprise remains custom. Free has no
+sponsored AI, including Luna general chat; paid subscriptions cover hosting and
+include no model-provider usage or bundled allowance.
+
+With the default catalog, retain approved price IDs in the existing `prices`
+mapping and use `{id: starter, version: 1}`, `{id: growth, version: 1}`, and
+`{id: scale, version: 1}` for new test-mode prices. Use one fixed USD monthly
+licensed price with quantity one per organization. Configure only verified test
+prices for $49/$149/$399. IDs are operator supplied; Detent does not create or
+modify Stripe products or prices. This change performs no live-mode operations.
+The existing $49 test price keeps its original plan/version mapping and paid
+access deadline; retain its catalog record and mapping alongside new prices.
+Do not repoint it to Starter or replace its subscription to migrate capacity.
+Audited base assignments and scoped complimentary grants preserve legacy access.
+
+The billing/plan screens show price, project and unarchived-issue consumption,
+remaining capacity, contextual over-limit state, and owner upgrade/portal actions.
+Changing plans through the portal reuses authoritative reconciliation and existing
+grace rules. Downgrades preserve data and in-flight completion. Archived issues
+remain readable and exportable.
+
 ## Supported test-pilot configuration
 
-Add the following to the hosted identity YAML, alongside explicit
+Add the following to the hosted identity YAML, alongside the default or explicit
 [versioned entitlement plans](hosted-allowances.md). The referenced paid plan
-must already appear in `entitlements.plans` and must differ from its base plan.
+must appear in the selected catalog and must differ from its base plan.
 
 ```yaml
 billing:
@@ -369,8 +393,8 @@ delivery, transaction rollback, restart recovery, grace boundaries, renewals,
 refunds/disputes, grant preservation, safe lease completion, local-only dispatch,
 configuration immutability, and browser-visible billing states.
 
-Run `go test -race ./internal/billing ./internal/hubserver ./internal/cli`,
-`make generate`, and the repository's `make check` gate before shipping.
+Run focused `go test` and `go vet` for touched packages and `make generate`.
+Follow the operator-selected local gate for shipping.
 Browser verification uses isolated test instances on ephemeral ports.
 
 Stripe references: [customer portal](https://docs.stripe.com/customer-management),

@@ -131,7 +131,7 @@ func TestCloudRegistryAndKeyCommands(t *testing.T) {
 		err := cmd.Execute()
 		return output.String(), err
 	}
-	register := []string{"registry", "register", "--registry", registry, "--organization", "org_example", "--provider-organization", "org_workos", "--name", "Example", "--endpoint", "unix:/run/detent/tenants/org_example.sock", "--generation", "1"}
+	register := []string{"registry", "register", "--registry", registry, "--organization", "org_example", "--provider-organization", "org_workos", "--name", "Example", "--endpoint", "unix:" + filepath.Join(t.TempDir(), "org_example.sock"), "--generation", "1"}
 	for _, want := range []string{`"changed":true`, `"changed":false`} {
 		output, err := run(nil, register...)
 		if err != nil || !strings.Contains(output, want) {
@@ -198,9 +198,12 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 	if err := os.WriteFile(tenantPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tenant, _, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
+	tenant, enabled, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatalf("generated tenant configuration is invalid: %v\n%s", err, raw)
+	}
+	if !enabled || tenant == nil {
+		t.Fatal("generated tenant configuration did not enable hosting")
 	}
 	if tenant.OrganizationID != "org_tenant" || tenant.WorkOSOrganizationID != "org_workos" || tenant.SharedEntry == nil || tenant.SharedEntry.Generation != 1 || tenant.BootstrapSubject != "" {
 		t.Fatalf("tenant = %+v", tenant)

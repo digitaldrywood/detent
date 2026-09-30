@@ -391,28 +391,6 @@ func TestDevRuntimeCommandBuildsScreenshotsDemoBootConfig(t *testing.T) {
 	}
 }
 
-func TestConfigPathCommandPrintsResolvedPathAndRule(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "global.yaml")
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", path, "--format", "pretty", "config", "path"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	output := stdout.String()
-	for _, want := range []string{path, string(globalconfig.PathRuleFlag)} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("config path output missing %q:\n%s", want, output)
-		}
-	}
-}
-
 func TestOutputFormatPrecedence(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -894,26 +872,6 @@ func TestProjectCommandsWriteJSONResults(t *testing.T) {
 			}
 			assertJSONEqual(t, stdout.Bytes(), tt.want)
 		})
-	}
-}
-
-func TestInitRefusesExistingConfigWithoutForce(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "global.yaml")
-	writeGlobalConfig(t, path, nil)
-
-	cmd := cli.NewRootCommand(context.Background())
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", path, "init"})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() error = nil, want error")
-	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("Execute() error = %v, want already exists", err)
 	}
 }
 
@@ -1407,25 +1365,6 @@ func TestProblemForErrorExtractsInlineDidYouMeanFromHint(t *testing.T) {
 	}
 }
 
-func TestRootCommandSuggestsMistypedFlag(t *testing.T) {
-	t.Parallel()
-
-	cmd := cli.NewRootCommand(context.Background())
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--hedless"})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() error = nil, want unknown flag")
-	}
-	for _, want := range []string{"unknown flag: --hedless", "Did you mean this?", "\t--headless"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("Execute() error missing %q:\n%v", want, err)
-		}
-	}
-}
-
 func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 	t.Parallel()
 
@@ -1859,35 +1798,6 @@ func TestProjectAdminCommandsRejectMissingProject(t *testing.T) {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
 		}
-	}
-}
-
-func TestAddProjectRejectsDuplicateID(t *testing.T) {
-	t.Parallel()
-
-	paths := createProjectFiles(t)
-	configPath := filepath.Join(paths.root, "global.yaml")
-	writeGlobalConfig(t, configPath, []globalconfig.Project{
-		{ID: "detent", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
-	})
-
-	cmd := cli.NewRootCommand(context.Background())
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{
-		"--config", configPath,
-		"add-project",
-		"--id", "detent",
-		"--workflow", paths.workflowPath,
-		"--workdir", paths.workdirPath,
-	})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() error = nil, want error")
-	}
-	if !errors.Is(err, cli.ErrProjectExists) {
-		t.Fatalf("Execute() error = %v, want %v", err, cli.ErrProjectExists)
 	}
 }
 

@@ -89,7 +89,14 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 			if err := prepareRunnerIdentity(paths.identity, base, org); err != nil {
 				return err
 			}
-			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev")})
+			configuration := globalconfig.Config{}
+			if _, err := os.Lstat(paths.config); err == nil {
+				configuration, err = globalconfig.Read(paths.config)
+				if err != nil {
+					return err
+				}
+			}
+			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev"), BackendIsolation: probeRunnerIsolation(cmd.Context(), configuration)})
 			if err != nil {
 				return err
 			}

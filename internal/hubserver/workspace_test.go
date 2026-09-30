@@ -433,7 +433,7 @@ func newWorkspaceRunnerFixture(t *testing.T) *workspaceRunnerFixture {
 	r.enroll(t)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", r.redemption.Credential,
 		map[string]any{"id": r.binding.MachineID, "hostname": "customer-host", "display_name": "Runner",
-			"capacity": 8, "version": "test", "workspace_capabilities": workspaceTestCapabilities,
+			"backend_isolation": r.redemption.BackendIsolation, "capacity": 8, "version": "test", "workspace_capabilities": workspaceTestCapabilities,
 			"workspace_isolation": workspacesession.IsolationContainer}), http.StatusOK)
 	return &workspaceRunnerFixture{workspaceFixture: f, runner: r}
 }

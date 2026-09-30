@@ -13,10 +13,9 @@ import { PathValue } from "../account/controls.tsx";
 import { RUNNER_UPGRADE_COMMAND, runnerUpdateLabel } from "../lib/detentUpdates.ts";
 import { formatLocalTime, formatRelativeTime } from "./format.ts";
 
-/** Healthy pulses; anything degraded is amber; anything unknown is inert. */
 function healthTone(health: string): string {
   if (health === "healthy") return "bg-success motion-safe:animate-status-pulse";
-  if (health === "stale" || health === "paused" || health === "degraded") return "bg-warning";
+  if (health === "needs_attention") return "bg-warning";
   return "bg-muted-foreground";
 }
 
@@ -79,12 +78,25 @@ export function HostCard({
         <Monitor aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">{runner.display_name}</div>
-          <div className="text-xs text-muted-foreground">{runner.health}</div>
+          <div className={cn("text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning")}>
+            {runner.health === "needs_attention" ? <span className="rounded border border-warning/40 px-1.5">Needs attention</span> : runner.health === "outside_hours" ? "Outside hours" : runner.health}
+          </div>
         </div>
         <div className="text-right text-xs text-muted-foreground">
           {runner.state} · {runner.hostname} · {runner.os}/{runner.architecture}
         </div>
       </div>
+
+      {(runner.problems?.length ?? 0) > 0 ? (
+        <ul aria-label="Runner problems" role={runner.health === "needs_attention" ? "alert" : undefined} className="space-y-2 text-xs">
+          {runner.problems?.map((problem) => (
+            <li key={problem.code} data-problem={problem.code}>
+              <p className="font-medium">{problem.message}</p>
+              <p className="text-muted-foreground">{problem.fix_hint}</p>
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
         <Field label="Slots">
@@ -101,7 +113,7 @@ export function HostCard({
 
       {runner.isolation_tier === undefined ? null : (
         <div className="text-xs text-muted-foreground">
-          {`Configured (not yet enforced): ${runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}`}
+          {`Isolation setting: ${runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}`}
           {runner.availability?.windows.length
             ? ` · ${runner.availability.windows.join(", ")} (${runner.availability.timezone})`
             : " · Always available"}

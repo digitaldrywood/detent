@@ -1003,3 +1003,29 @@ func TestAttemptAllowanceExternalWaitRestart(t *testing.T) {
 		})
 	}
 }
+
+func TestAttemptAllowanceSuccessfulPRDelivery(t *testing.T) {
+	t.Parallel()
+	pr := int64(3304)
+	for _, tt := range []struct {
+		name              string
+		terminal          store.WorkAttemptTerminalState
+		phase, errorClass string
+		pr                *int64
+		want              int
+	}{
+		{name: "completed PR awaiting gate", terminal: store.WorkAttemptTerminalSuccess, phase: "completed", pr: &pr},
+		{name: "no progress PR", terminal: store.WorkAttemptTerminalSuccess, phase: "completed", errorClass: "no_progress", pr: &pr, want: 1},
+		{name: "incomplete PR", terminal: store.WorkAttemptTerminalSuccess, phase: "rework", pr: &pr, want: 1},
+		{name: "failed PR", terminal: store.WorkAttemptTerminalFailure, phase: "completed", pr: &pr, want: 1},
+		{name: "no PR", terminal: store.WorkAttemptTerminalSuccess, phase: "completed", want: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			attempt := store.WorkAttempt{WorkerType: "agent", Lane: "In Progress", TerminalState: tt.terminal, Phase: tt.phase, ErrorClass: tt.errorClass, PRNumber: tt.pr}
+			got := countSessionsWithoutMerge([]store.WorkAttempt{attempt}, time.Time{}, time.Time{})
+			if got.Sessions != tt.want || len(got.Attempts) != tt.want {
+				t.Fatalf("allowance = %#v, want %d", got, tt.want)
+			}
+		})
+	}
+}

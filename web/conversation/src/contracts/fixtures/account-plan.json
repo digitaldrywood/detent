@@ -1,4 +1,6 @@
 {
+  "name": "Starter",
+  "monthly_usd_cents": 4900,
   "organization_id": "org_threefold",
   "base": { "id": "pilot_free", "version": 1 },
   "effective_base": { "id": "pilot_free", "version": 1 },

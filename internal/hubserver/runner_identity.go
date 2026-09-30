@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -171,12 +172,16 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
-		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
-		DisplayName     string                    `json:"display_name"`
-		Capacity        int                       `json:"capacity"`
-		Version         string                    `json:"version"`
-		OS              string                    `json:"os,omitempty"`
-		Architecture    string                    `json:"architecture,omitempty"`
+		Problems         []runnerauth.Problem      `json:"problems"`
+		ProtocolMajor    int                       `json:"protocol_major,omitempty"`
+		SettingsRejected bool                      `json:"settings_rejected,omitempty"`
+		BackendIsolation isolation.Report          `json:"backend_isolation,omitempty"`
+		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
+		DisplayName      string                    `json:"display_name"`
+		Capacity         int                       `json:"capacity"`
+		Version          string                    `json:"version"`
+		OS               string                    `json:"os,omitempty"`
+		Architecture     string                    `json:"architecture,omitempty"`
 		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
 		// can serve for a workspace session (decisions section 18.10). They
 		// ride the heartbeat beside the provider reports because the claim
@@ -190,7 +195,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
-		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be user or container"))
+		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be sandbox, container or user"))
 	}
 	scope := nativeRequestScope(c)
 	if scope.credential.Runner.RunnerID != "" && string(scope.credential.Runner.MachineID) != c.Param("machine") {
@@ -205,7 +210,13 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	}
 	return s.runnerTransaction(c, status, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		if scope.credential.Runner.RunnerID != "" {
+			if err := updateRunnerIsolationReport(ctx, tx, scope, request.BackendIsolation); err != nil {
+				return nil, err
+			}
 			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
+				return nil, err
+			}
+			if err := updateRunnerProblems(ctx, tx, scope, request.Problems, request.ProtocolMajor, request.SettingsRejected, now); err != nil {
 				return nil, err
 			}
 			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {

@@ -28,10 +28,6 @@ type attemptAllowance struct {
 
 func (a attemptAllowance) exhausted() bool { return a.Sessions >= sessionsWithoutMergeAllowance }
 
-// Started code/rework attempts consume the issue allowance unless they were
-// merge routing, infrastructure failures, or external waits.
-// The window starts at the last merge or operator lane move;
-// ordinary head, Detent lane, and diff changes do not replenish it.
 func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt time.Time) attemptAllowance {
 	var result attemptAllowance
 	for _, attempt := range attempts {
@@ -69,8 +65,10 @@ func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt t
 		if allowanceExternalWaitAttempt(attempt) {
 			continue
 		}
-		result.Sessions++
-		result.Attempts = append(result.Attempts, attempt)
+		if attempt.TerminalState != store.WorkAttemptTerminalSuccess || attempt.PRNumber == nil || *attempt.PRNumber <= 0 || attempt.ErrorClass != "" || attempt.Phase != "completed" {
+			result.Sessions++
+			result.Attempts = append(result.Attempts, attempt)
+		}
 	}
 	return result
 }
@@ -111,13 +109,14 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		return true
 	}
 	var metadata struct {
+		Cancellation    *runpkg.CancellationCause   `json:"cancellation"`
 		BlockerEvidence []telemetry.BlockerEvidence `json:"blocker_evidence"`
 		Fence           struct {
 			Excluded bool `json:"excluded_from_worker_outcomes"`
 		} `json:"historical_completion_fence"`
 	}
 	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
-		if metadata.Fence.Excluded {
+		if metadata.Fence.Excluded || attempt.TerminalState == store.WorkAttemptTerminalCancelled && metadata.Cancellation.IsAvailabilityInterruption() {
 			return true
 		}
 		for _, evidence := range metadata.BlockerEvidence {
