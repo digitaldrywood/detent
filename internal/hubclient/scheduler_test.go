@@ -82,7 +82,10 @@ func TestNativeCheckoutReportNegotiatesHubSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := scheduler.nativeProjects["native"]
-	for _, step := range []struct {
+	if source == nil {
+		t.Fatal("scheduler has no native project connector")
+	}
+	for index, step := range []struct {
 		supported, present bool
 		value              string
 	}{
@@ -96,6 +99,11 @@ func TestNativeCheckoutReportNegotiatesHubSupport(t *testing.T) {
 			t.Fatalf("ensureNativeMachine(supported=%v, repository=%q): %v", step.supported, repository, err)
 		}
 		mu.Lock()
+		if len(reports) != index+1 {
+			count := len(reports)
+			mu.Unlock()
+			t.Fatalf("machine reports = %d, want %d", count, index+1)
+		}
 		got := reports[len(reports)-1]
 		mu.Unlock()
 		if got.present != step.present || got.value != step.value {
@@ -108,6 +116,11 @@ func TestNativeCheckoutReportNegotiatesHubSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 	mu.Lock()
+	if len(reports) != 4 {
+		count := len(reports)
+		mu.Unlock()
+		t.Fatalf("machine reports = %d, want 4 after heartbeat", count)
+	}
 	got := reports[len(reports)-1]
 	mu.Unlock()
 	if got.present {
@@ -118,6 +131,11 @@ func TestNativeCheckoutReportNegotiatesHubSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 	mu.Lock()
+	if len(reports) != 5 {
+		count := len(reports)
+		mu.Unlock()
+		t.Fatalf("machine reports = %d, want 5 after heartbeat", count)
+	}
 	got = reports[len(reports)-1]
 	mu.Unlock()
 	if !got.present || got.value != "" {
