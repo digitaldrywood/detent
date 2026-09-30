@@ -20,7 +20,7 @@ func (c *Connector) createMachineIssue(ctx context.Context, draft connector.Issu
 	if store == nil {
 		var err error
 		store, err = coordination.NewGitHubRefStore(coordination.GitHubRefConfig{
-			Repository: repository, Branch: config.Branch, Client: c.client,
+			Repository: repository, Branch: config.Branch, Client: c.client, Purpose: "reconciliation",
 		})
 		if err != nil {
 			return connector.Issue{}, err

@@ -211,6 +211,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 
 	client, err := NewClient(ClientConfig{
 		Endpoint:                   cfg.Endpoint,
+		Project:                    cfg.ProjectSlug,
 		TokenSource:                tokenSource,
 		HTTPClient:                 httpClient,
 		GraphQLMinRemainingReserve: int64(cfg.GraphQLMinRemainingReserve),
