@@ -100,17 +100,35 @@ func TestHostedLoginCallbackProtection(t *testing.T) {
 func TestHostedLoginStaffAndUnallocatedStart(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name      string
-		allocated bool
-		staff     bool
+		name         string
+		allocated    bool
+		query        string
+		organization string
+		screenHint   string
 	}{
-		{name: "staff", allocated: true, staff: true},
-		{name: "new organization", allocated: false},
+		{name: "staff", allocated: true, query: "staff=1"},
+		{name: "new organization"},
+		{name: "sign in", allocated: true, organization: "org_provider_login"},
+		{name: "create account", allocated: true, query: "screen_hint=sign-up", organization: "org_provider_login", screenHint: "sign-up"},
+		{name: "unscoped create account", allocated: true, query: "unscoped=1&screen_hint=sign-up", screenHint: "sign-up"},
+		{name: "unknown hint", allocated: true, query: "screen_hint=unexpected", organization: "org_provider_login"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newHostedLoginProvider()
 			s := openTestService(t, hostedLoginConfig(t, p, tt.allocated))
-			_, _ = hostedLoginStart(t, s, tt.staff)
+			recorder := hostedLoginRequest(s, http.MethodGet, "/auth/oidc/start?"+tt.query, "", nil, false)
+			location, err := url.Parse(recorder.Header().Get("Location"))
+			if recorder.Code != http.StatusSeeOther || err != nil {
+				t.Fatalf("authorization redirect = %d %q, error = %v", recorder.Code, recorder.Header().Get("Location"), err)
+			}
+			query := location.Query()
+			if query.Get("organization_id") != tt.organization || query.Get("screen_hint") != tt.screenHint || query.Has("screen_hint") != (tt.screenHint != "") {
+				t.Fatalf("authorization query = %v", query)
+			}
+			if query.Get("state") == "" || query.Get("code_challenge") == "" {
+				t.Fatal("authorization lost state or PKCE")
+			}
+			_ = hostedLoginCookie(t, recorder, hostedTransactionCookie)
 		})
 	}
 }

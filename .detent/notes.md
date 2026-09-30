@@ -1,6 +1,130 @@
+## Codex Workpad
+
+Plan and result: merge fallback for #3440 / PR #3455 merges fetched develop `81311b8e8857c53ce6da3d57e810368c70e323be` into published PR head `e8727a6a15a649dfe4cf488800033b877409d317` without rebasing. Published history is retained as the first parent. Only `.detent/notes.md` conflicted; both historical handoff histories are preserved below. Source, generated assets and visual fixtures merged automatically; no manual source edits or asset generation were required.
+
+Prior notes verified: starting local head matches the fetched published PR head. Its parents are `7b7e60d2b364bf30a880b7f936d574bcfa6d6fb5` and prior target `962f52c6abe8642ba3c95044bb66c9e0bc267d37`, matching the preceding Rework handoff. Prior diagnostic results are historical and do not validate this resolved head.
+
+Key issue files: `web/conversation/src/app/account/Login.tsx`, `web/conversation/src/app/entry/EntryScreens.tsx`, `web/conversation/src/app/main.tsx`, `web/conversation/src/app/index.css`, `internal/hubserver/hosted_ui.go`, `internal/hubserver/hosted_login.go`, `internal/cloudentry/login.go`, and `tests/visual/hub-login.spec.js`. This fallback only resolves handoff notes; incoming source and invariant changes are retained unchanged.
+
+Validation: no tests, lint, vet, builds, asset generation, local gate (including `true`), CI checks or validation waits performed in this session. Gate/CI timings are unmeasured. No current-head validation success is claimed.
+
+Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. Return immediately after committing the resolution with a source-clean workspace. No out-of-scope findings, push, PR merge, issue-state changes, tracker lane writes or live-instance mutation.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7348"
+  completion_generation: "36"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both sides
+
+The following records concern earlier heads or other issues. Their validation and completion metadata do not apply to this resolved head or authorize validation or publication in this session.
+
+## Historical Workpad
+
+Plan and result: Rework attempt 7340 / generation 28 retains published PR #3455 head 7b7e60d2b364bf30a880b7f936d574bcfa6d6fb5 and merges fetched develop 962f52c6abe8642ba3c95044bb66c9e0bc267d37 without rebasing. Only handoff notes conflicted; both histories are retained below. Source merged automatically, preserving this issue's sign-up hint alongside develop's logout changes. Frontend, generated assets, visual fixtures and screenshots match the published head exactly.
+
+Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
+
+Validation: focused Hub shell/HTTP/login and shared-entry transaction/invitation/boundary/logout diagnostics passed on the combined source (6.87s command; Hub 1.713s, shared entry 2.880s). Affected-package vet passed (1.20s). Full issue diff and merge resolution reviewed; staged and non-generated whitespace checks passed. Frontend, generated assets, visual fixtures and screenshots exactly match the prior published head, so prior attempt 7329 generation, TypeScript checking, 99 component tests and four strict Linux Chromium Playwright cases are retained without repetition. Only four new hub-login baselines differ from develop; all existing desktop baselines are unchanged. No generated inputs or issue-owned invariant changes; invariants match develop. Configured true gate runs on the final committed head immediately before publication and provides no test credit. No full suite, coverage, race suite or CI wait.
+
+Handoff: commit and publish with an explicit expected-head lease, then record exact-head ancestry, review and check evidence in the canonical issue Workpad. PR #3455 is open, non-draft, targets develop and references Fixes #3440. No actionable reviews or threads; only the review bot usage-limit notice. Orchestrator owns lane transitions, squash merge and integrated-develop validation. No dependencies or out-of-scope discovery. Scratch stays under supplied TMPDIR; port 4000 is untouched.
+
+Skill draft: no — routine target merge and notes conflict resolution need no reusable procedure.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7340"
+  completion_generation: "28"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both sides
+
+## Historical Workpad
+
+Plan and result: Rework attempt 7334 / generation 22 retains published PR #3455 head aa657230e3072a70c0b29b56642fa80db2818cf4 and merges fetched develop ad7ab10857ba845495bc9ace4bf57fd362fb946a without rebasing. Only handoff notes conflicted; both histories are preserved. Source files, generated assets, visual fixtures and baselines merged automatically. All issue-owned source, tests, generated assets and screenshots exactly match the prior published head.
+
+Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
+
+Validation: focused Hub shell/HTTP/OIDC/login and shared-entry transaction/invitation diagnostics passed on the resolved source (9.63s command; Hub 2.097s, shared entry 0.988s). Prior attempt 7329 evidence is retained for the unchanged frontend and auth implementation: generation, TypeScript checking, 99 account/entry component tests, affected-package vet, Linux preview compilation and four strict Linux Chromium Playwright cases passed. No frontend/browser diagnostics or generation repeated because source and generated assets are unchanged. Only four new hub-login baselines differ from develop; all pre-existing desktop baselines are unchanged. Full issue diff and merge resolution reviewed. No issue-owned invariant change; incoming invariants match develop.
+
+Handoff: commit the resolution, run configured true on the exact committed head immediately before lease-protected publication, then record published-head ancestry and current feedback/checks in the canonical issue Workpad. PR #3455 is open, non-draft, targets develop and references Fixes #3440. Reviews and threads are empty; only the review bot usage-limit notice exists, with no findings. Initial current-head checks were absent, an expected skip with no test credit. No required checks, merge-group workflow, quiet window, PR CI wait, full checks, coverage or race suite applies. Orchestrator owns lane transitions, squash merge and integrated-develop validation. No dependencies or out-of-scope discoveries. Scratch stays under supplied TMPDIR; live port 4000 is untouched.
+
+Skill draft: no — routine notes conflict resolution and target refresh need no new reusable procedure.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7334"
+  completion_generation: "22"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both sides
+
+## Historical Workpad
+
+Plan and result: Rework attempt 7329 / generation 17 retains published PR #3455 head 76c04274a2de1de73697cdc393bc1fe42999611c and merges fetched develop 69874645ab6254f5480990b298e0ce4deeb5e987 without rebasing. Conflicts were limited to handoff notes and generated client JavaScript/CSS. Both histories are preserved; make generate rebuilt combined assets. All source merged automatically. The issue-owned sign-in source and tests exactly match the prior published head.
+
+Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
+
+Validation: make generate passed (18.75s; existing CSS/sourcemap/font/chunk and Node deprecation warnings). TypeScript checking and all 99 account/entry component tests passed (12.37s command; 3.67s Vitest). Focused Hub shell/HTTP/OIDC/invitation and shared-entry transaction/invitation diagnostics plus affected-package vet passed (12.74s command; Hub 1.494s, shared entry 0.899s). Linux/arm64 preview test binaries compiled (10.27s). Four Linux Chromium Playwright cases passed with snapshot updates disabled in mcr.microsoft.com/playwright:v1.61.0-noble (8.01s command; 6.6s suite), covering both public surfaces, actual provider hint/absence, error cards, authenticated /login, mobile overflow, keyboard and accessibility. Only four new hub-login baselines differ from develop; all pre-existing desktop baselines are unchanged. Full issue diff and merge resolution reviewed. Non-generated whitespace check passed; generated app.js retains inherited third-party whitespace, left as emitted by generation. No issue-owned invariant change; incoming invariants remain unchanged from develop.
+
+Handoff: commit the resolution, run configured true on the exact committed head immediately before lease-protected publication, then record published-head ancestry and current feedback/checks in the canonical issue Workpad. PR #3455 is open, non-draft, targets develop and references Fixes #3440. Reviews and threads are empty; only the review bot usage-limit notice exists, with no findings. Initial current-head checks were absent, an expected skip with no test credit. No required checks, merge-group workflow, quiet window, PR CI wait, full checks, coverage or race suite applies. Orchestrator owns lane transitions, squash merge and integrated-develop validation. No dependencies or out-of-scope discoveries. Scratch stayed under supplied TMPDIR; live port 4000 was untouched.
+
+Skill draft: no — existing merge-resolution and Linux preview guidance covers this refresh.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7329"
+  completion_generation: "17"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both sides
+
+## Historical Workpad
+
+Plan and result: Rework attempt 7323 / generation 14 retains published PR #3455 head b89f73b86acf21465d22d4c7489b5bf1a34ff113 and merges fetched develop 9a0691c07777b962c56cdd792af690f7aa116e6b. Develop advanced before publication; a second merge includes f5f3d56e7f17a3fa0f3611c7886c124f9244a0bc, retaining intermediate resolution 341aafc94. Both merges conflict only in notes. Latest Rework reported merge_fast_path_head_not_ready / dirty. The PR response had a stale baseRefOid; fetched and live Git refs establish the actual target. Only .detent/notes.md conflicted; both handoff histories are preserved. Source and generated assets merged automatically.
+
+Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
+
+Validation: focused Hub shell/HTTP/OIDC/invitation and shared-entry transaction/invitation diagnostics passed on the resolved source (12.03s command; Hub 1.473s, shared entry 0.923s). Full issue diff and merge resolution reviewed; whitespace check passed. Scoped source, tests, generated assets and screenshots exactly match published head b89f73b86. Prior attempt 7298 evidence is retained for that unchanged implementation: 99 component tests, TypeScript checking, affected package vet, Linux preview compilation and four strict Playwright cases passed. Frontend/browser diagnostics were not repeated. The second target refresh changes only unrelated orchestrator recovery code, its fixture, invariants documentation and notes; scoped Go and frontend source are unchanged from the diagnostic run, so no diagnostics were repeated. Only four new hub-login baselines differ from develop; all pre-existing desktop baselines are unchanged. No generated inputs changed, so prior make generate evidence is retained. No issue-owned invariant change; incoming invariant updates are retained unchanged from develop. Configured gate true runs on the final committed head immediately before push and gives no test credit. No full checks, coverage, race suite, quiet window or CI wait applies.
+
+Handoff: publish the committed resolution with an exact expected-head lease, then record published-head ancestry and current reviews/checks in the canonical issue Workpad. PR remains ready against develop and references Fixes #3440. No actionable review findings or dependencies. Orchestrator owns lane transitions and squash merge. No live-instance mutation.
+
+Skill draft: no — routine target refresh and handoff conflict resolution need no new reusable procedure.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7323"
+  completion_generation: "14"
+  completion_cleanliness_resolution: committed
+
+# Historical incoming target handoff
+
 # Issue #3454 Rework handoff — 2026-09-30
 
-## Codex Workpad
+## Historical Workpad
 
 Plan and result: attempt 7341 / generation 29 merges fetched develop 962f52c6abe8642ba3c95044bb66c9e0bc267d37 into published PR #3471 head a8dde869134e03d92e2690f4f8977cdfdd4c0edb, preserving both as ancestors. Rework feedback concerns target merge conflicts; no actionable reviews or dependencies. Only these notes conflicted. Both historical handoffs are retained; all source merged automatically. No manual source edits, generated-input or invariant changes, new mechanisms, stray artifacts or out-of-scope findings.
 
@@ -12,7 +136,7 @@ Handoff: PR #3471 is already non-draft, targets develop and includes Fixes #3454
 
 Skill draft: no — existing guidance covers this notes conflict repair and publication.
 
-```detent-status
+```yaml
 schema: 1
 status: in_progress
 blockers: []
@@ -20,6 +144,28 @@ human_action: null
 ```
 
 # Historical handoffs
+
+## Historical Workpad
+
+Plan and result: Rework attempt 7298 / generation 7 verified and retained published PR #3455 head 57d60d8707a060c7a703921e82eebb281b0adbf9, then merged fetched develop 3ce76fc185cf1d090eacaa27779ac77cfc84587c. Rework arose from stale target ancestry, with no actionable review findings. Only handoff notes conflicted; both histories are preserved. The sign-in source matches the original implementation, and source/generated assets match the published head. Incoming workspace test repairs are retained unchanged from develop.
+
+Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
+
+Validation: all 99 account/entry component tests and TypeScript checking passed (13.4s command, 4.89s Vitest). Focused Hub shell/HTTP/OIDC and shared-entry transaction/invitation diagnostics passed (Hub 2.276s, shared entry 1.468s); affected package vet passed (14.3s combined command). Linux/arm64 preview cross-compilation passed (23.5s). Four Linux Chromium cases using mcr.microsoft.com/playwright:v1.61.0-noble passed with snapshot updates disabled (6.3s suite, 7.2s command): both public screens, actual sign-in/sign-up provider requests, card errors, authenticated /login, mobile overflow, keyboard and accessibility. No pre-existing desktop baseline changed. Full issue diff and merge diff reviewed; whitespace checks passed. No generated inputs changed during this target refresh, so prior make generate evidence is retained. No invariant changes.
+
+Handoff: commit this resolved merge, run configured true on that exact head immediately before push, then refresh the canonical issue Workpad with exact publication/ancestry and current-head review/check evidence. The gate is a no-op and gives no test credit. Initial current-head checks were absent, with no actionable reviews or threads; automated review reported its usage limit and is not required. No quiet window, PR CI wait, merge-group workflow, full gate, coverage or race suite applies. Orchestrator owns lane changes, squash merging and scheduled integrated-develop validation. No dependencies or out-of-scope findings. Preview evidence stays under supplied TMPDIR; live port 4000 was untouched.
+
+Skill draft: no — existing preview and merge-resolution guidance covers this refresh.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7298"
+  completion_generation: "7"
+  completion_cleanliness_resolution: committed
+
+# Historical incoming target handoff
 
 Earlier records concern other heads or issues; their validation and completion metadata do not apply to this attempt.
 
@@ -43,6 +189,34 @@ status: in_progress
 blockers: []
 human_action: null
 ```
+
+# Historical handoffs retained from both sides
+
+## Historical Workpad
+
+- Plan and result: retain unpublished merge `5a6b32a097fc13037bac02e65fead5b2c3eb97dd`, merge freshly fetched develop `05725ad76853799c54c45db74deebcad0035b4f6` into the existing PR history without rebasing, commit the merge, and return immediately to Detent.
+- Verified PR #3455 is open against `develop` on the assigned isolated branch. Fetched published head is `0f3f6a6e720b487a609a4807fca6c5cb726e5b62`, an ancestor of the source-clean starting local head. The retained local merge's parents are that published head and prior target `69781ca9505d8356771e2e4d5c1552d5316cbac5`, matching the prior handoff. The preceding published merge's parent record also matches Git history. Prior diagnostics remain historical only.
+- Current target merged automatically with no conflicts or blockers. Retained the existing source and generated asset resolution, with no manual source edits, asset generation, or out-of-scope findings. Updated only these handoff notes beyond the automatic merge, preserving historical records below.
+- Key issue files remain `web/conversation/src/app/account/Login.tsx`, `web/conversation/src/app/entry/EntryScreens.tsx`, `web/conversation/src/app/main.tsx`, `web/conversation/src/app/index.css`, `internal/hubserver/hosted_ui.go`, `internal/hubserver/hosted_login.go`, and `internal/cloudentry/login.go`. These files and `static/app/conversation/app.js` / `app.css` match the fetched published PR head.
+- Validation: no tests, lint, vet, typecheck, builds, local gate (including `true`), CI checks, or validation waits run in this session. No current-head validation credit claimed; gate/CI and post-merge timings are unmeasured.
+- Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+# Issue #3452 Rework handoff — 2026-09-30
+
+# Incoming develop handoff history
+
+# Issue #3449 Rework handoff — 2026-09-30
+
+# Incoming develop handoff history
+
+# Issue #3453 merge fallback handoff — 2026-09-30
+
+# Issue #3258 merge fallback handoff — 2026-09-30
+
+## Historical Workpad
+
+# Incoming develop handoff history
+
+# Historical incoming target handoff
 
 # Historical handoffs
 
@@ -536,6 +710,16 @@ Open items: Detent owns independent branch ownership, cleanliness and target-anc
 
 # Historical handoffs
 
+These records concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+## Historical Workpad (#3440 retained unpublished merge)
+
+- Plan and result: merge freshly fetched develop `69781ca9505d8356771e2e4d5c1552d5316cbac5` into published PR #3455 head `0f3f6a6e720b487a609a4807fca6c5cb726e5b62`, preserving published history without rebasing, commit the resolution, and return immediately to Detent.
+- Verified PR #3455 is open against `develop` on the assigned isolated branch. Starting local HEAD and fetched published PR head match, with a source-clean workspace and no merge or rebase in progress. Verified the preceding merge's parents `6452077fd8df58d6680f7e726ee0bfb8e39691b7` and `09011d003ef74adb8a0fab414e7be80cbce6661a`; the earlier resolution's parents match its notes. Key issue source files and generated assets are unchanged between those two preceding resolutions. Historical diagnostics do not validate this head.
+- Only conflict: `.detent/notes.md`. Preserved both sides' historical handoffs, including prior #3440 and incoming #3448 records, with one current Workpad/status fence. All source files and generated assets merged automatically; no manual source edits, asset generation, or out-of-scope findings.
+- Key issue files remain `web/conversation/src/app/account/Login.tsx`, `web/conversation/src/app/entry/EntryScreens.tsx`, `web/conversation/src/app/main.tsx`, `web/conversation/src/app/index.css`, `internal/hubserver/hosted_ui.go`, `internal/hubserver/hosted_login.go`, and `internal/cloudentry/login.go`; the preceding generated asset resolution is retained.
+- Validation: no tests, lint, vet, typecheck, builds, local gate (including `true`), CI checks, or validation waits run in this session. No current-head validation credit claimed; gate/CI and post-merge timings are unmeasured.
+- Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
 # Issue #3452 merge fallback handoff — 2026-09-30
 
 - PR #3469 is open against `develop`, on the assigned isolated branch, and includes `Fixes #3452`. Source-clean starting local HEAD and fetched published PR head match `9c62696155653bfd09b10fb0666edebe6ab305cc`. No merge or rebase was in progress at session start.
@@ -566,6 +750,25 @@ These records concern earlier heads or other issues. Their validation, completio
 
 # Historical handoffs
 
+The following records concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+## Historical Workpad (#3440 preceding merge)
+
+- Plan and result: merge freshly fetched develop `09011d003ef74adb8a0fab414e7be80cbce6661a` into published PR #3455 head `6452077fd8df58d6680f7e726ee0bfb8e39691b7`, preserving published history without rebasing, commit the resolution, and return to Detent.
+- Verified PR #3455 is open against develop on the assigned isolated branch. Starting local and fetched published head match; the workspace was source-clean with no merge or rebase in progress. The preceding resolution's parents are `78cb74b12f414df43b128e9cd7cbe2ef49c6fae6` and `0721153854edcd0bd1fecd81edc90edbfc1853ba`, matching its notes. The recorded implementation parent `a80b710099516938a38c8cadb785f7fa61a56386` also matches Git history. Historical validation is not evidence for this head.
+- Only conflict: `.detent/notes.md`. Retained both sides' historical handoffs, including the preceding #3440 resolution and incoming #3451/#3447 records, with one current Workpad/status fence. All source files and generated assets merged automatically; no manual source edits, asset generation, or out-of-scope findings.
+- Key issue files remain `web/conversation/src/app/account/Login.tsx`, `web/conversation/src/app/entry/EntryScreens.tsx`, `web/conversation/src/app/main.tsx`, `web/conversation/src/app/index.css`, `internal/hubserver/hosted_ui.go`, `internal/hubserver/hosted_login.go`, and `internal/cloudentry/login.go`. These files match the prior implementation; the preceding generated asset resolution is retained.
+- Validation: no tests, lint, vet, typecheck, builds, local gate (including `true`), CI checks, or validation waits run in this session. No current-head validation credit claimed; gate/CI and post-merge timings are unmeasured.
+- Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_cleanliness_resolution: committed
+
+# Historical incoming target handoff
+
 The records below concern earlier heads or other issues. Their validation and completion metadata do not apply to this resolved head or authorize validation or publication in this session.
 
 # Issue #3454 browser visual repair
@@ -590,6 +793,22 @@ status: in_progress
 blockers: []
 human_action: null
 ```
+
+# Historical handoffs retained from both sides
+
+The following records concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+## Historical Workpad
+
+- Plan and result: merge fetched develop into PR #3455 for issue #3440, commit the conflict resolution, and return immediately to Detent with a source-clean workspace.
+- Verified PR #3455 is open against `develop` on the assigned isolated branch. The source-clean starting local head and remote PR head both match `78cb74b12f414df43b128e9cd7cbe2ef49c6fae6`; its parent is `a80b710099516938a38c8cadb785f7fa61a56386`, matching the prior #3440 rebase notes. Prior validation is historical only.
+- Merged freshly fetched target `0721153854edcd0bd1fecd81edc90edbfc1853ba` into the published PR history without rebasing; the remote PR head is retained as the first parent.
+- Conflicts: `.detent/notes.md`, `static/app/conversation/app.js`, and `static/app/conversation/app.css`. Preserved both sides' historical handoffs, including #3440 and incoming #3408, with one current Workpad/status fence. All source files merged automatically; no manual source changes or out-of-scope findings.
+- Key issue files: `web/conversation/src/app/account/Login.tsx`, `web/conversation/src/app/entry/EntryScreens.tsx`, `web/conversation/src/app/main.tsx`, `web/conversation/src/app/index.css`, `internal/hubserver/hosted_ui.go`, `internal/hubserver/hosted_login.go`, and `internal/cloudentry/login.go` remain unchanged from the published PR head. Regenerated both conflicted client assets from the combined sources, retaining the incoming Sprites settings UI; no other generated assets changed.
+- Validation: no tests, lint, vet, typecheck, local gate (including `true`), CI checks, or validation waits run. `npm run build` completed solely to regenerate the conflicted assets (4.9s command); this is not validation credit. It emitted CSS highlight, component sourcemap, font-resolution and chunk-size warnings, consistent with prior generation notes. Historical evidence does not validate this head; gate/CI and post-merge timings are unmeasured.
+- Open items: Detent owns independent branch ownership, cleanliness, target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+# Historical incoming target handoff
 
 # Historical fetched develop handoffs
 
@@ -630,6 +849,8 @@ Open items: Detent owns independent branch ownership, cleanliness and target-anc
 schema: 1
 status: complete
 fields:
+  completion_work_attempt_id: "7234"
+  completion_generation: "102"
   completion_cleanliness_resolution: committed
 blockers: []
 human_action: null
@@ -2937,6 +3158,20 @@ fields:
   completion_cleanliness_resolution: committed
 blockers: []
 human_action: null
+
+
+# Issue #3440 handoff — Hub sign-in
+
+- Both public sign-in surfaces share the detent.build mark, seven absolute site navigation links, and a 400px card with only Sign in and Create account. Removed invitation token controls and vendor wording from LoginCard; other account screens retain their existing layout.
+- Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css. Public /login renders before bootstrap, including for an already signed-in browser. internal/hubserver/hosted_ui.go now routes /login to the existing application shell instead of the legacy vendor-branded server page; browser verification reproduced that bypass before its repair.
+- internal/hubserver/hosted_login.go and internal/cloudentry/login.go forward only screen_hint=sign-up through existing authorization URLs. Organization scoping, state, cookies and PKCE remain intact; invitation email flows pass no sign-up hint.
+- Extended existing component and Go tables. The new hint cases fail against original handlers using a scratch Go overlay and pass against the implementation. No invariant or enforcement changes, mechanism, product configuration or CLI additions.
+- Passed: 99 account/entry component tests; TypeScript checking; focused Hub shell, shared-entry shell, hosted HTTP, OIDC callback, transaction and invitation diagnostics; vet for internal/hubserver and internal/cloudentry; make generate. Generated app.js and app.css are included.
+- Browser: Chrome DevTools verified both public pages and error rendering on isolated ephemeral previews. Linux/arm64 Chromium in mcr.microsoft.com/playwright:v1.61.0-noble passed four focused Playwright cases (6.4s): both sign-in surfaces, actual provider hint/absence, error card, mobile viewport/overflow, authenticated /login, keyboard and accessibility. Four new desktop baselines under hub-login.spec.js were generated and then compared with updates disabled. All pre-existing desktop baselines are unchanged.
+- Preview helpers keep fixture output in provided scratch and accept cross-compiled preview test binaries for Linux browser diagnostics. No live process or port-4000 mutation. No full validation gate, coverage, race suite or CI wait; configured gate is true and gives no test credit.
+- Rebased onto develop a80b71009 after PR publication. Only shared notes and generated app.js conflicted; preserved incoming handoffs and rebuilt the combined client. Focused Go diagnostics, vet, 99 component tests, TypeScript checking and four strict Linux Playwright cases passed again on the rebased source.
+- PR #3455 targets develop and references Fixes #3440. No implementation open items; final gate, publication and current-head review evidence are in the canonical issue Workpad. Orchestrator owns lane transitions and merging.
+- Skill draft: no — existing preview guidance covers this routine UI and OIDC change.
 
 # Issue #3408 implementation
 
