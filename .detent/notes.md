@@ -1,3 +1,11 @@
+# Issue #3400 merge fallback handoff (attempt 7114, generation 44)
+
+- Verified PR #3421 is open, targets `develop`, includes `Fixes #3400`, and has published head `10364b20fa9e31f0c3567974e537b152b098a5fe`, matching the source-clean local branch. Prior handoffs describe merges already present in that history.
+- Merged freshly fetched develop commit `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c` into the published head without rebasing.
+- Only conflict: `.detent/notes.md`. Preserved historical handoffs, including incoming #3273 notes, and consolidated one current Workpad/status block. `docs/invariants.md`, `internal/config/config.go`, `internal/config/runner_policy.go`, and `internal/config/runner_policy_test.go` merged automatically; no manual source edits were required.
+- Validation: no tests, builds, local gate, or CI checks run. Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI after return.
+- Open items: Detent verification/validation/publication and native Windows scheduled validation. Incoming historical notes mention existing #3427; no new finding or out-of-scope investigation occurred. No push, PR merge, or issue/lane mutation performed.
+
 # Issue #3400 merge fallback handoff (attempt 7103, generation 34)
 
 - Verified PR #3421 is open, targets `develop`, includes `Fixes #3400`, and has published head `f68005c60c44dfe93c667666e928cefbac980066`, matching the source-clean local branch before this merge. The prior #3400 handoff is historical; the published head already contains its resolution.
@@ -16,18 +24,18 @@
 
 ## Codex Workpad
 
-Plan: merge fetched develop into the published PR branch, preserve published history and historical handoff notes, and commit the resolution.
+Plan: merge fetched develop into the published PR branch, preserve historical handoffs, and commit the notes-only conflict resolution. Merge prepared against develop `c4455b9277dbcb7a9622a8d5a369bb1a7283cc5c`, preserving published PR head `10364b20fa9e31f0c3567974e537b152b098a5fe` as the first parent.
 
-Validation: deferred to Detent by the merge-fallback instructions. No tests, builds, local gate, or CI checks run in this session; no current-head validation evidence claimed. Quiet-window, gate/CI, slow-check, and post-merge CI timings are not measured.
+Validation: deferred to Detent. No tests, builds, local gate, or CI checks run in this session; historical results below do not validate this head. Quiet-window, gate/CI, slow-check, and post-merge CI timings are not measured.
 
-Open items: Detent verification, bounded validation, lease-protected publication, and native Windows scheduled validation. No out-of-scope findings identified.
+Open items: Detent verification, bounded validation, lease-protected publication, and native Windows scheduled validation. Incoming #3273 notes record an existing #3427 compilation problem; that historical report was not reproduced or investigated here. No new out-of-scope repair identified.
 
 ```detent-status
 schema: 1
 status: complete
 fields:
-  completion_work_attempt_id: "7103"
-  completion_generation: "34"
+  completion_work_attempt_id: "7114"
+  completion_generation: "44"
 blockers: []
 human_action: null
 ```
@@ -72,3 +80,13 @@ human_action: null
 - Prior notes above concern #3252; they are historical and do not establish validation for this resolved head. PR #3423 already includes `Fixes #3403`.
 - Validation: no local gate, tests, or CI checks run during this fallback, as instructed. Detent owns resolved-head verification, bounded validation, lease-protected publishing, and current-head CI waiting.
 - Open items: Detent's verification and validation; no out-of-scope findings identified. No push, PR merge, or issue-state changes performed.
+
+
+# Issue #3273 handoff (historical target notes)
+
+- Historical-source probe using v0.117.1 config/gate files found exactly three JSON differences versus develop: absent Worker.HostSelection -> "least_loaded", absent Worker.HostCaps -> null, and Gate.RequiredStatusChecks [] -> null. The live definition is not attached; its exact reported digest pair was not independently reproduced.
+- `internal/config/runner_policy.go` normalizes a copy for the digest, collapsing least_loaded/absent host selection and preserving historical [] for empty required checks. Worker JSON omits empty host selection/caps, matching the existing LocalStatus omission. Runtime defaults, source matching, explicit policy inputs, approval, and runner grants are preserved.
+- `TestRunnerPolicyUpgradeKeepsApprovedID` now pins an approval captured with historical sources and an explicit workspace root, reproducing the unchanged-source upgrade mismatch before the fix. Cases preserve absent/default equivalence and reject preference, caps, local status, required checks, command, workspace root, and prompt changes. It also passes with a second nested worker TMPDIR.
+- Passed: `go test -p 4 ./internal/config/... ./internal/policy -count=1`; `go vet -p 4 ./internal/config/... ./internal/policy`; `git diff --check`. Configured gate is `true`; no full gates or CI were run. No generated inputs changed.
+- Downstream approval/authorization diagnostics could not compile: `internal/runner/ssh_protocol.go:210:85: undefined: ErrSessionNoProgress`, already tracked by #3427. Added evidence under its existing fingerprint, without expanding this fix.
+- INV-3 documents the policy normalization consolidation. Do not claim live Mac Cloud recovery before a repaired release is deployed and verified.

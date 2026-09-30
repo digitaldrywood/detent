@@ -39,7 +39,7 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 	if err := cfg.Validate(); err != nil {
 		return policy.Descriptor{}, err
 	}
-	cfg.Policy = policy.Descriptor{}
+	cfg = normalizePolicyConfig(cfg)
 	raw, err := json.Marshal(struct {
 		Config Config
 		Prompt string
@@ -63,4 +63,20 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 		},
 	}.WithID()
 	return descriptor, descriptor.Validate()
+}
+
+// normalizePolicyConfig preserves the approved JSON representation across
+// binary upgrades. Only equivalent absent/default execution settings collapse;
+// explicit policy changes remain digest inputs. Normalize a copy so runtime
+// configuration keeps its execution defaults.
+func normalizePolicyConfig(cfg Config) Config {
+	cfg.Policy = policy.Descriptor{}
+	if cfg.Worker.HostSelection == "least_loaded" {
+		cfg.Worker.HostSelection = ""
+	}
+	// Before v0.117.6, gate normalization serialized absent checks as [].
+	if cfg.Gate.RequiredStatusChecks == nil {
+		cfg.Gate.RequiredStatusChecks = []string{}
+	}
+	return cfg
 }
