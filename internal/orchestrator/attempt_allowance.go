@@ -424,11 +424,31 @@ func attemptTriageCIPending(pr *connector.PullRequest) bool {
 		return false
 	}
 	for _, check := range pr.RequiredCheckFailures {
-		if !autoPromoteCheckPending(check) {
+		if !attemptTriageCheckRunning(check) {
 			return false
 		}
 	}
-	return true
+	if len(pr.RunningChecks) > 0 {
+		return true
+	}
+	for _, check := range pr.Checks {
+		if attemptTriageCheckRunning(check) {
+			return true
+		}
+	}
+	return false
+}
+
+func attemptTriageCheckRunning(check connector.PullRequestCheck) bool {
+	if strings.EqualFold(strings.TrimSpace(check.Conclusion), "missing") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(check.Status)) {
+	case "pending", "queued", "waiting", "in_progress", "in progress", "requested":
+		return true
+	default:
+		return false
+	}
 }
 
 // Observation timestamps qualify the historical worker explanation without

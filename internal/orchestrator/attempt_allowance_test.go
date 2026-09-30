@@ -578,6 +578,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 		name, ci, mergeable, want, passState            string
 		newHead, disabled, preserve                     bool
 		threads                                         []connector.PullRequestReviewThread
+		requiredChecks                                  []connector.PullRequestCheck
 		unavailable                                     string
 		wantErr                                         bool
 		merged, validator, audit, auditRunning, pending bool
@@ -593,6 +594,8 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 		{name: "green head promotes", ci: "green", mergeable: "clean", want: "Merging"},
 		{name: "pending CI waits", ci: "pending", mergeable: "blocked", pending: true},
 		{name: "pending CI and missing audit wait", ci: "pending", mergeable: "blocked", audit: true, pending: true},
+		{name: "missing required check parks despite running CI", ci: "pending", mergeable: "blocked", requiredChecks: []connector.PullRequestCheck{{Name: "Required", Status: "missing", Conclusion: "missing"}}, want: "Blocked"},
+		{name: "queued required check waits", ci: "pending", mergeable: "blocked", requiredChecks: []connector.PullRequestCheck{{Name: "Required", Status: "queued"}}, pending: true},
 		{name: "failing head parks", ci: "failure", mergeable: "blocked", want: "Blocked"},
 		{name: "conflicting head parks", ci: "green", mergeable: "dirty", want: "Blocked"},
 		{name: "unresolved thread parks", ci: "green", mergeable: "clean", threads: []connector.PullRequestReviewThread{{Body: "thread"}}, want: "Blocked"},
@@ -607,6 +610,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 				live.PullRequest.Checks[0].Status = "in_progress"
 				live.PullRequest.RunningChecks = []string{"Smoke"}
 			}
+			live.PullRequest.RequiredCheckFailures = tt.requiredChecks
 			if tt.merged {
 				live.PullRequest.State = "merged"
 			}
