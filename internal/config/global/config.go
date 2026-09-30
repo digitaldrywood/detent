@@ -175,6 +175,7 @@ type CPU struct {
 	PressureSomeAvg10Threshold  float64 `yaml:"pressure_some_avg10_threshold"`
 	DegradedMaxConcurrentAgents int     `yaml:"degraded_max_concurrent_agents,omitempty"`
 	PollIntervalMS              int     `yaml:"poll_interval_ms"`
+	GoBuildBudget               int     `yaml:"go_build_budget,omitempty"`
 }
 
 func (m Memory) Normalized() Memory {
@@ -1422,6 +1423,9 @@ func pressureErrors(value any, prefix string, thresholdKey string) []string {
 	if value, ok := pressure["degraded_max_concurrent_agents"]; ok {
 		problems = append(problems, optionalNonNegativeIntegerError(value, prefix+".degraded_max_concurrent_agents")...)
 	}
+	if value, ok := pressure["go_build_budget"]; ok {
+		problems = append(problems, optionalNonNegativeIntegerError(value, prefix+".go_build_budget")...)
+	}
 	return problems
 }
 
@@ -1449,6 +1453,9 @@ func cpuPressureProblems(pressure CPU, prefix string) []string {
 	}
 	if pressure.DegradedMaxConcurrentAgents < 0 {
 		problems = append(problems, prefix+".degraded_max_concurrent_agents: must be a non-negative integer")
+	}
+	if pressure.GoBuildBudget < 0 {
+		problems = append(problems, prefix+".go_build_budget: must be a non-negative integer")
 	}
 	return problems
 }

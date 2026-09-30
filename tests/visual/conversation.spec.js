@@ -921,6 +921,36 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors).toEqual([]);
   });
 
+  test("offers Luna with low and medium reasoning in general chat", async ({ page }) => {
+    await openChat(page);
+    const surface = page;
+    await surface.getByTestId("composer-model").click();
+    const model = page.getByTestId("composer-model-option-gpt-6-luna");
+    await expect(model).toBeVisible();
+    await model.click();
+    await surface.getByTestId("composer-effort").click();
+    await expect(page.getByRole("option", { name: /Low/ })).toBeVisible();
+    await expect(page.getByRole("option", { name: /Medium/ })).toBeVisible();
+    await expect(page.getByRole("option", { name: /High/ })).toHaveCount(0);
+    await expect(page.getByTestId("composer-effort-default-low")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await surface.getByTestId("composer-model").click();
+    await page.getByTestId("composer-model-option-auto").click();
+    const linked = await openLinkedConversation(page);
+    await linked.getByTestId("composer-model").click();
+    await expect(page.getByTestId("composer-model-option-gpt-6-luna")).toHaveCount(0);
+  });
+
+  test("limits a new general chat to Luna", async ({ page }) => {
+    await openChat(page);
+    await page.getByTestId("composer-model").click();
+    await expect(page.getByTestId("composer-model-option-gpt-6-luna")).toBeVisible();
+    await expect(page.getByTestId(/^composer-model-option-/)).toHaveCount(2);
+    await page.keyboard.press("Escape");
+    await page.getByTestId("composer-effort").click();
+    await expect(page.getByRole("option", { name: /High/ })).toHaveCount(0);
+  });
+
   test("offers the runners' model catalogue and the access choices", async () => {
     test.skip(true, "The hub bootstrap publishes no model or access choices on main: the runner catalogue slice of #2635 is not ported.");
   });

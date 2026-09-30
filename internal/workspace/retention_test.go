@@ -431,3 +431,59 @@ func TestRetentionRemovalFailureDeduplicatesArchives(t *testing.T) {
 		})
 	}
 }
+
+func TestRetentionCompletedResidue(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name     string
+		foreign  bool
+		checkout bool
+		age      time.Duration
+		remove   bool
+		wantErr  bool
+	}{
+		{name: "expired residue", age: 8 * 24 * time.Hour, remove: true},
+		{name: "recent residue", age: 6 * 24 * time.Hour},
+		{name: "foreign git workspace", foreign: true, age: 8 * 24 * time.Hour, wantErr: true},
+		{name: "checkout files remain", checkout: true, age: 8 * 24 * time.Hour, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			backend := retentionBackend(t)
+			issue := Issue{ID: "2459", Identifier: "repo#2459"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, backend.sourceRoot, "worktree", "remove", "--force", info.Path)
+			retentionFixture(t, filepath.Join(info.Path, ".detent", "notes.md"), now)
+			if test.foreign {
+				runGit(t, info.Path, "init")
+			}
+			if test.checkout {
+				retentionFixture(t, filepath.Join(info.Path, "untracked.txt"), now)
+			}
+			request := RetentionRequest{Now: now, Completed: func(context.Context, []Issue) (map[string]time.Time, error) {
+				return map[string]time.Time{issue.ID: now.Add(-test.age)}, nil
+			}}
+			total, err := backend.SweepRetention(t.Context(), request)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("sweep error=%v", err)
+			}
+			_, err = os.Stat(info.Path)
+			if errors.Is(err, fs.ErrNotExist) != test.remove {
+				t.Fatalf("remove=%v stat=%v total=%+v", test.remove, err, total)
+			}
+			if !test.remove {
+				return
+			}
+			if total.Workspaces.Count != 1 || total.Workspaces.Bytes != 16 || total.Ownership.Count != 1 {
+				t.Fatalf("totals=%+v", total)
+			}
+		})
+	}
+}

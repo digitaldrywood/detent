@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -601,7 +602,7 @@ func TestHostedBrowserProviderAccountSelection(t *testing.T) {
 const browserHostedOwnerEmail = "owner@example.test"
 
 func browserPreviewConfig(cfg *Config) {
-	cfg.Conversation = &ConversationConfig{Enabled: true}
+	cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Model: genkitbackend.Model, ReasoningEffort: "low"}
 	cfg.Usage = &UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{
 		"gpt-6-astra":   {Input: 1.25, CachedInput: 0.125, Output: 10},
 		"claude-opus-5": {Input: 5, CachedInput: 0.5, Output: 25},

@@ -150,7 +150,6 @@ func TestLocalGitCleanupRecordedLanding(t *testing.T) {
 			runGit(t, source, "push", "origin", "main")
 			if tt.recorded {
 				issue.LandedHeadSHA = landedHead
-				issue.LandedMergeSHA = strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
 			}
 			if tt.extraCommit {
 				runGit(t, info.Path, "commit", "--allow-empty", "-m", "later work")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"slices"
 	"sort"
@@ -19,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/observability"
@@ -114,7 +116,7 @@ func withRunnerFactoryWithIsolation(
 		if run == nil {
 			projectServiceConnection := serviceConnectionForProject(serviceConnection, cfg.ID, serviceTokenSource)
 			var err error
-			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), sessionStore, deps.Logger, projectServiceConnection, isolationPolicy)
+			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, isolationPolicy)
 			if err != nil {
 				return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
 			}
@@ -169,6 +171,7 @@ func buildRunner(
 	projectID string,
 	projectWorkdir string,
 	memory globalconfig.Memory,
+	goBudget gobudget.Budget,
 	sessionStore runnerpkg.SessionStore,
 	logger *slog.Logger,
 	serviceConnection serviceapi.Connection,
@@ -178,11 +181,20 @@ func buildRunner(
 	if err != nil {
 		return nil, err
 	}
+	deps.GoBudget = goBudget
 	run, err := runnerpkg.NewRunner(deps)
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
 	return run, nil
+}
+
+func hostGoBudget(slots int) gobudget.Budget {
+	executable, err := os.Executable()
+	if err != nil {
+		executable = ""
+	}
+	return gobudget.New(slots, gobudget.HostDir(), executable)
 }
 
 // buildRunnerDependencies assembles production wiring independently of runner
