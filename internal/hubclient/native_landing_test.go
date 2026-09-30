@@ -88,6 +88,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github bool) 
 	head := strings.Repeat("c", 40)
 	h.claim(t, issue.ID)
 	work := h.scheduler.RunExecution(issue.ID)
+	if work == nil {
+		t.Fatal("claimed issue has no native execution")
+	}
 	guarded, stop, err := work.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +135,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github bool) 
 		t.Fatal(err)
 	}
 	landing := h.scheduler.RunExecution(issue.ID)
+	if landing == nil {
+		t.Fatal("claimed issue has no landing execution")
+	}
 	guarded, stop, err = landing.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)
