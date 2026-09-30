@@ -519,9 +519,10 @@ administrator approval. Source identity and administrator-authorized runner
 requirements still match exactly; no mismatch bypass or recovery path is added.
 `TestRunnerPolicyUpgradeKeepsApprovedID` pins a v0.117.1 approval with an explicit
 workspace root and execution shells so host defaults cannot change the fixture.
-The fixture explicitly retains the historical opt-out label; removing it is a
-policy change and rejects the historical approval after #3281's intentional
-review-default change. Zero-valued human-review settings are omitted from policy
+Empty opt-out labels and the historical `requires-human-review` default share
+the approved representation: runtime label matching always recognizes that
+built-in label. Custom opt-out labels remain policy inputs. Zero-valued
+human-review settings are omitted from policy
 JSON, preserving the representation before that field existed, while enabling
 human review changes both the config digest and gate descriptor (#3451).
 Equivalent absent/default host and check settings still match; explicit policy
