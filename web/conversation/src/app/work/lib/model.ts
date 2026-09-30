@@ -55,6 +55,7 @@ export interface ChangeView {
 }
 
 export interface WorkItemView {
+  readonly archived?: boolean;
   readonly id: string;
   readonly projectId: string;
   readonly projectName: string;

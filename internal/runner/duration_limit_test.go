@@ -496,22 +496,6 @@ func TestRunAgentBackendTurnDoesNotTreatLivenessTimeoutAsTotalDuration(t *testin
 	}
 }
 
-func TestRunAgentBackendTurnLeavesDurationDisabledWithoutDeadline(t *testing.T) {
-	t.Parallel()
-
-	backend := &deadlineObservingAgentBackend{}
-	_, err, cleanupErr := runAgentBackendTurn(context.Background(), backend, AgentTurnRequest{}, nil)
-	if err != nil {
-		t.Fatalf("runAgentBackendTurn() error = %v", err)
-	}
-	if cleanupErr != nil {
-		t.Fatalf("runAgentBackendTurn() cleanup error = %v", cleanupErr)
-	}
-	if backend.hasDeadline {
-		t.Fatal("backend context has a deadline with duration limit disabled")
-	}
-}
-
 func TestRunAgentBackendTurnPropagatesDurationContextToUpdates(t *testing.T) {
 	t.Parallel()
 

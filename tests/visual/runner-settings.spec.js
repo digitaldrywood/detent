@@ -55,3 +55,21 @@ test("runner settings save through the fleet and remain visible after reload", a
   await expect(page.getByTestId("host-card")).toContainText("Trusted only: full host access");
   await expect(page.getByText("Edit runner settings")).toHaveCount(0);
 });
+
+test("runner outside hours stays contextual on the fleet card", async ({ page }) => {
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(new URL("/settings/runners", hub.fixture.url).toString());
+  const card = page.getByTestId("host-card").filter({ hasText: "Settings runner" });
+  await card.getByText("Edit runner settings").click();
+  const later = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  const end = new Date(later.getTime() + 60 * 60 * 1000);
+  const clock = (date) => date.toISOString().slice(11, 16);
+  await card.getByLabel("Availability timezone").fill("UTC");
+  await card.getByLabel("Weekly windows, one per line").fill(`Mon-Sun ${clock(later)}-${clock(end)}`);
+  await card.getByRole("button", { name: "Save runner" }).click();
+  await expect(card.getByText("Outside hours", { exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByTestId("host-card").getByText("Outside hours", { exact: true })).toBeVisible();
+  await page.screenshot({ path: "tmp/runner-outside-hours.png" });
+});

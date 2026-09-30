@@ -42,7 +42,7 @@ func newStripeFixture(t *testing.T) (*stripeFixture, Provider) {
 	f := &stripeFixture{responses: map[string]string{
 		"/v1/account":                                `{"id":"acct_test"}`,
 		"/v1/customers/cus_test":                     `{"id":"cus_test","livemode":false,"metadata":{"detent_organization_id":"org_test"}}`,
-		"/v1/subscriptions":                          `{"has_more":false,"data":[{"id":"sub_test","customer":"cus_test","livemode":false,"status":"active","metadata":{"detent_organization_id":"org_test"},"collection_method":"charge_automatically","items":{"has_more":false,"data":[{"quantity":1,"current_period_end":1900000000,"price":{"id":"price_test","livemode":false,"active":true,"type":"recurring","billing_scheme":"per_unit","recurring":{"usage_type":"licensed"}}}]},"latest_invoice":{"id":"in_test","customer":"cus_test","livemode":false,"status":"paid","created":1800000000,"amount_paid":1000,"parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_test"}}}}]}`,
+		"/v1/subscriptions":                          `{"has_more":false,"data":[{"id":"sub_test","customer":"cus_test","livemode":false,"status":"active","metadata":{"detent_organization_id":"org_test"},"collection_method":"charge_automatically","items":{"has_more":false,"data":[{"quantity":1,"current_period_start":1890000000,"current_period_end":1900000000,"price":{"id":"price_test","livemode":false,"active":true,"type":"recurring","billing_scheme":"per_unit","recurring":{"usage_type":"licensed"}}}]},"latest_invoice":{"id":"in_test","customer":"cus_test","livemode":false,"status":"paid","created":1800000000,"amount_paid":1000,"parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_test"}}}}]}`,
 		"/v1/invoice_payments":                       `{"has_more":false,"data":[{"invoice":"in_test","livemode":false,"status":"paid","amount_paid":1000,"payment":{"type":"payment_intent","payment_intent":"pi_test"}}]}`,
 		"/v1/payment_intents/pi_test":                `{"id":"pi_test","customer":"cus_test","livemode":false,"latest_charge":"ch_test"}`,
 		"/v1/charges/ch_test":                        `{"id":"ch_test","customer":"cus_test","livemode":false,"amount":1000,"amount_refunded":0,"disputed":false}`,
@@ -140,6 +140,9 @@ func TestStripeReconcile(t *testing.T) {
 				f.responses[test.path] = strings.Replace(f.responses[test.path], test.before, test.after, 1)
 			}
 			snapshot, err := provider.Reconcile(t.Context(), fixtureBinding())
+			if test.name == "paid active" && (!snapshot.PeriodStart.Equal(time.Unix(1890000000, 0)) || !snapshot.PeriodEnd.Equal(time.Unix(1900000000, 0))) {
+				t.Fatalf("period = %+v", snapshot)
+			}
 			if (err != nil) != test.wantError || snapshot.Status != test.status || snapshot.PaymentHold != test.hold {
 				t.Fatalf("reconcile = %+v, %v", snapshot, err)
 			}

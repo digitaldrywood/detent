@@ -161,7 +161,6 @@ function RunnerSettingsForm({
     <details className="border-t border-border/60 pt-2 text-xs">
       <summary className="cursor-pointer font-medium">Edit runner settings</summary>
       <form className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2" onSubmit={(event) => void submit(event)}>
-        <p className="text-muted-foreground sm:col-span-2">Isolation and availability settings are saved but not yet enforced.</p>
         <label>Runner name<input className="mt-1 w-full rounded border p-2" name="display_name" defaultValue={routing.display_name} required /></label>
         <label>Tags<input className="mt-1 w-full rounded border p-2" name="tags" defaultValue={routing.tags.join(", ")} /></label>
         <label>State<select className="mt-1 w-full rounded border p-2" name="state" defaultValue={routing.state}><option value="active">Active</option><option value="draining">Draining</option><option value="disabled">Disabled</option></select></label>
@@ -203,6 +202,18 @@ export function RunnersSectionView({
   readonly onSaveRouting?: (runner: FleetRunner, routing: RunnerRouting) => Promise<void>;
 }): React.ReactElement {
   const leases = fleet.runners.reduce((count, runner) => count + runner.leases.length, 0);
+  const [attentionOnly, setAttentionOnly] = React.useState(() => new URLSearchParams(window.location.search).get("health") === "needs_attention");
+  const attentionCount = fleet.runners.filter((runner) => runner.health === "needs_attention").length;
+  const runners = attentionOnly ? fleet.runners.filter((runner) => runner.health === "needs_attention") : fleet.runners;
+  function selectAttentionFilter(event: React.MouseEvent<HTMLAnchorElement>, only: boolean): void {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    const url = new URL(window.location.href);
+    if (only) url.searchParams.set("health", "needs_attention");
+    else url.searchParams.delete("health");
+    window.history.replaceState(window.history.state, "", url);
+    setAttentionOnly(only);
+  }
   return (
     <>
       <SettingsSection
@@ -225,7 +236,13 @@ export function RunnersSectionView({
         title="Runners"
         icon={<ServerIcon className="size-3.5" />}
         headerAction={
-          <span className="flex items-center gap-3">
+          <span className="flex flex-wrap items-center gap-3">
+            {attentionCount === 0 ? null : (
+              <a className="text-xs text-warning underline" href="?health=needs_attention#settings-runners" onClick={(event) => selectAttentionFilter(event, true)}>
+                {attentionCount} {attentionCount === 1 ? "runner needs" : "runners need"} attention
+              </a>
+            )}
+            {attentionOnly ? <a className="text-xs underline" href="?health=all#settings-runners" onClick={(event) => selectAttentionFilter(event, false)}>All runners</a> : null}
             <span className="text-xs text-muted-foreground tabular-nums">
               {fleet.runners.length} {fleet.runners.length === 1 ? "runner" : "runners"} · {leases}{" "}
               active {leases === 1 ? "lease" : "leases"}
@@ -245,7 +262,7 @@ export function RunnersSectionView({
           </p>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            {fleet.runners.map((runner) => (
+            {runners.map((runner) => (
               <HostCard
                 key={runner.id}
                 runner={runner}
@@ -256,6 +273,7 @@ export function RunnersSectionView({
             ))}
           </div>
         )}
+        {attentionOnly && fleet.runners.length > 0 && runners.length === 0 ? <p className="px-3 py-6 text-[13px] text-muted-foreground sm:px-4">No runners need attention.</p> : null}
       </SettingsSection>
 
       {enrollments.length === 0 ? null : (

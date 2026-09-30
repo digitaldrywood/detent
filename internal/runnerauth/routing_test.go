@@ -185,3 +185,76 @@ func TestRunnerHomeWorkStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerAvailability(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, zone, window, now string
+		open                    bool
+		deadline                string
+	}{
+		{"empty", "", "", "2026-09-29T12:00:00Z", true, ""},
+		{"timezone", "America/Chicago", "Mon-Fri 09:00-17:00", "2026-09-29T15:00:00Z", true, "2026-09-29T22:30:00Z"},
+		{"closed", "America/Chicago", "Mon-Fri 09:00-17:00", "2026-09-29T22:00:00Z", false, "2026-09-29T22:30:00Z"},
+		{"overnight", "Asia/Tokyo", "Mon-Fri 22:00-06:00", "2026-09-29T18:00:00Z", true, "2026-09-29T21:30:00Z"},
+		{"spring DST", "America/Chicago", "Sat-Sat 22:00-06:00", "2026-03-08T07:30:00Z", true, "2026-03-08T11:30:00Z"},
+		{"fall DST", "America/Chicago", "Sat-Sat 22:00-06:00", "2026-11-01T06:30:00Z", true, "2026-11-01T12:30:00Z"},
+		{"continuous", "UTC", "Mon-Sun 00:00-24:00", "2026-09-29T12:00:00Z", true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now, err := time.Parse(time.RFC3339, tt.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := Availability{Timezone: tt.zone}
+			if tt.window != "" {
+				a.Windows = []string{tt.window}
+				a.HardDeadline = "30m"
+			}
+			status, err := a.Evaluate(now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Open != tt.open {
+				t.Fatalf("open = %t, want %t", status.Open, tt.open)
+			}
+			deadline, err := a.Deadline(now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.deadline == "" {
+				if !deadline.IsZero() {
+					t.Fatalf("unexpected deadline %v", deadline)
+				}
+			} else if deadline.UTC().Format(time.RFC3339) != tt.deadline {
+				t.Fatalf("deadline = %v, want %s", deadline, tt.deadline)
+			}
+			a.HardDeadline = ""
+			deadline, err = a.Deadline(now)
+			if err != nil || !deadline.IsZero() {
+				t.Fatalf("no deadline = %v, %v", deadline, err)
+			}
+		})
+	}
+}
+
+func TestRunnerStatus(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 29, 18, 0, 0, 0, time.UTC)
+	for _, health := range []string{"online", "offline", "revoked", "expired"} {
+		t.Run(health, func(t *testing.T) {
+			r := Runner{Health: health, Routing: Routing{Availability: Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}}}
+			want := health
+			if health == "online" {
+				want = "outside_hours"
+			}
+			if got := r.Status(now); got != want {
+				t.Fatalf("status = %s, want %s", got, want)
+			}
+			if got := r.Status(now.Add(-2 * time.Hour)); got != health {
+				t.Fatalf("inside status = %s", got)
+			}
+		})
+	}
+}
