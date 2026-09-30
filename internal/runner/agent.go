@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -128,6 +129,7 @@ type Dependencies struct {
 	AfterRunTimeout        time.Duration
 	MaxAgentRSSBytes       uint64
 	RSSPollInterval        time.Duration
+	GoBudget               gobudget.Budget
 	ProcessRSS             func(context.Context, procgroup.Identity) (uint64, error)
 	WorkerReapGrace        time.Duration
 	ReapWorkerProcess      workerProcessReapFunc
@@ -172,6 +174,7 @@ type Runner struct {
 	progressTicker            sessionProgressTickerFactory
 	admissionLeaks            admissionWorkspaceLeakTracker
 	lookupEnv                 func(string) string
+	goBudget                  gobudget.Budget
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -273,6 +276,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		turnLimit:                 deps.turnLimit,
 		progressTicker:            deps.progressTicker,
 		lookupEnv:                 deps.lookupEnv,
+		goBudget:                  deps.GoBudget,
 	}, nil
 }
 
@@ -1636,7 +1640,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	runStartedAt := r.now()
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
 	baseModel := effectiveModel("", selection.Model, agentRuntime.defaultModelForRole(role))
-	baseEnvironment := workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue)
+	baseEnvironment := r.withGoBudget(info.Path, workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
 		Environment: baseEnvironment,
@@ -3074,7 +3078,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		selectedModel = override
 	}
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
-	baseEnvironment := workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue)
+	baseEnvironment := r.withGoBudget(info.Path, workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
 		Environment: baseEnvironment,

@@ -524,6 +524,7 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		{name: "memory pressure", field: "global.memory.pressure_some_avg60_threshold", mutate: func(cfg *globalconfig.Config) { cfg.Global.Memory.PressureSomeAvg60Threshold = 12 }},
 		{name: "IO pressure", field: "global.io.pressure_full_avg10_threshold", mutate: func(cfg *globalconfig.Config) { cfg.Global.IO.PressureFullAvg10Threshold = 7 }},
 		{name: "CPU pressure", field: "global.cpu.pressure_some_avg10_threshold", mutate: func(cfg *globalconfig.Config) { cfg.Global.CPU.PressureSomeAvg10Threshold = 95 }},
+		{name: "Go build budget", field: "global.cpu.go_build_budget", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { cfg.Global.CPU.GoBuildBudget = 6 }},
 	}
 
 	for _, tt := range tests {
