@@ -1,3 +1,22 @@
+## Codex Workpad
+
+- Plan: merge fetched `origin/develop` at `e687a22a5324187fb5a24de3aa5668e8e61f28f5` into PR #3026's published head `bb60dc4e827b413fffa8562ec135b402761e83ff`, preserving both as ancestors without rebasing.
+- Prior notes verified against the clean starting head and fetched PR ref. The historical #3019 notes name an earlier rebased head; the published head for this fallback is `bb60dc4e827b413fffa8562ec135b402761e83ff`. Prior diagnostics are historical only.
+- Resolution: only `.detent/notes.md` conflicted. Preserved historical handoffs from both sides, including #3019 and #3001, and consolidated this current Workpad/status block. All source files merged automatically; no manual source edits or out-of-scope findings.
+- Key issue files: `internal/cli/boot.go`, `internal/cli/dev_runtime_e2e_test.go`; both remain unchanged from the published PR head.
+- Validation: no tests, builds, local gate, CI checks, or waits run in this merge-fallback session. No current-head validation credit claimed; gate/CI and post-merge timings are unmeasured.
+- Open items: Detent owns resolved-head ownership, cleanliness, target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7141"
+  completion_generation: "12"
+blockers: []
+human_action: null
+```
+
 # Issue #3400 merge fallback handoff (attempt 7121, generation 51)
 
 - Verified PR #3421 is open, targets `develop`, includes `Fixes #3400`, and has published head `33b7e0c024a6653911eb8017a5bf159f607e2c72`, matching the source-clean local branch. The preceding #3400 handoff describes the merge already present in this history.
@@ -30,7 +49,7 @@
 - Validation: no tests, builds, local gate, or CI checks run in this fallback. Earlier macOS tests and Windows cross-compilation are historical and do not validate this head. Detent owns ancestry/cleanliness verification, bounded validation, lease-protected publishing, and current-head CI after return.
 - Open items: Detent validation/publication of the resolved head and native Windows scheduled validation. No out-of-scope repair identified. No push, PR merge, or issue/lane mutation performed.
 
-## Codex Workpad
+## Historical workpad for #3400
 
 Plan: Rework repair for #3400 preserves recovered merge 83598d050 and merges develop a53a7f204a278ae2f965560d6c4c10f96eb5b22d into PR #3421's published history. Only notes conflicted; retained historical handoffs from both sides and one current status block. No manual source edits or generated-input changes were required. The remaining issue source diff is internal/cli/boot_test.go and internal/cli/ssh_runner_test.go.
 
@@ -42,7 +61,9 @@ Open items: next scheduled native Windows validation confirms the portability re
 
 Timings: focused diagnostic command 20.5s; CLI Windows cross-compilation 10.1s. No quiet window is configured. The no-op gate takes under 1s; PR CI wait, slow checks, and post-merge main-CI are not applicable to this Rework handoff. Final publication verification belongs in the issue Workpad.
 
-```detent-status
+Historical status record for #3400:
+
+```yaml
 schema: 1
 status: complete
 fields:
@@ -170,6 +191,18 @@ Historical status: complete; blockers: []; human_action: null.
 - Passed existing runner protocol diagnostics: `go test ./internal/runner -run '^(TestSSHErrorRoundTrip|TestSSHPeerConcurrentCallbacksAndDisconnect|TestSSHCallbackDoesNotPublishRemotePID|TestSSHRunResponseRetainsResultOnFailure)$' -count=1 -p 4` (0.406s package time). Existing tests cover sentinel identity, wrappers, structured errors, callbacks, disconnects, and failure results; no duplicate test added.
 - No generated inputs changed. Configured gate is `true`; no full gates, coverage, race suite, or CI wait. No out-of-scope discovery or reusable skill draft.
 - Source repair and focused diagnostics are complete. PR publication, current-head review, and completion for attempt 7112 / generation 42 are tracked in the canonical issue Workpad.
+
+# Issue #3019 (historical implementation handoff)
+
+- Key files: `internal/cli/boot.go`, `internal/cli/dev_runtime_e2e_test.go`.
+- Existing fix publishes the dashboard address immediately after binding, before runtime store and board snapshot initialization. The blocked snapshot-load regression covers fixture and screenshots modes and checks `/health` after releasing the load.
+- Rework was an old CI failure, with no actionable human or bot review. #2975 and #3009 are closed; their fixes are merged into `origin/main`. Current `develop` has independent platform fixes; prior full-CI failures are historical under the operator's disabled blocking-gate policy.
+- Rebased the single issue commit cleanly onto `origin/develop` at `bccee4c50f86019fd961a4c457a59a2c91e9eb31`. Rebased head: `1cae634d21b925d2ef4570a6061d0888414342ae`.
+- Current-head diagnostics: affected startup tests passed three repetitions (27.313s); four concurrent GOMAXPROCS=1 runs passed (10.056–11.679s); `go test ./internal/cli/... -count=1 -timeout=15m` passed (54.533s); `go vet ./internal/cli/...` passed. DETENT_API_TOKEN was cleared for tests.
+- Prior deterministic regression failed on the old boot order after the unchanged 10-second empty-banner wait. Prior ambient host stress did not reproduce the observed host slowdown; no blanket timeout increase was made.
+- Configured `true` gate passed exactly once immediately before pushing. Rebased head is pushed, ready PR #3026 targets `develop`, and the issue Workpad reports `complete` with no blockers. GitHub recheck confirmed exact head, no review threads/findings, and no current-head check rollup; no skipped checks are credited as tests.
+- Open items: none for implementation/Rework. The orchestrator owns promotion and merging; do not merge during Rework or change tracker lane labels.
+- Skill draft: no; the deterministic startup-order regression needs no new reusable procedure.
 
 # Issue #3001
 
