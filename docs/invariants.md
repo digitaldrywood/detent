@@ -1719,6 +1719,11 @@ dispatch can force `verify-fast` to fail to exercise issue filing and closure.
 Every `develop` push deploys to staging even when that commit has not passed
 scheduled validation. Production release artifacts use validated tags only.
 
+The scheduled NilAway audit selects all Go packages, including unchanged
+importers affected by a provider's inferred nilability. The real-analyzer
+provider/importer fixture verifies that boundary and the reviewed baseline:
+only diagnostics matching both location and source-line hash are accepted.
+
 **Enforcement:** `TestRepositoryWorkflow` checks schedule, manual dispatch,
 required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
 checks every workflow for forbidden pull-request and merge-group events.

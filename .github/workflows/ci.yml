@@ -142,8 +142,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Audit changed Go packages with NilAway
-        run: make nilaway-changed
+      - name: Audit all Go packages with NilAway and the reviewed baseline
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          python3 -m unittest scripts/nilaway_changed_test.py
+          make nilaway-changed
 
       - name: Test
         run: make test
