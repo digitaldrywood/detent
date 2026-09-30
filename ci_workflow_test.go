@@ -226,7 +226,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("make lint: %v\n%s", err, output)
 			}
-			if !strings.Contains(string(output), "pinned:go1.26.6:run ") || !strings.Contains(string(output), "--timeout=15m") {
+			if !strings.Contains(string(output), "pinned:go1.26.6:run --allow-parallel-runners ") || !strings.Contains(string(output), "--timeout=15m") {
 				t.Fatalf("make lint did not invoke the pinned toolchain: %s", output)
 			}
 			if installed := strings.Contains(string(output), "go install"); installed == cached {
