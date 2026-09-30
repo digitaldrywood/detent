@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,112 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestNativeCheckoutReportNegotiatesHubSupport(t *testing.T) {
+	t.Parallel()
+	var supportsCheckout atomic.Bool
+	var mu sync.Mutex
+	var reports []struct {
+		present bool
+		value   string
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v2/capabilities":
+			features := []string{"native_issues", "scoped_collaboration", "repository_policy"}
+			if supportsCheckout.Load() {
+				features = append(features, tracker.NativeCheckoutRepositoryCapability)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": features})
+		case "/api/v2/organizations/org_test/projects/prj_test":
+			_ = json.NewEncoder(w).Encode(tracker.NativeProject{Profile: "native"})
+		case "/api/v2/organizations/org_test/projects/prj_test/machines/register", "/api/v2/organizations/org_test/projects/prj_test/machines/machine_1/heartbeat":
+			var body map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode machine report: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			raw, present := body["checkout_repository"]
+			if present && !supportsCheckout.Load() {
+				w.WriteHeader(http.StatusUnprocessableEntity) // an older Hub rejects unknown fields
+				return
+			}
+			var value string
+			if present {
+				_ = json.Unmarshal(raw, &value)
+			}
+			mu.Lock()
+			reports = append(reports, struct {
+				present bool
+				value   string
+			}{present, value})
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test" }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	repository := "Acme/Private"
+	scheduler, err := NewScheduler(client, SchedulerConfig{
+		OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"native": "prj_test"},
+		CheckoutRepository: func(string) string { return repository },
+		Machine:            Machine{ID: "machine_1", Hostname: "host", Version: "test", Capacity: 1},
+		HeartbeatInterval:  time.Second, LeaseTTL: time.Minute, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := scheduler.nativeProjects["native"]
+	for _, step := range []struct {
+		supported, present bool
+		value              string
+	}{
+		{false, false, ""},
+		{true, true, "Acme/Private"},
+		{true, true, ""},
+	} {
+		supportsCheckout.Store(step.supported)
+		repository = step.value
+		if err := scheduler.ensureNativeMachine(t.Context(), source); err != nil {
+			t.Fatalf("ensureNativeMachine(supported=%v, repository=%q): %v", step.supported, repository, err)
+		}
+		mu.Lock()
+		got := reports[len(reports)-1]
+		mu.Unlock()
+		if got.present != step.present || got.value != step.value {
+			t.Fatalf("checkout report = %+v, want present=%v value=%q", got, step.present, step.value)
+		}
+		now = now.Add(2 * time.Second)
+	}
+	machine := Machine{ID: "machine_1", Version: "test", Capacity: 1}
+	if err := source.client.HeartbeatMachine(t.Context(), machine); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := reports[len(reports)-1]
+	mu.Unlock()
+	if got.present {
+		t.Fatalf("heartbeat without a negotiated report included checkout_repository: %+v", got)
+	}
+	machine.CheckoutRepository = &repository
+	if err := source.client.HeartbeatMachine(t.Context(), machine); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got = reports[len(reports)-1]
+	mu.Unlock()
+	if !got.present || got.value != "" {
+		t.Fatalf("heartbeat did not clear the checkout report: %+v", got)
+	}
+}
 
 func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 	descriptor := clientTestPolicy()

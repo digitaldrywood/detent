@@ -185,6 +185,7 @@ func (r *Runner) workerGitHubPolicy(ctx context.Context, cfg config.Config, issu
 }
 
 func (r *Runner) logWorkerGitHubPolicyError(issue connector.Issue, err error, attrs ...any) {
+	attrs = append(attrs, "scope", "instance")
 	resolutionErr, ok := AsWorkerGitHubTokenResolutionError(err)
 	if !ok {
 		r.logWorkerEvent(issue, "worker_github_credential_refused", append(attrs, "error", err)...)
@@ -641,13 +642,14 @@ func startWorkerGitHubGovernor(ctx context.Context, policy workerGitHubPolicy, o
 	policy = classified
 	budget, err := policy.probe(ctx)
 	if err != nil {
-		return ctx, func() error { return nil }, policy.monitorError("launch_probe", err)
-	}
-	if err := policy.observe(budget, onUpdate); err != nil {
-		return ctx, func() error { return nil }, policy.monitorError("launch_observation", err)
-	}
-	if err := policy.reserveError(budget); err != nil {
-		return ctx, func() error { return nil }, err
+		policy.logProbeFailure("launch_probe", err)
+	} else {
+		if err := policy.observe(budget, onUpdate); err != nil {
+			policy.logProbeFailure("launch_observation", err)
+		}
+		if err := policy.reserveError(budget); err != nil {
+			return ctx, func() error { return nil }, err
+		}
 	}
 
 	governedCtx, cancel := context.WithCancelCause(ctx)
@@ -673,12 +675,13 @@ func startWorkerGitHubGovernor(ctx context.Context, policy workerGitHubPolicy, o
 			case <-poll:
 				budget, probeErr := policy.probe(governedCtx)
 				if probeErr != nil {
-					cancel(policy.monitorError("periodic_probe", probeErr))
-					return
+					if governedCtx.Err() == nil {
+						policy.logProbeFailure("periodic_probe", probeErr)
+					}
+					continue
 				}
 				if observeErr := policy.observe(budget, onUpdate); observeErr != nil {
-					cancel(policy.monitorError("periodic_observation", observeErr))
-					return
+					policy.logProbeFailure("periodic_observation", observeErr)
 				}
 				if reserveErr := policy.reserveError(budget); reserveErr != nil {
 					cancel(reserveErr)
@@ -692,12 +695,25 @@ func startWorkerGitHubGovernor(ctx context.Context, policy workerGitHubPolicy, o
 		cause := context.Cause(governedCtx)
 		cancel(context.Canceled)
 		<-done
-		if errors.Is(cause, ErrWorkerGitHubRESTReserved) || errors.Is(cause, ErrWorkerGitHubBudgetMonitor) {
+		if errors.Is(cause, ErrWorkerGitHubRESTReserved) {
 			return cause
 		}
 		return nil
 	}
 	return governedCtx, stop, nil
+}
+
+func (p workerGitHubPolicy) logProbeFailure(operation string, err error) {
+	if p.Logger == nil {
+		return
+	}
+	p.Logger.Warn("worker github REST budget observation unavailable",
+		"scope", "instance",
+		"project_id", p.ProjectID,
+		"credential_identity", p.CredentialIdentity,
+		"operation", operation,
+		"error", err,
+	)
 }
 
 func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHubPolicy, error) {

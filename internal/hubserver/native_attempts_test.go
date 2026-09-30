@@ -37,7 +37,7 @@ func nativeTestCheckpoint() *tracker.NativeCheckpoint {
 
 func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "ordered")
+	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
 	worker := f.worker(t, "worker")
@@ -181,7 +181,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 
 func TestNativeConcurrentOrderedEvents(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "concurrent")
+	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
 	worker := f.worker(t, "worker")

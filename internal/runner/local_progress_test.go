@@ -88,19 +88,19 @@ func TestSessionLocalCommitProgress(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
 			controller := &sessionBrakeController{
-				startedAt: started, lastProgressAt: started, noProgressTimeout: time.Minute,
+				startedAt: started, lastProgressAt: started,
 				initial: before, current: before, probe: probe, cancelSession: cancel,
 				now: func() time.Time { return started.Add(time.Minute) },
 			}
 			observation := sessionProgressObservation(before, started)
 			controller.observation = &observation
-			controller.checkProgress(ctx, started.Add(time.Minute))
+			controller.refreshSnapshot(ctx)
 			if got := controller.lastProgressAt.After(started); got != tt.wantProgress {
 				t.Fatalf("progress = %t, want %t; before=%+v after=%+v", got, tt.wantProgress, before, controller.current)
 			}
-			controller.checkProgress(ctx, controller.lastProgressAt.Add(time.Minute))
-			if controller.breach == nil {
-				t.Fatal("unchanged observation did not expire")
+			controller.refreshSnapshot(ctx)
+			if controller.breach != nil {
+				t.Fatal("unchanged observation canceled session")
 			}
 		})
 	}

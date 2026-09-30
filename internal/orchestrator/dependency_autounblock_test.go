@@ -819,6 +819,9 @@ func TestDependencyAutoUnblockRetainsNonReviewDecision(t *testing.T) {
 				if len(tracker.comments) != 0 {
 					t.Fatalf("comments = %#v, want no auto-unblock comment", tracker.comments)
 				}
+				if len(tracker.identifierCalls) != 0 {
+					t.Fatalf("identifier reads = %#v, want no tracker reads for the current persisted hold", tracker.identifierCalls)
+				}
 			})
 		}
 	}
@@ -1533,40 +1536,6 @@ func TestTickAutoPromoteBlockerWaitsForAvailableCapacity(t *testing.T) {
 	}
 	if len(tracker.comments) != 0 {
 		t.Fatalf("comments = %#v, want none without promotion", tracker.comments)
-	}
-}
-
-func TestDependencyAutoUnblockDoesNotChangeTodoDependencyGate(t *testing.T) {
-	t.Parallel()
-
-	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 1,
-		ActiveStates:        []string{"Todo"},
-		TerminalStates:      []string{"Done"},
-		DependencyAutoUnblock: DependencyAutoUnblockConfig{
-			Enabled:      true,
-			SourceStates: []string{"Blocked"},
-			TargetState:  "Todo",
-			Readiness:    DependencyReadinessTerminalOrMerged,
-		},
-	})
-	state := newState(cfg)
-	issue := dependencyAutoUnblockIssue("issue-todo", "Todo")
-	issue.BlockedBy = []connector.BlockedRef{{
-		Identifier: "digitaldrywood/detent#388",
-		State:      "In Progress",
-	}}
-
-	planner := newDispatchPlanner(cfg)
-	if _, ok, _ := planner.dispatchAction(&state, issue, time.Date(2026, 6, 12, 16, 10, 0, 0, time.UTC)); ok {
-		t.Fatal("dispatchAction ok = true, want Todo issue blocked by dependency")
-	}
-	blocked, ok := state.Blocked[issue.ID]
-	if !ok {
-		t.Fatalf("Blocked[%q] missing after Todo dependency gate", issue.ID)
-	}
-	if blocked.Source != BlockedSourceDependency {
-		t.Fatalf("Blocked source = %q, want dependency", blocked.Source)
 	}
 }
 

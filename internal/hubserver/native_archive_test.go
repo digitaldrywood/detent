@@ -46,7 +46,7 @@ func archiveRequest(issue tracker.NativeIssue, key string) archiveIssueRequest {
 
 func TestNativeArchiveLifecycle(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "archive")
+	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "History retained")
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, map[string]any{"idempotency_key": "comment", "body": "Retained comment"})
@@ -127,7 +127,7 @@ func TestNativeArchiveActiveWork(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newNativeFixture(t, nil, "", "active-archive")
+			f := newDefaultNativeFixture(t, Config{})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			issue := f.create(t, "Active work")
 			worker := f.worker(t, "worker")
@@ -309,7 +309,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 
 func TestNativeArchiveSelfHostedNoQuota(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "unlimited")
+	f := newDefaultNativeFixture(t, Config{})
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
 	seedArchiveIssues(t, f.service, scope, 201, "Done")
 	issue := f.create(t, "Beyond hosted allowance")

@@ -260,6 +260,7 @@ export const ProjectIntegration = Schema.Struct({
   projection: Schema.String,
   repository_enabled: Schema.Boolean,
   repository: Schema.optional(Schema.String),
+  checkout_repository: Schema.optional(Schema.String),
   authority: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ProjectIntegration = typeof ProjectIntegration.Type;
@@ -521,6 +522,12 @@ export const FleetRunner = Schema.Struct({
   display_name: Schema.String,
   hostname: Schema.String,
   health: Schema.String,
+  problems: Schema.optional(Schema.Array(Schema.Struct({
+    code: Schema.String,
+    message: Schema.String,
+    fix_hint: Schema.String,
+    first_seen: Schema.String,
+  }))),
   state: Schema.String,
   os: Schema.String,
   architecture: Schema.String,

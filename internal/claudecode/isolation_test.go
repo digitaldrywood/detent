@@ -27,6 +27,12 @@ func TestIsolationSettings(t *testing.T) {
 		t.Run(test.tier, func(t *testing.T) {
 			p := isolation.Policy{Tier: test.tier, WritableRoots: []string{"/worktree", "/runtime"}, HostServices: []string{"unix:/var/run/example.sock"}}
 			settings, err := IsolationSettings(p)
+			if test.tier == isolation.Sandbox && !isolation.SandboxAvailable() {
+				if !errors.Is(err, isolation.ErrSandboxUnavailable) {
+					t.Fatalf("error = %v, want sandbox unavailable", err)
+				}
+				return
+			}
 			if (err == nil) != test.valid {
 				t.Fatalf("error = %v", err)
 			}
@@ -64,6 +70,12 @@ func TestCommandAppliesRunnerIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd, err := backend.command(t.Context(), runner.AgentTurnRequest{Workspace: "/worktree", TempDir: "/runtime"})
+			if tier == isolation.Sandbox && !isolation.SandboxAvailable() {
+				if !errors.Is(err, isolation.ErrSandboxUnavailable) {
+					t.Fatalf("error = %v, want sandbox unavailable", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,10 +122,7 @@ func TestCommandRejectsIsolationFailures(t *testing.T) {
 }
 
 func TestEffectiveIsolationRejectsWeakenedSettings(t *testing.T) {
-	expected, err := IsolationSettings(isolation.Policy{Tier: isolation.Sandbox, WritableRoots: []string{t.TempDir()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	expected := sandboxSettings(t)
 	for _, change := range []string{"none", "disabled", "unsandboxed", "domains", "sockets", "excluded commands"} {
 		t.Run(change, func(t *testing.T) {
 			encoded, _ := json.Marshal(expected)
@@ -142,10 +151,7 @@ func TestEffectiveIsolationRejectsWeakenedSettings(t *testing.T) {
 }
 
 func TestSandboxHandshakeVerifiesBeforePrompt(t *testing.T) {
-	settings, err := IsolationSettings(isolation.Policy{Tier: isolation.Sandbox, WritableRoots: []string{t.TempDir()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	settings := sandboxSettings(t)
 	for _, valid := range []bool{true, false} {
 		expected := settings
 		var effective any = settings
@@ -184,6 +190,12 @@ func TestSandboxProductionShellFactory(t *testing.T) {
 			}
 			root := t.TempDir()
 			_, err = backend.RunTurn(t.Context(), runner.AgentTurnRequest{Workspace: root, TempDir: root, Prompt: "sandbox test prompt"}, nil)
+			if !isolation.SandboxAvailable() {
+				if !errors.Is(err, isolation.ErrSandboxUnavailable) {
+					t.Fatalf("error = %v, want sandbox unavailable", err)
+				}
+				return
+			}
 			if (err != nil) != weakened {
 				t.Fatalf("turn error = %v", err)
 			}
@@ -235,4 +247,19 @@ func TestSandboxShellHelper(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+func sandboxSettings(t *testing.T) map[string]any {
+	t.Helper()
+	settings, err := IsolationSettings(isolation.Policy{Tier: isolation.Sandbox, WritableRoots: []string{t.TempDir()}})
+	if !isolation.SandboxAvailable() {
+		if !errors.Is(err, isolation.ErrSandboxUnavailable) {
+			t.Fatalf("error = %v, want sandbox unavailable", err)
+		}
+		t.Skip("the sandbox tier is unavailable on this platform")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return settings
 }

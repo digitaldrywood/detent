@@ -940,3 +940,32 @@ func openDoctorWorkflowLintDB(t *testing.T) *sql.DB {
 	}
 	return db
 }
+
+func TestCheckDoctorGateCommandMissingCIOptIn(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, command string
+		checks        []string
+		warn          bool
+	}{
+		{name: "omitted no-op", command: "true", warn: true},
+		{name: "omitted colon", command: ":", warn: true},
+		{name: "explicit empty", command: "true", checks: []string{}},
+		{name: "configured checks", command: "true", checks: []string{"build"}},
+		{name: "real command", command: "make check"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := workflowconfig.Default()
+			cfg.Gate.Run = tt.command
+			cfg.Gate.RequiredStatusChecks = tt.checks
+			checks := checkDoctorGateCommand(context.Background(), "alpha", "WORKFLOW.md", globalconfig.Project{ID: "alpha"}, cfg, doctorDeps{})
+			if tt.warn {
+				if len(checks) != 1 || checks[0].Status != doctorWarn || !strings.Contains(checks[0].Detail, "no CI producer") || !strings.Contains(checks[0].Hint, "required_status_checks: []") {
+					t.Fatalf("checks = %#v", checks)
+				}
+			} else if len(checks) != 0 {
+				t.Fatalf("unexpected checks = %#v", checks)
+			}
+		})
+	}
+}

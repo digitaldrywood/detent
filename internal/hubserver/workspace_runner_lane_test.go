@@ -179,14 +179,23 @@ func (f *workspaceLaneFixture) awaitReady(t *testing.T, id string) workspacesess
 	for time.Now().Before(deadline) {
 		session := f.read(t, id)
 		if session.State == workspacesession.StateReady {
-			return session
+			// Ready describes the worktree; the runner attaches its relay
+			// afterward. Lifecycle tests need both before sending frames.
+			relay := f.service.workspaces.relay
+			relay.mu.Lock()
+			room := relay.rooms[id]
+			attached := room != nil && room.runner != nil
+			relay.mu.Unlock()
+			if attached {
+				return session
+			}
 		}
 		if workspacesession.Terminal(session.State) {
 			t.Fatalf("workspace ended before ready: %+v", session)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("the runner never made the workspace ready")
+	t.Fatal("the runner never made the workspace ready with an attached relay")
 	return workspacesession.Session{}
 }
 

@@ -377,6 +377,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(ProjectIntegration, "POST", `${project(input.projectId)}/onboarding/repository`, {
         expected_revision: input.revision,
         repository: input.repository,
+        source: "runner_checkout",
         idempotency_key: input.key,
       }),
     bindArtifactService: (input: {

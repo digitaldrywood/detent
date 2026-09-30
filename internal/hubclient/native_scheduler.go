@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,6 +30,17 @@ func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bo
 	return source, true
 }
 
+func (s *Scheduler) Heartbeat(ctx context.Context) error {
+	if s.client.runner == nil {
+		return nil
+	}
+	var result error
+	for _, source := range s.nativeProjects {
+		result = errors.Join(result, s.ensureNativeMachine(ctx, source))
+	}
+	return result
+}
+
 func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConnector) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -38,6 +50,10 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	}
 	s.mu.Unlock()
 	var report isolation.Report
+	var problems []runnerauth.Problem
+	if s.problems != nil {
+		problems = s.problems()
+	}
 	if s.isolationReport != nil {
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		report = s.isolationReport(probeCtx)
@@ -70,12 +86,29 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	if s.isolationReport != nil {
 		s.machine.BackendIsolation = report
 	}
+	s.machine.Problems = problems
+	machine := s.machine
+	if s.checkoutRepository != nil {
+		supported, err := source.client.HubFeature(ctx, tracker.NativeCheckoutRepositoryCapability)
+		if err != nil {
+			return err
+		}
+		if supported {
+			for name, candidate := range s.nativeProjects {
+				if candidate == source {
+					repository := s.checkoutRepository(name)
+					machine.CheckoutRepository = &repository
+					break
+				}
+			}
+		}
+	}
 	if s.client.runner != nil && !last.IsZero() {
-		if err := source.client.HeartbeatMachine(ctx, s.machine); err != nil {
+		if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
 			return err
 		}
 	} else {
-		if err := source.client.RegisterMachine(ctx, s.machine); err != nil {
+		if err := source.client.RegisterMachine(ctx, machine); err != nil {
 			return err
 		}
 	}

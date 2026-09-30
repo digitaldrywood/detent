@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/routine"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -185,6 +186,7 @@ type Project struct {
 	orchFactory               OrchestratorFactory
 	orchConfig                orchestrator.Config
 	orchDeps                  orchestrator.Dependencies
+	policyScheduling          orchestrator.SchedulingSource
 	runner                    orchestrator.Runner
 	scheduler                 scheduler.Scheduler
 	schedulerFactory          schedulerFactory
@@ -508,6 +510,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		orchFactory:               orchestratorFactory,
 		orchConfig:                orchConfig,
 		orchDeps:                  orchDeps,
+		policyScheduling:          deps.Scheduling,
 		runner:                    deps.Runner,
 		scheduler:                 projectScheduler,
 		schedulerFactory:          schedulerFactory,
@@ -544,6 +547,16 @@ func (p *Project) ID() ID {
 		return ""
 	}
 	return p.id
+}
+
+func (p *Project) RunnerProblems() []runnerauth.Problem {
+	p.mu.Lock()
+	value := p.runner
+	p.mu.Unlock()
+	if reporter, ok := value.(interface{ Problems() []runnerauth.Problem }); ok {
+		return reporter.Problems()
+	}
+	return nil
 }
 
 func (p *Project) Config() globalconfig.Project {
@@ -1491,11 +1504,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	issueCoordinator := p.issueCoordinator
 	scheduleConfig := p.scheduleConfig
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
-	scheduling := p.orchDeps.Scheduling
+	scheduling := p.policyScheduling
 	previousPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(projectConfig.GlobalAgents, projectConfig.GlobalBudget)
+	workflow.Config = withMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
 	}
@@ -1753,11 +1767,8 @@ func withMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestr
 	if !ok {
 		return workflow
 	}
-	repositoryTracker := workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal
-	if _, mapped := source.ConnectorForProject(string(id)); mapped && repositoryTracker {
-		workflow.Tracker.Kind = workflowconfig.TrackerHubNative
-	}
-	return workflow
+	_, mapped := source.ConnectorForProject(string(id))
+	return MapNativeTracker(workflow, mapped)
 }
 
 func projectSchedulingSource(source orchestrator.SchedulingSource, workflow workflowconfig.Config) orchestrator.SchedulingSource {

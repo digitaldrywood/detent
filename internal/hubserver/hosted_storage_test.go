@@ -89,6 +89,67 @@ func TestHostedDatabaseBindingRestart(t *testing.T) {
 	}
 }
 
+func TestHostedDatabaseCloudAliases(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, from, to string
+		mutate         func(*Config)
+		originBound    bool
+		wantError      bool
+	}{
+		{name: "production", from: "https://hub.detent.build", to: "https://cloud.detent.build"},
+		{name: "staging", from: "https://staging.hub.detent.build", to: "https://staging.cloud.detent.build"},
+		{name: "production rollback", from: "https://cloud.detent.build", to: "https://hub.detent.build"},
+		{name: "staging rollback", from: "https://staging.cloud.detent.build", to: "https://staging.hub.detent.build"},
+		{name: "cross environment", from: "https://hub.detent.build", to: "https://staging.cloud.detent.build", wantError: true},
+		{name: "unapproved origin", from: "https://tenant.example.test", to: "https://cloud.detent.build", wantError: true},
+		{name: "origin-bound tenant", from: "https://hub.detent.build", to: "https://cloud.detent.build", originBound: true, wantError: true},
+		{name: "changed generation", from: "https://hub.detent.build", to: "https://cloud.detent.build", mutate: func(c *Config) { c.Hosted.SharedEntry.Generation++ }, wantError: true},
+		{name: "changed organization", from: "https://hub.detent.build", to: "https://cloud.detent.build", mutate: func(c *Config) { c.Hosted.OrganizationID = "org_other" }, wantError: true},
+		{name: "changed provider", from: "https://hub.detent.build", to: "https://cloud.detent.build", mutate: func(c *Config) { c.Hosted.WorkOSOrganizationID = "org_other" }, wantError: true},
+		{name: "changed bootstrap", from: "https://hub.detent.build", to: "https://cloud.detent.build", mutate: func(c *Config) { c.Hosted.BootstrapSubject = "user_other" }, wantError: true},
+		{name: "removed shared entry", from: "https://hub.detent.build", to: "https://cloud.detent.build", mutate: func(c *Config) { c.Hosted.SharedEntry = nil }, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := hostedStorageConfig(t)
+			cfg.Hosted.PublicURL = test.from
+			if !test.originBound {
+				cfg.Hosted.SharedEntry = &HostedSharedEntry{Generation: 1}
+			}
+			db := openHostedStorage(t, cfg)
+			seedProjection(t, db.db)
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			cfg.Hosted.PublicURL = test.to
+			if test.mutate != nil {
+				test.mutate(&cfg)
+			}
+			reopened, err := openDatabase(t.Context(), cfg.normalized())
+			if test.wantError {
+				if !errors.Is(err, ErrHostedDatabaseBinding) || reopened != nil {
+					t.Fatalf("reopen = %v, %v; want binding rejection", reopened, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			var stored string
+			var generation, projects, migrations int
+			if err := reopened.db.QueryRowContext(t.Context(), `SELECT public_url, allocation_generation,
+(SELECT count(*) FROM projects), (SELECT count(*) FROM hosted_binding_migrations) FROM hosted_tenant`).Scan(&stored, &generation, &projects, &migrations); err != nil {
+				t.Fatal(err)
+			}
+			if stored != test.from || generation != 1 || projects != 1 || migrations != 0 {
+				t.Fatalf("stored = %q, generation = %d, projects = %d, migrations = %d", stored, generation, projects, migrations)
+			}
+		})
+	}
+}
+
 func TestHostedDatabaseBootstrapBinding(t *testing.T) {
 	t.Parallel()
 	cfg := hostedStorageConfig(t)

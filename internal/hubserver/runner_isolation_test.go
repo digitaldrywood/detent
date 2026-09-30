@@ -27,7 +27,7 @@ func TestRunnerIsolationClaims(t *testing.T) {
 		{"probe failed", isolation.Report{"codex": {}}, "sandbox", http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "isolation")
+			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.redemption.BackendIsolation = test.report
 			r.enroll(t)
@@ -43,7 +43,7 @@ func TestRunnerIsolationClaims(t *testing.T) {
 }
 
 func TestRunnerIsolationHeartbeatWithdrawsTier(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "isolation-withdraw")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.redemption.BackendIsolation = isolation.Report{"codex": {"sandbox", "native-trusted"}}
 	r.enroll(t)
@@ -102,7 +102,7 @@ func TestIsolationMigrationPreservesRecordings(t *testing.T) {
 }
 
 func TestRunnerIsolationOmittedHeartbeatClearsReport(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "isolation-omitted")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
@@ -117,7 +117,7 @@ func TestRunnerIsolationOmittedHeartbeatClearsReport(t *testing.T) {
 }
 
 func TestRunnerIsolationPolicyPinnedToClaim(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "isolation-pinned")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
 	r.enroll(t)
 	issue := f.create(t, "queued")

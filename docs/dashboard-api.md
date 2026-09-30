@@ -52,14 +52,9 @@ bound defaults to two hours (`7200000` ms); `0` disables it. The per-turn bound
 defaults to `0`. When both are configured, the shorter applicable deadline
 wins.
 
-`agent.no_progress_timeout_ms` defaults to 90 minutes (`5400000` ms). While an
-agent is running, Detent checks the workspace fingerprint, diff, unpushed
-commits, and Codex Workpad content. Any change resets the heartbeat; an
-unchanged session is cancelled when the timeout expires. Turn, duration, and
-no-progress breaches cancel the worker through Detent's normal owned process
-context, so process-tree reaping, scratch cleanup, session completion, and slot
-release still run. Detent records a cause fingerprint and parks resumable work
-in `Rework`, or returns an empty attempt to `Todo`.
+The separate `session_no_progress` timer was removed. A live local validation
+queue wait remains subject to the gate lock deadline and the worker session bound.
+Legacy `agent.no_progress_timeout_ms` values are accepted but ignored.
 
 `agent.merge_worker_startup_timeout_ms` independently bounds how long a
 dispatched merge runner may take to report its first startup progress. It
