@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -37,6 +38,7 @@ type WorkflowMetricsMetadataUpdater interface {
 }
 
 type workflowLaneMetadata struct {
+	TerminalOutcome       string                                     `json:"terminal_outcome,omitempty"`
 	StateFieldID          int                                        `json:"-"`
 	StateFieldValue       string                                     `json:"-"`
 	LessonEvidence        reworkLessonEvidence                       `json:"-"`
@@ -431,6 +433,13 @@ func (o *Orchestrator) recordLaneTransition(
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		reason = "state_transition"
+	}
+	// Persist the existing artifact gate's accepted terminal outcome in the lane
+	// history. Reports must not infer shipping from a mutable finalized receipt
+	// or an intermediate artifact promotion to Merging.
+	if reason == string(AutoPromoteReasonReady) && gate.Effective(o.cfg.AutoPromote.Gate).Kind == gate.KindArtifact &&
+		stateIn(targetState, o.cfg.TerminalStates) && normalizeState(targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) {
+		metadata.TerminalOutcome = "artifact"
 	}
 	metadata.Provenance = workflowLaneMutationAttribution(reason, metadata)
 	if err := workflowmetrics.RecordLaneTransition(ctx, o.workflowMetrics, workflowmetrics.LaneTransition{
