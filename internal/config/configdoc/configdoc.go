@@ -385,6 +385,9 @@ func fieldDefault(defaultConfig config.Config, node *schemaNode) (string, string
 	if node.synthetic {
 		return optionDefault(node.path)
 	}
+	if node.path == "gate.required_status_checks" {
+		return "omitted (aggregate observed CI)", "null"
+	}
 	if node.path == "worker.github_token" {
 		return "top-level github_token", `""`
 	}

@@ -4716,3 +4716,26 @@ func TestTypelessSandboxPolicyValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestParseWorkflowRequiredChecksPresence(t *testing.T) {
+	for _, tt := range []struct {
+		name, setting string
+		wantNil       bool
+	}{
+		{name: "omitted", wantNil: true},
+		{name: "explicit empty", setting: "  required_status_checks: []\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\ngate:\n  run: true\n" + tt.setting + "---\nPrompt\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				workflow.Config.normalize()
+				if (workflow.Config.Gate.RequiredStatusChecks == nil) != tt.wantNil {
+					t.Fatalf("required checks=%#v, want nil %t", workflow.Config.Gate.RequiredStatusChecks, tt.wantNil)
+				}
+			}
+		})
+	}
+}

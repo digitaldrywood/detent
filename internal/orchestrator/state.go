@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -688,7 +689,7 @@ func cloneAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 }
 
 func cloneGateConfig(cfg gate.Config) gate.Config {
-	cfg.RequiredStatusChecks = append([]string(nil), cfg.RequiredStatusChecks...)
+	cfg.RequiredStatusChecks = slices.Clone(cfg.RequiredStatusChecks)
 	cfg.RequireAutomatedReview = cloneBoolPointer(cfg.RequireAutomatedReview)
 	cfg.TransientCIRetryLimit = cloneIntPointer(cfg.TransientCIRetryLimit)
 	cfg.Validator.BlockOn = append([]string(nil), cfg.Validator.BlockOn...)

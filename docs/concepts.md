@@ -140,6 +140,16 @@ another reason when that is the desired repository record.
 Detent also leaves linked pull requests open. Operators should close, comment
 on, or reuse an open PR explicitly when cancelled work has one.
 
+Omitting `gate.required_status_checks` preserves aggregate evaluation of all
+observed check runs and commit statuses. A nonempty list also requires those
+named checks while preserving the aggregate. An explicitly empty list (`[]`)
+evaluates only the PR base branch's native ruleset and branch-protection checks,
+in every lane and for both REST hydration and cached candidate observations.
+With no native required checks, CI passes even when optional statuses are absent,
+failed, or obsolete. Missing, unfinished, or failed native checks still block;
+unavailable branch-policy reads do not grant a pass. Review, merge conflicts,
+ownership, and dependencies keep their existing rules.
+
 ### Review gate
 
 `Human Review` is the holding state before the merge train. Auto-promotion out

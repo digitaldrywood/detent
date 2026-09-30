@@ -63,6 +63,9 @@ artifact workflows. GitHub PR delivery remains the default.
 - `gate.kind: command` with `require_automated_review: false` keeps the
   command, linked PR, green CI, no-P1, and quiet-period checks but does not
   require an automated GitHub PR review to exist before promotion.
+- An explicitly empty `gate.required_status_checks: []` uses only native base-branch
+  requirements; with none, CI passes. Omission and nonempty lists retain the
+  aggregate of observed CI. Unavailable native policy does not grant a pass.
 - `gate.required_status_checks` lists release-blocking check-run names or
   commit status contexts that must be present on the current PR head, completed,
   and successful. Missing, skipped, failed, cancelled, neutral, or still-running
