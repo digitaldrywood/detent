@@ -450,6 +450,9 @@ func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Set
 	if previous.CPU.PollIntervalMS != next.CPU.PollIntervalMS {
 		fields = append(fields, globalConfigChange{Field: "global.cpu.poll_interval_ms", Old: previous.CPU.PollIntervalMS, New: next.CPU.PollIntervalMS})
 	}
+	if previous.CPU.GoBuildBudget != next.CPU.GoBuildBudget {
+		fields = append(fields, globalConfigChange{Field: "global.cpu.go_build_budget", RequiresRestart: true, Old: previous.CPU.GoBuildBudget, New: next.CPU.GoBuildBudget})
+	}
 	return fields
 }
 
