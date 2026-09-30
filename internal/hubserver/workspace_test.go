@@ -1408,7 +1408,7 @@ func (f *workspaceRunnerFixture) reportProviderCapacity(t *testing.T, capacity i
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
 		f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential,
 		map[string]any{"display_name": "Runner", "capacity": capacity, "version": "test",
-			"provider_reports": []providercapacity.Report{report}}), http.StatusNoContent)
+			"provider_reports": []providercapacity.Report{report}}), http.StatusOK)
 }
 
 // reservations counts the provider reservations written against a lease.

@@ -14,7 +14,10 @@ if ! cmp -s "$profile_dir/ordinary-inputs" "$profile_dir/race-inputs"; then
     exit 1
 fi
 
-env -u DETENT_API_TOKEN go run ./tools/testgate -race -coverprofile "$profile_dir/hub.out" -parallel "$1" -timeout "$2" -output tmp/hub-race-evidence ./internal/hubserver
+env -u DETENT_API_TOKEN go run ./tools/testgate -race -coverprofile "$profile_dir/hub-a.out" -parallel "$1" -timeout "$2" -run "$6" -output tmp/hub-race-evidence-a ./internal/hubserver
+env -u DETENT_API_TOKEN go run ./tools/testgate -race -coverprofile "$profile_dir/hub-b.out" -parallel "$1" -timeout "$2" -run "$7" -output tmp/hub-race-evidence-b ./internal/hubserver
+env -u DETENT_API_TOKEN go run ./tools/testgate -race -coverprofile "$profile_dir/hub-c.out" -parallel "$1" -timeout "$2" -skip "$6|$7" -output tmp/hub-race-evidence-c ./internal/hubserver
+go run ./tools/covermerge -union "$profile_dir/hub-a.out" "$profile_dir/hub-b.out" "$profile_dir/hub-c.out" > "$profile_dir/hub.out"
 go list ./... > "$profile_dir/packages"
 packages=()
 while IFS= read -r package; do

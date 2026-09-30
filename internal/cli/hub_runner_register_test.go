@@ -137,7 +137,17 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 
 func runRegister(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	command := newHubRunnerRegisterCommand("test", func(name string) string { return env[name] }, starter)
+	return executeRegister(t, newHubRunnerRegisterCommand("test", func(name string) string { return env[name] }, starter), args...)
+}
+
+// Registration fixtures stay under t.TempDir even when worker TMPDIR is inside this repository.
+func runRegisterInTestWorkspace(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
+	t.Helper()
+	return executeRegister(t, newHubRunnerRegisterCommandWithPrivateLocation("test", func(name string) string { return env[name] }, starter, func(string) error { return nil }), args...)
+}
+
+func executeRegister(t *testing.T, command *cobra.Command, args ...string) (string, error) {
+	t.Helper()
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetErr(&output)
@@ -159,7 +169,7 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 		return nil
 	}
 	args := []string{"--url", hub.server.URL + "/organizations/org_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaces, "--service"}
-	output, err := runRegister(t, map[string]string{"DETENT_RUNNER_ENROLLMENT_TOKEN": "det_enroll_example"}, starter, args...)
+	output, err := runRegisterInTestWorkspace(t, map[string]string{"DETENT_RUNNER_ENROLLMENT_TOKEN": "det_enroll_example"}, starter, args...)
 	if err != nil {
 		t.Fatalf("register: %v\n%s", err, output)
 	}
@@ -183,7 +193,7 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("# edited by the operator\n"+mustRead(t, configPath)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	output, err = runRegister(t, map[string]string{}, starter, append(args, "--token", "det_enroll_example")...)
+	output, err = runRegisterInTestWorkspace(t, map[string]string{}, starter, append(args, "--token", "det_enroll_example")...)
 	if err != nil {
 		t.Fatalf("rerun: %v\n%s", err, output)
 	}
@@ -279,7 +289,7 @@ func TestHubRunnerRegisterRefusesAnotherRunnersFiles(t *testing.T) {
 		if _, err := runnerauth.Initialize(filepath.Join(filepath.Dir(configPath), "identity.json"), "https://other-hub.example.test"); err != nil {
 			t.Fatal(err)
 		}
-		_, err := runRegister(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
+		_, err := runRegisterInTestWorkspace(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
 		if err == nil || !strings.Contains(err.Error(), "other-hub.example.test") {
 			t.Fatalf("err = %v, want a refusal naming the other hub", err)
 		}
@@ -295,7 +305,7 @@ func TestHubRunnerRegisterRefusesAnotherRunnersFiles(t *testing.T) {
 		if err := os.WriteFile(configPath, []byte(existing), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, err := runRegister(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
+		_, err := runRegisterInTestWorkspace(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
 		if err == nil || !strings.Contains(err.Error(), "client.organization_id") {
 			t.Fatalf("err = %v, want a refusal naming the mismatched key", err)
 		}

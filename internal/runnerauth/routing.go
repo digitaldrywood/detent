@@ -2,10 +2,15 @@ package runnerauth
 
 import (
 	"errors"
+	"fmt"
+	"net"
+	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -19,6 +24,27 @@ type Routing struct {
 	State         string              `json:"state"`
 	CapacityLimit int                 `json:"capacity_limit"`
 	ProjectIDs    []tracker.ProjectID `json:"project_ids"`
+	IsolationTier string              `json:"isolation_tier"`
+	HostServices  []string            `json:"host_services"`
+	Availability  Availability        `json:"availability"`
+	Spillover     Spillover           `json:"spillover"`
+}
+
+type Availability struct {
+	Timezone     string   `json:"timezone"`
+	Windows      []string `json:"windows"`
+	HardDeadline string   `json:"hard_deadline"`
+}
+
+type Spillover struct {
+	Mode         string `json:"mode"`
+	AfterMinutes int    `json:"after_minutes"`
+}
+
+type RoutingSnapshot struct {
+	RunnerID string  `json:"runner_id"`
+	Revision int64   `json:"revision"`
+	Routing  Routing `json:"routing"`
 }
 
 type RoutingChange struct {
@@ -95,6 +121,23 @@ func (r Routing) Normalized() Routing {
 	}
 	r.ProjectIDs = slices.Clone(r.ProjectIDs)
 	slices.Sort(r.ProjectIDs)
+	if r.IsolationTier == "" {
+		r.IsolationTier = "sandbox"
+	}
+	r.HostServices = slices.Clone(r.HostServices)
+	if r.HostServices == nil {
+		r.HostServices = []string{}
+	}
+	for i := range r.HostServices {
+		r.HostServices[i] = strings.TrimSpace(r.HostServices[i])
+	}
+	config := (activehours.Config{Timezone: r.Availability.Timezone, Windows: r.Availability.Windows}).Normalize()
+	r.Availability.Timezone = config.Timezone
+	r.Availability.Windows = config.Windows
+	r.Availability.HardDeadline = strings.TrimSpace(r.Availability.HardDeadline)
+	if r.Spillover.Mode == "" {
+		r.Spillover.Mode = "never"
+	}
 	return r
 }
 
@@ -114,6 +157,55 @@ func (r Routing) Validate() error {
 	for i, id := range r.ProjectIDs {
 		if id == "" || slices.Contains(r.ProjectIDs[:i], id) {
 			return errors.New("runner project access must contain unique project IDs")
+		}
+	}
+	if r.IsolationTier != "sandbox" && r.IsolationTier != "native-trusted" {
+		return errors.New("runner isolation tier must be sandbox or native-trusted")
+	}
+	if len(r.HostServices) > 32 {
+		return errors.New("runner host services are limited to 32")
+	}
+	for _, service := range r.HostServices {
+		if err := validateHostService(service); err != nil {
+			return err
+		}
+	}
+	if len(r.Availability.Windows) > 64 {
+		return errors.New("runner availability is limited to 64 windows")
+	}
+	config := activehours.Config{Timezone: r.Availability.Timezone, Windows: r.Availability.Windows}
+	if problems := config.ValidateNonOverlapping("availability"); len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	if r.Availability.HardDeadline != "" {
+		deadline, err := time.ParseDuration(r.Availability.HardDeadline)
+		if err != nil || deadline <= 0 || config.IsZero() {
+			return errors.New("availability.hard_deadline requires a positive duration and a window")
+		}
+	}
+	if r.Spillover.Mode != "never" && r.Spillover.Mode != "after" || r.Spillover.AfterMinutes < 0 || r.Spillover.Mode == "never" && r.Spillover.AfterMinutes != 0 {
+		return errors.New("spillover must be never or after a nonnegative number of minutes")
+	}
+	return nil
+}
+
+func validateHostService(service string) error {
+	if strings.HasPrefix(service, "tcp:") {
+		host, rawPort, err := net.SplitHostPort(strings.TrimPrefix(service, "tcp:"))
+		port, portErr := strconv.Atoi(rawPort)
+		if err != nil || portErr != nil || host != "127.0.0.1" || port < 1 || port > 65535 {
+			return errors.New("host services require tcp:127.0.0.1:<port>")
+		}
+		return nil
+	}
+	socketPath, ok := strings.CutPrefix(service, "unix:")
+	if !ok || !path.IsAbs(socketPath) || path.Clean(socketPath) != socketPath {
+		return errors.New("host services require an absolute unix socket path")
+	}
+	name := strings.ToLower(path.Base(socketPath))
+	for _, privileged := range []string{"docker", "podman", "containerd", "crio", "buildkit", "libvirt", "kubelet"} {
+		if strings.Contains(name, privileged) {
+			return fmt.Errorf("host service %q grants host administration", service)
 		}
 	}
 	return nil

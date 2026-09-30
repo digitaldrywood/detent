@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -683,6 +685,25 @@ func TestHostedBrowserPreview(t *testing.T) {
 	}
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER") != "" {
+		binding := runnerauth.NewBinding()
+		base := browserHostedOrganizationBase
+		for _, project := range []string{f.project, f.privateProject} {
+			f.api(t, "owner", http.MethodPut, base+"/members/membership_user_browser_owner/grants", map[string]any{
+				"project_id": project, "write": true, "runner": true, "idempotency_key": "preview-runner-" + project,
+			}, http.StatusOK)
+		}
+		request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 900}
+		response := f.api(t, "owner", http.MethodPost, base+"/runner-enrollments", request, http.StatusCreated)
+		var enrollment runnerauth.Enrollment
+		decodeHubResponse(t, response, &enrollment)
+		credential, err := apikey.GenerateToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "test-host", DisplayName: "Settings runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "arm64"}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+	}
 	accounts := make(map[string]string, len(f.cookies))
 	for account := range f.cookies {
 		accounts[account] = f.server.URL + "/__preview/account/" + account

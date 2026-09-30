@@ -15,7 +15,7 @@ import (
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 )
 
-const releaseBranchRef = "refs/heads/main"
+const releaseBranchRef = "refs/heads/develop"
 
 func main() {
 	if err := run(os.Args[1:], os.Stderr); err != nil {
@@ -30,7 +30,7 @@ func run(args []string, stderr io.Writer) error {
 	repository := flags.String("repository", "", "expected owner/repository")
 	tag := flags.String("tag", "", "expected release tag")
 	commit := flags.String("commit", "", "expected full release commit")
-	defaultBranchRef := flags.String("default-branch-ref", "", "full ref for the authenticated default branch; rulesets are evaluated for refs/heads/main")
+	defaultBranchRef := flags.String("default-branch-ref", "", "full ref for the authenticated default branch; rulesets are evaluated for refs/heads/develop")
 	tagMessagePath := flags.String("tag-message", "", "path containing the annotated tag message")
 	checkRunsPath := flags.String("github-check-runs", "", "authenticated GitHub check-runs response")
 	statusesPath := flags.String("github-statuses", "", "authenticated GitHub combined-status response")

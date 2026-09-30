@@ -69,10 +69,11 @@ describe("repository policy after setup", () => {
     const requests = vi.spyOn(globalThis, "fetch");
     renderSettings();
     expect(await screen.findByText("A runner is waiting for a new policy.")).toBeTruthy();
+    expect(screen.getByText(/runner upgrade changed the resolved policy/)).toBeTruthy();
     expect(screen.getByText("pol_changed")).toBeTruthy();
     expect(screen.getAllByText(approvedId).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Approve reported policy" })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "Approve updated policy" })[0]!);
     await waitFor(() => expect(screen.queryByText("A runner is waiting for a new policy.")).toBeNull());
     const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
     expect(after.policy.policy_id).toBe("pol_changed");
@@ -80,7 +81,7 @@ describe("repository policy after setup", () => {
     expect(puts.some((url) => url.endsWith("/projects/proj_alpha/onboarding/policy"))).toBe(true);
     expect(puts.some((url) => url.endsWith("/projects/proj_alpha/policy"))).toBe(false);
     requests.mockRestore();
-    expect(screen.queryByRole("button", { name: "Approve reported policy" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve updated policy" })).toBeNull();
   });
 
   it("names the current approval even while the policy read is still loading", async () => {
@@ -101,7 +102,7 @@ describe("repository policy after setup", () => {
       return realFetch(input, init);
     });
     renderSettings();
-    fireEvent.click(await screen.findByRole("button", { name: "Approve reported policy pol_slow" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve updated policy pol_slow" }));
     await waitFor(async () => {
       const after = (await (await realFetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
       expect(after.policy.policy_id).toBe("pol_slow");
@@ -123,8 +124,8 @@ describe("repository policy after setup", () => {
       });
     }
     renderSettings();
-    expect(await screen.findByRole("button", { name: "Approve reported policy pol_a" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Approve reported policy pol_b" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Approve updated policy pol_a" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve updated policy pol_b" })).toBeTruthy();
 
     // Another owner approves pol_b while this page is open.
     await fetch(`${base}/onboarding/policy`, {
@@ -132,9 +133,9 @@ describe("repository policy after setup", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ expected_policy_id: current.policy.policy_id, policy: { ...current.policy, policy_id: "pol_b" } }),
     });
-    fireEvent.click(screen.getByRole("button", { name: "Approve reported policy pol_a" }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Approve reported policy pol_b" })).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "Approve reported policy pol_a" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve updated policy pol_a" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Approve updated policy pol_b" })).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Approve updated policy pol_a" }));
     await waitFor(async () => {
       const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
       expect(after.policy.policy_id).toBe("pol_a");

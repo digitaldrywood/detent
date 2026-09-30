@@ -418,8 +418,12 @@ func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
 				t.Fatalf("got %+v; want %s", got, tt.want)
 			}
 			count := 0
+			workflowPath, err := filepath.EvalSymlinks(filepath.Join(root, "WORKFLOW.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, file := range files {
-				if file.path == filepath.Join(root, "WORKFLOW.md") {
+				if file.path == workflowPath {
 					count++
 				}
 			}
