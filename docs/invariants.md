@@ -679,6 +679,15 @@ Shutdown cancels and joins cleanup. `TestWorkspaceCleanupBatch`,
 continued tick liveness, and workspace ownership. No configuration, lane writer,
 recovery path, or operator-facing reason is added.
 
+Cleanup delivery verification (#3484) uses the existing association reader with
+status enrichment disabled and one fresh scalar PR read. Cached association
+heads, issue closure, and branch deletion never prove delivery. Issue identity,
+repository and PR number binding, merged state, merge time, and head remain
+required before cleanup receives a delivered head. CI, workflow, review, and
+branch-policy reads remain enabled for live merge evaluation.
+`TestRevalidatePullRequestAssociationWithoutStatus` and
+`TestVerifyCleanupDelivery` cover this read consolidation and evidence boundary.
+
 PR conflict classification and conflict-cleared progress share connector helpers
 (#2934), replacing separate completion, spend, dispatch, and display checks.
 Both tracker conflict spellings are recognized. A transition to a reported

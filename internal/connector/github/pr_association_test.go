@@ -50,7 +50,7 @@ func TestRevalidatePullRequestAssociation(t *testing.T) {
 			server := newGraphQLTestServer(t, responses)
 			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent"})
 			issue := connector.Issue{ID: "I_2238", Identifier: "digitaldrywood/detent#2238", State: "Human Review", PRNumber: new(2239), PRRepository: prRepo, PullRequest: &connector.PullRequest{Number: 2239, State: tt.state, BranchName: tt.branch}}
-			got, err := c.RevalidatePullRequestAssociation(t.Context(), issue)
+			got, err := c.RevalidatePullRequestAssociation(t.Context(), issue, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,9 +95,90 @@ func TestRevalidatePullRequestAssociationRejectsIncompleteEvidence(t *testing.T)
 			}
 			server := newGraphQLTestServer(t, responses)
 			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent"})
-			_, err := c.RevalidatePullRequestAssociation(t.Context(), connector.Issue{ID: tt.id, Identifier: tt.identifier})
+			_, err := c.RevalidatePullRequestAssociation(t.Context(), connector.Issue{ID: tt.id, Identifier: tt.identifier}, true)
 			if err == nil {
 				t.Fatal("incomplete association evidence accepted")
+			}
+		})
+	}
+}
+
+func TestRevalidatePullRequestAssociationWithoutStatus(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		linked     bool
+		discover   bool
+		state      string
+		mergedAt   string
+		head       string
+		number     int
+		httpStatus int
+		wantErr    bool
+	}{
+		{name: "changed cross repository association", linked: true, state: "closed", mergedAt: `"2026-09-05T23:00:00Z"`, head: "fresh-head", number: 2239},
+		{name: "cached merged fresh open", linked: true, state: "open", mergedAt: "null", head: "snapshot-head", number: 2239},
+		{name: "closed unmerged", linked: true, state: "closed", mergedAt: "null", head: "fresh-head", number: 2239},
+		{name: "missing head", linked: true, state: "closed", mergedAt: `"2026-09-05T23:00:00Z"`, number: 2239},
+		{name: "wrong PR response", linked: true, state: "closed", mergedAt: `"2026-09-05T23:00:00Z"`, head: "other-head", number: 2240, wantErr: true},
+		{name: "not found", linked: true, httpStatus: http.StatusNotFound, wantErr: true},
+		{name: "forbidden", linked: true, httpStatus: http.StatusForbidden, wantErr: true},
+		{name: "managed branch", state: "closed", mergedAt: `"2026-09-05T23:00:00Z"`, head: "branch-head", number: 2239},
+		{name: "discover managed branch", discover: true, state: "closed", mergedAt: `"2026-09-05T23:00:00Z"`, head: "branch-head", number: 2239},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			refs := "[]"
+			prRepo := "digitaldrywood/detent"
+			if tt.linked {
+				prRepo = "example/implementation"
+				refs = `[{"number":2239,"state":"MERGED","repository":{"nameWithOwner":"example/implementation"}}]`
+			}
+			body := fmt.Sprintf(`{"number":%d,"state":%q,"merged_at":%s,"head":{"ref":"detent/2238","sha":%q}}`, tt.number, tt.state, tt.mergedAt, tt.head)
+			if tt.httpStatus != 0 {
+				body = `{"message":"unavailable"}`
+			}
+			responses := []graphqlTestResponse{
+				{body: fmt.Sprintf(`{"data":{"nodes":[{"__typename":"Issue","id":"I_2238","number":2238,"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":%s}}]}}`, refs)},
+			}
+			if tt.discover {
+				responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: restPullRequestsPath(pullRequestRepo{Owner: "digitaldrywood", Name: "detent"}, 1), body: "[" + body + "]"})
+			}
+			responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/" + prRepo + "/pulls/2239", status: tt.httpStatus, body: body})
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent"})
+			oldNumber := 2238
+			if !tt.linked {
+				oldNumber = 2239
+			}
+			issue := connector.Issue{ID: "I_2238", Identifier: "digitaldrywood/detent#2238", PRNumber: &oldNumber, PRRepository: "digitaldrywood/detent", PullRequest: &connector.PullRequest{Number: oldNumber, State: "MERGED", HeadSHA: "snapshot-head", CIStatus: "success"}}
+			if tt.discover {
+				issue.PRNumber, issue.PRRepository, issue.PullRequest = nil, "", nil
+			}
+			got, err := c.RevalidatePullRequestAssociation(t.Context(), issue, false)
+			if tt.wantErr {
+				if err == nil && (got.PullRequest == nil || got.PullRequest.HydrationUnavailableReason == "") {
+					t.Fatal("unavailable or invalid PR accepted")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.PRNumber == nil || *got.PRNumber != 2239 || got.PRRepository != prRepo || got.PRVerifiedAt.IsZero() || got.PullRequest == nil || got.PullRequest.HeadSHA != tt.head || got.PullRequest.CIStatus != "" {
+					t.Fatalf("fresh scalar association = %+v", got)
+				}
+				wantState := "CLOSED"
+				if tt.mergedAt != "null" {
+					wantState = "MERGED"
+				} else if tt.state == "open" {
+					wantState = "OPEN"
+				}
+				if got.PullRequest.State != wantState {
+					t.Fatalf("state = %q, want %q", got.PullRequest.State, wantState)
+				}
+			}
+			if requests := server.requests(); len(requests) != len(responses) {
+				t.Fatalf("requests = %d, want %d without status enrichment", len(requests), len(responses))
 			}
 		})
 	}
