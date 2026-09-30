@@ -86,6 +86,26 @@ decision. `TestCompletedReadyPullRequestEntersMergeGate` and
 `TestTickDispatchesPlanApprovedIssueAfterLongRefresh` cover completion and
 next-cycle dispatch.
 
+Authorized no-PR operational delivery reads the structured receipt from the
+canonical issue-body Workpad as well as Workpad comments (#3425). GitHub
+hydration and completion classification share the section parser; protocol
+examples outside that section cannot complete an issue. Existing Workpad-comment
+precedence remains authoritative. Acceptance still requires the dispatch-time
+and current operational authorization, clean delivered workspace, and matching
+attempt/generation when the receipt supplies them. The accepted signal and
+generation persist with the existing successful attempt. Both cached promotion
+and restart restoration require unchanged receipt fields; an unrelated issue
+timestamp update does not revoke an accepted delivery. Legacy successful
+unattributed receipts retain the existing timing check and cannot acquire a
+generation from current issue text. Historical no-progress receipts do not
+manufacture acceptance. The existing orchestrator completion transition retires
+accepted work to Done without another model session, retaining Human Review when
+required. `TestOperationalBodyCompletionSurvivesRestart` reproduces #3058's
+attempt 7018 / generation 25 publication and completion followed by the
+2026-09-30T14:14:11Z restart reclaiming unrelated work; it also covers refusal
+of changed evidence and stale attribution. Live attribution cases extend
+`TestHandleRunResultClassifiesImplementWorkerProgress`.
+
 An operator rejects a reviewed PR by moving its card to Rework, including through
 the dashboard. The existing lane history records the PR identity and hydrated
 head. Both completion and auto-promotion consume this durable rejection evidence:
@@ -452,6 +472,19 @@ Claude verifies effective policy on its worker before sending a model prompt.
 `TestProbeBackendTiers`, and each backend's `TestIsolationSettings` cover dispatch,
 withdrawal, failed probes, and policy mapping. Raw workspace terminals still report
 their actual `user` isolation independently of agent sandbox support.
+
+Runner policy identity (#3273) preserves the historical digest representation
+of equivalent absent/default execution settings across binary upgrades. The
+policy config normalization treats absent and `least_loaded` host selection
+identically, omits empty host caps and unset local status, and retains the older
+`[]` representation for empty required checks. Runtime defaults remain intact.
+Explicit host preference, nonempty caps, local status, required checks, commands,
+workspace paths, and effective prompts remain policy inputs requiring the existing
+administrator approval. Source identity and administrator-authorized runner
+requirements still match exactly; no mismatch bypass or recovery path is added.
+`TestRunnerPolicyUpgradeKeepsApprovedID` pins a v0.117.1 approval with an explicit
+workspace root so worker scratch paths cannot change the fixture, and covers
+the recorded unchanged-definition upgrade failure and explicit changes.
 
 Runner availability (#3169) reuses weekly-window evaluation and the existing
 runner-capacity exclusion: runners report zero capacity outside the cached

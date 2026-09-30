@@ -287,6 +287,7 @@ export const PolicyGates = Schema.Struct({
   validator: Schema.Boolean,
   security_audit: Schema.Boolean,
   merge_method: Schema.String,
+  github_pull_request: Schema.optional(Schema.Boolean),
 });
 export type PolicyGates = typeof PolicyGates.Type;
 

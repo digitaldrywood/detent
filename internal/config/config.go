@@ -312,6 +312,7 @@ type Workpad struct {
 type Deliverable struct {
 	Kind                  string `yaml:"kind"`
 	MergeMethod           string `yaml:"merge_method,omitempty"`
+	GitHubPullRequest     bool   `yaml:"github_pull_request,omitempty" json:"github_pull_request,omitempty"`
 	OutputRoot            string `yaml:"output_root,omitempty"`
 	ReviewURL             string `yaml:"review_url,omitempty"`
 	mergeMethodConfigured bool
@@ -325,8 +326,8 @@ type DeliverableElicitationRule struct {
 
 type Worker struct {
 	SSHHosts                       []string       `yaml:"ssh_hosts"`
-	HostSelection                  string         `yaml:"host_selection,omitempty"`
-	HostCaps                       map[string]int `yaml:"host_caps,omitempty"`
+	HostSelection                  string         `yaml:"host_selection,omitempty" json:"HostSelection,omitempty"`
+	HostCaps                       map[string]int `yaml:"host_caps,omitempty" json:"HostCaps,omitempty"`
 	MaxConcurrentAgentsPerHost     *int           `yaml:"max_concurrent_agents_per_host"`
 	GitHubToken                    string         `yaml:"github_token,omitempty"`
 	GitHubTokenResolutionTimeoutMS int            `yaml:"github_token_resolution_timeout_ms"`

@@ -14,12 +14,19 @@ import (
 
 type landingBackend struct {
 	workspace.Backend
-	result   workspace.LandResult
-	err      error
-	received workspace.LandOptions
+	result       workspace.LandResult
+	err          error
+	received     workspace.LandOptions
+	githubCalled bool
 }
 
 func (b *landingBackend) LandChange(_ context.Context, _ workspace.Info, _ workspace.Issue, opts workspace.LandOptions) (workspace.LandResult, error) {
+	b.received = opts
+	return b.result, b.err
+}
+
+func (b *landingBackend) LandChangeViaGitHub(_ context.Context, _ workspace.Info, _ workspace.Issue, opts workspace.LandOptions) (workspace.LandResult, error) {
+	b.githubCalled = true
 	b.received = opts
 	return b.result, b.err
 }
@@ -53,9 +60,12 @@ func TestLandNativeChange(t *testing.T) {
 		wantErr      string
 		wantRecorded int
 		wantRefusal  string
+		wantGitHub   bool
 	}{
 		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1},
+		{name: "opted-in project uses GitHub PR landing", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
+			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true},
 		{name: "a refusal is reported, not recorded", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "the base branch main refused the push"}},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalProtected},
 		{name: "an unreviewed change is a refusal", stub: landingStub{target: target, targetErr: errors.New("hub says: " + ErrLandingNotReviewed.Error())},
@@ -93,8 +103,11 @@ func TestLandNativeChange(t *testing.T) {
 			if len(stub.recorded) != test.wantRecorded {
 				t.Fatalf("recorded = %#v, want %d", stub.recorded, test.wantRecorded)
 			}
+			if backend.githubCalled != test.wantGitHub {
+				t.Fatalf("GitHub landing called = %t, want %t", backend.githubCalled, test.wantGitHub)
+			}
 			if test.wantRecorded == 1 {
-				if backend.received.HeadSHA != head || backend.received.Method != "merge" || !backend.received.PushAttemptBranch || !strings.Contains(backend.received.Message, "Add a sign-in link") || !strings.Contains(backend.received.Message, "round 2") {
+				if backend.received.HeadSHA != head || backend.received.Method != "merge" || !backend.received.PushAttemptBranch || (!test.wantGitHub && (!strings.Contains(backend.received.Message, "Add a sign-in link") || !strings.Contains(backend.received.Message, "round 2"))) {
 					t.Fatalf("land options = %#v", backend.received)
 				}
 				if stub.recorded[0].MergeSHA != merge || stub.recorded[0].BaseRef != "main" || stub.recorded[0].ChangeID != "change_1" {
