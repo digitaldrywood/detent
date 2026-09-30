@@ -324,26 +324,15 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		o.warnImplementProgressHydration(issue, reason, nil)
 		return decision
 	}
-	var workpadCurrent bool
-	if pullRequestMerged(issue.PullRequest) {
-		var refreshed connector.Issue
-		refreshed, workpadCurrent = o.refreshImplementCompletionIssue(ctx, issue)
-		decision.Issue = refreshed
-		decision.TrackerState = strings.TrimSpace(refreshed.State)
-		if workpadCurrent && implementProgressMergedCompletion(refreshed, running.DiffStats) {
-			decision.WorkpadStatus = workpad.StatusComplete
-			decision.CurrentSignature = autoPromoteReworkSignatureFromIssue(refreshed, staleMergedPullRequestSummaryFromIssue(refreshed))
-			decision.Reason = implementMergedCompletionReason
-			return decision
-		}
-		issue = refreshed
-	} else {
-		var refreshed connector.Issue
-		refreshed, workpadCurrent = o.refreshImplementCompletionIssue(ctx, issue)
-		issue = refreshed
-	}
+	issue, workpadCurrent := o.refreshImplementCompletionIssue(ctx, issue)
 	decision.Issue = issue
 	decision.TrackerState = strings.TrimSpace(issue.State)
+	if workpadCurrent && pullRequestMerged(issue.PullRequest) && implementProgressMergedCompletion(issue, running.DiffStats) {
+		decision.WorkpadStatus = workpad.StatusComplete
+		decision.CurrentSignature = autoPromoteReworkSignatureFromIssue(issue, staleMergedPullRequestSummaryFromIssue(issue))
+		decision.Reason = implementMergedCompletionReason
+		return decision
+	}
 	decision.WorkspaceDiffStats = implementProgressReconcilePullRequestEvidence(running.DiffStats, issue.PullRequest)
 	if workpadCurrent {
 		decision.WorkpadStatus = implementProgressArtifactSnapshotFromIssue(issue, true).WorkpadStatus
@@ -628,6 +617,9 @@ func (o *Orchestrator) refreshImplementCompletionIssue(ctx context.Context, issu
 	if signal, ok := autoPromoteIssueWorkpadSignal(refreshed); ok {
 		refreshed.WorkpadSignal = signal
 	}
+	if resolved, ok := o.resolveMergedCompletionPullRequest(ctx, refreshed); ok {
+		refreshed = resolved
+	}
 	return refreshed, true
 }
 
@@ -665,12 +657,8 @@ func implementProgressMergedCompletion(issue connector.Issue, diffStats DiffStat
 		pullRequestHydrationBlocksProgress(pullRequest) || strings.TrimSpace(pullRequest.HeadSHA) == "" {
 		return false
 	}
-	if pullRequest.CheckRunCount+pullRequest.StatusContextCount == 0 ||
-		len(pullRequest.RunningChecks) > 0 || len(pullRequest.UnstartedChecks) > 0 ||
-		len(pullRequest.RequiredCheckFailures) > 0 {
-		return false
-	}
-	return mergeWorkerCIGreen(pullRequest.CIStatus)
+	decision := staleMergedPullRequestDecision(issue, staleMergedPullRequestSummaryFromIssue(issue))
+	return decision.Reason == AutoPromoteReasonPullRequestMerged
 }
 
 func implementProgressMergedCompletionCandidate(issue connector.Issue, diffStats DiffStats) bool {

@@ -1806,10 +1806,14 @@ func TestImplementProgressMergedCompletionQualification(t *testing.T) {
 			issue.PullRequest.Number = 0
 		}},
 		{name: "head missing", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.HeadSHA = "" }},
-		{name: "check evidence missing", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CheckRunCount = 0 }},
-		{name: "ci pending", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CIStatus = "pending" }},
-		{name: "required check pending", mutate: func(issue *connector.Issue, _ *DiffStats) {
+		{name: "check evidence missing after merge", qualifies: true, mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CheckRunCount = 0 }},
+		{name: "ci pending after merge", qualifies: true, mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CIStatus = "pending" }},
+		{name: "required check pending after merge", qualifies: true, mutate: func(issue *connector.Issue, _ *DiffStats) {
 			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "in_progress"}}
+		}},
+		{name: "ci red remains", mutate: func(issue *connector.Issue, _ *DiffStats) { issue.PullRequest.CIStatus = "failure" }},
+		{name: "failed check remains", mutate: func(issue *connector.Issue, _ *DiffStats) {
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "completed", Conclusion: "failure"}}
 		}},
 		{name: "hydration degraded", mutate: func(issue *connector.Issue, _ *DiffStats) {
 			issue.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData

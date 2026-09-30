@@ -1,6 +1,9 @@
 package orchestrator
 
 import (
+	"context"
+	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -270,6 +273,74 @@ func operationalCompletionWithAuthorization(issue connector.Issue, authorized bo
 		evidence:   evidence,
 		workpadURL: strings.TrimSpace(signal.CommentURL),
 	}, true
+}
+
+func (o *Orchestrator) resolveMergedCompletionPullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	if !ok || !workpad.MergedCompletionEvidence(signal) ||
+		issue.PullRequest != nil && (normalizePullRequestState(issue.PullRequest.State) != "closed" || pullRequestMerged(issue.PullRequest) || pullRequestHydrationBlocksProgress(issue.PullRequest)) {
+		return issue, false
+	}
+	if issue.PRNumber != nil && issue.PullRequest != nil && *issue.PRNumber != issue.PullRequest.Number {
+		return issue, false
+	}
+	resolver, ok := o.connector.(connector.IssueReferenceResolver)
+	if !ok {
+		return issue, false
+	}
+	repository := dependencyIssueRepo(issue.Identifier)
+	if workAttemptPRNumber(issue) != nil && !strings.EqualFold(pullRequestRepository(issue), repository) {
+		return issue, false
+	}
+	mergedURL := strings.TrimSpace(signal.Fields["completion_merged_pr"])
+	parsed, err := url.Parse(mergedURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return issue, false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) != 4 || parts[2] != "pull" {
+		return issue, false
+	}
+	identifier, err := workpad.ParseRef(parts[0]+"/"+parts[1]+"#"+parts[3], repository)
+	if err != nil || dependencyIssueRepo(identifier) != repository {
+		return issue, false
+	}
+	identifiers := []string{identifier}
+	previous := ""
+	if number := workAttemptPRNumber(issue); number != nil {
+		previous = fmt.Sprintf("%s#%d", repository, *number)
+		identifiers = append(identifiers, previous)
+	}
+	refs, err := resolver.FetchIssueStatesByIdentifiers(ctx, identifiers)
+	if err != nil {
+		return issue, false
+	}
+	var merged *connector.PullRequest
+	previousClosed := previous == ""
+	for _, ref := range refs {
+		pr := ref.PullRequest
+		if pr == nil || pullRequestHydrationBlocksProgress(pr) {
+			continue
+		}
+		if normalizedIssueIdentifier(ref.Identifier) == normalizedIssueIdentifier(previous) {
+			previousClosed = normalizedIssueIdentifier(fmt.Sprintf("%s#%d", repository, pr.Number)) == normalizedIssueIdentifier(previous) && normalizePullRequestState(pr.State) == "closed" && !pullRequestMerged(pr)
+		}
+		if normalizedIssueIdentifier(ref.Identifier) == normalizedIssueIdentifier(identifier) && pullRequestMerged(pr) &&
+			strings.TrimSpace(pr.HeadSHA) != "" && strings.TrimSpace(pr.BaseRef) == strings.TrimPrefix(strings.TrimSpace(signal.Fields["completion_branch"]), "origin/") {
+			prIdentifier := fmt.Sprintf("%s#%d", repository, pr.Number)
+			if strings.TrimSpace(pr.URL) == mergedURL && normalizedIssueIdentifier(prIdentifier) == normalizedIssueIdentifier(identifier) {
+				merged = pr
+			}
+		}
+	}
+	if !previousClosed || merged == nil {
+		return issue, false
+	}
+	issue = cloneIssue(issue)
+	issue.PullRequest = merged
+	issue.PRNumber = &merged.Number
+	issue.PRRepository = repository
+	return issue, true
 }
 
 func autoPromoteHumanReviewRequired(issue connector.Issue, cfg AutoPromoteConfig, gateCfg gate.Config) bool {
