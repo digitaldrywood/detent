@@ -25,6 +25,7 @@ import type {
 import { useTheme } from "../adapters/theme.ts";
 import { useShell, type ConnectionChip } from "../App.tsx";
 import { useClient } from "../client.ts";
+import { usePageTitle } from "../pageTitle.ts";
 import { AttemptDiffBody } from "../components/surfaces/DiffSurface.tsx";
 import { Pill, type PillTone } from "./components/IssueCard.tsx";
 import { WorkTopBar } from "./components/WorkTopBar.tsx";
@@ -604,6 +605,7 @@ export function ChangeRequestPage(): React.ReactElement {
     projectId === null
       ? null
       : (client.bootstrap.projects.find((candidate) => candidate.id === projectId) ?? null);
+  usePageTitle(data === null ? "Change" : `Change: ${data.change.change.title}`, project?.name);
   const canWrite = project?.can_write !== false;
 
   const openIssue = React.useCallback(
