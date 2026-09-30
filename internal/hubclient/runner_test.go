@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -80,7 +81,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := Machine{ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 1, Version: "test"}
+	machine := Machine{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 1, Version: "test"}
 	identity, err := EnrollRunner(t.Context(), path, organization, enrollment.Token, machine)
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +155,10 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil || len(candidates) != 1 || candidates[0].ID != string(issue.WorkItemID) {
 		t.Fatalf("enrolled scheduler: candidates=%d err=%v", len(candidates), err)
 	}
+	cachedClaim, cacheErr := runnerauth.LoadRoutingCache(path)
+	if cacheErr != nil || cachedClaim.Revision != 2 || cachedClaim.Routing.IsolationTier != "native-trusted" {
+		t.Fatalf("claim routing cache = %#v, %v", cachedClaim, cacheErr)
+	}
 	if _, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
 		t.Fatalf("runner-side validation: %v", err)
 	}
@@ -174,8 +179,8 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
-		t.Fatalf("accepted heartbeat failed on cache permission error: %v", err)
+	if err := native.HeartbeatMachine(t.Context(), machine); err == nil {
+		t.Fatal("heartbeat accepted an unavailable isolation policy cache")
 	}
 	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o600); err != nil {
 		t.Fatal(err)

@@ -562,6 +562,38 @@ otherwise authorized compatible runner; an unknown ID/tag matches none and retur
 a structured reason. Renaming preserves routing. Disabled, drained, offline or
 unauthorized runners cannot receive new claims; no selector is silently widened.
 
+Runners report the probed isolation tiers of every configured backend at enrollment,
+registration, and each heartbeat. Agent claims require every reported backend to
+support the runner's administrator-selected tier, which defaults to `sandbox`.
+Missing reports and failed probes match no sandbox work. Reports belong to the
+logical runner, including when several runners share a host. A heartbeat replaces
+the report, so unavailable support is withdrawn rather than retained. Workspace
+shell capabilities remain separate: a native PTY reports `user`, never `sandbox`.
+
+Codex maps sandbox work to a named permission profile equivalent to
+`workspace-write`, with explicit worktree and Detent
+runtime writable roots, no implicit system temporary-directory grant, and its
+limited network proxy. Claude enables its sandbox, fails if unavailable, disables
+unsandboxed retries and excluded commands, limits network destinations, and denies
+reads of SSH, AWS, and macOS keychain directories. Sandbox runs expose only
+Bash, Read, Glob, and Grep, with MCP disabled, so file writes and network access
+pass through the shell sandbox. Backend launches apply the
+administrator's routing snapshot, refreshed on each claim; a missing private
+snapshot or failed cache update fails execution.
+`native-trusted` explicitly disables the backend sandbox. Neither tier is a
+container or microVM guarantee. The workspace terminal default is `sandbox`;
+explicit legacy `container` and `user` settings remain readable.
+
+Network grants cover the model APIs, GitHub, and Go, npm, Python, and Rust package
+registries. Unix host services are granted by exact path. TCP host-service grants
+are unsupported in `sandbox`, because these backend settings cannot constrain
+localhost access to an exact port; such runners must not advertise sandbox support
+for that configuration. Probes conservatively require Codex 0.159.2 or newer and
+Claude Code 2.1.285 or newer on macOS, plus working OS sandbox support. Claude
+Linux is not advertised until its optional Unix socket filter can be proven;
+its version alone does not establish socket isolation. Unsupported hosts
+or configurations retain only the tiers they can deliver; there is no downgrade.
+
 Actual enrollment binds logical runners to a machine. Checked-in runner profiles
 declare requirements, not physical registrations. Self-reported capabilities and
 tags cannot grant access or privileged labels. Multiple runners on one machine

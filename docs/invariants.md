@@ -419,6 +419,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Runner isolation (#3168) replaces the undeliverable default `container` declaration
+with `sandbox` and extends existing claim compatibility to backend-probed tiers.
+Missing or withdrawn tier reports use the existing no-compatible-work result;
+no new reason code, recovery path, lane writer, or configuration key is introduced.
+Backend policy mapping fails closed instead of retrying as a native process.
+`TestRunnerIsolationClaims`, `TestRunnerIsolationHeartbeatWithdrawsTier`,
+`TestProbeBackendTiers`, and each backend's `TestIsolationSettings` cover dispatch,
+withdrawal, failed probes, and policy mapping. Raw workspace terminals still report
+their actual `user` isolation independently of agent sandbox support.
+
 The stranded-active lane recovery is removed (#3238). In Progress remains an
 active dispatch candidate after a long refresh, and the existing completion
 transition owns finished attempts. The diagnostic snapshot still reports the

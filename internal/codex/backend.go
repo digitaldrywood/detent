@@ -88,8 +88,34 @@ func (b *AgentBackend) runTurn(
 	ctx = withWorkerTempDir(ctx, req.TempDir)
 	ctx = withAgentProcess(ctx, runner.AgentProcessRequest{Workspace: req.Workspace, Environment: req.Environment})
 	restricted := req.ReadOnly || (len(tools) > 0 && !req.SupplementalTools)
+	options := b.options
+	var settings map[string]any
 	var err error
-	req.ExtraWritableRoots, err = hostCacheWritableRoots(ctx, b.options, req.ExtraWritableRoots, restricted)
+	if options.IsolationPolicy != nil {
+		policy, policyErr := options.IsolationPolicy()
+		if policyErr != nil {
+			return runner.AgentTurnResult{}, policyErr
+		}
+		policy.WritableRoots = append([]string{req.Workspace, req.TempDir}, req.ExtraWritableRoots...)
+		policy.WritableRoots = appendUniqueStrings(nil, policy.WritableRoots...)
+		mapped, config, mapErr := IsolationSettings(policy)
+		if mapErr != nil {
+			return runner.AgentTurnResult{}, mapErr
+		}
+		options.ApprovalPolicy, options.ThreadSandbox, options.TurnSandboxPolicy = mapped.ApprovalPolicy, mapped.ThreadSandbox, mapped.TurnSandboxPolicy
+
+		options.PermissionProfile = mapped.PermissionProfile
+		settings = config
+		if options.PermissionProfile != "" {
+			if restricted {
+				profile := settings["permissions"].(map[string]any)[options.PermissionProfile].(map[string]any)
+				profile["filesystem"] = map[string]any{"/": "read", ":workspace_roots": "read"}
+			}
+			options.ThreadSandbox, options.TurnSandboxPolicy = "", nil
+		}
+	} else {
+		req.ExtraWritableRoots, err = hostCacheWritableRoots(ctx, options, req.ExtraWritableRoots, restricted)
+	}
 	if err != nil {
 		return runner.AgentTurnResult{}, err
 	}
@@ -111,10 +137,13 @@ func (b *AgentBackend) runTurn(
 		TempDir:                 req.TempDir,
 		ResumeThreadID:          req.Resume.ThreadID,
 		DeveloperInstructions:   toolTurnInstructions(instructionTools, req.ToolInstructions),
-		ApprovalPolicy:          approvalPolicy(b.options.ApprovalPolicy, restricted),
+		Config:                  settings,
+		Permissions:             options.PermissionProfile,
+		RuntimeWorkspaceRoots:   isolationRuntimeRoots(options.PermissionProfile, req),
+		ApprovalPolicy:          approvalPolicy(options.ApprovalPolicy, restricted),
 		MCPElicitationPolicy:    mcpElicitationPolicy(b.options.DeliverableElicitationAllowlist, req, restricted),
-		ThreadSandbox:           threadSandbox(b.options.ThreadSandbox, restricted),
-		TurnSandboxPolicy:       turnSandboxPolicy(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots, restricted),
+		ThreadSandbox:           threadSandbox(options.ThreadSandbox, restricted),
+		TurnSandboxPolicy:       turnSandboxPolicy(options.ThreadSandbox, options.TurnSandboxPolicy, req.ExtraWritableRoots, restricted),
 		Model:                   req.Model,
 		ModelProvider:           req.ModelProvider,
 		ServiceTier:             req.ServiceTier,

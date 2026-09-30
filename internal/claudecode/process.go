@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -158,6 +159,35 @@ func (b *AgentBackend) RunTurn(
 
 func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, error) {
 	argv := b.argv(req)
+	if b.options.IsolationPolicy != nil {
+		policy, err := b.options.IsolationPolicy()
+		if err != nil {
+			return nil, err
+		}
+		policy.WritableRoots = []string{req.Workspace}
+		if req.TempDir != "" {
+			policy.WritableRoots = append(policy.WritableRoots, req.TempDir)
+		}
+		policy.WritableRoots = append(policy.WritableRoots, req.ExtraWritableRoots...)
+		settings, err := IsolationSettings(policy)
+		if err != nil {
+			return nil, err
+		}
+		if policy.Tier == "sandbox" && len(b.options.ExtraArgs) > 0 {
+			return nil, errors.New("runner isolation cannot apply Claude extra arguments")
+		}
+		if policy.Tier == "sandbox" {
+			bounded := *b
+			bounded.options.PermissionMode = "acceptEdits"
+			argv = bounded.argv(req)
+			argv = append(argv, "--tools", "Bash,Read,Glob,Grep", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`)
+		}
+		encoded, err := json.Marshal(settings)
+		if err != nil {
+			return nil, err
+		}
+		argv = append(argv, "--setting-sources", "", "--settings", string(encoded))
+	}
 	var cmd *exec.Cmd
 	if b.options.CommandFactoryWithArgs != nil {
 		cmd = b.options.CommandFactoryWithArgs(ctx, argv)

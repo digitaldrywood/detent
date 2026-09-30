@@ -53,6 +53,9 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 		}
 		s.machine.ProviderReports = reports
 	}
+	if s.isolationReport != nil {
+		s.machine.BackendIsolation = s.isolationReport(ctx)
+	}
 	if s.client.runner != nil && !last.IsZero() {
 		if err := source.client.HeartbeatMachine(ctx, s.machine); err != nil {
 			return err

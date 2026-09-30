@@ -9,7 +9,9 @@ import (
 	"slices"
 	"strings"
 
+	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -203,25 +205,42 @@ func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkIte
 func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) error {
 	capabilities, isolation := machine.workspaceReport()
 	request := struct {
-		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
-		ID              tracker.MachineID         `json:"id"`
-		Hostname        string                    `json:"hostname"`
-		DisplayName     string                    `json:"display_name"`
-		Capacity        int                       `json:"capacity"`
-		Version         string                    `json:"version"`
-		OS              string                    `json:"os"`
-		Architecture    string                    `json:"architecture"`
+		BackendIsolation isolationpolicy.Report    `json:"backend_isolation"`
+		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
+		ID               tracker.MachineID         `json:"id"`
+		Hostname         string                    `json:"hostname"`
+		DisplayName      string                    `json:"display_name"`
+		Capacity         int                       `json:"capacity"`
+		Version          string                    `json:"version"`
+		OS               string                    `json:"os"`
+		Architecture     string                    `json:"architecture"`
 		// Registration carries the same workspace report the heartbeat does,
 		// so a restarted runner is eligible before its first heartbeat.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
-	}{machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
-	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
+	}{machine.BackendIsolation, machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
+	if c.client.runner == nil {
+		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
+	}
+	var snapshot runnerauth.RoutingSnapshot
+	if err := c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, &snapshot); err != nil {
+		return err
+	}
+	return runnerauth.SaveRoutingCache(c.client.runner.path, snapshot)
 }
 
 func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (tracker.NativeLease, error) {
-	var result tracker.NativeLease
-	err := c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &result)
+	var response struct {
+		tracker.NativeLease
+		RunnerRouting runnerauth.RoutingSnapshot `json:"runner_routing"`
+	}
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &response)
+	result := response.NativeLease
+	if err == nil && c.client.runner != nil {
+		if cacheErr := runnerauth.SaveRoutingCache(c.client.runner.path, response.RunnerRouting); cacheErr != nil {
+			return result, errors.Join(cacheErr, c.Release(context.WithoutCancel(ctx), result, "work_item_hydration_failed"))
+		}
+	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "no_claimable_work" {
 		return result, ErrNoClaimableWork

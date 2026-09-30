@@ -347,6 +347,11 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now); err != nil {
 			return tracker.Lease{}, err
 		}
+		if !query.WorkspaceLane {
+			if err := validateRunnerIsolation(ctx, tx, *query.NativeScope, now); err != nil {
+				return tracker.Lease{}, err
+			}
+		}
 	}
 	claimableRepositories := make(map[tracker.RepositoryID]struct{})
 	if query.NativeScope == nil {

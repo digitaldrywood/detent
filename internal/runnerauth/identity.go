@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -48,6 +49,7 @@ type Enrollment struct {
 }
 
 type Redemption struct {
+	BackendIsolation isolation.Report `json:"backend_isolation,omitempty"`
 	Binding
 	Credential   string `json:"credential"`
 	Hostname     string `json:"hostname"`

@@ -356,7 +356,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	serviceConnection := serviceapi.Connection{
 		Address: serviceAddress,
 	}
-	projectFactory := withRunnerFactory(project.Dependencies{
+	projectFactory := withRunnerFactoryWithIsolation(project.Dependencies{
 		Events:             events,
 		Scheduling:         hubScheduling,
 		Logger:             logger,
@@ -379,7 +379,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		ScheduleOwner:      cfg.Global.InstanceName,
 		ConnectorFactory:   cfg.ConnectorFactory,
 		Runner:             cfg.Runner,
-	}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runtimeGitHubToken.get)
+	}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), runtimeGitHubToken.get)
 	managerDependencies := deps.managerDependencies
 	managerDependencies.ProjectFactory = projectFactory
 	managerDependencies.Events = events
