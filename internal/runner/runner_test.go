@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1685,6 +1686,7 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
 					t.Errorf("fixture scratch cleanup: %v", err)
 				}
+				_ = os.RemoveAll(workspace.WorkerScratchRoot(workspacePath))
 			})
 			reaped := false
 			r := &Runner{
@@ -1735,12 +1737,8 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 			if execution.cleanupErr != nil {
 				t.Fatalf("scratch removal error: %v (turn error: %v)", execution.cleanupErr, execution.err)
 			}
-			canonicalWorkspace, err := filepath.EvalSymlinks(workspacePath)
-			if err != nil {
-				t.Fatalf("EvalSymlinks() error = %v", err)
-			}
-			if backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, canonicalWorkspace+string(filepath.Separator)) {
-				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, canonicalWorkspace)
+			if scratchRoot := workspace.WorkerScratchRoot(workspacePath); backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, scratchRoot+string(filepath.Separator)) {
+				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, scratchRoot)
 			}
 			_, statErr := os.Stat(backend.tempDir)
 			if tt.wantScratch {
@@ -1860,6 +1858,7 @@ func TestRunAgentTurnRecreatesWorkerScratchForEveryAttempt(t *testing.T) {
 	t.Parallel()
 
 	workspacePath := t.TempDir()
+	t.Cleanup(func() { _ = os.RemoveAll(workspace.WorkerScratchRoot(workspacePath)) })
 	backend := &scratchWritingAgentBackend{}
 	r := &Runner{
 		now:    time.Now,
@@ -1898,6 +1897,12 @@ func TestRunAgentTurnRecreatesWorkerScratchForEveryAttempt(t *testing.T) {
 			}
 			if !backend.scratchReady[len(backend.scratchReady)-1] {
 				t.Fatal("worker scratch did not exist when backend turn started")
+			}
+			if filepath.Dir(backend.tempDir) != workspace.WorkerScratchRoot(workspacePath) {
+				t.Fatalf("worker scratch = %q, want attempt under %q", backend.tempDir, workspace.WorkerScratchRoot(workspacePath))
+			}
+			if !slices.Contains(backend.writableRoots, backend.tempDir) {
+				t.Fatalf("sandbox writable roots = %q, want worker scratch %q", backend.writableRoots, backend.tempDir)
 			}
 			if _, err := os.Stat(backend.tempDir); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("worker scratch stat error after turn = %v, want not exist", err)
@@ -2541,6 +2546,7 @@ func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				if backend.request.Workspace != "" {
+					_ = os.RemoveAll(workspace.WorkerScratchRoot(backend.request.Workspace))
 					if _, err := os.Stat(backend.request.Workspace); errors.Is(err, os.ErrNotExist) {
 						return
 					}
@@ -7633,12 +7639,14 @@ type deliverableRecoveryAgentBackend struct {
 type scratchWritingAgentBackend struct {
 	runErr        error
 	tempDir       string
+	writableRoots []string
 	workerProcess procgroup.Identity
 	scratchReady  []bool
 }
 
 func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.tempDir = req.TempDir
+	b.writableRoots = req.ExtraWritableRoots
 	_, scratchErr := os.Stat(req.TempDir)
 	b.scratchReady = append(b.scratchReady, scratchErr == nil)
 	if b.workerProcess.PID > 0 {

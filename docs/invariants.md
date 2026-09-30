@@ -1546,7 +1546,9 @@ and read-only diagnostics. All are registered in the invariant manifest.
 Doctor reports native Go cache paths and readable sizes once per host, the last completed
 reaper trim (or “not recorded”), and warns about legacy `.detent/cache` roots in
 the workspace root or workdirs, including former per-attempt cache components
-under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
+under `.detent/worker-tmp` and under each workdir's worker scratch root in the
+OS temp directory (`detent-worker-scratch/`), where attempt scratch lives so
+toolchain churn stays out of file-watched workspace trees. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
 The native build cache defaults to 10% of total cache-volume capacity with the
 existing 48-hour age trim; explicit bounds win, and unavailable capacity falls
