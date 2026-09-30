@@ -649,6 +649,11 @@ host-key verification, with noninteractive authentication and no agent forwardin
 
 ```yaml
 worker:
+  # Per runner host; omitted prices inherit Sprites public rates.
+  compute_rates:
+    local:
+      cpu_hour_usd: 0.07
+      memory_gb_hour_usd: 0.04375
   ssh_hosts: [logans-macbook-air, corys-mac-studio, local]
   host_selection: preference
   max_concurrent_agents_per_host: 2
@@ -1694,6 +1699,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank |
 | `tracker.write_probe_issue` | `string` | `none` | No | None |
 | `worker` | `object` | `see child fields` | No | None |
+| `worker.compute_rates` | `mapping<string, mapping>` | `{}` | No | None |
 | `worker.github_rest_min_remaining_reserve` | `integer` | `1250` | No | must be greater than 0 |
 | `worker.github_rest_poll_interval_ms` | `integer` | `60000` | No | must be greater than or equal to 60000 |
 | `worker.github_token` | `string` | `top-level github_token` | No | None |

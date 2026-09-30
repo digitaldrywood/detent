@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -34,7 +35,7 @@ func TestTerminalAttemptPersistsSessionUsage(t *testing.T) {
 			now := time.Now()
 			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 42, Mode: runpkg.RunModeImplement, StartedAt: now.Add(-2 * time.Hour), TurnCount: 2, Tokens: TokenTotals{InputTokens: 567990, OutputTokens: 4310, TotalTokens: 572300}}
 			totals := TokenTotals{InputTokens: 60500000, OutputTokens: 500000, TotalTokens: 61000000, RuntimeSeconds: 7321.9}
-			o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Result: runpkg.RunResult{TurnStarted: true, TurnCount: 120, Tokens: totals, FinalState: tt.final}, Err: tt.err, CompletedAt: now})
+			o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Result: runpkg.RunResult{TurnStarted: true, TurnCount: 120, Tokens: totals, TokenUSD: 1.25, Compute: &compute.Usage{CPUSeconds: 3, AvgMemoryBytes: 1e9, WallSeconds: 5, ComputeUSD: .0001}, FinalState: tt.final}, Err: tt.err, CompletedAt: now})
 			if len(attempts.completions) != 1 {
 				t.Fatalf("completions = %d, want 1", len(attempts.completions))
 			}
@@ -43,14 +44,19 @@ func TestTerminalAttemptPersistsSessionUsage(t *testing.T) {
 				t.Fatalf("terminal state = %s", completion.TerminalState)
 			}
 			var metrics struct {
-				Input   int64   `json:"input_tokens"`
-				Output  int64   `json:"output_tokens"`
-				Total   int64   `json:"total_tokens"`
-				Runtime float64 `json:"runtime_seconds"`
-				Turns   int     `json:"turns"`
+				compute.Usage
+				TokenUSD float64 `json:"token_usd"`
+				Input    int64   `json:"input_tokens"`
+				Output   int64   `json:"output_tokens"`
+				Total    int64   `json:"total_tokens"`
+				Runtime  float64 `json:"runtime_seconds"`
+				Turns    int     `json:"turns"`
 			}
 			if err := json.Unmarshal([]byte(completion.MetricsJSON), &metrics); err != nil {
 				t.Fatal(err)
+			}
+			if metrics.CPUSeconds != 3 || metrics.AvgMemoryBytes != 1e9 || metrics.WallSeconds != 5 || metrics.ComputeUSD != .0001 || metrics.TokenUSD != 1.25 {
+				t.Fatalf("compute metrics = %+v", metrics)
 			}
 			if metrics.Turns != 120 {
 				t.Fatalf("turns = %d, want 120", metrics.Turns)

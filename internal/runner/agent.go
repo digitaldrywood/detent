@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
@@ -172,6 +173,7 @@ type Runner struct {
 	sessionLimit              durationLimitContextFactory
 	turnLimit                 durationLimitContextFactory
 	admissionLeaks            admissionWorkspaceLeakTracker
+	startCompute              func(compute.Rates) func() *compute.Usage
 	lookupEnv                 func(string) string
 	goBudget                  gobudget.Budget
 }
@@ -1173,6 +1175,7 @@ func (r *Runner) runAgentTurn(
 	}
 	activityProfile := r.startActivityProfile(ctx, runRequest, detentSessionID, info.Path, profileWorkflow, profileStage)
 	defer activityProfile.close()
+	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsCheckedAt)
@@ -1234,6 +1237,7 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	}), r.turnLimit)
+	result.Compute = stopCompute()
 	conversation.finishTurn(ctx, turnResult, turnErr)
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		ctx,
@@ -1942,7 +1946,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if targetRefObserver != nil {
 			initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, sessionCtx, info, workspaceIssue, "resume_fallback_initial")
 		}
+		resumeCompute := execution.result.Compute
 		execution = runWithCheckpoint(turnRequest, req, runtimeIdentity, 0)
+		execution.result.Compute = compute.Add(resumeCompute, execution.result.Compute)
 		r.rememberPrompt(promptKey, prompt, execution)
 		execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
@@ -2031,6 +2037,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	turnErr := execution.err
 	cleanupErr := execution.cleanupErr
 	result := execution.result
+	result.TokenUSD = r.usageCostUSD(effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model, sessionModel), result.Tokens.InputTokens, result.Tokens.CachedInputTokens, result.Tokens.OutputTokens, backendConfig.Kind)
 	result.TurnCount = execution.turnCount
 	result.WorkspaceBranch = strings.TrimSpace(info.Branch)
 	if mergeFallback && turnErr == nil {
@@ -2625,6 +2632,7 @@ func mergeAgentTurnExecutions(initial agentTurnExecution, recovery agentTurnExec
 	result.Model = effectiveModel(recovery.result.Model, initial.result.Model)
 	result.RuntimeIdentity = initial.result.RuntimeIdentity.Merge(recovery.result.RuntimeIdentity)
 	result.Tokens = addAgentTokenTotals(initial.result.Tokens, recovery.result.Tokens)
+	result.Compute = compute.Add(initial.result.Compute, recovery.result.Compute)
 	result.RateLimits = mergeAgentRateLimits(initial.result.RateLimits, recovery.result.RateLimits)
 	result.SkillDraftProposed = initial.result.SkillDraftProposed || recovery.result.SkillDraftProposed
 	result.PullRequestUpdated = initial.result.PullRequestUpdated || recovery.result.PullRequestUpdated
@@ -3167,6 +3175,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	activityProfile := r.startActivityProfile(sessionCtx, runReq, sessionID, info.Path, workflow, "validation")
 	defer activityProfile.close()
+	stopCompute := r.meterCompute(runReq.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
@@ -3228,6 +3237,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		return nil
 	}, r.turnLimit)
+	runResult.Compute = stopCompute()
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		sessionCtx,
 		sessionID,
@@ -3957,6 +3967,7 @@ func (r *Runner) finishSession(
 		TotalTokens:            result.Tokens.TotalTokens,
 		ModelContextWindow:     result.Tokens.ModelContextWindow,
 		CostUSD:                actualCostUSD,
+		Compute:                result.Compute,
 		ProjectedCostUSD:       projectedCostUSD,
 		ProjectionOvershootUSD: projectionOvershootUSD,
 		RuntimeSeconds:         int64(math.Round(result.Tokens.RuntimeSeconds)),
@@ -5803,4 +5814,16 @@ func runtimeSeconds(startedAt, completedAt time.Time) float64 {
 		return 0
 	}
 	return completedAt.Sub(startedAt).Seconds()
+}
+
+func (r *Runner) meterCompute(host string) func() *compute.Usage {
+	if host == "" {
+		host = "local"
+	}
+	workflow, _, _, _ := r.runtimeSnapshot()
+	rates := workflow.Config.Worker.ComputeRates[host]
+	if r.startCompute != nil {
+		return r.startCompute(rates)
+	}
+	return compute.Start(rates)
 }

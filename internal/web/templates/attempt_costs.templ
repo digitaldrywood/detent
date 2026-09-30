@@ -1,0 +1,27 @@
+package templates
+
+import "strconv"
+
+templ BoardAttemptCosts(rows []AttemptCostData, message string) {
+ if len(rows) > 0 || message != "" {
+  <section class="min-w-0 rounded-card border border-line" aria-label="Attempt costs">
+   <h3 class="border-b border-line px-3 py-2 text-xs font-medium text-text">Attempt costs</h3>
+   if message != "" {
+ <p class="px-3 py-2 text-xs text-sec">{ message }</p>
+ }
+   for _, row := range rows {
+    <div class="border-b border-line px-3 py-3 last:border-b-0" data-attempt-cost={ strconv.FormatInt(row.ID, 10) }>
+     <p class="mb-2 text-xs font-medium text-text">{ row.Label }</p>
+     <dl class="grid grid-cols-3 gap-2 text-2xs">
+      <div><dt class="text-sec">Tokens</dt><dd class="font-mono text-text">{ row.Tokens }</dd></div>
+      <div><dt class="text-sec">Token USD</dt><dd class="font-mono text-text">{ row.TokenUSD }</dd></div>
+      <div><dt class="text-sec">Compute USD</dt><dd class="font-mono text-text">{ row.ComputeUSD }</dd></div>
+     </dl>
+     if row.Detail != "" {
+ <p class="mt-2 break-words text-2xs text-dim">{ row.Detail }</p>
+ }
+    </div>
+   }
+  </section>
+ }
+}

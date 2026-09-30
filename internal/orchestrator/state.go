@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/compute"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -153,6 +154,8 @@ type StalenessWarning struct {
 }
 
 type Running struct {
+	Compute                     *compute.Usage
+	TokenUSD                    float64
 	progress                    *workerProgress
 	Policy                      policy.Descriptor
 	Issue                       connector.Issue
