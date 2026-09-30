@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -449,7 +450,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 	provider.member("user_bob", "porg_beta", "member")
 	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project")
 	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project")
-	tenants := map[string]http.Handler{"unix:/tenants/alpha.sock": alphaHandler, "unix:/tenants/beta.sock": betaHandler}
+	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
 	service, err := Open(t.Context(), Config{
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
 		Logger: logger, clientFS: fstest.MapFS{},
@@ -465,7 +466,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 		fixture  tenantFixture
 		endpoint string
 		name     string
-	}{{alpha, "unix:/tenants/alpha.sock", "Alpha"}, {beta, "unix:/tenants/beta.sock", "Beta"}} {
+	}{{alpha, testSocketEndpoint("alpha.sock"), "Alpha"}, {beta, testSocketEndpoint("beta.sock"), "Beta"}} {
 		if _, err := service.Registry().Register(t.Context(), Organization{ID: tenant.fixture.id, ProviderID: tenant.fixture.provider, Name: tenant.name, Endpoint: tenant.endpoint, Generation: 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -706,7 +707,7 @@ func TestRegistryRegister(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = registry.Close() })
-	base := Organization{ID: "org_a", ProviderID: "porg_a", Name: "A", Endpoint: "unix:/run/a.sock", Generation: 1}
+	base := Organization{ID: "org_a", ProviderID: "porg_a", Name: "A", Endpoint: testSocketEndpoint("a.sock"), Generation: 1}
 	tests := []struct {
 		name    string
 		mutate  func(*Organization)
@@ -718,8 +719,12 @@ func TestRegistryRegister(t *testing.T) {
 		{"rename", func(o *Organization) { o.Name = "A renamed" }, true, false},
 		{"other provider", func(o *Organization) { o.ProviderID = "porg_other" }, false, true},
 		{"provider reuse", func(o *Organization) { o.ID = "org_b" }, false, true},
-		{"same generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = "unix:/run/b.sock" }, false, true},
-		{"generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = "unix:/run/b.sock"; o.Generation = 2 }, true, false},
+		{"same generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = testSocketEndpoint("b.sock") }, false, true},
+		{"generation move", func(o *Organization) {
+			o.Name = "A renamed"
+			o.Endpoint = testSocketEndpoint("b.sock")
+			o.Generation = 2
+		}, true, false},
 		{"generation rollback", func(o *Organization) { o.Name = "A renamed"; o.Generation = 1 }, false, true},
 		{"public endpoint", func(o *Organization) { o.Endpoint = "http://10.0.0.1:80"; o.Generation = 3 }, false, true},
 		{"loopback tcp", func(o *Organization) { o.Endpoint = "http://127.0.0.1:7777"; o.Generation = 3 }, false, true},
@@ -859,4 +864,12 @@ func TestStoreDSN(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testSocketEndpoint(name string) string {
+	root := string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		root = `C:\`
+	}
+	return "unix:" + filepath.Join(root, "tenants", name)
 }

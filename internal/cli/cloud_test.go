@@ -131,7 +131,7 @@ func TestCloudRegistryAndKeyCommands(t *testing.T) {
 		err := cmd.Execute()
 		return output.String(), err
 	}
-	register := []string{"registry", "register", "--registry", registry, "--organization", "org_example", "--provider-organization", "org_workos", "--name", "Example", "--endpoint", "unix:/run/detent/tenants/org_example.sock", "--generation", "1"}
+	register := []string{"registry", "register", "--registry", registry, "--organization", "org_example", "--provider-organization", "org_workos", "--name", "Example", "--endpoint", "unix:" + filepath.Join(t.TempDir(), "org_example.sock"), "--generation", "1"}
 	for _, want := range []string{`"changed":true`, `"changed":false`} {
 		output, err := run(nil, register...)
 		if err != nil || !strings.Contains(output, want) {
