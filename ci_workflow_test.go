@@ -149,7 +149,7 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 		"GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)",
 		"GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)",
 		"lint: $(GOLANGCI_LINT)",
-		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=15m`,
+		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --timeout=15m`,
 		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)`,
 		"setup: $(GOLANGCI_LINT)",
 	} {
@@ -226,7 +226,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("make lint: %v\n%s", err, output)
 			}
-			if !strings.Contains(string(output), "pinned:go1.26.6:run --timeout=15m") {
+			if !strings.Contains(string(output), "pinned:go1.26.6:run --allow-parallel-runners --timeout=15m") {
 				t.Fatalf("make lint did not invoke the pinned toolchain: %s", output)
 			}
 			if installed := strings.Contains(string(output), "go install"); installed == cached {
@@ -239,7 +239,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 func TestScheduledCIDocumentationMatchesWorkflow(t *testing.T) {
 	t.Parallel()
 	docs := readNormalizedFile(t, "docs/execution-seams.md")
-	section := workflowBetween(t, docs, "### Main Branch Protection\n", "\n## Still Git/PR Coupled")
+	section := workflowBetween(t, docs, "### Detent Repository Branch Protection\n", "\n## Still Git/PR Coupled")
 	for _, want := range []string{"`make check-fast`", "scheduled", "`develop`", "tag", "staging"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("CI documentation missing %q", want)
