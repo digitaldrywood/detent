@@ -738,13 +738,18 @@ pacer, configuration key, or recovery loop is added.
 `TestCandidatePageObservation`, and
 `TestCandidatePRLargeCollectionsRemainAuthoritative` cover this consolidation.
 
-Non-draft dirty PRs in Rework or In Progress reuse the existing merge-mode precheck,
+Non-draft dirty PRs in In Progress reuse the existing merge-mode precheck,
 fallback rebase prompt, and deterministic verification (#2842), regardless of
 the programmatic merge fast-path flag. Verified repairs rejoin ordinary progress
 accounting with the changed PR head and retain their source lane without merge
 reservations or programmatic merging. Explicit fallback rework findings and a
 head replaced after verification use the existing Rework handoff. Merging keeps
-its existing CI wait and merge behavior. `TestDispatchModeMergingFastPathFlag`,
+its existing CI wait and merge behavior. Rework uses ordinary implementation
+routing even while the remote PR remains conflicted (#3475), so unfinished
+source and test changes receive an implementation worker instead of repeatedly
+entering conflict-only merge fallback. Same-lane Rework handoffs retain this
+routing without adding a retry mechanism or exception flag.
+`TestDispatchModeMergingFastPathFlag`,
 `TestMergeFallbackRoutesBoundedOutcomesToRework`, and
 `TestMergeFallbackResolvedHeadHandoff` cover this consolidation; no prompt, mode,
 reason code, or recovery mechanism is added. Repair runs retain the existing
