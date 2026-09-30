@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -1105,6 +1106,11 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 			continue
 		}
 		out[key] = value
+	}
+	if record, ok := metadata[implementProgressMetadataKey].(implementProgressRecord); ok &&
+		record.Outcome == string(store.WorkAttemptTerminalSuccess) && record.CompletionKind == workpad.CompletionOperational {
+		signal, _ := autoPromoteIssueWorkpadSignal(running.Issue)
+		out["operational_completion_receipt"] = operationalCompletionReceipt{Generation: running.Generation, Signal: workpad.CloneSignal(signal)}
 	}
 	if running.Policy.ID != "" {
 		out["policy"] = running.Policy

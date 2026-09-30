@@ -233,7 +233,6 @@ func EvaluateAutoPromote(
 type operationalCompletion struct {
 	evidence   string
 	workpadURL string
-	recordedAt *time.Time
 }
 
 func operationalCompletionFromIssue(issue connector.Issue) (operationalCompletion, bool) {
@@ -265,7 +264,6 @@ func operationalCompletionWithAuthorization(issue connector.Issue, authorized bo
 	return operationalCompletion{
 		evidence:   evidence,
 		workpadURL: strings.TrimSpace(signal.CommentURL),
-		recordedAt: signal.RecordedAt,
 	}, true
 }
 
@@ -669,7 +667,7 @@ func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 		if !autoPromoteIsWorkpadComment(body) {
 			continue
 		}
-		if signal, ok := workpad.SignalFromComment(body, comment.URL, dependencyIssueRepo(issue.Identifier)); ok {
+		if signal, ok := workpad.SignalFromWorkpad(body, comment.URL, dependencyIssueRepo(issue.Identifier)); ok {
 			signal.RecordedAt = autoPromoteWorkpadRecordedAt(comment)
 			return signal, true
 		}
@@ -678,6 +676,10 @@ func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 			return signal, true
 		}
 		return nil, false
+	}
+	if signal, ok := workpad.SignalFromWorkpad(issue.Description, issue.URL, dependencyIssueRepo(issue.Identifier)); ok {
+		signal.RecordedAt = autoPromoteWorkpadRecordedAt(connector.IssueComment{CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt})
+		return signal, true
 	}
 	if issue.WorkpadSignal != nil {
 		return workpad.CloneSignal(issue.WorkpadSignal), true
