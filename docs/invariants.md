@@ -58,8 +58,9 @@ the independent corroboration. The dispatch fingerprint and mergeability baselin
 persist with the attempt across restart, including merge-mode conflict repairs in active lanes
 (#2929); a changed head SHA alone is not implementation. No-progress
 outcomes consume the existing issue attempt allowance, including merge-mode
-conflict repairs dispatched in active lanes. Successful repairs also consume a
-started code session without requiring failure evidence. Merging-lane runs,
+conflict repairs dispatched in active lanes. Completed, successful PR deliveries
+without a recorded error do not consume the allowance, including successful
+conflict repairs; a subsequent completion-gate wait is not a failed delivery. Merging-lane runs,
 legacy merge-mode rows without a lane, and historical merge-routing receipts
 remain excluded (`TestAttemptAllowanceExcludesMergeRouting` and
 `TestAttemptAllowanceDispatchAndRestart`, #2933). No-progress outcomes
@@ -1347,6 +1348,10 @@ PR CI, merge-group CI, and required status checks remain supported.
 `merge_group`, and no branch ruleset requires a status check. Pull requests do
 not wait for CI or local validation gates before push or merge. The self-hosted
 project uses the existing no-op command `true` and publishes no local status.
+It explicitly sets `gate.required_status_checks: []`, so pending optional or absent
+CI does not block progress. Reported failed CI still blocks, and native
+base-branch requirements remain authoritative;
+omitting the setting preserves aggregate CI behavior for other projects.
 
 `make check-fast`, focused tests, and vet remain available for optional
 diagnostics. When invoked, checks preserve failures. The local tools take no
