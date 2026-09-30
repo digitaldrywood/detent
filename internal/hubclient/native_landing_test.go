@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -21,15 +22,26 @@ import (
 // the item and the Change Request.
 func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 	t.Parallel()
-	testNativeExecutionLandsReviewedVersion(t, false)
+	for _, test := range []struct {
+		name   string
+		github bool
+	}{
+		{"plain git by default", false},
+		{"approved GitHub PR policy", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			testNativeExecutionLandsReviewedVersion(t, false, test.github)
+		})
+	}
 }
 
 func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 	t.Parallel()
-	testNativeExecutionLandsReviewedVersion(t, true)
+	testNativeExecutionLandsReviewedVersion(t, true, false)
 }
 
-func testNativeExecutionLandsReviewedVersion(t *testing.T, linked bool) {
+func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github bool) {
 	t.Helper()
 	h := newNativeChangeHubWithStates(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
@@ -38,6 +50,15 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked bool) {
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}, intakeRepositoryBackend{})
+	if github {
+		next := h.descriptor
+		next.Gates.GitHubPullRequest = true
+		next = next.WithID()
+		if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
+			t.Fatal(err)
+		}
+		h.descriptor = next
+	}
 	var issue connector.Issue
 	if !linked {
 		issue = h.createInProgress(t, "Land me")
@@ -124,7 +145,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != "Land me" {
+	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != "Land me" || target.Repository != nativeChangeRepository || target.GitHubPullRequest != github {
 		t.Fatalf("landing target = %#v", target)
 	}
 	if err := execution.RecordLanding(guarded, runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, RefusalKind: "conflict"}); err == nil {
