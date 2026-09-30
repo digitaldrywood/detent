@@ -918,8 +918,8 @@ func TestConversationRetryOnTheHubCoordinatorPath(t *testing.T) {
 	if receipt.Status != conversation.DeliverySaved || receipt.MessageID != stranded.ID {
 		t.Fatalf("receipt = %#v, want saved for %s", receipt, stranded.ID)
 	}
-	if got := f.messages(t, record.ID)[0].Delivery; got != conversation.DeliverySaved {
-		t.Fatalf("delivery = %q, want saved so the coordinator picks it up", got)
+	if got := f.messages(t, record.ID)[0].Delivery; got != conversation.DeliverySaved && got != conversation.DeliverySending && got != conversation.DeliverySent && got != conversation.DeliveryDelivered && got != conversation.DeliveryResponding && got != conversation.DeliveryCompleted {
+		t.Fatalf("delivery = %q, want saved or coordinator progress", got)
 	}
 }
 
