@@ -2,6 +2,31 @@
 
 ## Codex Workpad
 
+Plan and result: attempt 7341 / generation 29 merges fetched develop 962f52c6abe8642ba3c95044bb66c9e0bc267d37 into published PR #3471 head a8dde869134e03d92e2690f4f8977cdfdd4c0edb, preserving both as ancestors. Rework feedback concerns target merge conflicts; no actionable reviews or dependencies. Only these notes conflicted. Both historical handoffs are retained; all source merged automatically. No manual source edits, generated-input or invariant changes, new mechanisms, stray artifacts or out-of-scope findings.
+
+Key file: tests/visual/account.spec.js finds the checked card through its contained radio, requires exactly one selected card with the expected name before and after switching, and matches Runs at once exactly to exclude its help button. It exactly matches validated implementation 8d5843246bb94582fd284844171e662d602bb549. Incoming develop changes logout redirects and stored-session handling, with no changes to setup choices, enrollment or account assets. The account browser file contains no logout assertions.
+
+Validation: JavaScript syntax and full issue whitespace checks pass. Complete issue diff reviewed; every non-notes source matches the pinned target except the unchanged account test repair. Historical Linux account-file diagnostics reproduced both failures, then passed 11 tests with one intentional skip and retries disabled. This notes resolution repeats no browser diagnostics and claims no current-head browser or full-job pass. No full checks, coverage, race suite, Actions rerun or CI wait. make generate is unnecessary because generated inputs were not changed. Configured true runs on the final committed head immediately before publication; exact head, ancestor verification, gate/push timings and final reviews/checks belong in the canonical issue Workpad.
+
+Handoff: PR #3471 is already non-draft, targets develop and includes Fixes #3454. Initial reviews and threads are empty; the sole comment is the review bot usage limit, with no findings. Current-head check rollup is absent, an expected skip with no test credit. Quiet window and merge-group workflow are not configured. Detent owns lane transitions and squash merge. Next scheduled integrated-develop validation confirms the job and closes this issue. No stash, lane write, human action or live port-4000 mutation.
+
+Skill draft: no — existing guidance covers this notes conflict repair and publication.
+
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+Earlier records concern other heads or issues; their validation and completion metadata do not apply to this attempt.
+
+# Issue #3454 Rework handoff — 2026-09-30
+
+## Historical Workpad (#3454 prior publication)
+
 Plan and result: attempt 7335 / generation 23 merges fetched develop ad7ab10857ba845495bc9ace4bf57fd362fb946a into published PR #3471 head 943b9d26ff92ab2d01ddc3322c4ae40ad35066c1, preserving both as ancestors. Rework is target merge conflict repair; no actionable human or bot findings remain. Only these notes conflicted; retained both historical handoffs. All source files merged automatically and match fetched develop except the existing account browser test repair. No manual source edit, generated-input change, invariant enforcement change or out-of-scope finding.
 
 Key file: tests/visual/account.spec.js selects the checked card through its contained radio, asserts exactly one selected card before and after switching, and matches Runs at once exactly to exclude its help button. It exactly matches passing implementation 8d5843246bb94582fd284844171e662d602bb549. Newly integrated develop changes affect hydration and board detail identity; account sources, generated account assets and the repaired test are unchanged relative to the preceding handoff.
@@ -12,7 +37,7 @@ Handoff: PR #3471 is already non-draft, targets develop and includes Fixes #3454
 
 Skill draft: no — existing guidance covers this notes conflict repair and publication.
 
-```detent-status
+```yaml
 schema: 1
 status: in_progress
 blockers: []
@@ -26,6 +51,30 @@ These records concern earlier heads or other issues; their validation and comple
 # Issue #3454 Rework handoff — 2026-09-30
 
 # Incoming develop handoff
+
+# Incoming develop handoff
+
+# Issue #3441 implementation handoff — 2026-09-30
+
+- Key files: internal/hubserver/hosted_login.go and internal/cloudentry/login.go redirect successful logout to the fixed https://detent.build URL. Request query/form destinations are ignored. Existing provider-failure pages and CSRF validation are retained.
+- internal/cloudentry/sessions.go separates stored-session reading from ordinary expiry validation. Logout uses the same unrevoked identity/CSRF data to revoke expired local sessions, linked tenant authorizations, and provider sessions. Ordinary authentication continues to reject expired sessions. No new recovery mechanism, configuration, invariant enforcement, or generated input is added.
+- Extended the existing Hub logout table and reused the shared-entry browser/provider fixture for customer, support, expired local session, and provider failure. Both tables failed with the original /login and / destinations, then passed after the change (5.5s command; Hub 1.114s, entry 1.467s). The tests assert fixed destination, local/provider revocation, cookie clearing, and unchanged sanitized failure pages.
+- Affected-package diagnostics: shared-entry package passed (12.678s); Hub package failed only TestHostedAccountClientRoutesMounted for GET/PUT/DELETE project-secret fly_sprites_token routes (50.014s). The same three failures reproduce on original develop 9f171a33c (3.3s command); filed independent Backlog follow-up #3491. Both affected packages pass go vet (2.3s). Full diff and whitespace reviewed. No full suite, coverage, race suite, or Actions wait.
+- Configured true gate, published head, PR readiness, and current-head reviews/checks belong in the canonical issue Workpad. No PR CI or merge-group workflow applies; absent checks receive no test credit. Orchestrator owns lane transitions and squash merge. Live port 4000 untouched. No dependencies; no template/query/CSS changes, so generation is unnecessary.
+- Skill draft: no — existing Go handler-testing and PR workflows cover this change.
+
+- Publication refresh: rebased onto develop f5f3d56e7 after the draft reported a conflict. Only notes conflicted; preserved incoming historical handoffs. Both affected packages and Go dependencies are unchanged from the tested source, so diagnostics are not repeated. Run true on the rebased committed head before the lease-protected push.
+
+
+- Rework attempt 7332 / generation 20: verified source-clean local and published PR #3492 head 4d539785338f17c3356e93b179036fcafbcd0e35. Feedback was merge conflicts only; no actionable reviews or threads. Rebased onto fetched develop c445e109e0e71200167611ec824e03369ea288de. Only notes conflicted; preserved historical handoffs from both sides. Logout source/tests and Go dependencies exactly match the previously published implementation; no manual source or generated-input changes.
+- Resolved-source diagnostics: env -u DETENT_API_TOKEN GOMAXPROCS=4 go test -p 4 ./internal/hubserver/... ./internal/cloudentry/... -run '^(TestHostedLoginLogoutRevokesLocalAndProviderSessions|TestSharedEntryLogoutRevokesLocalAndProviderSessions)$' -count=1 passed (8.7s command; Hub 1.010s, entry 1.358s). Both affected packages passed go vet -p 4 (1.1s). Full source diff and whitespace reviewed. Earlier broad Hub diagnostic failure is historical and tracked separately in #3491; no full suite or CI waiting ran here.
+- Final publication: run configured true on the final committed head immediately before lease-protected push. Canonical issue Workpad records exact head, gate timing and current-head PR feedback/check eligibility. Ready PR #3492 targets develop and references Fixes #3441. Orchestrator owns lane changes and squash merge; no dependencies, new discoveries, or remaining source work. Live port 4000 untouched.
+
+- Publication target refresh: develop advanced again before push; rebased onto ad7ab10857ba845495bc9ace4bf57fd362fb946a. Only notes conflicted again. Preserved incoming historical handoffs; tested logout source and Go dependencies remain identical. No diagnostic repeat is needed for this notes-only resolution.
+
+# Historical handoffs
+
+Earlier records concern other issues and do not apply to #3441.
 
 # Issue #3430 implementation handoff
 
