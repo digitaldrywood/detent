@@ -282,8 +282,8 @@ func TestLocalGitDiffStat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiffStat() error = %v", err)
 	}
-	if got.Files != 2 || got.Added != 2 || got.Removed != 1 || got.Fingerprint == "" {
-		t.Fatalf("DiffStat() = %+v, want 2 files, 2 added, 1 removed, and a fingerprint", got)
+	if got.Files != 4 || got.Added != 4 || got.Removed != 1 || got.Fingerprint == "" {
+		t.Fatalf("DiffStat() = %+v, want 4 files, 4 added, 1 removed, and a fingerprint", got)
 	}
 	originalFingerprint := got.Fingerprint
 
@@ -332,9 +332,10 @@ func TestLocalGitDiffStat(t *testing.T) {
 func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 	t.Parallel()
 	source := initSourceRepo(t)
-	writeFileDiffFile(t, source, ".detent/notes.md", "old runtime\n")
-	runGit(t, source, "add", ".detent/notes.md")
-	runGit(t, source, "commit", "-m", "tracked runtime fixture")
+	writeFileDiffFile(t, source, ".detent/notes.md", "old human knowledge\n")
+	writeFileDiffFile(t, source, ".detent/tmp/tracked", "old scratch\n")
+	runGit(t, source, "add", ".detent/notes.md", ".detent/tmp/tracked")
+	runGit(t, source, "commit", "-m", "tracked documentation and scratch fixture")
 	excludePath := filepath.Join(source, ".git", "info", "exclude")
 	exclude := "# operator exclusions without a final newline\n*.operator-local"
 	writeFileDiffFile(t, source, ".git/info/exclude", exclude)
@@ -359,7 +360,10 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 		writeFileDiffFile(t, path, "README.md", "source repo\nchanged\n")
 		writeFileDiffFile(t, path, "new file.txt", "worktree "+filepath.Base(path)+"\n")
 		writeFileDiffFile(t, path, "secret.operator-local", "ignored\n")
-		for _, runtime := range []string{".detent/notes.md", ".detent/lessons.md", ".detent/tmp/nested/scratch", ".detent/worker-tmp/attempt/scratch"} {
+		for _, document := range []string{".detent/notes.md", ".detent/lessons.md"} {
+			writeFileDiffFile(t, path, document, "human knowledge\n")
+		}
+		for _, runtime := range []string{".detent/tmp/tracked", ".detent/tmp/nested/scratch", ".detent/worker-tmp/attempt/scratch"} {
 			writeFileDiffFile(t, path, runtime, "runtime\n")
 		}
 		indexPaths[i], err = gitIndexPath(t.Context(), path)
@@ -377,21 +381,22 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 	}{
 		{"diffstat", func(t *testing.T, path string) {
 			stat, err := GitDiffStat(t.Context(), path)
-			if err != nil || stat.Files != 2 || stat.Added != 2 || stat.Removed != 0 || stat.Fingerprint == "" {
-				t.Errorf("GitDiffStat = %+v, %v; want only source changes and fingerprint", stat, err)
+			if err != nil || stat.Files != 4 || stat.Added != 4 || stat.Removed != 1 || stat.Fingerprint == "" {
+				t.Errorf("GitDiffStat = %+v, %v; want source and documentation changes with fingerprint", stat, err)
 			}
 		}},
 		{"diff", func(t *testing.T, path string) {
 			diff, err := GitDiff(t.Context(), path, 1<<20)
-			if err != nil || diff.Stat.Files != 2 || diff.Truncated || strings.Contains(diff.Patch, ".detent/") ||
+			if err != nil || diff.Stat.Files != 4 || diff.Truncated || strings.Contains(diff.Patch, ".detent/tmp/") || strings.Contains(diff.Patch, ".detent/worker-tmp/") ||
+				!strings.Contains(diff.Patch, "a/.detent/notes.md") || !strings.Contains(diff.Patch, "b/.detent/lessons.md") ||
 				!strings.Contains(diff.Patch, "+worktree "+filepath.Base(path)) || !strings.Contains(diff.Patch, "+changed") {
-				t.Errorf("GitDiff = %+v, %v; want this worktree's source patch only", diff, err)
+				t.Errorf("GitDiff = %+v, %v; want this worktree's source and documentation patches", diff, err)
 			}
 		}},
 		{"filediff", func(t *testing.T, path string) {
 			diff, err := GitFileDiffs(t.Context(), path, "", 1<<20)
-			if err != nil || len(diff.Files) != 2 {
-				t.Errorf("GitFileDiffs = %+v, %v; want two source files", diff, err)
+			if err != nil || len(diff.Files) != 4 {
+				t.Errorf("GitFileDiffs = %+v, %v; want source files and human documentation", diff, err)
 			}
 			file, ok := fileDiffByPath(diff.Files, "new file.txt")
 			if !ok || !strings.Contains(file.Patch, "+worktree "+filepath.Base(path)) {
@@ -400,11 +405,11 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 		}},
 		{"recovery paths", func(t *testing.T, path string) {
 			tracked, err := gitTrackedPaths(t.Context(), path)
-			if err != nil || !slices.Equal(tracked, []string{"README.md"}) {
+			if err != nil || !slices.Equal(tracked, []string{".detent/notes.md", "README.md"}) {
 				t.Errorf("tracked paths = %v, %v", tracked, err)
 			}
 			untracked, err := gitUntrackedPaths(t.Context(), path)
-			if err != nil || !slices.Equal(untracked, []string{"new file.txt"}) {
+			if err != nil || !slices.Equal(untracked, []string{".detent/lessons.md", "new file.txt"}) {
 				t.Errorf("untracked paths = %v, %v", untracked, err)
 			}
 		}},
