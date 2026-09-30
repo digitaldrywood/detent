@@ -17,6 +17,8 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
+
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
 Validator reviews now refresh the PR head before dispatch, seed a clean review
@@ -185,6 +187,8 @@ must reject those bypasses too.
 adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
+
+SSH host loss uses the existing host-scoped instance-capacity retry without incrementing issue failure counts or draining healthy hosts. `TestSSHHostLossUsesInstanceRetry`, `TestSSHHostLossClearsResumeOnSpillover`, and `TestSSHLocalTargetIntegration` cover attribution and retry behavior (#3239).
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
 
@@ -1284,6 +1288,8 @@ request when changing validation or release evidence.
 
 ## INV-6 — Isolated Codex home
 
+Remote SSH lifecycles run the same provider isolation and private temporary GitHub credential setup on the selected host. The transport carries configuration over encrypted stdin and removes bootstrap credentials after teardown. `TestSSHLocalTargetIntegration` exercises remote hooks, gates, push, cleanup, and disconnect cancellation (#3239).
+
 **Statement:** Workers run with an isolated Codex home; user-level instructions never reach a worker.
 
 **Why:** Host-level instructions introduced competing worker prerequisites and
@@ -1534,6 +1540,8 @@ criteria in the same PR. Identify INV-11 in the PR template and record the
 operator-managed workflow update when it lives outside the repository.
 
 ## INV-12 — Native toolchain caches
+
+SSH workers keep the remote host’s native toolchain caches and shared Go admission budget. Worker scratch uses only the host-provided TMPDIR/TMP/TEMP, and never points at the orchestrator’s scratch or caches. `TestSSHProbeRequiresProvidedScratch` and `TestSSHLocalTargetIntegration` exercise these boundaries (#3239).
 
 Detent never substitutes its own cache or state location for a toolchain's native
 one; bounding uses the toolchain's own mechanism. Workers inherit the host

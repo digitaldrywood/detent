@@ -626,6 +626,53 @@ sharing, and cleanup. `deliverable` selects pull requests or file artifacts and
 their review destination. `worker` distributes sessions across optional SSH
 hosts; per-state and global concurrency limits remain under `agent`.
 
+SSH workers run the installed `detent` binary on each selected host over an
+SSH stdio channel. Workspace setup, hooks, provider processes, gates, and Git
+pushes execute there; session records, Workpads, lane decisions, and merge
+coordination stay with the orchestrator. Hosts use normal SSH configuration and
+host-key verification, with noninteractive authentication and no agent forwarding.
+
+```yaml
+worker:
+  ssh_hosts: [logans-macbook-air, corys-mac-studio, local]
+  host_selection: preference
+  max_concurrent_agents_per_host: 2
+  host_caps:
+    logans-macbook-air: 2
+    corys-mac-studio: 6
+    local: 1
+```
+
+`preference` fills hosts in list order to their project-specific cap. The default
+`least_loaded` selects the least busy available host and retains retry affinity
+when that host has capacity. `host_caps` overrides the fallback
+`max_concurrent_agents_per_host` for individual configured hosts. Include `local`
+where local execution belongs in the order; an empty list means local execution.
+The existing project and instance agent limits still apply.
+
+Install matching Detent binaries, Git, `gh`, and the configured provider on every
+remote host. Provider subscription authentication must already be available there.
+The noninteractive SSH environment must provide a writable `TMPDIR`, `TMP`, or
+`TEMP`; workers never fall back to host scratch space. Paths below the
+orchestrator's home directory are mapped below the remote user's home directory;
+other absolute paths must exist on that host. Hook references to the home path
+are mapped too. Provision the source checkout there, or allow Detent to clone
+its HTTPS origin into the mapped source root on first use.
+
+Detent checks SSH reachability and the worker protocol before dispatch, caches
+the result for 15 seconds, and skips unavailable hosts. A lost channel cancels
+the remote lifecycle and uses the existing instance retry path. A retry on a
+different host starts a fresh provider session. Existing workspace reaping and
+reconciliation also visit configured remote hosts. GitHub credentials cross only
+the encrypted channel and use the same private temporary `GH_CONFIG_DIR` as
+local workers; they are removed when the worker exits and never written to the
+source checkout or persistent Git configuration.
+
+Remote workers currently support GitHub and Linear trackers. `hub_native`
+projects reject remote hosts because native artifact and diff publication need
+additional transport support; that work is tracked in
+[#3358](https://github.com/digitaldrywood/detent/issues/3358).
+
 GitHub-capable workers never inherit `GITHUB_TOKEN`, `GH_TOKEN`, their
 enterprise variants, or the host's GitHub CLI configuration. When omitted or
 empty, `worker.github_token` defaults to the resolved top-level `github_token`
@@ -1633,8 +1680,10 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `worker.github_rest_poll_interval_ms` | `integer` | `60000` | No | must be greater than or equal to 60000 |
 | `worker.github_token` | `string` | `top-level github_token` | No | None |
 | `worker.github_token_resolution_timeout_ms` | `integer` | `15000` | No | must be greater than 0 |
+| `worker.host_caps` | `mapping<string, integer>` | `{}` | No | .__invalid__ must be greater than 0<br>.__invalid__ must name a configured worker.ssh_hosts entry |
+| `worker.host_selection` | `string` | `"least_loaded"` | No | must be least_loaded or preference |
 | `worker.max_concurrent_agents_per_host` | `integer` | `none` | No | must be greater than 0 |
-| `worker.ssh_hosts` | `list<string>` | `[]` | No | None |
+| `worker.ssh_hosts` | `list<string>` | `[]` | No | must contain unique SSH destinations or local<br>worker.host_caps.__invalid__ must name a configured worker.ssh_hosts entry |
 | `workpad` | `object` | `see child fields` | No | None |
 | `workpad.structured_only` | `boolean` | `false` | No | None |
 | `workspace` | `object` | `see child fields` | No | agent.lessons.path must be a relative path inside the workspace<br>agent.skills.path must be a relative path inside the workspace |

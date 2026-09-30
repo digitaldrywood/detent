@@ -184,8 +184,8 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	if run == nil {
 		t.Fatal("buildRunner() = nil, want non-nil runner")
 	}
-	if _, ok := run.(*runnerpkg.Runner); !ok {
-		t.Fatalf("buildRunner() = %T, want *runner.Runner", run)
+	if _, ok := run.(*sshRunner); !ok {
+		t.Fatalf("buildRunner() = %T, want SSH-capable runner", run)
 	}
 }
 

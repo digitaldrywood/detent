@@ -10,14 +10,17 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 type dispatchPlanner struct {
+	workerHostAvailable  func(string) bool
 	operatorRejectedHead func(connector.Issue) (bool, error)
 	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
 	cfg                  Config
@@ -434,6 +437,12 @@ func (p dispatchPlanner) newDispatchAction(
 	workerHost, ok := p.selectWorkerHost(state, preferredWorkerHost)
 	if !ok && !allowMergeControl {
 		return dispatchAction{}, false
+	}
+	if retryState != nil && retryState.WorkerHost != workerHost {
+		copy := *retryState
+		copy.RetryMode = runpkg.RetryModeFresh
+		copy.ResumeState = store.AgentResumeState{}
+		retryState = &copy
 	}
 
 	return dispatchAction{
@@ -1178,7 +1187,7 @@ func (p dispatchPlanner) selectWorkerHost(state *State, preferredWorkerHost stri
 
 	availableHosts := make([]string, 0, len(p.cfg.WorkerHosts))
 	for _, host := range p.cfg.WorkerHosts {
-		if p.workerHostSlotsAvailable(state, host) {
+		if p.workerHostSlotsAvailable(state, host) && (p.workerHostAvailable == nil || p.workerHostAvailable(host)) {
 			availableHosts = append(availableHosts, host)
 		}
 	}
@@ -1187,6 +1196,9 @@ func (p dispatchPlanner) selectWorkerHost(state *State, preferredWorkerHost stri
 	}
 
 	preferredWorkerHost = strings.TrimSpace(preferredWorkerHost)
+	if p.cfg.WorkerHostSelection == "preference" {
+		return availableHosts[0], true
+	}
 	if preferredWorkerHost != "" {
 		if slices.Contains(availableHosts, preferredWorkerHost) {
 			return preferredWorkerHost, true
@@ -1197,11 +1209,19 @@ func (p dispatchPlanner) selectWorkerHost(state *State, preferredWorkerHost stri
 }
 
 func (p dispatchPlanner) workerHostSlotsAvailable(state *State, workerHost string) bool {
-	if p.cfg.MaxConcurrentAgentsPerHost <= 0 {
+	capacity := p.cfg.workerHostCapacity(workerHost)
+	if capacity <= 0 {
 		return true
 	}
 
-	return runningWorkerHostCount(state, workerHost) < p.cfg.MaxConcurrentAgentsPerHost
+	return runningWorkerHostCount(state, workerHost) < capacity
+}
+
+func (c Config) workerHostCapacity(host string) int {
+	if capacity := c.WorkerHostCaps[host]; capacity > 0 {
+		return capacity
+	}
+	return c.MaxConcurrentAgentsPerHost
 }
 
 func (p dispatchPlanner) scheduleRetry(
