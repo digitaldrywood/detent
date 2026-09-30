@@ -196,6 +196,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		// serves no surface and is never handed a workspace item.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -222,6 +223,9 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
 				return nil, err
 			}
+			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
+				return nil, err
+			}
 			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
 				return nil, err
 			}
@@ -233,6 +237,9 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	}
 	if len(request.ProviderReports) != 0 {
 		return s.nativeAPIError(c, nativeInvalid("Provider reports require an enrolled runner"))
+	}
+	if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
+		return s.nativeAPIError(c, nativeInvalid("Checkout reports require an enrolled runner"))
 	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

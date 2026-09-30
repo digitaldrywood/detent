@@ -87,12 +87,28 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 		s.machine.BackendIsolation = report
 	}
 	s.machine.Problems = problems
+	machine := s.machine
+	if s.checkoutRepository != nil {
+		supported, err := source.client.HubFeature(ctx, tracker.NativeCheckoutRepositoryCapability)
+		if err != nil {
+			return err
+		}
+		if supported {
+			for name, candidate := range s.nativeProjects {
+				if candidate == source {
+					repository := s.checkoutRepository(name)
+					machine.CheckoutRepository = &repository
+					break
+				}
+			}
+		}
+	}
 	if s.client.runner != nil && !last.IsZero() {
-		if err := source.client.HeartbeatMachine(ctx, s.machine); err != nil {
+		if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
 			return err
 		}
 	} else {
-		if err := source.client.RegisterMachine(ctx, s.machine); err != nil {
+		if err := source.client.RegisterMachine(ctx, machine); err != nil {
 			return err
 		}
 	}
