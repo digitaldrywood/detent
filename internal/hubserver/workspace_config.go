@@ -57,11 +57,7 @@ type WorkspaceConfig struct {
 type WorkspaceTerminalConfig struct {
 	// Enabled is workspaces.terminal.enabled, default off; an owner turns it
 	// on.
-	Enabled bool
-	// Isolation is workspaces.terminal.isolation. container is the default
-	// the setting offers and the only level recommended; user is allowed only
-	// when an organization has set it explicitly, and the setting page says
-	// in words what that level exposes.
+	Enabled   bool
 	Isolation string
 	// Record is workspaces.terminal.record, default on.
 	//
@@ -116,7 +112,7 @@ func (c WorkspaceConfig) normalized() WorkspaceConfig {
 		c.RelayMemoryBytes = workspacesession.DefaultRelayMemoryBytes
 	}
 	if c.Terminal.Isolation == "" {
-		c.Terminal.Isolation = workspacesession.IsolationContainer
+		c.Terminal.Isolation = workspacesession.IsolationSandbox
 	}
 	if c.Terminal.Record == nil {
 		recording := true
@@ -130,7 +126,7 @@ func (c WorkspaceConfig) normalized() WorkspaceConfig {
 // and an invalid value is not.
 func (c WorkspaceConfig) validate() error {
 	if !workspacesession.ValidIsolation(c.Terminal.Isolation) || c.Terminal.Isolation == "" {
-		return errors.Join(ErrWorkspaceConfig, errors.New("workspaces.terminal.isolation must be container or user"))
+		return errors.Join(ErrWorkspaceConfig, errors.New("workspaces.terminal.isolation must be sandbox, container or user"))
 	}
 	if _, err := workspacesession.NewDenylist(c.FilesDeny); err != nil {
 		return errors.Join(ErrWorkspaceConfig, err)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -173,7 +174,7 @@ func EnrollRunner(ctx context.Context, path string, organization tracker.Organiz
 		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
 			return identity, err
 		}
-		request := runnerauth.Redemption{Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
+		request := runnerauth.Redemption{BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
 		if err := client.runnerRequest(ctx, enrollment, http.MethodPost, base+"/runner-enrollments/redeem", request, &identity); err != nil {
 			return identity, err
 		}
@@ -234,17 +235,18 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, capacity int, refresh bool) error {
 	capabilities, isolation := machine.workspaceReport()
 	request := struct {
-		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
-		DisplayName     string                    `json:"display_name"`
-		Capacity        int                       `json:"capacity"`
-		Version         string                    `json:"version"`
-		OS              string                    `json:"os"`
-		Architecture    string                    `json:"architecture"`
+		BackendIsolation isolationpolicy.Report    `json:"backend_isolation"`
+		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
+		DisplayName      string                    `json:"display_name"`
+		Capacity         int                       `json:"capacity"`
+		Version          string                    `json:"version"`
+		OS               string                    `json:"os"`
+		Architecture     string                    `json:"architecture"`
 		// The workspace claim gate matches these against a workspace's
 		// requires set and checks the heartbeat that carried them is fresh.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
-	}{machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
+	}{machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
 	if c.client.runner == nil {
 		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 	}

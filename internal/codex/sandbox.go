@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 type Options struct {
+	PermissionProfile               string
+	IsolationPolicy                 func() (isolation.Policy, error)
 	ApprovalPolicy                  any
 	DeliverableElicitationAllowlist []MCPElicitationRule
 	ThreadSandbox                   string
