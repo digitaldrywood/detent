@@ -354,3 +354,64 @@ directory, then run a Python-capable Linux image with `--network none`, a read-o
 fixture mount and private writable temp storage. Run the smoke script plus the
 Hub recovery/routing/protocol tests there. No production deployment or paid
 resources are needed. The required repository gate remains `make check`.
+
+## Project Sprites credentials
+
+Owners and admins can set, replace or remove a project's Sprites organization
+token in project settings under Execution. The API is
+`/api/v2/organizations/{organization}/projects/{project}/secrets/fly_sprites_token`:
+GET returns only presence, organization slug and master key version; PUT accepts
+`{"token":"..."}`; DELETE removes Detent's copy. Hosted requests require the
+existing session, CSRF protection and a project grant. A self-hosted instance
+administrator can use the same endpoints. Worker, runner and coordinator tools
+have no plaintext read operation. PUT/DELETE use last-write-wins settings semantics;
+they never persist request input or a token-bearing command receipt.
+
+Hubs without provider secrets need no extra configuration. To enable encrypted
+secrets, inject `DETENT_HUB_SECRET_KEYS` as a JSON object mapping positive integer
+versions to standard base64-encoded **32-byte random master keys**, and set
+`DETENT_HUB_SECRET_KEY_VERSION` to the active version. Supply these environment
+variables through the same operator secret manager as `DETENT_HUB_ADMIN_TOKEN`.
+Never put them in `detent.yaml`, hosted config, the database, shell history or
+logs. The service refuses to start if a stored secret's key is missing or cannot
+unwrap its data key.
+
+Each value uses a separate random AES-256-GCM data key. Its data key is wrapped
+with AES-256-GCM under the versioned master key. Both authenticate the
+organization, project and secret kind, preventing ciphertext substitution across
+rows; the wrapping also authenticates the master key version. The database
+stores only ciphertext, nonce, wrapped key (including its wrapping nonce), version
+and public organization metadata. Backups must keep the corresponding master
+keys separately. Losing the keys loses access to stored credentials; possession
+of both a database backup and its keys exposes those credentials.
+
+For rotation, stop the Hub, add a new version to `DETENT_HUB_SECRET_KEYS` while
+retaining all old versions, and select the new `DETENT_HUB_SECRET_KEY_VERSION`.
+Run `detent hub secrets rotate --database /var/lib/detent/hub.db`. The existing
+database ownership lock refuses rotation against a running Hub. Rotation
+atomically re-wraps data keys and records the local operator identity; ciphertext
+and value nonces remain unchanged. Repeating rotation at that version is a no-op.
+Restart with the new active version; remove old keys only after every relevant
+database is rotated, keeping them in separate archival storage for old backups.
+A failed rotation rolls back every row. No master key is written to disk by this
+command.
+
+Setting a token validates `GET https://api.sprites.dev/v1/sprites` with Bearer
+authentication. Redirects are refused and provider errors/bodies are never echoed.
+Sprites organization tokens encode `org-slug/org-id/token-id/token-value`;
+authenticated list success confirms that organization even before its first
+sprite exists. Returned sprite organization fields must agree with the token's
+slug. See the [Sprites list API](https://docs.fly.io/sprites/api/sprites/list-sprites)
+and [Sprites authentication](https://docs.fly.io/sprites/cli/authentication).
+Set, replace, remove, use (including validation attempts) and rotation events
+carry actor, organization, project, kind and key version in `project_secret_audit`,
+never a value. Successful secret mutations and their audit events commit together.
+Internal use decrypts only for a provider call and clears mutable plaintext buffers;
+Go strings and HTTP header allocations are transient, garbage-collected memory,
+so this is not a guarantee of physical memory erasure. Credentials are never
+passed to workers, Luna or sprite processes.
+
+Use a dedicated Fly organization containing nothing else and configure a spend
+alert. A Sprites organization token can create and drive sprites in that
+organization. Removing it from Detent does not revoke it at Fly; revoke it at
+[your Sprites account](https://sprites.dev/account) to invalidate it.

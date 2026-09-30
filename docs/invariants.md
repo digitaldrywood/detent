@@ -478,10 +478,12 @@ completed-run transition reason, merge-revocation destination, and the central
 lane writer. These changes consolidate Human Review routing under the project
 setting; they add no reason code or recovery mechanism.
 
-The completed-run transition fingerprint includes #3429's operational-receipt
-freshness check and #3281's opted-out review routing (#3451). Its dynamic reason
-still selects an existing auto-promotion decision reason or
-`completed_active_review_transition`; the scanner's review boundary is retained.
+Scheduled validation repairs (#3447, #3451) refresh the completed-run transition
+fingerprint after reviewing #3429's operational-receipt freshness check and
+#3281's opted-out review routing. Its dynamic reason still selects an existing
+auto-promotion decision reason or `completed_active_review_transition`; the
+scanner's review boundary is retained. The orchestrator remains the sole lane
+writer; no transition reason or runtime behavior changes in these repairs.
 
 Runner credential expiry (#3382) no longer rejects the existing renewal
 operation for the same enrolled runner and organization. The host keeps its
@@ -516,12 +518,14 @@ workspace paths, and effective prompts remain policy inputs requiring the existi
 administrator approval. Source identity and administrator-authorized runner
 requirements still match exactly; no mismatch bypass or recovery path is added.
 `TestRunnerPolicyUpgradeKeepsApprovedID` pins a v0.117.1 approval with an explicit
-workspace root so worker scratch paths cannot change the fixture, and covers
-the recorded unchanged-definition upgrade failure and explicit changes.
+workspace root and execution shells so host defaults cannot change the fixture.
 The fixture explicitly retains the historical opt-out label; removing it is a
-policy change. Zero-valued human-review settings are omitted from policy JSON,
-preserving the representation before that field existed, while enabling human
-review changes both the config digest and gate descriptor (#3451).
+policy change and rejects the historical approval after #3281's intentional
+review-default change. Zero-valued human-review settings are omitted from policy
+JSON, preserving the representation before that field existed, while enabling
+human review changes both the config digest and gate descriptor (#3451).
+Equivalent absent/default host and check settings still match; explicit policy
+changes require reapproval (#3447, #3451).
 
 Runner availability (#3169) reuses weekly-window evaluation and the existing
 runner-capacity exclusion: runners report zero capacity outside the cached

@@ -468,6 +468,9 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 	issue := h.createInProgress(t, "Native change")
 	h.claim(t, issue.ID)
 	execution := h.scheduler.RunExecution(issue.ID)
+	if execution == nil {
+		t.Fatal("claimed issue has no native execution")
+	}
 	guarded, stop, err := execution.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)

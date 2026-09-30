@@ -21,6 +21,10 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The historical snapshot used Unix execution defaults. Pin them so the
+	// approval comparison also runs on Windows.
+	workflow.Config.Codex.Shell = "sh"
+	workflow.Config.Hooks.Shell = "sh"
 	// Preserve the approved opt-out setting explicitly; its runtime default
 	// changed after v0.117.1 and is a real policy input, not serialization drift.
 	workflow.Config.Agent.AutoPromote.OptoutLabel = "requires-human-review"
