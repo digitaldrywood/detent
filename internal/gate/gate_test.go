@@ -758,19 +758,65 @@ func TestInstructionsDescribeArtifactWorkpadCompletionField(t *testing.T) {
 func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
 	t.Parallel()
 
-	got := Instructions(Config{
-		Kind:                 KindCommand,
-		Run:                  "make check",
-		RequiredStatusChecks: []string{"Windows Core"},
-	})
-
-	for _, want := range []string{
-		"required status checks must be present on the current PR head",
-		"missing, skipped, failed, cancelled, or still-running required checks block promotion",
+	for _, tt := range []struct {
+		name   string
+		checks []string
+		want   []string
+		absent []string
+	}{
+		{
+			name: "omitted aggregate policy",
+			want: []string{
+				"require eligible current-head checks before promotion",
+				"Skipped is not a test pass",
+				"For merge-group-only CI, require passing merge-group checks before merge",
+			},
+			absent: []string{"do not wait for a CI producer", "required_status_checks is explicitly empty"},
+		},
+		{
+			name:   "explicit empty native policy",
+			checks: []string{},
+			want: []string{
+				"required_status_checks is explicitly empty",
+				"defers to the base branch's native required checks",
+				"When that branch requires no checks, do not wait for a CI producer",
+				"Native required checks and red CI still block promotion and merge",
+			},
+			absent: []string{
+				"require eligible current-head checks before promotion",
+				"For merge-group-only CI, require passing merge-group checks before merge",
+				"Configured required status checks must be present",
+			},
+		},
+		{
+			name:   "configured required checks",
+			checks: []string{"Windows Core"},
+			want: []string{
+				"required status checks must be present on the current PR head",
+				"missing, skipped, failed, cancelled, or still-running required checks block promotion",
+				"Native required checks and red CI still block promotion and merge",
+			},
+			absent: []string{"do not wait for a CI producer", "required_status_checks is explicitly empty"},
+		},
 	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("Instructions() missing %q:\n%s", want, got)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Instructions(Config{
+				Kind:                 KindCommand,
+				Run:                  "true",
+				RequiredStatusChecks: tt.checks,
+			})
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("Instructions() missing %q", want)
+				}
+			}
+			for _, absent := range tt.absent {
+				if strings.Contains(got, absent) {
+					t.Errorf("Instructions() contradicts policy with %q", absent)
+				}
+			}
+		})
 	}
 }
 

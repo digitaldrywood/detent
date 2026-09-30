@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -19,7 +20,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func newHubScheduling(cfg globalconfig.Config, version string, problems ...func() []runnerauth.Problem) (orchestrator.SchedulingSource, error) {
+type hubSchedulingOptions struct {
+	intakeToken githubconnector.TokenSource
+	problems    func() []runnerauth.Problem
+}
+
+func newHubScheduling(cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
 	clientConfig := cfg.Client
 	if !clientConfig.Configured() {
 		return nil, errors.New("hub client is not configured")
@@ -82,11 +88,20 @@ func newHubScheduling(cfg globalconfig.Config, version string, problems ...func(
 			return providercapacity.Load(clientConfig.ProviderCapacityFile)
 		}
 	}
+	tokenSource := githubconnector.StaticTokenSource("")
+	if len(options) > 0 && options[0].intakeToken != nil {
+		tokenSource = options[0].intakeToken
+	}
+	github, err := githubconnector.NewClient(githubconnector.ClientConfig{TokenSource: tokenSource, HTTPClient: &http.Client{Timeout: clientConfig.RequestTimeout()}})
+	if err != nil {
+		return nil, err
+	}
 	var reportProblems func() []runnerauth.Problem
-	if len(problems) > 0 {
-		reportProblems = problems[0]
+	if len(options) > 0 {
+		reportProblems = options[0].problems
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		GitHubIntake:    github.FetchIssueSnapshot,
 		Problems:        reportProblems,
 		IsolationReport: func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
 		ProviderReports: providerReports,

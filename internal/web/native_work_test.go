@@ -234,7 +234,7 @@ func TestNativeWorkReadAndBrowserAuthorization(t *testing.T) {
 			if res.Header().Get("Cache-Control") != "no-store" {
 				t.Fatal("native content must not be cached")
 			}
-			if strings.Contains(res.Body.String(), "<script>unsafe()") || strings.Contains(res.Body.String(), "<img src=x") || strings.Contains(res.Body.String(), "github.com/") {
+			if strings.Contains(res.Body.String(), "<script>unsafe()") || strings.Contains(res.Body.String(), "<img src=x") || strings.Contains(res.Body.String(), `href="https://github.com/`) {
 				t.Fatal("unsafe content or manufactured GitHub URL")
 			}
 		})
@@ -262,6 +262,25 @@ func TestNativeWorkReadAndBrowserAuthorization(t *testing.T) {
 			server.Handler().ServeHTTP(res, req)
 			if res.Code != tt.want {
 				t.Fatalf("response %d: %s", res.Code, res.Body)
+			}
+		})
+	}
+}
+
+func TestNativeLinkedSourceStatus(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"pending", "complete"} {
+		t.Run(status, func(t *testing.T) {
+			server, fixture := newNativeWebServer(t)
+			fixture.issue.LinkedSource = &tracker.LinkedIssueSource{URL: "https://github.com/acme/orders/issues/12", Status: status}
+			r := httptest.NewRecorder()
+			server.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/projects/native/issues/wi_example", nil))
+			want := "Awaiting source intake"
+			if status == "complete" {
+				want = "Source intake completed"
+			}
+			if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), want) || !strings.Contains(r.Body.String(), `href="https://github.com/acme/orders/issues/12"`) {
+				t.Fatalf("linked issue view: status=%d, missing %s or source link", r.Code, want)
 			}
 		})
 	}

@@ -46,10 +46,14 @@ type changeFailingTransport struct {
 	fail       atomic.Bool
 	failDiffs  atomic.Bool
 	failEvents atomic.Bool
+	failIntake atomic.Bool
 }
 
 func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request.Method == http.MethodPost {
+		if t.failIntake.Load() && strings.HasSuffix(request.URL.Path, "/source-intake") {
+			return nil, errors.New("source persistence unavailable")
+		}
 		if t.fail.Load() && strings.HasSuffix(request.URL.Path, "/changes") {
 			return nil, errors.New("change creation unavailable")
 		}
@@ -75,9 +79,13 @@ func newNativeChangeHub(t *testing.T) *nativeChangeHub {
 
 // newNativeChangeHubWithStates builds the hub with a given workflow and the
 // review lane the orchestrator is configured with.
-func newNativeChangeHubWithStates(t *testing.T, review string, states []tracker.NativeState) *nativeChangeHub {
+func newNativeChangeHubWithStates(t *testing.T, review string, states []tracker.NativeState, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	t.Helper()
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(nativeChangeAdminToken)})
+	config := hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(nativeChangeAdminToken)}
+	if len(repositoryBackend) > 0 {
+		config.ReconcileBackend = repositoryBackend[0]
+	}
+	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,6 +468,9 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 	issue := h.createInProgress(t, "Native change")
 	h.claim(t, issue.ID)
 	execution := h.scheduler.RunExecution(issue.ID)
+	if execution == nil {
+		t.Fatal("claimed issue has no native execution")
+	}
 	guarded, stop, err := execution.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)

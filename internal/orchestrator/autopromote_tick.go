@@ -106,6 +106,10 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				continue
 			}
 		}
+		// Unfinished ready PRs need the existing repair lane before a worker can
+		// publish corrections. They do not gain eligibility for promotion.
+		repairOnly := autoPromoteInProgressRepairIssue(issue, cfg) &&
+			(!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg))
 		rework := gateRequiresPullRequest(cfg.Gate) && normalizeState(issue.State) == normalizeState(cfg.ReworkState)
 		if rework {
 			if _, running := state.Running[issueID]; running {
@@ -127,22 +131,35 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if allowanceErr != nil {
 			continue
 		}
-		if allowance.exhausted() && o.cfg.DeliverableKind != "artifact" {
-			if _, running := state.Running[issueID]; running {
-				continue
-			}
-			if allowance.Triage != nil {
-				if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil && o.logger != nil {
-					o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
-				}
-			} else if !mergeWorkerIssue(issue) {
-				o.dispatchIssue(ctx, state, issue, 1, now, "")
-			}
+		allowanceExhausted := allowance.exhausted() && o.cfg.DeliverableKind != "artifact"
+		if allowanceExhausted && !repairOnly {
+			o.handleExhaustedAutoPromoteAllowance(ctx, state, issue, allowance, now)
 			continue
 		}
 
-		issue, securityAudit := o.liveSecurityAuditEvaluation(ctx, issue)
-		if gateRequiresPullRequest(cfg.Gate) {
+		merging := mergeWorkerIssue(issue)
+		var securityAudit securityaudit.Evaluation
+		if merging {
+			// The tick already hydrated this PR. Merging consumes only its
+			// exact-head/base audit here; merge preparation owns fresh checks,
+			// reviews, threads, and the final live eligibility verification.
+			if issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) {
+				continue
+			}
+			securityAudit = o.securityAuditEvaluation(ctx, issue)
+			if verdict, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, securityAudit); pending && verdict.Action == gate.ActionRework {
+				// A lane-changing verdict still needs a live identity check. Reuse
+				// the existing refresh only for that side effect, never for a
+				// passing or running audit whose lane stays unchanged.
+				issue, securityAudit = o.liveSecurityAuditEvaluation(ctx, issue)
+				if !mergeWorkerIssue(issue) || issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) {
+					continue
+				}
+			}
+		} else {
+			issue, securityAudit = o.liveSecurityAuditEvaluation(ctx, issue)
+		}
+		if !merging && gateRequiresPullRequest(cfg.Gate) {
 			var hydrated bool
 			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 			if !hydrated {
@@ -160,9 +177,8 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		summary.SecurityAudit = securityAudit
-		summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
-		decision := EvaluateAutoPromote(issue, summary, cfg, now)
-		if mergeWorkerIssue(issue) {
+		var decision AutoPromoteDecision
+		if merging {
 			// Merging consumes only the audit verdict here; its other gates remain
 			// owned by merge preparation. Passing audits leave the lane unchanged.
 			auditDecision, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, securityAudit)
@@ -171,6 +187,16 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 			decision = autoPromoteDecision(autoPromoteActionFromGate(auditDecision.Action), autoPromoteReasonFromGate(auditDecision.Reason))
 			decision.Findings = autoPromoteFindingsFromGate(auditDecision.Findings)
+		} else {
+			summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
+			decision = EvaluateAutoPromote(issue, summary, cfg, now)
+			if repairOnly && (decision.Action != AutoPromoteActionRework ||
+				(decision.Reason != AutoPromoteReasonUnresolvedReviewThreads && decision.Reason != AutoPromoteReasonCINotGreen)) {
+				if allowanceExhausted {
+					o.handleExhaustedAutoPromoteAllowance(ctx, state, issue, allowance, now)
+				}
+				continue
+			}
 		}
 		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, now)
@@ -250,6 +276,21 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		return autoPromoteTickResult{}
 	}
 	return result
+}
+
+func (o *Orchestrator) handleExhaustedAutoPromoteAllowance(
+	ctx context.Context, state *State, issue connector.Issue, allowance attemptAllowance, now time.Time,
+) {
+	if _, running := state.Running[strings.TrimSpace(issue.ID)]; running {
+		return
+	}
+	if allowance.Triage != nil {
+		if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil && o.logger != nil {
+			o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
+		}
+	} else if !mergeWorkerIssue(issue) {
+		o.dispatchIssue(ctx, state, issue, 1, now, "")
+	}
 }
 
 func autoPromoteCompletedFinalState(state *State, issueID string) string {
@@ -336,13 +377,21 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 			_, running = state.Running[issueID]
 		}
 		liveRework := gateRequiresPullRequest(cfg.Gate) && !running && normalizeState(issue.State) == normalizeState(cfg.ReworkState) && issueHasOpenPullRequest(issue) && completedActiveIssueReadyForReview(issue, true, false)
-		if !liveRework && (!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
+		if !liveRework && !autoPromoteInProgressRepairIssue(issue, cfg) && (!autoPromoteSourceGateWaitEnabled(cfg) || !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
 			continue
 		}
 		out = append(out, cloneIssue(issue))
 		seen[issueID] = struct{}{}
 	}
 	return out
+}
+
+func autoPromoteInProgressRepairIssue(issue connector.Issue, cfg AutoPromoteConfig) bool {
+	state := normalizeState(issue.State)
+	return gateRequiresPullRequest(cfg.Gate) && state == "in progress" &&
+		state != normalizeState(cfg.SourceState) && state != normalizeState(cfg.PassState) &&
+		state != normalizeState(cfg.ReworkState) &&
+		issueHasOpenPullRequest(issue) && !issue.PullRequest.Draft
 }
 
 func autoPromoteIssueCompleted(state *State, issueID string) bool {

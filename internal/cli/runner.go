@@ -110,12 +110,11 @@ func withRunnerFactoryWithIsolation(
 			workflow.Config.Identity = cfg.Identity
 			workflow.Config.Identity.Normalize()
 		}
+		token := strings.TrimSpace(deps.GitHubToken)
 		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
-			token := strings.TrimSpace(githubTokenSource[0]())
-			if token != "" && (workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal) {
-				workflow.Config.Tracker.APIKey = token
-			}
+			token = strings.TrimSpace(githubTokenSource[0]())
 		}
+		workflow.Config = workflow.Config.WithRuntimeGitHubToken(token)
 
 		run := deps.Runner
 		if run == nil {
@@ -151,9 +150,7 @@ func withRunnerFactoryWithIsolation(
 				return err
 			}
 		}
-		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
-			projectDeps.GitHubToken = githubTokenSource[0]()
-		}
+		projectDeps.GitHubToken = token
 
 		if load != nil {
 			return load(projectDeps)

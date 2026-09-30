@@ -1,7 +1,9 @@
 package hubclient
 
 import (
+	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -29,12 +31,17 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, test.github)
+			testNativeExecutionLandsReviewedVersion(t, false, test.github)
 		})
 	}
 }
 
-func testNativeExecutionLandsReviewedVersion(t *testing.T, github bool) {
+func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
+	t.Parallel()
+	testNativeExecutionLandsReviewedVersion(t, true, false)
+}
+
+func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github bool) {
 	t.Helper()
 	h := newNativeChangeHubWithStates(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
@@ -42,7 +49,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, github bool) {
 		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	})
+	}, intakeRepositoryBackend{})
 	if github {
 		next := h.descriptor
 		next.Gates.GitHubPullRequest = true
@@ -52,11 +59,38 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, github bool) {
 		}
 		h.descriptor = next
 	}
-	issue := h.createInProgress(t, "Land me")
+	var issue connector.Issue
+	if !linked {
+		issue = h.createInProgress(t, "Land me")
+	}
+	sourceCalls := 0
+	if linked {
+		// Reuse the exact landing journey, with a historical GitHub source.
+		if err := h.admin.client.request(t.Context(), http.MethodPost, h.admin.base()+"/onboarding/repository", map[string]any{"idempotency_key": "attach", "expected_revision": "1", "repository": "acme/orders"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		created, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), GitHubIssueURL: "https://github.com/acme/orders/issues/12", State: "In Progress"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue = issueFromNative(created)
+		h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
+			sourceCalls++
+			if sourceCalls > 1 {
+				return tracker.GitHubIssueSnapshot{}, errors.New("GitHub source access removed after intake")
+			}
+			snapshot := intakeSnapshot()
+			snapshot.Title = "Land me"
+			return snapshot, nil
+		}
+	}
 	item := tracker.NativeWorkItemID(issue.ID)
 	head := strings.Repeat("c", 40)
 	h.claim(t, issue.ID)
 	work := h.scheduler.RunExecution(issue.ID)
+	if work == nil {
+		t.Fatal("claimed issue has no native execution")
+	}
 	guarded, stop, err := work.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +135,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, github bool) {
 		t.Fatal(err)
 	}
 	landing := h.scheduler.RunExecution(issue.ID)
+	if landing == nil {
+		t.Fatal("claimed issue has no landing execution")
+	}
 	guarded, stop, err = landing.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -157,6 +194,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, github bool) {
 	}
 	if _, err := execution.LandingTarget(guarded); !errors.Is(err, runner.ErrLandingNotReviewed) {
 		t.Fatalf("landing target after landing = %v, want %v", err, runner.ErrLandingNotReviewed)
+	}
+	if linked && sourceCalls != 1 {
+		t.Fatalf("source calls across implementation and native landing = %d, want 1", sourceCalls)
 	}
 }
 

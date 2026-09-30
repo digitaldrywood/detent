@@ -984,6 +984,20 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             className="rounded-[var(--radius)] border border-border bg-card px-4 py-3.5"
             data-testid="issue-body"
           >
+			{data.issue.linked_source === undefined ? null : (
+				<div className="mb-3 text-sm" data-testid="issue-linked-source">
+					<a className="text-primary underline" href={data.issue.linked_source.url} target="_blank" rel="noopener noreferrer">GitHub source</a>
+					<p className="text-xs text-muted-foreground">{data.issue.linked_source.status === "complete" ? "Source intake completed" : "Awaiting source intake before the first run"}</p>
+						{data.issue.linked_source.snapshot === undefined ? null : (
+						<details className="mt-2">
+							<summary>Original source context</summary>
+							<p className="text-xs text-muted-foreground">Observed {data.issue.linked_source.snapshot.provenance.observed_at}</p>
+							<p>{data.issue.linked_source.snapshot.title}</p>
+							<Markdown source={data.issue.linked_source.snapshot.body} />
+						</details>
+					)}
+				</div>
+			)}
             <div className={truncated ? "relative max-h-64 overflow-hidden" : undefined}>
               <Markdown source={truncated ? item.body.slice(0, BODY_CLAMP) : item.body} />
               {truncated ? (

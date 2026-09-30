@@ -26,10 +26,16 @@ templ NativeIssueForm(data NativeFormData) {
 					<input type="hidden" name="comment" value={ data.CommentID }/>
 					if data.Action == "create" || data.Action == "edit" || data.Action == "change" {
 						<label class="flex flex-col gap-2 text-sm text-text">Title
-							<input name="title" value={ data.Title } required maxlength="500" class="rounded-card border border-line bg-page px-3 py-2"/>
+							<input name="title" value={ data.Title } required?={ data.Action != "create" } maxlength="500" class="rounded-card border border-line bg-page px-3 py-2"/>
 						</label>
 					}
 					if data.Action != "dependency" && data.Action != "transition" {
+						if data.Action == "create" {
+							<label class="flex flex-col gap-2 text-sm text-text">GitHub issue URL (optional)
+								<input name="github_issue_url" value={ data.GitHubIssueURL } placeholder="https://github.com/owner/repo/issues/123" class="rounded-card border border-line bg-page px-3 py-2"/>
+							</label>
+							<p class="text-xs text-sec">The runner imports source context before the first run. Title and body are optional for linked issues.</p>
+						}
 						<label class="flex flex-col gap-2 text-sm text-text">{ nativeBodyLabel(data.Action) }
 							<textarea name="body" rows="12" maxlength={ nativeBodyLimit(data.Action) } required?={ data.Action == "comment" || data.Action == "comment_edit" } class="min-h-32 w-full rounded-card border border-line bg-page px-3 py-2">{ data.Body }</textarea>
 						</label>
@@ -136,6 +142,14 @@ templ NativeIssueContext(projectID string, data NativeWorkData) {
 		@issueDetailRow("ID", string(data.Issue.WorkItemID))
 		@issueDetailRow("Revision", nativeRevision(data.Issue.Revision))
 		@NativeProvenance(data.Issue.Actor, data.Issue.Provenance)
+		if data.Issue.LinkedSource != nil {
+			<a href={ templ.SafeURL(data.Issue.LinkedSource.URL) } target="_blank" rel="noopener noreferrer" class="text-accent">GitHub source</a>
+			if data.Issue.LinkedSource.Status == "complete" {
+				<p class="text-sec">Source intake completed.</p>
+			} else {
+				<p class="text-sec">Awaiting source intake before the first run.</p>
+			}
+		}
 		if len(data.Issue.ExternalReferences) == 0 {
 			<p class="text-sec">No external references. This issue lives in Detent.</p>
 		}

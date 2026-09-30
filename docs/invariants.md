@@ -21,6 +21,17 @@ SSH worker callbacks keep session persistence, Workpad tools, lane decisions, an
 
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
+Merging promotion reads only the trusted audit verdict for the tick's hydrated
+PR head and base (#3436). Passing and running audits do not repeat PR, check,
+review, or thread hydration; merge preparation remains the owner of live merge
+eligibility. A lane-changing audit verdict still refreshes the live PR identity
+before routing to Rework, and degraded/unavailable snapshots cannot route it.
+`TestMergingPromotionUsesFetchedAuditIdentity` covers these ownership boundaries.
+Tick entry publishes the existing runtime overlay before blocking tracker reads;
+`TestPromotionReadKeepsRecoveredWorkersObservable` replays nine active attempts
+behind an empty prior snapshot and verifies fresh progress during slow promotion.
+
+
 Validator reviews now refresh the PR head before dispatch, seed a clean review
 workspace at that commit, and compare the current PR head again before storing
 the verdict. A changed head produces the existing wait verdict under the head
@@ -225,6 +236,16 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 SSH host loss uses the existing host-scoped instance-capacity retry without incrementing issue failure counts or draining healthy hosts. `TestSSHHostLossUsesInstanceRetry`, `TestSSHHostLossClearsResumeOnSpillover`, and `TestSSHLocalTargetIntegration` cover attribution and retry behavior (#3239).
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
+
+Linked native GitHub issues hydrate title, body and complete paginated discussion
+with runner credentials before agent dispatch (#3257). Missing credentials,
+inaccessible sources, throttling, partial reads and failed persistence release
+the existing claim as `work_item_hydration_failed` and return the existing
+instance scheduling diagnostic, without changing the issue lane or spending an
+agent attempt. `TestNativeSourceIntakeRetryBeforeDispatch` covers failure,
+retry and zero source calls after successful intake. Atomic intake retains the
+source snapshot and imported comment provenance while native edit history
+preserves field ownership (`TestLinkedIssueIntakeAtomicAndNativeEdits`).
 
 Validator PR-diff provenance failures are production failures, not code findings (#3066).
 The validator uses a repository/PR/base/head snapshot whose file list and patch
@@ -882,6 +903,15 @@ publication pending. A merge discovered during hydration uses the existing merge
 lifecycle; missing or running audit and validator stages leave publication pending
 while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
 no new lane reason, allowance reset, or recovery mechanism is introduced.
+Ready In Progress PRs also enter the existing repair evaluation before worker
+completion (#2976). Unresolved review threads and failing CI reuse the existing
+Rework decisions and audit comments, including during the final running attempt.
+Configured source, pass, and rework lanes retain their normal promotion behavior.
+This consolidates repair routing with Human Review; it does not authorize
+promotion of unfinished work or routing drafts. `TestAutoPromoteReadyPullRequestRepairs`
+and `TestAutoPromoteConfiguredInProgressSourcePromotesReadyPullRequest` cover
+both lanes, active workers, configured source lanes, draft exclusion, unfinished
+clean heads, pending checks, closed PRs, opt-out labels, and unavailable evidence.
 Idle Rework PRs enter the existing promotion evaluation without a worker completion
 record (#2688). Promotion reuses the merge worker readiness predicate and live PR
 hydration; unresolved threads and known audit failures still prevent promotion.
