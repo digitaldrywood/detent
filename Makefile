@@ -116,7 +116,7 @@ app-dev:
 # The build is deterministic (fixed output names, no hashes, no timestamps),
 # which is what makes the diff check meaningful.
 check-app:
-	@if [ -f "$(APP_DIR)/package.json" ]; then \
+	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
 		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
 		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run && npm run build); \
 		git diff --exit-code -- static/app/conversation || { \

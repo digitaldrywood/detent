@@ -1243,6 +1243,8 @@ shared validation lock and supports concurrent worktrees. Short tests skip
 shared databases and ports. Focused tests and vet remain available during edits.
 The lint command disables golangci-lint's shared runner lock with
 `--allow-parallel-runners`; analyzers and the existing timeout remain unchanged.
+The client check stops on dependency installation, typecheck, test, or build
+failure before checking bundle drift and attribution, preserving failure status.
 
 GitHub Actions schedules the full suite hourly from the default `main` branch.
 Preflight pins the current `develop` SHA and skips when that commit already has
