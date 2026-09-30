@@ -1,5 +1,32 @@
 ## Codex Workpad
 
+Plan and result: merge fallback for #3440 / PR #3455 merges fetched develop `81311b8e8857c53ce6da3d57e810368c70e323be` into published PR head `e8727a6a15a649dfe4cf488800033b877409d317` without rebasing. Published history is retained as the first parent. Only `.detent/notes.md` conflicted; both historical handoff histories are preserved below. Source, generated assets and visual fixtures merged automatically; no manual source edits or asset generation were required.
+
+Prior notes verified: starting local head matches the fetched published PR head. Its parents are `7b7e60d2b364bf30a880b7f936d574bcfa6d6fb5` and prior target `962f52c6abe8642ba3c95044bb66c9e0bc267d37`, matching the preceding Rework handoff. Prior diagnostic results are historical and do not validate this resolved head.
+
+Key issue files: `web/conversation/src/app/account/Login.tsx`, `web/conversation/src/app/entry/EntryScreens.tsx`, `web/conversation/src/app/main.tsx`, `web/conversation/src/app/index.css`, `internal/hubserver/hosted_ui.go`, `internal/hubserver/hosted_login.go`, `internal/cloudentry/login.go`, and `tests/visual/hub-login.spec.js`. This fallback only resolves handoff notes; incoming source and invariant changes are retained unchanged.
+
+Validation: no tests, lint, vet, builds, asset generation, local gate (including `true`), CI checks or validation waits performed in this session. Gate/CI timings are unmeasured. No current-head validation success is claimed.
+
+Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. Return immediately after committing the resolution with a source-clean workspace. No out-of-scope findings, push, PR merge, issue-state changes, tracker lane writes or live-instance mutation.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7348"
+  completion_generation: "36"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both sides
+
+The following records concern earlier heads or other issues. Their validation and completion metadata do not apply to this resolved head or authorize validation or publication in this session.
+
+## Historical Workpad
+
 Plan and result: Rework attempt 7340 / generation 28 retains published PR #3455 head 7b7e60d2b364bf30a880b7f936d574bcfa6d6fb5 and merges fetched develop 962f52c6abe8642ba3c95044bb66c9e0bc267d37 without rebasing. Only handoff notes conflicted; both histories are retained below. Source merged automatically, preserving this issue's sign-up hint alongside develop's logout changes. Frontend, generated assets, visual fixtures and screenshots match the published head exactly.
 
 Key files: web/conversation/src/app/account/Login.tsx, app/entry/EntryScreens.tsx, app/main.tsx, app/index.css, internal/hubserver/hosted_ui.go, hosted_login.go, internal/cloudentry/login.go, tests/visual/hub-login.spec.js.
@@ -10,7 +37,7 @@ Handoff: commit and publish with an explicit expected-head lease, then record ex
 
 Skill draft: no — routine target merge and notes conflict resolution need no reusable procedure.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
@@ -92,6 +119,26 @@ fields:
   completion_work_attempt_id: "7323"
   completion_generation: "14"
   completion_cleanliness_resolution: committed
+
+# Historical incoming target handoff
+
+# Issue #3454 Rework handoff — 2026-09-30
+
+## Historical Workpad
+
+Plan and result: attempt 7341 / generation 29 merges fetched develop 962f52c6abe8642ba3c95044bb66c9e0bc267d37 into published PR #3471 head a8dde869134e03d92e2690f4f8977cdfdd4c0edb, preserving both as ancestors. Rework feedback concerns target merge conflicts; no actionable reviews or dependencies. Only these notes conflicted. Both historical handoffs are retained; all source merged automatically. No manual source edits, generated-input or invariant changes, new mechanisms, stray artifacts or out-of-scope findings.
+
+Key file: tests/visual/account.spec.js finds the checked card through its contained radio, requires exactly one selected card with the expected name before and after switching, and matches Runs at once exactly to exclude its help button. It exactly matches validated implementation 8d5843246bb94582fd284844171e662d602bb549. Incoming develop changes logout redirects and stored-session handling, with no changes to setup choices, enrollment or account assets. The account browser file contains no logout assertions.
+
+Validation: JavaScript syntax and full issue whitespace checks pass. Complete issue diff reviewed; every non-notes source matches the pinned target except the unchanged account test repair. Historical Linux account-file diagnostics reproduced both failures, then passed 11 tests with one intentional skip and retries disabled. This notes resolution repeats no browser diagnostics and claims no current-head browser or full-job pass. No full checks, coverage, race suite, Actions rerun or CI wait. make generate is unnecessary because generated inputs were not changed. Configured true runs on the final committed head immediately before publication; exact head, ancestor verification, gate/push timings and final reviews/checks belong in the canonical issue Workpad.
+
+Handoff: PR #3471 is already non-draft, targets develop and includes Fixes #3454. Initial reviews and threads are empty; the sole comment is the review bot usage limit, with no findings. Current-head check rollup is absent, an expected skip with no test credit. Quiet window and merge-group workflow are not configured. Detent owns lane transitions and squash merge. Next scheduled integrated-develop validation confirms the job and closes this issue. No stash, lane write, human action or live port-4000 mutation.
+
+Skill draft: no — existing guidance covers this notes conflict repair and publication.
+
+```yaml
+schema: 1
+status: in_progress
 blockers: []
 human_action: null
 ```
@@ -117,6 +164,28 @@ fields:
   completion_work_attempt_id: "7298"
   completion_generation: "7"
   completion_cleanliness_resolution: committed
+
+# Historical incoming target handoff
+
+Earlier records concern other heads or issues; their validation and completion metadata do not apply to this attempt.
+
+# Issue #3454 Rework handoff — 2026-09-30
+
+## Historical Workpad (#3454 prior publication)
+
+Plan and result: attempt 7335 / generation 23 merges fetched develop ad7ab10857ba845495bc9ace4bf57fd362fb946a into published PR #3471 head 943b9d26ff92ab2d01ddc3322c4ae40ad35066c1, preserving both as ancestors. Rework is target merge conflict repair; no actionable human or bot findings remain. Only these notes conflicted; retained both historical handoffs. All source files merged automatically and match fetched develop except the existing account browser test repair. No manual source edit, generated-input change, invariant enforcement change or out-of-scope finding.
+
+Key file: tests/visual/account.spec.js selects the checked card through its contained radio, asserts exactly one selected card before and after switching, and matches Runs at once exactly to exclude its help button. It exactly matches passing implementation 8d5843246bb94582fd284844171e662d602bb549. Newly integrated develop changes affect hydration and board detail identity; account sources, generated account assets and the repaired test are unchanged relative to the preceding handoff.
+
+Validation: current JavaScript syntax and full issue whitespace diagnostics pass. Reviewed the complete issue diff; all non-notes source matches fetched develop except the unchanged account test repair. Both ancestors are verified after committing. Historical Linux Playwright account-file evidence: both failures reproduced before repair, then 11 passed and one intentional skip, with retries disabled. This notes conflict repair repeats no browser diagnostics and claims no current-head browser or full-job pass. No full checks, coverage, race suite, Actions rerun or CI wait. make generate is not applicable because no generated inputs are manually changed. Run configured true on the final committed head immediately before explicit-lease publication; exact head, diagnostics, gate/push timings and final feedback/check evidence belong in the canonical issue Workpad.
+
+Handoff: PR #3471 is already non-draft, targets develop and includes Fixes #3454. Initial GraphQL inspection found no reviews or threads; the sole PR comment is the review bot usage limit, which is not a required review. Current-head checks absent, an expected skip providing no test credit. No merge-group workflow or quiet window applies. Detent owns lane transitions and squash merging; scheduled integrated-develop validation confirms the job and closes the issue. No dependency, human action, stash or live port-4000 mutation.
+
+Skill draft: no — existing guidance covers this notes conflict repair and publication.
+
+```yaml
+schema: 1
+status: in_progress
 blockers: []
 human_action: null
 ```
@@ -146,6 +215,18 @@ human_action: null
 ## Historical Workpad
 
 # Incoming develop handoff history
+
+# Historical incoming target handoff
+
+# Historical handoffs
+
+These records concern earlier heads or other issues; their validation and completion metadata do not apply to this attempt.
+
+# Issue #3454 Rework handoff — 2026-09-30
+
+# Incoming develop handoff
+
+# Incoming develop handoff
 
 # Issue #3441 implementation handoff — 2026-09-30
 
@@ -192,6 +273,54 @@ Skill draft: no — existing selection and isolated preview procedures cover thi
 # Issue #3258 merge fallback handoff — 2026-09-30
 
 ## Historical Workpad (develop before #3430)
+
+Plan and result: attempt 7330 / generation 18 resolves merge_conflicts by merging fetched develop 69874645ab6254f5480990b298e0ce4deeb5e987 into published PR #3471 head 5c0c67f048edd771192dc72a993a94fc87291479, preserving published history. Only these notes conflicted; retained both sides' historical handoffs. All source changes merged automatically from develop. No manual source edits or out-of-scope findings.
+
+Key file: tests/visual/account.spec.js selects the checked card by its contained radio, asserts exactly one selected card before and after switching, and matches Runs at once exactly to exclude its help button. The issue-owned test exactly matches passing implementation 8d5843246bb94582fd284844171e662d602bb549. Develop adds an issue-intake section to Setup.tsx and updated generated assets; its diff does not change the repaired radio cards or enrollment field. All source files match fetched develop except the existing account test repair. No generated inputs or invariant enforcement are changed by this resolution.
+
+Validation: current JavaScript syntax and full issue whitespace inspection pass. Broader staged whitespace inspection flags trailing whitespace in inherited generated app.js, which exactly matches fetched develop and is outside the issue diff. Historical Linux Playwright account-file evidence: 11 passed, one intentional skip, retries disabled, with recorded pre-fix selector timeout and masked enrollment collision. No browser diagnostics are repeated in this notes conflict repair; no current-head browser or full-job pass is claimed. No full checks, coverage, race suite, Actions rerun or CI waiting. make generate is not applicable because generated inputs were not manually changed. Configured true runs on the final committed head immediately before explicit-lease publication; exact head, gate/push timings and final feedback/check evidence belong in the canonical issue Workpad.
+
+Handoff: PR #3471 is already non-draft, targets develop and includes Fixes #3454. Initial GraphQL inspection found no reviews or threads; automated review usage limit is not a required review. Current-head checks absent, expected under repository policy and providing no test credit. No merge-group workflow or quiet window applies. Detent owns lane transitions and squash merging; scheduled integrated-develop validation confirms the job and closes the issue. No dependencies, human action, stash or live port-4000 mutation.
+
+```yaml
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+These records concern earlier heads or other issues; their validation and completion metadata do not apply to this attempt.
+
+# Issue #3454 Rework handoff — 2026-09-30
+
+## Historical Workpad
+
+Plan and result: attempt 7320 / generation 12 resolves merge_fast_path_head_not_ready by merging fetched develop 9a0691c07777b962c56cdd792af690f7aa116e6b into published PR #3471 head 66219629c1a09cacd8fabf3806c5f32f78d71de7, preserving published history. Only these notes conflicted; retained both sides' historical handoffs. All source changes merged automatically from develop. No manual source edits or out-of-scope findings.
+
+Key file: tests/visual/account.spec.js selects the checked card by its contained radio, asserts exactly one selected card before and after switching, and matches Runs at once exactly to exclude the help button. The test and frontend/generated account assets exactly match passing implementation 8d5843246bb94582fd284844171e662d602bb549. The issue diff is only notes and this test; no generated inputs or invariant enforcement changed.
+
+Validation: current JavaScript syntax and full issue whitespace inspection pass. Historical Linux Playwright account-file evidence: 11 passed, one intentional skip, retries disabled, with recorded pre-fix selector timeout and masked enrollment collision. This retry changes no tested source, so no browser diagnostics were repeated and no current-head browser or full-job pass is claimed. No full checks, coverage, race suite, Actions rerun or CI waiting. make generate is not applicable. Configured true runs on the final committed head immediately before explicit-lease publication; exact head, gate/push timings and final feedback/check evidence belong in the canonical issue Workpad.
+
+Handoff: PR #3471 is already non-draft, targets develop and includes Fixes #3454. Initial GraphQL inspection found no reviews or threads; automated review usage limit is not a required review. Current-head checks absent, expected under repository policy and providing no test credit. No merge-group workflow or quiet window applies. Detent owns lane transitions and squash merging; scheduled integrated-develop validation confirms the job and closes the issue. No dependencies, human action, stash or live port-4000 mutation.
+
+Skill draft: no — existing commit and Linux browser guidance covers this conflict repair.
+
+```yaml
+schema: 1
+status: in_progress
+fields:
+  completion_work_attempt_id: "7320"
+  completion_generation: "12"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Issue #3258 merge fallback handoff — 2026-09-30
+
+## Historical Workpad
 
 Plan and result: merged freshly fetched develop `f5f3d56e7f17a3fa0f3611c7886c124f9244a0bc` into source-clean published PR #3472 head `68c8c1ab86196a7435df184c1ae39adab08257ed`, preserving published history without rebasing. PR #3472 is open against develop on the assigned isolated branch and includes Fixes #3258. No merge or rebase was in progress at session start.
 
@@ -265,6 +394,38 @@ human_action: null
 ```
 
 # Historical handoffs
+
+These records concern earlier heads or other issues; their validation and completion metadata do not apply to this attempt.
+
+# Issue #3454 Rework publication handoff — 2026-09-30
+
+## Historical Workpad
+
+Plan: attempt 7304 / generation 13 resolves the recovered unpublished merge dfe16d6da2c16fb9a9d35294022c766301edf327 by retaining and publishing it with this refreshed handoff. Rework feedback reports target ancestry/merge conflicts; PR #3471 has no actionable human or bot findings and is already non-draft against develop with Fixes #3454. No source repair remains.
+
+Recovery and review: inspected all four recovered paths. The three internal/workspace test files exactly match fetched develop 3ce76fc185cf1d090eacaa27779ac77cfc84587c; the remaining path is the issue-owned notes conflict resolution. Both fetched develop and published PR head 08bcfa7d6ea302c2a3e740f11f5961e6def40c9a are verified ancestors. The full issue diff contains only these handoff notes and tests/visual/account.spec.js. Retain all recovered work; no stray artifacts, stash, generated-input changes or out-of-scope findings.
+
+Key file: tests/visual/account.spec.js locates exactly one selected card containing a radio before and after switching choices, and matches Runs at once exactly to exclude its help button. The test file and frontend/generated account assets match passing implementation 8d5843246bb94582fd284844171e662d602bb549. The recovered merge adds only develop's unrelated workspace tests.
+
+Validation: current JavaScript syntax check (node --check) and full issue whitespace inspection pass. Prior Linux Playwright account-file evidence is 11 passed and one intentional skip, with recorded pre-fix selector timeout and masked enrollment collision; this is historical evidence, not a new current-head browser run. No source changed during this retry. No full suite, coverage, race suite, Actions rerun or CI wait. make generate is not applicable. Run configured true on the final committed head immediately before an explicit-lease push; exact gate, push timing, head and post-publication feedback/check evidence belong in the canonical issue Workpad.
+
+Handoff: publish the retained merge and notes, then update the existing canonical issue Workpad for attempt 7304 / generation 13. At initial inspection the PR has no reviews or review threads; the review bot reports its usage limit, which does not require automated review. Current-head checks are absent and confer no test credit. No merge-group workflow or quiet window is configured. Detent owns lane transitions and squash merging; the next scheduled integrated-develop validation confirms the original job and closes the issue. Live port 4000 is untouched.
+
+Skill draft: no — existing commit and Linux browser guidance cover this recovery.
+
+```yaml
+schema: 1
+status: in_progress
+fields:
+  completion_work_attempt_id: "7304"
+  completion_generation: "13"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Issue #3449 Rework handoff — 2026-09-30
+
 
 The following validation and completion metadata apply only to their recorded heads; historical instructions do not authorize publication or validation in this attempt.
 
@@ -415,7 +576,61 @@ blockers: []
 human_action: null
 ```
 
-# Historical handoffs
+
+The records below describe earlier sessions. Current publication and completion evidence is in the canonical issue Workpad.
+
+# Issue #3454 current merge fallback handoff — 2026-09-30
+
+## Historical Workpad
+
+Plan and result: merge freshly fetched develop `3ce76fc185cf1d090eacaa27779ac77cfc84587c` into published PR #3471 head `08bcfa7d6ea302c2a3e740f11f5961e6def40c9a` without rebasing; commit the resolution and return immediately with a source-clean workspace. The fetched PR head matches the clean starting local head. PR #3471 is open against develop on the assigned isolated branch and includes Fixes #3454. No rebase or merge was in progress before this merge.
+
+Prior notes verified: the starting head has parents `0b6ff6f06f64f707cabb1fbae986ebcfd2175176` and prior target `05725ad76853799c54c45db74deebcad0035b4f6`. The preceding merge and published head parent records also match Git history. Key issue file `tests/visual/account.spec.js` matches the earlier validated implementation `8d5843246bb94582fd284844171e662d602bb549` and is retained unchanged. Prior diagnostics are historical only.
+
+Resolution: only `.detent/notes.md` conflicted. Preserved both sides' historical handoffs, including incoming #3452 records, with one current Workpad/status fence. Develop's three workspace test files merged automatically; no manual source edits, generated-input changes, or out-of-scope findings.
+
+Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks, or validation waits run in this session. Gate and current-head checks are deferred to Detent; no validation credit claimed for this head and timings are unmeasured.
+
+Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7294"
+  completion_generation: "3"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both merge parents
+
+These records concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+# Issue #3454 current merge fallback handoff — 2026-09-30
+
+## Historical Workpad
+
+Plan and result: retain unpublished merge `0b6ff6f06f64f707cabb1fbae986ebcfd2175176` and merge freshly fetched develop `05725ad76853799c54c45db74deebcad0035b4f6` into that local PR history without rebasing; commit the resolution and return immediately with a source-clean workspace. PR #3471 is open against develop on the assigned isolated branch and includes Fixes #3454. Fetched published PR head `fe8de071ad05b3aa7eb34d3d39f441983bfd3b44` remains an ancestor of the starting local head.
+
+Prior notes verified: the starting unpublished merge has parents `fe8de071ad05b3aa7eb34d3d39f441983bfd3b44` and prior target `f6c8aa5746b049b71fad5c7704fe74054a5630e6`, matching the preceding handoff. The published head's parents also match its recorded handoff. The key issue file, `tests/visual/account.spec.js`, matches both the published head and earlier validated implementation `8d5843246bb94582fd284844171e662d602bb549`; it merged unchanged. Prior diagnostics below remain historical.
+
+Resolution: only `.detent/notes.md` conflicted. Preserved both sides' historical handoffs, including incoming #3448 and #3457 records, with one current Workpad/status fence. Source files merged automatically; no manual source edits, generated-input changes, or out-of-scope findings.
+
+Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks, or validation waits run in this session. No validation credit claimed for this head; timings are unmeasured.
+
+Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+The following records concern earlier heads or other issues. Their validation, dependency and completion metadata do not apply to this head or authorize validation or publication in this session.
 
 The records below concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
 
@@ -447,6 +662,51 @@ fields:
 blockers: []
 human_action: null
 ```
+
+# Historical handoffs retained from both merge parents
+
+These records concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+# Issue #3454 current merge fallback handoff — 2026-09-30
+
+## Historical Workpad
+
+Plan and result: merge freshly fetched develop `f6c8aa5746b049b71fad5c7704fe74054a5630e6` into published PR #3471 head `fe8de071ad05b3aa7eb34d3d39f441983bfd3b44`, preserving published history without rebasing; commit the resolution and return immediately to Detent with a source-clean workspace. PR #3471 is open against develop on the assigned isolated branch and includes Fixes #3454. Starting local and fetched PR heads match; no rebase or merge was in progress.
+
+Prior notes verified: the starting merge has parents `bb901a2a234e8ef735e9384e0d7d3135c29a7c9a` and prior target `09011d003ef74adb8a0fab414e7be80cbce6661a`, matching the preceding handoff. The key issue file, `tests/visual/account.spec.js`, matches both the published head and earlier validated implementation `8d5843246bb94582fd284844171e662d602bb549`. Prior browser diagnostics and publication instructions below remain historical.
+
+Resolution: only `.detent/notes.md` conflicted. Preserved historical handoffs from both sides, including incoming #3450 and #3445 records, and consolidated one current Workpad/status fence. Source files merged automatically; no manual source edits, generated-input changes, or out-of-scope findings.
+
+Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks, or validation waits run in this session. No validation credit claimed for this head; gate/CI and post-merge timings are unmeasured.
+
+Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs retained from both merge parents
+
+These records concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+# Issue #3454 merge fallback handoff — 2026-09-30
+
+## Historical Workpad (#3454 prior merge)
+
+Plan and result: merge freshly fetched develop `09011d003ef74adb8a0fab414e7be80cbce6661a` into published PR #3471 head `bb901a2a234e8ef735e9384e0d7d3135c29a7c9a`, preserve published history without rebasing, commit the resolution, and return immediately to Detent with a source-clean workspace. PR #3471 is open against develop on the assigned isolated branch and includes Fixes #3454. Starting local and fetched published heads match; no rebase or merge was in progress.
+
+Prior notes verified: the starting issue commit has parent `0721153854edcd0bd1fecd81edc90edbfc1853ba`, and `tests/visual/account.spec.js` exactly matches the earlier validated implementation commit `8d5843246bb94582fd284844171e662d602bb549`. Earlier publication instructions and browser diagnostics below are historical; they do not authorize validation or publishing in this session.
+
+Resolution: only `.detent/notes.md` conflicted. Preserved both sides' historical handoffs with one current Workpad/status fence. All source files merged automatically; no manual source edits, generated-input changes, or out-of-scope findings. Key issue file: `tests/visual/account.spec.js`, retained unchanged from the published PR head.
+
+Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks, or validation waits run in this session. No current-head validation credit claimed. Gate/CI and post-merge timings are unmeasured.
+
+Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
 
 # Historical handoffs
 
@@ -506,6 +766,30 @@ schema: 1
 status: complete
 fields:
   completion_cleanliness_resolution: committed
+
+# Historical incoming target handoff
+
+The records below concern earlier heads or other issues. Their validation and completion metadata do not apply to this resolved head or authorize validation or publication in this session.
+
+# Issue #3454 browser visual repair
+
+## Historical Workpad (#3454 implementation)
+
+Plan and result: repair the existing account browser assertions for the current contextual-help markup, publish a draft PR against develop, inspect feedback, then mark it ready. Assigned isolated branch started clean at develop 6b4283ddfd6e4db65463450fdd28f998b9967d61; no dependencies.
+
+Key file: tests/visual/account.spec.js. Selected-card assertions locate the data-checked element containing a radio, preserve native checked-state assertions, and require exactly one selected card both before and after switching choices. Runner enrollment matches the Runs at once label exactly so its help button cannot collide. Product behavior, generated assets and invariants are unchanged.
+
+Evidence: scheduled run 36758716559 / job 110035613139 failed both attempts at label[data-checked] after Local history passed toBeChecked. Reproduced the identical 10-second timeout on current develop in Linux Chromium before edits (12.5s command). After fixing that selector, the full serial account file exposed a previously unexecuted strict-mode failure: Runs at once matched both its input and Help for Runs at once. Preserved both failure traces under provided TMPDIR.
+
+Validation: matching mcr.microsoft.com/playwright:v1.61.0-noble image, Linux arm64, Go 1.26.6 cross-compiled real hosted-Hub preview test, ephemeral ports, one worker, no retries, strict Linux comparisons. Final complete account file: 11 passed, 1 intentionally skipped (15.5s Playwright; 15.9s command). Skip receives no test credit. Both 1440px desktop and 390px phone choices, enrollment, accessibility, authorization and usage assertions passed. All fixture, trace, video and runner output used provided TMPDIR. No full browser suite, coverage, race suite or Actions rerun. No generated inputs changed, so make generate is not applicable. Whitespace inspection passed.
+
+Publication: draft PR #3471 targets develop and includes Fixes #3454. Initial committed-head true gate passed immediately before pushing 8d5843246bb94582fd284844171e662d602bb549. Initial feedback inspection found no comments, reviews or threads; current-head check rollup was absent and receives no test credit. Rebased onto fetched develop 0721153854edcd0bd1fecd81edc90edbfc1853ba; only handoff notes conflicted, preserving incoming historical notes and one current Workpad/status fence. Browser test, product source and generated assets match the validated implementation; incoming changes are unrelated tests and the NilAway baseline. No implementation changed, so browser diagnostics were not repeated. Run true again immediately before lease-protected publication of this rebased commit, then mark ready and record final current-head feedback in the canonical issue Workpad. Next scheduled integrated-develop validation confirms the full-job repair. No tracker lane writes, live-instance mutation or out-of-scope findings. Quiet window not configured; initial no-op gate under 1s, initial push 1.4s, draft creation 2.0s; PR CI and merge-group checks are not configured. Slow checks and post-merge main CI are not applicable to this implementation handoff.
+
+Skill draft: no — the existing Linux Playwright skill covers this selector repair and isolated reproduction.
+
+```yaml
+schema: 1
+status: in_progress
 blockers: []
 human_action: null
 ```
@@ -523,6 +807,14 @@ The following records concern earlier heads or other issues. Their validation an
 - Key issue files: `web/conversation/src/app/account/Login.tsx`, `web/conversation/src/app/entry/EntryScreens.tsx`, `web/conversation/src/app/main.tsx`, `web/conversation/src/app/index.css`, `internal/hubserver/hosted_ui.go`, `internal/hubserver/hosted_login.go`, and `internal/cloudentry/login.go` remain unchanged from the published PR head. Regenerated both conflicted client assets from the combined sources, retaining the incoming Sprites settings UI; no other generated assets changed.
 - Validation: no tests, lint, vet, typecheck, local gate (including `true`), CI checks, or validation waits run. `npm run build` completed solely to regenerate the conflicted assets (4.9s command); this is not validation credit. It emitted CSS highlight, component sourcemap, font-resolution and chunk-size warnings, consistent with prior generation notes. Historical evidence does not validate this head; gate/CI and post-merge timings are unmeasured.
 - Open items: Detent owns independent branch ownership, cleanliness, target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+# Historical incoming target handoff
+
+# Historical fetched develop handoffs
+
+
+# Historical incoming develop handoffs
+
 The following records concern earlier heads or other issues. Their validation and completion metadata do not apply to this resolved head or authorize validation or publication in this session.
 
 # Issue #3452 Windows portability repair
