@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -201,6 +202,9 @@ func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkIte
 }
 
 func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) error {
+	if c.client.runner != nil {
+		return c.HeartbeatMachine(ctx, machine)
+	}
 	capabilities, isolation := machine.workspaceReport()
 	request := struct {
 		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
@@ -221,6 +225,19 @@ func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) err
 
 func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (tracker.NativeLease, error) {
 	var result tracker.NativeLease
+	if c.client.runner != nil {
+		availability, err := c.client.runner.availability()
+		if err != nil {
+			return result, err
+		}
+		status, err := availability.Evaluate(time.Now())
+		if err != nil {
+			return result, err
+		}
+		if !status.Open {
+			return result, ErrNoClaimableWork
+		}
+	}
 	err := c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &result)
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "no_claimable_work" {

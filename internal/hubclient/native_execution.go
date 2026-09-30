@@ -123,11 +123,38 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		var routingChanged <-chan struct{}
 		for {
+			if source := e.scheduler.client.runner; source != nil {
+				availability, changed, err := source.availabilityState()
+				if err != nil {
+					cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, err))
+					return
+				}
+				if changed != routingChanged {
+					deadline, err := availability.Deadline(e.scheduler.now())
+					if err != nil {
+						cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, err))
+						return
+					}
+					e.mu.Lock()
+					e.claim.availabilityDeadline = deadline
+					e.mu.Unlock()
+					routingChanged = changed
+				}
+			}
 			remaining := e.remaining()
 			if remaining <= 0 {
 				cancel(runner.ErrExecutionAuthorityUnavailable)
 				return
+			}
+			if deadline := e.AvailabilityDeadline(); !deadline.IsZero() {
+				untilDeadline := deadline.Sub(e.scheduler.now())
+				if untilDeadline <= 0 {
+					cancel(runner.NewCancellationCause(context.Canceled, "runner.availability"))
+					return
+				}
+				remaining = min(remaining, untilDeadline)
 			}
 			timer := time.NewTimer(remaining)
 			select {
@@ -135,6 +162,8 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 				timer.Stop()
 				return
 			case <-timer.C:
+			case <-routingChanged:
+				timer.Stop()
 			}
 		}
 	}()
@@ -154,6 +183,9 @@ func (e *nativeExecution) unavailable(err error) error {
 
 func (e *nativeExecution) Validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
+		if deadline := e.AvailabilityDeadline(); errors.Is(context.Cause(ctx), context.Canceled) && !deadline.IsZero() && !e.scheduler.now().Before(deadline) {
+			return err
+		}
 		return e.unavailable(err)
 	}
 	if e.remaining() <= 0 {
@@ -332,4 +364,10 @@ func (e *nativeExecution) flush(ctx context.Context) error {
 	e.data = e.pending.Data
 	e.pending = nil
 	return nil
+}
+
+func (e *nativeExecution) AvailabilityDeadline() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.claim.availabilityDeadline
 }
