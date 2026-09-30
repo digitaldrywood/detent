@@ -84,6 +84,7 @@ type reportsDigest struct {
 }
 
 type reportsDigestDay struct {
+	Scope    string
 	Date     string
 	Label    string
 	Today    bool
@@ -336,6 +337,7 @@ func reportsDigestView(data DailyDigestData) reportsDigest {
 			Label:    reportsDigestDateLabel(day.Date, index == len(data.Days)-1),
 			Today:    index == len(data.Days)-1,
 			Metrics:  reportsDigestMetrics(day, baseline),
+			Scope:    "Shipped: unique Detent-verified outcomes in this calendar day. Lifetime cohort metrics: " + formatInt(day.Efficiency.Issues) + " / " + formatInt(day.IssuesShipped) + " shipped issues have receipts; dwell is lane elapsed time since first dispatch, with unclassified time shown as unknown. Runtime usage is attributed by session finish in this day; filed counts cover visible snapshot issues. Release history is unavailable; external releases are not observed.",
 			Projects: day.Projects,
 		})
 	}
@@ -353,8 +355,8 @@ func reportsDigestMetrics(day DailyDigestDayData, baseline []DailyDigestDayData)
 	recoveries := day.OrphanResumed + day.OrphanFresh
 	metrics := []reportsDigestMetric{
 		reportsDigestCountMetric("shipped", "Shipped", day.IssuesShipped, baseline, func(value DailyDigestDayData) int64 { return value.IssuesShipped }),
-		reportsDigestCountMetric("filed", "Filed", day.IssuesFiled, baseline, func(value DailyDigestDayData) int64 { return value.IssuesFiled }),
-		reportsDigestCountMetric("releases", "Releases", day.ReleasesTagged, baseline, func(value DailyDigestDayData) int64 { return value.ReleasesTagged }),
+		reportsDigestCountMetric("filed", "Filed · snapshot", day.IssuesFiled, baseline, func(value DailyDigestDayData) int64 { return value.IssuesFiled }),
+		{ID: "releases", Label: "Releases", Value: "Unavailable", Detail: "No durable history · external releases unobserved"},
 		reportsDigestCountMetric("sessions", "Sessions", day.Sessions, baseline, func(value DailyDigestDayData) int64 { return value.Sessions }),
 		reportsDigestCountMetric("tokens", "Tokens", day.TotalTokens, baseline, func(value DailyDigestDayData) int64 { return value.TotalTokens }),
 		reportsDigestFloatMetric("cache", "Cached share", cacheShare, baseline, func(value DailyDigestDayData) float64 {
@@ -365,15 +367,16 @@ func reportsDigestMetrics(day DailyDigestDayData, baseline []DailyDigestDayData)
 		reportsDigestCountMetric("outages", "Capacity outages", day.CapacityOutages, baseline, func(value DailyDigestDayData) int64 { return value.CapacityOutages }),
 		reportsDigestCountMetric("breakers", "Breaker trips", day.BreakerTrips, baseline, func(value DailyDigestDayData) int64 { return value.BreakerTrips }),
 		reportsDigestCountMetric("failures", "Failed sessions", day.FailedSessions, baseline, func(value DailyDigestDayData) int64 { return value.FailedSessions }),
-		reportsDigestFloatMetric("tokens-per-merged", "Tokens / merged · p50", day.Efficiency.TokensPerIssue.P50, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.TokensPerIssue.P50 }),
-		reportsDigestFloatMetric("cost-per-merged", "Notional USD / merged · p50", day.Efficiency.CostPerIssueUSD.P50, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.CostPerIssueUSD.P50 }),
-		reportsDigestFloatMetric("sessions-per-issue", "Sessions / issue", day.Efficiency.SessionsPerIssue, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.SessionsPerIssue }),
-		reportsDigestFloatMetric("first-attempt", "First-attempt merge", day.Efficiency.FirstAttemptMergeRate, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.FirstAttemptMergeRate }),
-		reportsDigestCountMetric("efficiency-anomalies", "Efficiency anomalies", day.Efficiency.Anomalies, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Anomalies }),
-		reportsDigestCountMetric("dwell-working", "Working dwell", day.Efficiency.Dwell.WorkingSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.WorkingSeconds }),
-		reportsDigestCountMetric("dwell-gate", "Gate-wait dwell", day.Efficiency.Dwell.GateWaitSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.GateWaitSeconds }),
-		reportsDigestCountMetric("dwell-merge", "Merge-train dwell", day.Efficiency.Dwell.MergeTrainSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.MergeTrainSeconds }),
-		reportsDigestCountMetric("dwell-parked", "Parked dwell", day.Efficiency.Dwell.ParkedSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.ParkedSeconds }),
+		reportsDigestFloatMetric("tokens-per-merged", "Lifetime tokens / shipped · p50", day.Efficiency.TokensPerIssue.P50, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.TokensPerIssue.P50 }),
+		reportsDigestFloatMetric("cost-per-merged", "Lifetime notional USD / shipped · p50", day.Efficiency.CostPerIssueUSD.P50, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.CostPerIssueUSD.P50 }),
+		reportsDigestFloatMetric("sessions-per-issue", "Lifetime sessions / shipped", day.Efficiency.SessionsPerIssue, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.SessionsPerIssue }),
+		reportsDigestFloatMetric("first-attempt", "Single-attempt shipped", day.Efficiency.FirstAttemptMergeRate, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.FirstAttemptMergeRate }),
+		reportsDigestCountMetric("efficiency-anomalies", "Lifetime cohort anomalies", day.Efficiency.Anomalies, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Anomalies }),
+		reportsDigestCountMetric("dwell-working", "Lifetime working-lane dwell", day.Efficiency.Dwell.WorkingSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.WorkingSeconds }),
+		reportsDigestCountMetric("dwell-gate", "Lifetime gate-wait dwell", day.Efficiency.Dwell.GateWaitSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.GateWaitSeconds }),
+		reportsDigestCountMetric("dwell-merge", "Lifetime merge-train dwell", day.Efficiency.Dwell.MergeTrainSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.MergeTrainSeconds }),
+		reportsDigestCountMetric("dwell-parked", "Lifetime parked dwell", day.Efficiency.Dwell.ParkedSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.ParkedSeconds }),
+		reportsDigestCountMetric("dwell-unknown", "Lifetime unknown dwell", day.UnknownDwellSeconds, baseline, func(value DailyDigestDayData) int64 { return value.UnknownDwellSeconds }),
 	}
 	metrics[4].Value = fleetCompactTokens(day.TotalTokens)
 	metrics[4].Full = formatInt(day.TotalTokens)
@@ -405,6 +408,18 @@ func reportsDigestMetrics(day DailyDigestDayData, baseline []DailyDigestDayData)
 			day.Efficiency.Dwell.MergeTrainSeconds,
 			day.Efficiency.Dwell.ParkedSeconds,
 		}[index-16]))
+	}
+	metrics[20].Value = formatDuration(float64(day.UnknownDwellSeconds))
+	metrics[20].Detail = "Unclassified elapsed time · not command time"
+	for index := 11; index < len(metrics); index++ {
+		if day.Efficiency.Issues == 0 {
+			metrics[index].Value = "—"
+			metrics[index].Delta = ""
+			metrics[index].Trend = ""
+			if index == 11 || index == 12 {
+				metrics[index].Detail = ""
+			}
+		}
 	}
 	return metrics
 }
