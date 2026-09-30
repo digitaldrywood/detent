@@ -8,12 +8,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -144,6 +146,9 @@ func (s *Server) events(c echo.Context) error {
 			if !ok {
 				return nil
 			}
+			if stream.skipUnchangedSnapshot(snapshot) {
+				continue
+			}
 			snapshot = s.withManualRefresh(s.snapshotMissingRequiredChecks(s.cachedEnrichedSnapshot(ctx, snapshot))).WithFreshness(s.now())
 			data := s.dashboardData(ctx, snapshot)
 			if selectedProjectID != "" {
@@ -258,6 +263,125 @@ type sseStream struct {
 	pending           map[string]ssePendingEvent
 	metrics           map[string]*sseEventMetrics
 	pendingFlushOrder []string
+	lastSnapshot      telemetry.Snapshot
+	lastSnapshotAt    time.Time
+	hasSnapshot       bool
+}
+
+// skipUnchangedSnapshot avoids enrichment and rendering for publication ticks
+// that only advance the snapshot clock. The periodic pass keeps reports backed
+// by the store fresh even when no telemetry field changes.
+func (s *sseStream) skipUnchangedSnapshot(snapshot telemetry.Snapshot) bool {
+	now := s.currentTime()
+	if s.hasSnapshot && snapshot.Seq != s.lastSnapshot.Seq && now.Before(s.lastSnapshotAt.Add(workflowHistoryFreshness)) &&
+		!now.Before(s.lastSnapshotAt) && sameSnapshotForSSE(s.lastSnapshot, snapshot) {
+		s.metricsFor(sseEventSnapshot).skippedFingerprint++
+		s.logMetricsIfDue(now)
+		return true
+	}
+	s.lastSnapshot = snapshot
+	s.lastSnapshotAt = now
+	s.hasSnapshot = true
+	return false
+}
+
+func sameSnapshotForSSE(left, right telemetry.Snapshot) bool {
+	left = snapshotWithoutTickFields(left)
+	right = snapshotWithoutTickFields(right)
+	if reflect.DeepEqual(left.Tokens, right.Tokens) {
+		// The publisher appends a timestamped sample on every tick after any
+		// token use, and its rolling throughput can change while idle.
+		left.TokenTrend, right.TokenTrend = nil, nil
+		left.Throughput, right.Throughput = telemetry.TokenThroughput{}, telemetry.TokenThroughput{}
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func snapshotWithoutTickFields(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	generatedAt := snapshot.GeneratedAt
+	snapshot.Seq = 0
+	snapshot.GeneratedAt = time.Time{}
+	snapshot.Runtime.ObservedAt = time.Time{}
+	snapshot.Refresh = refreshWithoutTickFields(snapshot.Refresh, generatedAt)
+	snapshot.Dispatch = dispatchWithoutTickFields(snapshot.Dispatch)
+	snapshot.DispatchStalls = append([]telemetry.DispatchStatus(nil), snapshot.DispatchStalls...)
+	for i := range snapshot.DispatchStalls {
+		snapshot.DispatchStalls[i] = dispatchWithoutTickFields(snapshot.DispatchStalls[i])
+	}
+	snapshot.Projects = append([]telemetry.ProjectSnapshot(nil), snapshot.Projects...)
+	for i := range snapshot.Projects {
+		snapshot.Projects[i].Runtime.ObservedAt = time.Time{}
+		snapshot.Projects[i].Refresh = refreshWithoutTickFields(snapshot.Projects[i].Refresh, generatedAt)
+		snapshot.Projects[i].Dispatch = dispatchWithoutTickFields(snapshot.Projects[i].Dispatch)
+	}
+	snapshot.BoardIssues = issuesWithoutTickFields(snapshot.BoardIssues)
+	snapshot.Pipeline = issuesWithoutTickFields(snapshot.Pipeline)
+	snapshot.TrackerDrift.UntrackedOpen = issuesWithoutTickFields(snapshot.TrackerDrift.UntrackedOpen)
+	snapshot.TrackerDrift.OpenTerminal = issuesWithoutTickFields(snapshot.TrackerDrift.OpenTerminal)
+	snapshot.TrackerDrift.ClosedActive = issuesWithoutTickFields(snapshot.TrackerDrift.ClosedActive)
+	snapshot.Running = append([]telemetry.Running(nil), snapshot.Running...)
+	for i := range snapshot.Running {
+		snapshot.Running[i].Issue = issueWithoutTickFields(snapshot.Running[i].Issue)
+		snapshot.Running[i].RuntimeSeconds = 0
+	}
+	snapshot.Queue = append([]telemetry.Queued(nil), snapshot.Queue...)
+	for i := range snapshot.Queue {
+		snapshot.Queue[i].Issue = issueWithoutTickFields(snapshot.Queue[i].Issue)
+		snapshot.Queue[i].DueInMillis = 0
+	}
+	snapshot.Blocked = append([]telemetry.Blocked(nil), snapshot.Blocked...)
+	for i := range snapshot.Blocked {
+		snapshot.Blocked[i].Issue = issueWithoutTickFields(snapshot.Blocked[i].Issue)
+	}
+	snapshot.Completed = append([]telemetry.Completed(nil), snapshot.Completed...)
+	for i := range snapshot.Completed {
+		snapshot.Completed[i].Issue = issueWithoutTickFields(snapshot.Completed[i].Issue)
+	}
+	snapshot.StrandedActiveIssues = append([]telemetry.StrandedIssue(nil), snapshot.StrandedActiveIssues...)
+	for i := range snapshot.StrandedActiveIssues {
+		snapshot.StrandedActiveIssues[i].DurationSeconds = 0
+	}
+	return snapshot
+}
+
+func refreshWithoutTickFields(refresh telemetry.Refresh, generatedAt time.Time) telemetry.Refresh {
+	refresh.ObservedSweepSeconds = 0
+	refresh.BehindBySeconds = 0
+	if refresh.Status == telemetry.RefreshStatusInitializing && refresh.NextRefreshAt != nil && refresh.NextRefreshAt.Equal(generatedAt) {
+		refresh.NextRefreshAt = nil
+	}
+	return refresh
+}
+
+func issuesWithoutTickFields(issues []telemetry.Issue) []telemetry.Issue {
+	out := append([]telemetry.Issue(nil), issues...)
+	for i := range out {
+		out[i] = issueWithoutTickFields(out[i])
+	}
+	return out
+}
+
+func issueWithoutTickFields(issue telemetry.Issue) telemetry.Issue {
+	issue.CurrentLaneAgeSeconds = 0
+	if issue.WorkpadHumanAction != nil {
+		copy := *issue.WorkpadHumanAction
+		copy.AgeSeconds = 0
+		issue.WorkpadHumanAction = &copy
+	}
+	if issue.MergeTiming != nil {
+		copy := *issue.MergeTiming
+		copy.QueueWaitSeconds = 0
+		copy.ActiveMergeDurationSeconds = 0
+		copy.TotalMergingSeconds = 0
+		issue.MergeTiming = &copy
+	}
+	return issue
+}
+
+func dispatchWithoutTickFields(dispatch telemetry.DispatchStatus) telemetry.DispatchStatus {
+	dispatch.SecondsSinceLastSelected = nil
+	dispatch.StallDurationSeconds = 0
+	return dispatch
 }
 
 type sseRenderedEvent struct {

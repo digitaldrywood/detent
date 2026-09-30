@@ -121,6 +121,10 @@ func restCheckRunRerequestPath(repo pullRequestRepo, checkRunID int64) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/check-runs/" + strconv.FormatInt(checkRunID, 10) + "/rerequest"
 }
 
+func restCreateCommitStatusPath(repo pullRequestRepo, sha string) string {
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/statuses/" + url.PathEscape(sha)
+}
+
 func restCommitStatusesPath(repo pullRequestRepo, sha string) string {
 	values := url.Values{}
 	values.Set("per_page", "100")

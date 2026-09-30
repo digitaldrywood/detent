@@ -50,7 +50,7 @@ func TestCheckMigrations(t *testing.T) {
 func TestRun(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	for _, directory := range []string{"internal/store/migrations", "internal/hubserver/migrations"} {
+	for _, directory := range []string{"internal/store/migrations", "internal/hubserver/migrations", "internal/cloudentry/migrations/registry", "internal/cloudentry/migrations/auth"} {
 		writeMigration(t, root, directory+"/00001_initial.sql")
 	}
 	for _, test := range []struct {

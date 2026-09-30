@@ -87,6 +87,90 @@ func TestRunnerEnrollmentSingleRedemption(t *testing.T) {
 	}
 }
 
+func TestRunnerUnboundEnrollment(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "unbound")
+	base := "/api/v2/organizations/" + string(f.project.OrganizationID)
+	create := func(t *testing.T, request runnerauth.EnrollmentRequest) runnerauth.Enrollment {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments", testHubAdminToken, request)
+		requireNativeStatus(t, response, http.StatusCreated)
+		var enrollment runnerauth.Enrollment
+		decodeHubResponse(t, response, &enrollment)
+		return enrollment
+	}
+	redemption := func(t *testing.T, binding runnerauth.Binding) runnerauth.Redemption {
+		t.Helper()
+		credential, err := apikey.GenerateToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}
+	}
+	unbound := runnerauth.EnrollmentRequest{ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60}
+
+	for _, test := range []struct {
+		name    string
+		request runnerauth.EnrollmentRequest
+		status  int
+	}{
+		{"unbound", unbound, http.StatusCreated},
+		{"runner without machine", func() runnerauth.EnrollmentRequest {
+			request := unbound
+			request.RunnerID = runnerauth.NewBinding().RunnerID
+			return request
+		}(), http.StatusUnprocessableEntity},
+		{"shared without a host", func() runnerauth.EnrollmentRequest {
+			request := unbound
+			request.SharedMachine = true
+			return request
+		}(), http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments", testHubAdminToken, test.request), test.status)
+		})
+	}
+
+	enrollment := create(t, unbound)
+	first := runnerauth.NewBinding()
+	statuses := make(chan int, 4)
+	var workers sync.WaitGroup
+	for i := range 4 {
+		binding := first
+		if i > 0 {
+			binding = runnerauth.NewBinding()
+		}
+		body := redemption(t, binding)
+		workers.Go(func() {
+			statuses <- performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, body).Code
+		})
+	}
+	workers.Wait()
+	close(statuses)
+	winners := 0
+	for status := range statuses {
+		if status == http.StatusCreated {
+			winners++
+		} else if status != http.StatusUnauthorized {
+			t.Fatalf("redemption status = %d", status)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("unbound redemption winners = %d, want 1", winners)
+	}
+	var runner, machine string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT runner_id, machine_id FROM runner_enrollments WHERE id = ?", enrollment.ID).Scan(&runner, &machine); err != nil || runner == "" || machine == "" {
+		t.Fatalf("redeemed enrollment binding = %q %q, %v", runner, machine, err)
+	}
+	var identities int
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_identities WHERE id = ? AND machine_id = ?", runner, machine).Scan(&identities); err != nil || identities != 1 {
+		t.Fatalf("runner identity rows = %d, %v", identities, err)
+	}
+
+	taken := create(t, unbound)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", taken.Token, redemption(t, runnerauth.Binding{RunnerID: runner, MachineID: tracker.MachineID(machine)})), http.StatusConflict)
+}
+
 func TestRunnerConcurrentRotationHasOneWinner(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "rotations")
@@ -267,7 +351,7 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 		t.Fatal("history did not attribute event to authenticated runner")
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.base+"/machines/"+string(r.binding.MachineID)+"/routing", testHubAdminToken, runnerauth.HostChange{ExpectedRevision: 1, DisplayName: "Renamed", Capacity: 2}), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Worker override", "capacity": 2, "version": "test"}), http.StatusNoContent)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Worker override", "capacity": 2, "version": "test"}), http.StatusOK)
 	var display, machine string
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id, display_name FROM machines WHERE id = ?", r.binding.MachineID).Scan(&machine, &display); err != nil || machine != string(r.binding.MachineID) || display != "Renamed" {
 		t.Fatal("rename did not preserve identity")

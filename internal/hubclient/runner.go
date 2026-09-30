@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type runnerCredentialSource struct {
@@ -130,7 +132,7 @@ func (c *Client) prepareRunnerCredential(ctx context.Context, path string, file 
 }
 
 func validateRunnerResponse(file runnerauth.File, identity runnerauth.Identity) error {
-	if identity.Binding != file.Identity.Binding || identity.OrganizationID != file.Identity.OrganizationID || identity.ExpiresAt.IsZero() || len(identity.ProjectIDs) == 0 || !runnerauth.ValidOperations(identity.Operations) {
+	if identity.Binding != file.Identity.Binding || identity.OrganizationID != file.Identity.OrganizationID || identity.ExpiresAt.IsZero() || !runnerauth.ValidOperations(identity.Operations) {
 		return errors.New("hub returned an unexpected runner identity")
 	}
 	return nil
@@ -207,6 +209,7 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 }
 
 func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) error {
+	capabilities, isolation := machine.workspaceReport()
 	request := struct {
 		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
 		DisplayName     string                    `json:"display_name"`
@@ -214,6 +217,20 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 		Version         string                    `json:"version"`
 		OS              string                    `json:"os"`
 		Architecture    string                    `json:"architecture"`
-	}{machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH}
-	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
+		// The workspace claim gate matches these against a workspace's
+		// requires set and checks the heartbeat that carried them is fresh.
+		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
+		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+	}{machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
+	if c.client.runner == nil {
+		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
+	}
+	var snapshot runnerauth.RoutingSnapshot
+	if err := c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, &snapshot); err != nil {
+		return err
+	}
+	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
+		slog.Default().Warn("runner routing cache not updated", "error", err)
+	}
+	return nil
 }

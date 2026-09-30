@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -11,6 +12,43 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
+
+func TestMergeFallbackPublicationFailureRecordsFailedAttempt(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{name: "gate failure", err: errors.New("verify merge fallback: merge resolution gate failed: exit status 1")},
+		{name: "push failure", err: errors.New("verify merge fallback: push validated merge resolution: rejected")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+			issue := connector.Issue{
+				ID: "issue-3122", Identifier: "digitaldrywood/detent#3122", State: "Rework", PRRepository: "digitaldrywood/detent",
+				PullRequest: &connector.PullRequest{Number: 3123, State: "OPEN", MergeableState: "dirty", HeadSHA: "conflicted-head"},
+			}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Rework", "Merging"}, TerminalStates: []string{"Done"}})
+			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}
+			attempts := &recordingWorkAttemptStore{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 1, Attempt: 1, Mode: runpkg.RunModeMerge, StartedAt: now.Add(-time.Minute)}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Err: tt.err,
+				Result: runpkg.RunResult{FinalState: runpkg.FinalStateFailed, Output: runpkg.RunOutputMergeFallbackResolved},
+			})
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalFailure || !strings.Contains(attempts.completions[0].ErrorMessage, tt.err.Error()) {
+				t.Fatalf("completions = %#v, want failed attempt with %q", attempts.completions, tt.err)
+			}
+			if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %#v, want existing failure handling", tracker.updates)
+			}
+		})
+	}
+}
 
 func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 	t.Parallel()
@@ -142,6 +180,7 @@ func TestMergeFallbackResolvedHeadHandoff(t *testing.T) {
 		{lane: "Merging", name: "validation failure", head: "validated-head", ci: "failure", wantRework: true},
 		{lane: "Merging", name: "replaced head with green CI", head: "replacement-head", ci: "success", wantRework: true},
 		{lane: "Rework", name: "Rework resolved", head: "validated-head", ci: "success"},
+		{lane: "Rework", name: "Rework published head waits for CI", head: "validated-head", ci: "pending"},
 		{lane: "In Progress", name: "In Progress resolved", head: "validated-head", ci: "success"},
 		{lane: "Rework", name: "Rework replaced head", head: "replacement-head", ci: "success", wantRework: true},
 		{lane: "In Progress", name: "In Progress replaced head", head: "replacement-head", ci: "success", wantRework: true},
@@ -155,7 +194,7 @@ func TestMergeFallbackResolvedHeadHandoff(t *testing.T) {
 				ActiveStates: []string{"In Progress", "Rework", "Merging"}, ObservedStates: []string{"Merging"}, TerminalStates: []string{"Done"},
 			})
 			issue := connector.Issue{
-				ID: "issue-2273", Identifier: "digitaldrywood/detent#2273", State: tt.lane, PRRepository: "digitaldrywood/detent",
+				ID: "issue-2273", Identifier: "digitaldrywood/detent#2273", Title: "Resolve merge conflict", State: tt.lane, PRRepository: "digitaldrywood/detent", AssignedToWorker: true,
 				PullRequest: &connector.PullRequest{
 					Number: 2274, State: "OPEN", MergeableState: "clean", HeadSHA: tt.head, CIStatus: tt.ci,
 				},
@@ -203,6 +242,18 @@ func TestMergeFallbackResolvedHeadHandoff(t *testing.T) {
 				}
 				if len(state.Retry) != 0 || len(state.mergeReservations) != 0 {
 					t.Fatal("repair retained merge retry or reservation")
+				}
+				if tt.lane == "Rework" && tt.ci == "pending" {
+					delete(state.Completed, issue.ID)
+					var skipReason string
+					plan := newDispatchPlanner(cfg).plan(&state, []connector.Issue{issue}, now.Add(time.Second), dispatchPlanHooks{decision: func(decision dispatchPlanDecision) {
+						if decision.Issue.ID == issue.ID {
+							skipReason = decision.SkipReason
+						}
+					}})
+					if len(plan.DispatchOrder()) != 0 || skipReason != dispatchSkipCurrentHeadCIWait {
+						t.Fatalf("post-push dispatch = %v, skip = %q; want current-head CI wait", plan.DispatchOrder(), skipReason)
+					}
 				}
 				return
 			}

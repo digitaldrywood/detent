@@ -48,8 +48,9 @@ const (
 )
 
 var (
-	ErrMissingWorkspace    = errors.New("runner workspace backend is required")
-	ErrMissingAgentBackend = errors.New("runner agent backend is required")
+	ErrMissingWorkspace        = errors.New("runner workspace backend is required")
+	ErrMissingAgentBackend     = errors.New("runner agent backend is required")
+	ErrValidatorInfrastructure = errors.New("validator infrastructure failure")
 )
 
 type SessionStore interface {
@@ -603,6 +604,9 @@ func normalizeRunMode(mode string) string {
 }
 
 func agentTurnDeliverable(cfg config.Config, issue connector.Issue, mode string) (string, string) {
+	if cfg.Tracker.Kind == config.TrackerHubNative {
+		return "", ""
+	}
 	switch normalizeRunMode(mode) {
 	case RunModeImplement, RunModeMerge:
 	default:
@@ -662,14 +666,18 @@ func (r *Runner) prepareMergeFastPath(
 	req RunRequest,
 	info workspace.Info,
 	issue workspace.Issue,
+	gateConfig gate.Config,
 ) (RunResult, workspace.MergePrepareResult, bool, error) {
 	preparer, ok := r.workspace.(workspace.MergePreparer)
 	if !ok {
 		return RunResult{}, workspace.MergePrepareResult{}, false, nil
 	}
-	opts := workspace.MergePrepareOptions{}
+	// With a local status to post, the clean path runs the gate on the head
+	// it pushes, so the status names a head Detent validated itself.
+	opts := workspace.MergePrepareOptions{ValidationCommand: gateConfig.Run, ValidateHead: gateConfig.LocalStatus != ""}
 	if req.Issue.PullRequest != nil {
 		opts.TargetBranch = strings.TrimSpace(req.Issue.PullRequest.BaseRef)
+		opts.ExpectedRemoteHead = strings.TrimSpace(req.Issue.PullRequest.HeadSHA)
 	}
 	precheck, err := preparer.PrepareMerge(ctx, info, issue, opts)
 	if err != nil {
@@ -688,6 +696,8 @@ func (r *Runner) prepareMergeFastPath(
 			DiffStats:             diffStatsFromWorkspace(precheck.DiffStat),
 			PullRequestHeadPushed: precheck.HeadChanged,
 			ForgeWriteCompleted:   true,
+			GateValidatedHead:     validatedHead(precheck),
+			GateValidatedRun:      validatedRun(precheck, opts),
 		}, precheck, true, nil
 	case workspace.MergePrepareStatusConflict, workspace.MergePrepareStatusDirty:
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_fallback",
@@ -752,7 +762,7 @@ func (r *Runner) verifyMergeFallback(
 		if ctx.Err() != nil {
 			return result, fmt.Errorf("verify merge fallback: %w", errors.Join(ctx.Err(), err))
 		}
-		if !errors.Is(err, workspace.ErrMergeResolutionInvalid) && !errors.Is(validationCtx.Err(), context.DeadlineExceeded) {
+		if !errors.Is(err, workspace.ErrMergeResolutionInvalid) || errors.Is(validationCtx.Err(), context.DeadlineExceeded) {
 			return result, fmt.Errorf("verify merge fallback: %w", err)
 		}
 		result.Output = RunOutputMergeFallbackRework
@@ -768,7 +778,23 @@ func (r *Runner) verifyMergeFallback(
 	}
 	result.PullRequestHeadPushed = result.PullRequestHeadPushed || precheck.HeadChanged
 	result.ForgeWriteCompleted = true
+	result.GateValidatedHead = validatedHead(precheck)
+	result.GateValidatedRun = validatedRun(precheck, opts)
 	return result, nil
+}
+
+func validatedHead(precheck workspace.MergePrepareResult) string {
+	if !precheck.Validated || precheck.Status != workspace.MergePrepareStatusClean {
+		return ""
+	}
+	return strings.TrimSpace(precheck.HeadSHA)
+}
+
+func validatedRun(precheck workspace.MergePrepareResult, opts workspace.MergePrepareOptions) string {
+	if validatedHead(precheck) == "" {
+		return ""
+	}
+	return strings.TrimSpace(opts.ValidationCommand)
 }
 
 func cloneMergePrecheck(precheck *MergePrecheck) *MergePrecheck {
@@ -790,6 +816,9 @@ func mergeFastPathCheckedHead(issue connector.Issue) bool {
 	}
 	mergeable := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
 	if mergeable != "clean" {
+		return false
+	}
+	if pullRequest.BaseBranchStrict {
 		return false
 	}
 	if pullRequest.HydrationUnavailableReason != "" || pullRequest.HydrationDegradedReason != "" || len(pullRequest.RequiredCheckFailures) > 0 || pullRequest.MergeQueueEntry != nil {
@@ -1127,7 +1156,9 @@ func (r *Runner) runAgentTurn(
 	}
 	turnStarted := false
 	workerProcessObserved := false
-	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
+	conversation := conversationRunFromContext(ctx)
+	turnRequest = conversation.prepareTurn(turnRequest)
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
@@ -1186,7 +1217,8 @@ func (r *Runner) runAgentTurn(
 			return err
 		}
 		return nil
-	}, r.turnLimit)
+	}), r.turnLimit)
+	conversation.finishTurn(ctx, turnResult, turnErr)
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		ctx,
 		detentSessionID,
@@ -1240,6 +1272,7 @@ func (r *Runner) runAgentTurn(
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
 	result.TurnStarted = turnStarted
+	reportTurnUsage(ctx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
 	return agentTurnExecution{
 		turnResult:  turnResult,
 		result:      result,
@@ -1457,8 +1490,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if heldErr, held := workspaceBranchHeldError(err, req.Issue); held {
 			return RunResult{}, heldErr
 		}
-		classifiedErr := classifyForgeOperationError(fmt.Errorf("create workspace: %w", err), "git fetch", forgeHost)
-		return RunResult{}, fmt.Errorf("%w: %w", ErrWorkspacePreparation, classifiedErr)
+		return RunResult{}, fmt.Errorf("%w: create workspace: %w", ErrWorkspacePreparation, err)
 	}
 	r.logWorkerEvent(req.Issue, "worker_workspace_created",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
@@ -1490,11 +1522,21 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	mergePrecheck := MergePrecheck{}
 	mergeFallback := false
+	if landing, ok := req.Execution.(LandingExecution); ok && mode == RunModeMerge {
+		// A hub-native landing has no pull request to prepare and no agent to
+		// run: the runner lands the reviewed version itself.
+		afterRunPending = false
+		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue)
+		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); afterErr != nil && err == nil {
+			err = afterErr
+		}
+		return result, err
+	}
 	if mode == RunModeMerge {
 		if req.MergePrecheck != nil {
 			mergePrecheck = *req.MergePrecheck
 		} else {
-			precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue)
+			precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue, gate.Effective(workflow.Config.Gate))
 			if err != nil {
 				operation := "git fetch"
 				if strings.Contains(strings.ToLower(err.Error()), "git push") {
@@ -1569,7 +1611,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	if req.ForgeRetry != nil && !strings.Contains(strings.ToLower(req.ForgeRetry.Operation), "git fetch") {
+	if req.ForgeRetry != nil && !forgeRetryReadOperation(req.ForgeRetry.Operation) {
 		prompt = forgeRetryPrompt(*req.ForgeRetry, req.Issue)
 		if strings.TrimSpace(req.ForgeRetry.Branch) != "" && req.Issue.PullRequest == nil {
 			req.deliverableRecoveryBranch = strings.TrimSpace(req.ForgeRetry.Branch)
@@ -1680,8 +1722,20 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		return RunResult{}, err
 	}
 	if req.Execution != nil {
+		// The stored attempt diff rides every checkpoint and the finish
+		// (decisions section 18.5).
+		if diffs, ok := req.Execution.(DiffExecution); ok {
+			diffs.SetDiffSource(r.attemptDiffSource(ctx, info, workspaceIssue))
+		}
+		if repository, ok := req.Execution.(RepositoryExecution); ok {
+			repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
+		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return RunResult{}, err
+		}
+		if conversation := r.bindConversation(ctx, req, backend, resumeState.ProviderThreadID); conversation != nil {
+			ctx = conversation.attach(ctx)
+			defer func() { conversation.close(ctx, returnValue, returnErr) }()
 		}
 		if artifacts, ok := req.Execution.(ArtifactExecution); ok {
 			if err := artifacts.PrepareArtifacts(ctx, info.Path); err != nil {
@@ -1796,6 +1850,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnPrompt = appendBlockedHandoffBlock(turnPrompt+"\n\nThe current attempt fields below supersede any completion lease values in earlier provider history. Use these values for the completion handshake when this attempt succeeds.", promptOptions)
 			turnPrompt = appendNativeIssueInstructions(turnPrompt, req.Issue)
 		}
+		if workflow.Config.Tracker.Kind == config.TrackerHubNative {
+			turnPrompt = appendNativeCompletionContract(turnPrompt)
+		}
 	}
 	var extraWritableRoots []string
 	if req.Admission == nil {
@@ -1878,7 +1935,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 	}
-	if req.ForgeRetry != nil && strings.Contains(strings.ToLower(req.ForgeRetry.Operation), "git fetch") {
+	if req.ForgeRetry != nil && forgeRetryReadOperation(req.ForgeRetry.Operation) {
 		execution.result.ForgeWriteCompleted = true
 	}
 	if req.ForgeRetry != nil && req.ForgeRetry.WorkProductPushed {
@@ -2296,8 +2353,9 @@ func workerCredentialBlockerError(message string) error {
 	firstLine, _, _ := strings.Cut(message, "\n")
 	firstLine = strings.TrimSpace(strings.TrimLeft(firstLine, "#>*_- "))
 	blocked := strings.HasPrefix(strings.ToLower(firstLine), "blocked") || strings.HasPrefix(strings.ToLower(firstLine), "work is blocked")
-	credentialQuestion := IsWorkerGitHubCredentialQuestion(message)
-	if (!blocked || !workerGitHubCredentialFailureDetail(message)) && !credentialQuestion {
+	credentialBlocker := blocked && workerGitHubCredentialFailureDetail(message)
+	supportRequest := workerGitHubSupportRequest(message)
+	if !credentialBlocker && !supportRequest {
 		return nil
 	}
 	return &DeliverableCommandError{
@@ -2306,11 +2364,14 @@ func workerCredentialBlockerError(message string) error {
 		Status:         "blocked",
 		Message:        truncateDeliverableDetail(firstLine),
 		Body:           truncateDeliverableDetail(message),
-		ApprovalDenied: credentialQuestion,
+		ApprovalDenied: supportRequest,
 	}
 }
 
-func IsWorkerGitHubCredentialQuestion(detail string) bool {
+// workerGitHubSupportRequest catches final messages that ask a person to repair
+// worker access or perform a GitHub write. Those are instance failures even
+// when the worker phrases them as a question instead of a blocked report.
+func workerGitHubSupportRequest(detail string) bool {
 	detail = strings.ToLower(strings.TrimSpace(detail))
 	if !strings.Contains(detail, "?") {
 		return false
@@ -2325,13 +2386,9 @@ func IsWorkerGitHubCredentialQuestion(detail string) bool {
 	if !githubScoped {
 		return false
 	}
-	// Use the same access-failure evidence as worker outcomes. Credential and
-	// authentication terminology alone also occurs in ordinary design questions.
 	if githubCredentialFailureDetail(detail) {
 		return true
 	}
-	// Match the requested action independently of the polite auxiliary and of
-	// the connector name between the action and its object.
 	if strings.Contains(detail, "write access") {
 		for _, action := range []string{"you enable", "you grant", "you allow"} {
 			if strings.Contains(detail, action) {
@@ -2372,7 +2429,7 @@ func workerGitHubCredentialFailureDetail(detail string) bool {
 }
 
 func deliverableCredentialFailureDetail(detail string) bool {
-	if githubCredentialFailureDetail(detail) || IsWorkerGitHubCredentialQuestion(detail) {
+	if githubCredentialFailureDetail(detail) || workerGitHubSupportRequest(detail) {
 		return true
 	}
 	detail = strings.ToLower(strings.TrimSpace(detail))
@@ -2402,6 +2459,11 @@ func classifyForgeOperationError(err error, operation string, host string) error
 		host = observedHost
 	}
 	return forgeavailability.NewError(forgeavailability.Scope{Host: host, Operation: operation}, class, err)
+}
+
+func forgeRetryReadOperation(operation string) bool {
+	operation = strings.ToLower(operation)
+	return strings.Contains(operation, "git fetch") || strings.Contains(operation, "git ls-remote")
 }
 
 func pullRequestDeliverableFailure(err error) (*DeliverableCommandError, bool) {
@@ -2936,6 +2998,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := verifyValidatorDiff(req.Issue, req.Diff); err != nil {
+		return gate.ValidatorResult{}, err
+	}
 	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
 	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
 	if err != nil {
@@ -2960,6 +3025,11 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
+	if seeder, ok := r.workspace.(workspace.ReviewHeadSeeder); ok {
+		if err := seeder.SeedReviewHead(ctx, info, workspaceIssue); err != nil {
+			return gate.ValidatorResult{}, fmt.Errorf("%w: seed validation review head: %w", ErrValidatorInfrastructure, err)
+		}
+	}
 
 	if err := r.workspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 		return gate.ValidatorResult{}, fmt.Errorf("workspace before_run: %w", err)
@@ -2974,9 +3044,25 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			r.afterRun(r.workspace, info, workspaceIssue)
 		}
 	}()
+	if expected := strings.TrimSpace(workspaceIssue.PullRequestHeadSHA); expected != "" {
+		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
+			checkedOut, err := provider.Head(ctx, info, workspaceIssue)
+			if err != nil {
+				return gate.ValidatorResult{}, fmt.Errorf("%w: read validation workspace head: %w", ErrValidatorInfrastructure, err)
+			}
+			if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
+				return gate.ValidatorResult{}, fmt.Errorf("%w: validation head mismatch: workspace %s, PR evidence %s", ErrValidatorInfrastructure, checkedOut, expected)
+			}
+		}
+		if verifier, ok := r.workspace.(workspace.ReviewTreeVerifier); ok {
+			if err := verifier.VerifyReviewTree(ctx, info, workspaceIssue); err != nil {
+				return gate.ValidatorResult{}, fmt.Errorf("%w: validation workspace changed before review: %w", ErrValidatorInfrastructure, err)
+			}
+		}
+	}
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
-	promptOptions := r.validatorPromptOptions(ctx, info, workspaceIssue, validatorMaxInlineDiffBytes(validator))
+	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
 	prompt := BuildValidatorPrompt(workflow, req.Issue, promptOptions)
 	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
 	if err != nil {
@@ -3182,6 +3268,22 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		r.logWorkerEvent(req.Issue, "worker_check_finished", checkFinishedAttrs...)
 	}
 
+	var treeErr error
+	if expected := strings.TrimSpace(workspaceIssue.PullRequestHeadSHA); expected != "" {
+		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
+			checkedOut, err := provider.Head(ctx, info, workspaceIssue)
+			if err != nil {
+				treeErr = fmt.Errorf("%w: read validation workspace head before cleanup: %w", ErrValidatorInfrastructure, err)
+			} else if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
+				treeErr = fmt.Errorf("%w: validation head mismatch before cleanup: workspace %s, PR evidence %s", ErrValidatorInfrastructure, checkedOut, expected)
+			}
+		}
+		if verifier, ok := r.workspace.(workspace.ReviewTreeVerifier); ok {
+			if err := verifier.VerifyReviewTree(ctx, info, workspaceIssue); err != nil {
+				treeErr = errors.Join(treeErr, fmt.Errorf("%w: validation workspace changed during review: %w", ErrValidatorInfrastructure, err))
+			}
+		}
+	}
 	r.afterRun(r.workspace, info, workspaceIssue)
 	afterRunPending = false
 	r.logWorkerEvent(req.Issue, "worker_check_after_run_finished",
@@ -3191,12 +3293,32 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 
 	finishedAt := r.now().UTC()
 	runResult.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
+	if strings.TrimSpace(workspaceIssue.PullRequestHeadSHA) != "" {
+		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
+			checkedOut, err := provider.Head(ctx, info, workspaceIssue)
+			if err != nil {
+				treeErr = errors.Join(treeErr, fmt.Errorf("%w: read validation workspace head after cleanup: %w", ErrValidatorInfrastructure, err))
+			} else if checkedOut = strings.TrimSpace(checkedOut); checkedOut != strings.TrimSpace(workspaceIssue.PullRequestHeadSHA) {
+				treeErr = errors.Join(treeErr, fmt.Errorf("%w: validation head mismatch after cleanup: workspace %s, PR evidence %s", ErrValidatorInfrastructure, checkedOut, strings.TrimSpace(workspaceIssue.PullRequestHeadSHA)))
+			}
+		}
+		if verifier, ok := r.workspace.(workspace.ReviewTreeVerifier); ok {
+			if err := verifier.VerifyReviewTree(ctx, info, workspaceIssue); err != nil {
+				treeErr = errors.Join(treeErr, fmt.Errorf("%w: validation workspace changed after review: %w", ErrValidatorInfrastructure, err))
+			}
+		}
+	}
 	if turnErr != nil {
 		runResult.FinalState = finalStateForTurnError(turnErr)
 		return gate.ValidatorResult{}, errors.Join(
+			treeErr,
 			fmt.Errorf("run validator turn: %w", turnErr),
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
+	}
+	if treeErr != nil {
+		return gate.ValidatorResult{}, errors.Join(treeErr,
+			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0))
 	}
 
 	validation, err := parseValidatorResult(output.String())
@@ -3207,10 +3329,63 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
 	}
+	if expected := strings.TrimSpace(workspaceIssue.PullRequestHeadSHA); expected != "" {
+		if provider, ok := r.workspace.(workspace.HeadProvider); ok {
+			checkedOut, headErr := provider.Head(ctx, info, workspaceIssue)
+			if headErr != nil {
+				return gate.ValidatorResult{}, errors.Join(
+					fmt.Errorf("%w: read validation workspace head: %w", ErrValidatorInfrastructure, headErr),
+					r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
+				)
+			}
+			if checkedOut = strings.TrimSpace(checkedOut); checkedOut != expected {
+				return gate.ValidatorResult{}, errors.Join(
+					fmt.Errorf("%w: validation head mismatch: workspace %s, PR evidence %s", ErrValidatorInfrastructure, checkedOut, expected),
+					r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
+				)
+			}
+		}
+	}
 	if err := r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	validation.Repository = req.Diff.Repository
+	validation.PRNumber = req.Diff.PRNumber
+	validation.BaseSHA = req.Diff.BaseSHA
+	validation.HeadSHA = req.Diff.HeadSHA
+	validation.DiffDigest = req.Diff.Digest
+	validation.DiffFiles = append([]string(nil), req.Diff.Files...)
 	return validation, nil
+}
+
+func verifyValidatorDiff(issue connector.Issue, diff *connector.ValidationDiff) error {
+	if diff == nil || issue.PullRequest == nil {
+		return connector.NewRetryableError("validator PR diff provenance is missing")
+	}
+	repo := strings.TrimSpace(issue.PRRepository)
+	if repo == "" {
+		identifier := strings.TrimSpace(issue.Identifier)
+		if cut := strings.IndexByte(identifier, '#'); cut > 0 {
+			repo = identifier[:cut]
+		}
+	}
+	if repo == "" || diff.Repository != repo || diff.PRNumber <= 0 || diff.PRNumber != issue.PullRequest.Number ||
+		diff.BaseSHA == "" || diff.BaseSHA != issue.PullRequest.BaseSHA || diff.HeadSHA == "" || diff.HeadSHA != issue.PullRequest.HeadSHA || diff.Digest == "" {
+		return connector.NewRetryableError("validator PR diff identity differs from requested head/base")
+	}
+	return nil
+}
+
+func validatorPromptOptionsForPR(info workspace.Info, diff connector.ValidationDiff, maxBytes int) ValidatorPromptOptions {
+	opts := ValidatorPromptOptions{WorkspacePath: info.Path, Branch: info.Branch, MaxInlineDiffBytes: maxBytes,
+		Repository: diff.Repository, PRNumber: diff.PRNumber, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA,
+		DiffDigest: diff.Digest, DiffFiles: append([]string(nil), diff.Files...), DiffStat: &workspace.DiffStat{Files: len(diff.Files)}}
+	if maxBytes > 0 && len(diff.Patch) <= maxBytes {
+		opts.DiffPatch = diff.Patch
+	} else {
+		opts.DiffTruncated = true
+	}
+	return opts
 }
 
 func workerServiceEnvironment(mode string, connection serviceapi.Connection, info workspace.Info, issue workspace.Issue) procgroup.Environment {
@@ -3228,56 +3403,11 @@ func workerEnvironment(variables map[string]string, info workspace.Info, issue w
 	return procgroup.Environment{Variables: merged}
 }
 
-func (r *Runner) validatorPromptOptions(ctx context.Context, info workspace.Info, issue workspace.Issue, maxInlineDiffBytes int) ValidatorPromptOptions {
-	opts := ValidatorPromptOptions{
-		WorkspacePath:      info.Path,
-		Branch:             info.Branch,
-		MaxInlineDiffBytes: maxInlineDiffBytes,
-	}
-
-	if provider, ok := r.workspace.(workspace.DiffProvider); ok {
-		diff, err := provider.Diff(ctx, info, issue, maxInlineDiffBytes)
-		if err == nil {
-			opts.DiffStat = &diff.Stat
-			opts.DiffPatch = diff.Patch
-			opts.DiffTruncated = diff.Truncated
-			return opts
-		}
-		opts.DiffError = err.Error()
-		r.logValidatorDiffError(issue, info, "workspace diff failed", err)
-	}
-
-	stat, err := r.workspace.DiffStat(ctx, info, issue)
-	if err != nil {
-		if opts.DiffError == "" {
-			opts.DiffError = err.Error()
-		}
-		r.logValidatorDiffError(issue, info, "workspace diff stat failed", err)
-		return opts
-	}
-	opts.DiffStat = &stat
-	return opts
-}
-
 func validatorMaxInlineDiffBytes(cfg gate.ValidatorConfig) int {
 	if cfg.MaxInlineDiffBytes == nil {
 		return gate.DefaultValidatorMaxInlineDiffBytes
 	}
 	return *cfg.MaxInlineDiffBytes
-}
-
-func (r *Runner) logValidatorDiffError(issue workspace.Issue, info workspace.Info, message string, err error) {
-	if r == nil || r.logger == nil || err == nil {
-		return
-	}
-	r.logger.Warn(
-		message,
-		slog.String("issue_id", issue.ID),
-		slog.String("issue_identifier", issue.Identifier),
-		slog.String("workspace_path", info.Path),
-		slog.String("phase", "validator"),
-		slog.String("error", err.Error()),
-	)
 }
 
 type validatorJSONResult struct {
@@ -4197,14 +4327,34 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		progressBaseRef = strings.TrimSpace(issue.PullRequest.BaseRef)
 	}
 	return workspace.Issue{
-		ProjectID:          projectID,
-		ID:                 issue.ID,
-		Identifier:         issue.Identifier,
-		BranchName:         issue.BranchName,
-		BaseRef:            baseRef,
-		ProgressBaseRef:    progressBaseRef,
-		PullRequestHeadSHA: pullRequestHeadSHA(issue.PullRequest),
+		ProjectID:             projectID,
+		ID:                    issue.ID,
+		Identifier:            issue.Identifier,
+		Terminal:              issue.Closed,
+		LandedHeadSHA:         issue.Metadata["hub_landed_head_sha"],
+		LandedMergeSHA:        issue.Metadata["hub_landed_merge_sha"],
+		BranchName:            issue.BranchName,
+		BaseRef:               baseRef,
+		ProgressBaseRef:       progressBaseRef,
+		PullRequestHeadSHA:    pullRequestHeadSHA(issue.PullRequest),
+		PullRequestRepository: strings.TrimSpace(issue.PRRepository),
+		PullRequestNumber:     workspacePullRequestNumber(issue.PullRequest),
+		PullRequestBranch:     pullRequestBranch(issue.PullRequest),
 	}
+}
+
+func pullRequestBranch(pr *connector.PullRequest) string {
+	if pr == nil {
+		return ""
+	}
+	return strings.TrimSpace(pr.BranchName)
+}
+
+func workspacePullRequestNumber(pr *connector.PullRequest) int {
+	if pr == nil {
+		return 0
+	}
+	return pr.Number
 }
 
 func pullRequestHeadSHA(pullRequest *connector.PullRequest) string {

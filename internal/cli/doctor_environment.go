@@ -819,7 +819,7 @@ func checkDoctorDashboardAddress(configured BootConfig, running dashboardAddress
 			Detail: configuredAddress + " has no distinct running-process address override",
 		}
 	}
-	if configuredAddress == running.Value {
+	if configuredAddress == running.Value || ephemeralPortMatches(configuredAddress, running.Value) {
 		return doctorCheck{
 			Name:   "Dashboard address",
 			Status: doctorOK,
@@ -832,6 +832,15 @@ func checkDoctorDashboardAddress(configured BootConfig, running dashboardAddress
 		Detail: fmt.Sprintf("config resolves the dashboard to %s, but the running Detent service uses %s", configuredAddress, running),
 		Hint:   "Set the global or workflow server host and port to the running service address, then restart Detent.",
 	}
+}
+
+func ephemeralPortMatches(configured string, running string) bool {
+	configuredHost, configuredPort, err := net.SplitHostPort(configured)
+	if err != nil || configuredPort != "0" {
+		return false
+	}
+	runningHost, runningPort, err := net.SplitHostPort(running)
+	return err == nil && runningHost == configuredHost && runningPort != "" && runningPort != "0"
 }
 
 func dashboardAddressFromRunningProcess(address dashboardAddress) bool {

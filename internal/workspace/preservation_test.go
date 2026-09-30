@@ -99,6 +99,85 @@ func TestLocalGitCleanupChecksEveryWorkspace(t *testing.T) {
 	}
 }
 
+func TestLocalGitCleanupRecordedLanding(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		method        string
+		terminal      bool
+		recorded      bool
+		extraCommit   bool
+		dirty         bool
+		wantPreserved bool
+	}{
+		{name: "squash landed", method: "squash", terminal: true, recorded: true},
+		{name: "merge landed", method: "merge", terminal: true, recorded: true},
+		{name: "fast-forward landed", method: "fast-forward", terminal: true, recorded: true},
+		{name: "nonterminal squash", method: "squash", recorded: true, wantPreserved: true},
+		{name: "terminal without landing", method: "squash", terminal: true, wantPreserved: true},
+		{name: "work after landing", method: "squash", terminal: true, recorded: true, extraCommit: true, wantPreserved: true},
+		{name: "uncommitted work after landing", method: "squash", terminal: true, recorded: true, dirty: true, wantPreserved: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			publishCleanupSource(t, source)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{ProjectID: "native", ID: "wi_1", Identifier: "native#1", Terminal: tt.terminal}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "native.txt"), []byte("delivered work\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "add", "native.txt")
+			runGit(t, info.Path, "commit", "-m", "native work")
+			landedHead := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			switch tt.method {
+			case "squash":
+				runGit(t, source, "merge", "--squash", info.Branch)
+				runGit(t, source, "commit", "-m", "squash native work")
+			case "merge":
+				runGit(t, source, "merge", "--no-ff", "-m", "merge native work", info.Branch)
+			case "fast-forward":
+				runGit(t, source, "merge", "--ff-only", info.Branch)
+			}
+			runGit(t, source, "push", "origin", "main")
+			if tt.recorded {
+				issue.LandedHeadSHA = landedHead
+				issue.LandedMergeSHA = strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			}
+			if tt.extraCommit {
+				runGit(t, info.Path, "commit", "--allow-empty", "-m", "later work")
+			}
+			if tt.dirty {
+				if err := os.WriteFile(filepath.Join(info.Path, "later.txt"), []byte("later work\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := backend.CleanupIssue(t.Context(), issue)
+			if got := errors.Is(err, ErrWorkspacePreserved); got != tt.wantPreserved {
+				t.Fatalf("CleanupIssue() = %+v, %v; want preserved %t", result, err, tt.wantPreserved)
+			}
+			if !tt.wantPreserved && err != nil {
+				t.Fatalf("CleanupIssue() error = %v", err)
+			}
+			_, statErr := os.Stat(info.Path)
+			if tt.wantPreserved != (statErr == nil) {
+				t.Fatalf("workspace present = %t, want %t", statErr == nil, tt.wantPreserved)
+			}
+			if branchExists(t, source, info.Branch) != tt.wantPreserved {
+				t.Fatalf("branch present = %t, want %t", branchExists(t, source, info.Branch), tt.wantPreserved)
+			}
+		})
+	}
+}
+
 func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)

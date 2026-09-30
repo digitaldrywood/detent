@@ -305,7 +305,7 @@ func (p dispatchPlanner) retryAction(
 	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || retry.CIUnavailable) {
 		return dispatchAction{}, false, dispatchSkipCIUnavailable
 	}
-	if forgeAvailabilityBlocks(state, issue, retry, p.cfg.ForgeHost, now) {
+	if p.forgeAvailabilityBlocks(state, issue, retry, now) {
 		return dispatchAction{}, false, dispatchSkipForgeUnavailable
 	}
 	if workerGitHubMonitorBlocks(state, issue.ID, retry, now) {
@@ -449,6 +449,7 @@ func (p dispatchPlanner) newDispatchAction(
 
 func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now time.Time) {
 	issue := cloneIssue(action.issue)
+	reserveIdleWorkerGitHubMonitorProbe(state, issue.ID, now)
 	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	reserveMergeCandidate(state, issue, now)
 	state.Running[issue.ID] = Running{
@@ -744,7 +745,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if activeTrackerUnavailable(state) && trackerDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
 	}
-	if forgeAvailabilityBlocks(state, issue, Retry{}, p.cfg.ForgeHost, now) {
+	if p.forgeAvailabilityBlocks(state, issue, Retry{}, now) {
 		return dispatchableDecision{reason: dispatchSkipForgeUnavailable}
 	}
 	if workerGitHubMonitorBlocks(state, issue.ID, Retry{}, now) {
@@ -837,7 +838,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if !mergeControl && !p.workerSlotsAvailable(state, preferredWorkerHost) {
 		return dispatchableDecision{reason: dispatchSkipWorkerHostUnavailable}
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) {
+	if !projectFailureBreakerAllowsDispatch(state, now) && !p.workspaceBreakerAllowsMerge(state, issue) {
 		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
 	}
 	if p.recordedBlockers != nil {

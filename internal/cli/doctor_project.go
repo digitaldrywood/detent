@@ -15,12 +15,21 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/pause"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/skills"
 )
+
+func defaultDoctorGitHubBranchMergePolicy(ctx context.Context, cfg workflowconfig.Config, repository string) (ghconnector.BranchMergePolicy, error) {
+	client, err := ghconnector.NewConnector(doctorGitHubConnectorConfig(cfg))
+	if err != nil {
+		return ghconnector.BranchMergePolicy{}, err
+	}
+	return client.RepositoryStrictMergePolicy(ctx, repository)
+}
 
 func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheck {
 	if len(cfg.Projects) == 0 {
@@ -219,7 +228,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 
 	deps.pauseProjects = append([]globalconfig.Project(nil), cfg.Projects...)
 	deps.pauseGitHubToken = runtimeGlobalGitHubToken(githubToken)
-	jobs := []doctorCheckJob{{Name: "Host native toolchain caches", Run: func(ctx context.Context) []doctorCheck {
+	jobs := []doctorCheckJob{{Name: "Host native toolchain caches", TimeoutStatus: doctorWarn, Run: func(ctx context.Context) []doctorCheck {
 		return []doctorCheck{checkDoctorNativeCaches(ctx, deps, cfg.Global.Cache)}
 	}}}
 	for _, project := range cfg.Projects {
@@ -453,6 +462,10 @@ func checkDoctorProjectWithProgress(
 	}
 	setDoctorCurrentCheck("Project " + id + " out-of-scope follow-up guidance")
 	checks = append(checks, checkDoctorFollowupGuidance(id, workflow.Config.Agent.Followups, workflow.Prompt))
+	if workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+		setDoctorCurrentCheck("Project " + id + " native workflow instructions")
+		checks = append(checks, checkDoctorNativeWorkflowInstructions(id, workflow.Config, workflow.Prompt))
+	}
 	setDoctorCurrentCheck("Project " + id + " pinned route models")
 	checks = append(checks, checkDoctorRouteModels(ctx, id, project, workflow.Config, deps))
 	if workflow.Config.Agents.ModelSelection.Configured() || len(workflow.Config.Agents.Sources) > 0 {
@@ -481,8 +494,6 @@ func checkDoctorProjectWithProgress(
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) && workflow.Config.Deliverable.Kind == workflowconfig.DeliverablePullRequest {
 		setDoctorCurrentCheck("Project " + id + " repository merge policy")
 		checks = append(checks, checkDoctorRepositoryMergePolicy(ctx, id, project, workflow.Config, deps))
-		setDoctorCurrentCheck("Project " + id + " merge queue recommendation")
-		checks = append(checks, checkDoctorMergeQueue(ctx, id, project, workflow.Config, storePath, deps))
 	}
 	setDoctorCurrentCheck("Project " + id + " invariant evidence")
 	checks = append(checks, checkDoctorInvariantEvidence(ctx, id, project, workflow.Config, storePath, deps)...)

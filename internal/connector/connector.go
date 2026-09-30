@@ -228,12 +228,34 @@ type SecurityAuditSnapshotReader interface {
 	SecurityAuditSnapshot(context.Context, Issue, int) (securityaudit.Snapshot, error)
 }
 
+// ValidationDiff is a PR-scoped snapshot. Digest covers the complete patch, even
+// when a caller chooses to show only part of it to the validator.
+type ValidationDiff struct {
+	Repository string
+	PRNumber   int
+	BaseSHA    string
+	HeadSHA    string
+	Files      []string
+	Patch      string
+	Digest     string
+}
+
+type ValidationDiffReader interface {
+	PullRequestValidationDiff(context.Context, Issue) (ValidationDiff, error)
+}
+
 type PullRequestCheckRerunner interface {
 	RerunPullRequestChecks(context.Context, Issue, []PullRequestCheck) error
 }
 
 type PullRequestLabelReapplier interface {
 	ReapplyPullRequestLabel(context.Context, string, int, string, time.Duration) error
+}
+
+// CommitStatusPoster records a commit status on a repository commit, such as
+// the local gate's success on the exact pull request head Detent validated.
+type CommitStatusPoster interface {
+	PostCommitStatus(ctx context.Context, repository, sha, statusContext, description string) error
 }
 
 type IssueCommentReader interface {

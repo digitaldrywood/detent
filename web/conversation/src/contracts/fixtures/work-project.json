@@ -1,0 +1,16 @@
+{
+  "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+  "organization_id": "org_4d1f2a3b4c5d6e7f8091a2b3c4d5e6f7",
+  "name": "parable",
+  "profile": "native",
+  "states": [
+    { "name": "Backlog", "terminal": false, "dispatchable": false, "transitions": ["Todo"] },
+    { "name": "Todo", "terminal": false, "dispatchable": true, "transitions": ["In Progress", "Blocked", "Backlog"] },
+    { "name": "In Progress", "terminal": false, "dispatchable": false, "transitions": ["In Review", "Blocked", "Todo"] },
+    { "name": "In Review", "terminal": false, "dispatchable": false, "transitions": ["Merging", "In Progress"] },
+    { "name": "Blocked", "terminal": false, "dispatchable": false, "transitions": ["Todo"] },
+    { "name": "Merging", "terminal": false, "dispatchable": false, "transitions": ["Done"] },
+    { "operator_only": true, "name": "Done", "terminal": true, "dispatchable": false, "transitions": [] }
+  ],
+  "require_dependencies": true
+}

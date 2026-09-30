@@ -1,0 +1,24 @@
+{
+  "id": "msg_6a20f1c6",
+  "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+  "seq": 9,
+  "role": "system",
+  "kind": "status",
+  "text": "Correction request queued, waiting for a slot.",
+  "data": {
+    "available_slots": 0,
+    "total_slots": 2
+  },
+  "delivery": "queued",
+  "attempt_id": "att_18f4",
+  "turn_id": null,
+  "provider_item_id": null,
+  "actor": {
+    "kind": "coordinator",
+    "principal_id": "tok_hub"
+  },
+  "command_key": null,
+  "references": [],
+  "created_at": "2026-09-09T10:03:10Z",
+  "updated_at": "2026-09-09T10:03:10Z"
+}

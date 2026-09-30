@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -356,5 +358,390 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 	}
 	if got := f.detail(t).Summary.ExternalReview; got != "stale_head" {
 		t.Fatalf("moved external head review = %s", got)
+	}
+}
+
+// TestChangeLanding checks what recording a landing means: only a reviewed
+// current version lands, the landing finishes the primary issue in a
+// terminal lane in the same transaction, the change reports itself landed,
+// and nothing further is reviewed or landed on it.
+func TestChangeLanding(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 29, 1, 0, 0, 0, time.UTC)
+	f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}))
+	first := f.publish(t, "v1", "")
+	landing := func(key, version string, request tracker.LandChangeVersion) *httptest.ResponseRecorder {
+		request.IdempotencyKey = key
+		return performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+version+"/landing", f.token, request)
+	}
+	land := tracker.LandChangeVersion{MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}
+	requireNativeStatus(t, landing("unreviewed", first.ID, land), http.StatusConflict)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+first.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approval"}, Decision: "approved"}), http.StatusOK)
+	requireNativeStatus(t, landing("unchecked", first.ID, land), http.StatusConflict)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+first.ID+"/checks", f.token, changeTestResult(first)), http.StatusOK)
+	if summary := f.detail(t).Summary; summary.Status != "reviewed" {
+		t.Fatalf("summary before landing = %#v", summary)
+	}
+	for _, test := range []struct {
+		name    string
+		request tracker.LandChangeVersion
+	}{
+		{"uppercase merge sha", tracker.LandChangeVersion{MergeSHA: strings.Repeat("E", 40), BaseRef: "main", Method: "squash"}},
+		{"blank base", tracker.LandChangeVersion{MergeSHA: strings.Repeat("e", 40), BaseRef: " ", Method: "squash"}},
+		{"unknown method", tracker.LandChangeVersion{MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "octopus"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireNativeStatus(t, landing(test.name, first.ID, test.request), http.StatusUnprocessableEntity)
+		})
+	}
+	response := landing("land", first.ID, land)
+	requireNativeStatus(t, response, http.StatusOK)
+	var landed tracker.ChangeRequest
+	decodeHubResponse(t, response, &landed)
+	if landed.Landed == nil || landed.Landed.VersionID != first.ID || landed.Landed.MergeSHA != land.MergeSHA || landed.Landed.BaseRef != "main" || landed.Landed.Method != "squash" || landed.Landed.HeadSHA != first.HeadSHA || !landed.Landed.LandedAt.Equal(now) {
+		t.Fatalf("landed change = %#v", landed.Landed)
+	}
+	replay := landing("land", first.ID, land)
+	requireNativeStatus(t, replay, http.StatusOK)
+	if replay.Body.String() != response.Body.String() {
+		t.Fatal("replaying the landing changed the record")
+	}
+	requireNativeStatus(t, landing("again", first.ID, tracker.LandChangeVersion{MergeSHA: strings.Repeat("f", 40), BaseRef: "main", Method: "squash"}), http.StatusConflict)
+	detail := f.detail(t)
+	if detail.Summary.Status != "landed" || detail.Summary.NativeReview != "approved" || len(detail.Summary.Messages) != 1 || !strings.Contains(detail.Summary.Messages[0], land.MergeSHA) {
+		t.Fatalf("landed summary = %#v", detail.Summary)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+first.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "late-review"}, Decision: "changes_requested", Body: "too late"}), http.StatusConflict)
+	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, response, &issue)
+	if !issue.Terminal {
+		t.Fatalf("the landed item is in %s, not a terminal lane", issue.State)
+	}
+}
+
+// TestApprovalMovesToLandingLane checks the move an approval implies: a
+// reviewed current version moves the primary issue to the Merging lane when
+// the workflow has one reachable from the issue's lane, and only then.
+func TestApprovalMovesToLandingLane(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		states []tracker.NativeState
+		from   string
+		want   string
+	}{
+		{name: "hosted template lands", states: HostedProjectStates(), from: "Human Review", want: "Merging"},
+		{name: "no landing lane stays", states: []tracker.NativeState{
+			{Name: "Todo", Dispatchable: true, Transitions: []string{"Review"}},
+			{Name: "Review", Transitions: []string{"Done"}},
+			{Name: "Done", Terminal: true},
+		}, from: "Review", want: "Review"},
+		{name: "landing lane not reachable stays", states: []tracker.NativeState{
+			{Name: "Todo", Dispatchable: true, Transitions: []string{"Review", "Merging"}},
+			{Name: "Review", Transitions: []string{"Done"}},
+			{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}},
+			{Name: "Done", Terminal: true},
+		}, from: "Review", want: "Review"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "landing")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := marshalNative(test.states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range test.states {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Land me", State: test.from})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Native change"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			path += "/" + change.ID
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: changeTestInput()})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &issue)
+			if issue.State != test.want {
+				t.Fatalf("after approval the item is in %s, want %s", issue.State, test.want)
+			}
+		})
+	}
+}
+
+// TestReviewedChangePromotesOnAnyEvidence checks that the move to the landing
+// lane follows whichever write completes the evidence: an approval given
+// before the check, a check reported after the approval, and a publish under
+// a policy that requires no review.
+func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		require bool
+		order   []string
+	}{
+		{name: "check after approval", require: true, order: []string{"approve", "check"}},
+		{name: "approval after check", require: true, order: []string{"check", "approve"}},
+		{name: "no review required", require: false, order: []string{"check"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "promote")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			states := HostedProjectStates()
+			raw, err := marshalNative(states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range states {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			var principal string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = 'operator-promote'").Scan(&principal); err != nil {
+				t.Fatal(err)
+			}
+			rules := tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: test.require, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Promote me", State: "Human Review"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Native change"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			path += "/" + change.ID
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: changeTestInput()})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			state := func() string {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID), f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var current tracker.NativeIssue
+				decodeHubResponse(t, response, &current)
+				return current.State
+			}
+			if got := state(); got != "Human Review" {
+				t.Fatalf("before evidence the item is in %s", got)
+			}
+			for i, step := range test.order {
+				switch step {
+				case "approve":
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
+				case "check":
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
+				}
+				want := "Human Review"
+				if i == len(test.order)-1 {
+					want = "Merging"
+				}
+				if got := state(); got != want {
+					t.Fatalf("after %s the item is in %s, want %s", step, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestRequestChangesReturnsToWork checks what a request for changes means for
+// the primary issue: the review text lands on the issue as the reviewer's
+// comment, and an issue waiting in review moves back to a working lane, while
+// an issue already being worked stays put and a finished one is untouched.
+func TestRequestChangesReturnsToWork(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		from        string
+		want        string
+		wantComment bool
+	}{
+		{name: "review returns to In Progress", from: "Human Review", want: "In Progress", wantComment: true},
+		{name: "landing lane returns to In Progress", from: "Merging", want: "In Progress", wantComment: true},
+		{name: "a working item stays where it is", from: "In Progress", want: "In Progress", wantComment: true},
+		{name: "a finished item is untouched", from: "Done", want: "Done", wantComment: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "rework")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			states := HostedProjectStates()
+			raw, err := marshalNative(states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range states {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Rework me", State: test.from})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Native change"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			path += "/" + change.ID
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: changeTestInput()})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "rework"}, Decision: "changes_requested", Body: "Move the link to the end of the row."}), http.StatusOK)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &issue)
+			if issue.State != test.want {
+				t.Fatalf("after the request the item is in %s, want %s", issue.State, test.want)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var comments tracker.Page[tracker.NativeComment]
+			decodeHubResponse(t, response, &comments)
+			found := false
+			for _, comment := range comments.Items {
+				if strings.Contains(comment.Body, "Changes requested on Change Request "+change.ID) && strings.Contains(comment.Body, "Move the link to the end of the row.") && comment.Actor.Kind == "human" {
+					found = true
+				}
+			}
+			if found != test.wantComment {
+				t.Fatalf("instruction comment present = %t, want %t: %#v", found, test.wantComment, comments.Items)
+			}
+		})
+	}
+}
+
+// TestRequestChangesOnAnOlderVersionMovesNothing checks that a late decision
+// on a superseded version is recorded on the change and leaves the issue
+// where the current version put it.
+func TestRequestChangesOnAnOlderVersionMovesNothing(t *testing.T) {
+	t.Parallel()
+	f := newChangeFixture(t, nil)
+	first := f.publish(t, "v1", "")
+	f.publish(t, "v2", first.ID)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+first.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "late"}, Decision: "changes_requested", Body: "About round one."}), http.StatusOK)
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var comments tracker.Page[tracker.NativeComment]
+	decodeHubResponse(t, response, &comments)
+	for _, comment := range comments.Items {
+		if strings.Contains(comment.Body, "About round one.") {
+			t.Fatalf("a decision on an older version reached the issue: %#v", comment)
+		}
+	}
+	if len(f.detail(t).Reviews) != 1 {
+		t.Fatal("the late review was not recorded on the change")
+	}
+}
+
+func TestReviewInstructionsStayWithinTheCommentLimit(t *testing.T) {
+	t.Parallel()
+	change := tracker.ChangeRequest{ID: "change_1"}
+	review := tracker.ChangeReview{VersionID: "version_1", Body: strings.Repeat("é", 40<<10)}
+	body := reviewInstructions(change, review)
+	if len(body) > maxNativeCommentBytes || !utf8.ValidString(body) || !strings.HasPrefix(body, "Changes requested on Change Request change_1 (version version_1).\n\n") {
+		t.Fatalf("instructions = %d bytes, valid = %t", len(body), utf8.ValidString(body))
+	}
+	if short := reviewInstructions(change, tracker.ChangeReview{Body: " Move it. "}); short != "Changes requested on Change Request change_1.\n\nMove it." {
+		t.Fatalf("short instructions = %q", short)
+	}
+}
+
+// TestPublishUnderTheDefaultPolicyLands checks the default review policy on
+// the hosted template: a published version needs nobody, so an item waiting
+// in review moves to Merging when it is published, while an item a run is
+// still working stays where it is for that run's completion to move.
+func TestPublishUnderTheDefaultPolicyLands(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		from string
+		want string
+	}{
+		{from: "Human Review", want: "Merging"},
+		{from: "In Progress", want: "In Progress"},
+	} {
+		t.Run(test.from, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "default")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			states := HostedProjectStates()
+			raw, err := marshalNative(states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range states {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Land me", State: test.from})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Native change"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			path += "/" + change.ID
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: changeTestInput()}), http.StatusOK)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var detail tracker.ChangeDetail
+			decodeHubResponse(t, response, &detail)
+			if detail.Summary.Status != "reviewed" || detail.Summary.NativeReview != "not_required" {
+				t.Fatalf("summary under the default policy = %#v, want reviewed with no review required", detail.Summary)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &issue)
+			if issue.State != test.want {
+				t.Fatalf("after publishing the item is in %s, want %s", issue.State, test.want)
+			}
+		})
 	}
 }

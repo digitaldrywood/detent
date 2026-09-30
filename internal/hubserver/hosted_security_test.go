@@ -419,7 +419,8 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 		{name: "reporting bearer", path: "/api/cloud/metadata", bearer: testHubAdminToken, want: http.StatusOK},
 		{name: "customer report", path: "/api/cloud/metadata", user: customer, want: http.StatusForbidden},
 		{name: "staff native content", path: f.base + "/work-items", user: staff, want: http.StatusForbidden},
-		{name: "staff project page", path: "/projects/" + string(f.project), user: staff, want: http.StatusForbidden},
+		{name: "staff organization members", path: "/api/v2/organizations/org_security/members", user: staff, want: http.StatusForbidden},
+		{name: "staff fleet", path: "/api/v2/organizations/org_security/fleet", user: staff, want: http.StatusForbidden},
 		{name: "bootstrap native content", path: f.base + "/work-items", bearer: testHubAdminToken, want: http.StatusNotFound},
 		{name: "staff legacy content", path: "/api/v1/work-items", user: staff, want: http.StatusNotFound},
 		{name: "legacy health", path: "/health", bearer: testHubAdminToken, want: http.StatusNotFound},
@@ -926,7 +927,7 @@ func TestHostedSecuritySupportLoginAndExit(t *testing.T) {
 		t.Fatal("support session cookie was not set")
 	}
 	support := hostedSecurityUser{identity: customer.identity, token: sessionCookie.Value}
-	page := f.request(t, support, http.MethodGet, "/projects/"+string(f.project), nil)
+	page := f.request(t, support, http.MethodGet, "/organization", nil)
 	requireNativeStatus(t, page, http.StatusOK)
 	if !strings.Contains(page.Body.String(), "support@example.test") || !strings.Contains(page.Body.String(), "/logout") {
 		t.Fatal("support indicator or exit flow is missing")
@@ -977,5 +978,42 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), sentinel) || strings.Contains(response.Body.String(), sentinel) {
 		t.Fatal("hosted logs or errors exposed customer content")
+	}
+}
+
+func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		role    string
+		created bool
+	}{
+		{role: "owner", created: true},
+		{role: "admin", created: true},
+		{role: "member", created: false},
+	} {
+		t.Run(test.role, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			user := f.user(t, "creator-"+test.role, test.role, test.role+"-creator@example.test", "write", "")
+			f.grant(t, user, true, true)
+			// The request authenticated while the user was an owner; the
+			// provider's membership is what the transaction must trust.
+			var principal string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id = ?", user.identity.Subject).Scan(&principal); err != nil {
+				t.Fatal(err)
+			}
+			credential := apiCredential{ID: principal, Scope: apiScopeOperator, NativeOnly: true, Hosted: user.identity.Hosted, SessionHash: apikey.HashToken(user.token), HostedRole: "owner", ManageRunners: true}
+			project, err := f.service.createHostedProjectRecord(t.Context(), credential, "Project for "+test.role)
+			if (err == nil) != test.created {
+				t.Fatalf("createHostedProjectRecord() = %q, %v; want created %v", project, err, test.created)
+			}
+			if !test.created {
+				return
+			}
+			var manageRunner bool
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT manage_runner FROM hosted_project_grants WHERE project_id = ? AND user_id = ?", project, user.identity.Subject).Scan(&manageRunner); err != nil || !manageRunner {
+				t.Fatalf("creator runner management = %v, %v", manageRunner, err)
+			}
+		})
 	}
 }

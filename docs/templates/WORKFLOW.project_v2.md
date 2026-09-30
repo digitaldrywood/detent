@@ -3,7 +3,7 @@ Current Detent status: {{ issue.state }}.
 
 Follow repository instructions and keep changes scoped to the issue.
 Use the Detent-appended Blocked handoff block for the Workpad, dependencies,
-human questions, completion, and tracker ownership contract.
+human actions, completion, and tracker ownership contract.
 
 ## Project CI Quality Gates
 

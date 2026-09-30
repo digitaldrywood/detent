@@ -32,6 +32,7 @@ type nativeError struct {
 	Code            string           `json:"code"`
 	Message         string           `json:"message"`
 	CurrentRevision tracker.Revision `json:"current_revision,string,omitempty"`
+	Details         map[string]any   `json:"details,omitempty"`
 	status          int
 }
 
@@ -49,6 +50,17 @@ func nativeConflict(revision tracker.Revision) error {
 	return &nativeError{Code: "revision_conflict", Message: "Resource has changed", CurrentRevision: revision, status: http.StatusConflict}
 }
 
+// isNativeNotFound reports whether err is the opaque native not-found error.
+func isNativeNotFound(err error) bool {
+	var failure *nativeError
+	return errors.As(err, &failure) && failure != nil && failure.Code == "not_found"
+}
+
+func isNativeConflict(err error) bool {
+	var failure *nativeError
+	return errors.As(err, &failure) && failure != nil && failure.Code == "revision_conflict"
+}
+
 func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
@@ -64,6 +76,9 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	var failure *nativeError
 	if errors.As(err, &failure) {
 		if s.config.Hosted != nil {
+			if len(failure.Details) > 0 {
+				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", Details: failure.Details, status: failure.status})
+			}
 			return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: "The requested operation is unavailable"})
 		}
 		return c.JSON(failure.status, failure)
@@ -92,12 +107,18 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/policy", s.getProjectPolicy, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
 	e.PUT(nativeBase+"/policy", s.approveProjectPolicy, admin)
 	e.DELETE(nativeBase+"/policy", s.revokeProjectPolicy, admin)
+	e.POST(nativeBase+"/policy/observed", s.observeProjectPolicy, worker)
 	e.GET("/api/v2/capabilities", s.nativeCapabilities, s.requireAPIScope(apiScopeWorker, apiScopeOperator))
 	e.GET("/api/v2/organizations", s.nativeOrganizations, admin)
 	e.POST("/api/v2/organizations", s.createNativeOrganization, admin)
-	e.POST("/api/v2/organizations/:organization/projects", s.createNativeProject, admin)
+	if s.config.Hosted != nil {
+		e.POST("/api/v2/organizations/:organization/projects", s.createHostedProjectJSON, admin)
+	} else {
+		e.POST("/api/v2/organizations/:organization/projects", s.createNativeProject, admin)
+	}
 	e.POST("/api/v2/tokens/:id/grants", s.grantNativeToken, admin)
 	e.GET(nativeBase, s.getNativeProject, read)
+	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
 	e.GET(nativeBase+"/work-items", s.listNativeIssues, read)
 	e.POST(nativeBase+"/work-items", s.createNativeIssue, write)
 	e.GET(nativeBase+"/work-items/:item", s.getNativeIssue, read)
@@ -117,6 +138,43 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/leases/:lease/release", s.releaseNativeLease, worker)
 	e.POST(nativeBase+"/machines/register", s.registerNativeMachine, worker)
 	e.POST(nativeBase+"/work-items/:item/events", s.appendNativeRunEvent, worker)
+	// Stored attempt diffs and the pull request panel (decisions section
+	// 18.5 and 18.6). The diff write is a worker endpoint fenced by the
+	// producer's lease; every read follows the issue's read rule.
+	e.POST(nativeBase+"/attempts/:attempt/diff", s.postAttemptDiff, worker)
+	e.GET(nativeBase+"/attempts/:attempt/diff", s.getAttemptDiff, read)
+	e.GET(nativeBase+"/work-items/:item/diff", s.getWorkItemDiff, read)
+	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)
+	// Workspace sessions (decisions section 18.1). The reads follow the
+	// issue's read rule; the writes need write on the project, and a
+	// terminal in requires needs the grant's runners flag on top.
+	e.POST(nativeBase+"/workspaces", s.createWorkspace, write)
+	e.GET(nativeBase+"/workspaces", s.listWorkspaces, read)
+	e.GET(nativeBase+"/workspaces/:workspace", s.getWorkspace, read)
+	e.DELETE(nativeBase+"/workspaces/:workspace", s.deleteWorkspace, write)
+	e.GET(nativeBase+"/work-items/:item/workspace", s.workspaceForWorkItem, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/relay-tickets", s.mintWorkspaceRelayTicket, read)
+	e.GET(nativeBase+"/workspaces/:workspace/relay", s.openWorkspaceRelay, read)
+	e.GET(nativeBase+"/workspaces/:workspace/worker/relay", s.openWorkspaceWorkerRelay, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/bind", s.bindWorkspaceWorker, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/heartbeat", s.heartbeatWorkspaceWorker, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/unbind", s.unbindWorkspaceWorker, worker)
+	e.POST(nativeBase+"/workspaces/:workspace/worker/action-runs", s.reportWorkspaceActionRun, worker)
+	e.GET(nativeBase+"/actions", s.listProjectActions, read)
+	e.POST(nativeBase+"/actions", s.createProjectAction, write)
+	e.PATCH(nativeBase+"/actions/:action", s.patchProjectAction, write)
+	e.DELETE(nativeBase+"/actions/:action", s.deleteProjectAction, write)
+	e.GET(nativeBase+"/actions/:action/runs", s.listProjectActionRuns, read)
+	e.POST(nativeBase+"/actions/:action/runs", s.createProjectActionRun, write)
+	e.GET(nativeBase+"/actions/:action/runs/:run", s.getProjectActionRun, read)
+	e.GET(nativeBase+"/actions/:action/runs/:run/output", s.getProjectActionRunOutput, read)
+	// Terminal recordings (decisions section 18.3). They are mounted under the
+	// project's read scope like everything else, and then narrowed again by the
+	// handler: a recording's audience is the person who ran it plus owners and
+	// admins, and a user-isolation recording's is owners alone, which is
+	// narrower than any scope the router can express.
+	e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings", s.listWorkspaceTerminalRecordings, read)
+	e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings/:recording", s.getWorkspaceTerminalRecording, read)
 }
 
 func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
@@ -142,12 +200,19 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-			write := !hostedReadRequest(c) && !artifactReadGrantRequest(c)
-			if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, write); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
-				return s.nativeAPIError(c, err)
+			runnerHeartbeat := c.Path() == nativeBase+"/machines/:machine/heartbeat" && credential.Runner.RunnerID != ""
+			if runnerHeartbeat {
+				if credential.Runner.OrganizationID != scope.organization {
+					return s.nativeAPIError(c, nativeNotFound())
+				}
+			} else {
+				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
+				if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, write); err != nil {
+					return s.nativeAPIError(c, err)
+				}
+				if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
+					return s.nativeAPIError(c, err)
+				}
 			}
 			c.Set("native_scope", scope)
 			c.Response().Header().Set("Cache-Control", "no-store")
@@ -206,7 +271,14 @@ func marshalNative(value any) (string, error) {
 	return string(encoded), err
 }
 
-func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (resultErr error) {
+func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
+	return s.nativeMutationStatus(c, http.StatusOK, command, input, operation)
+}
+
+// nativeMutationStatus is nativeMutation with the success status the route
+// reports. A replay answers with the same status as the first call, so a
+// created resource stays 201 on every retry of its key.
+func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (resultErr error) {
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return s.nativeAPIError(c, nativeInvalid("An idempotency key of at most 128 bytes is required"))
 	}
@@ -248,7 +320,7 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 		if err := tx.Commit(); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		return c.JSONBlob(http.StatusOK, []byte(response))
+		return c.JSONBlob(status, []byte(response))
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, err)
@@ -292,7 +364,7 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 	if err := tx.Commit(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, []byte(response))
+	return c.JSONBlob(status, []byte(response))
 }
 
 func (s *Service) requireCompatibilityResource(c echo.Context) error {

@@ -1296,7 +1296,6 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		pullRequest = &connector.PullRequest{Number: *prNumber}
 	}
 	out := &telemetry.PullRequest{
-		HumanQuestionWorkFingerprint: humanQuestionWorkFingerprint(issue),
 
 		Number:                     pullRequest.Number,
 		URL:                        pullRequest.URL,

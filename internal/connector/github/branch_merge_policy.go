@@ -208,6 +208,7 @@ func (c *Connector) attachRequiredBranchChecks(ctx context.Context, issue *conne
 	}
 	// Copy the PR because snapshots may share a cached pointer.
 	enriched := *pr
+	enriched.BaseBranchStrict = policy.Strict
 	enriched.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), pr.RequiredCheckFailures...)
 	for _, name := range policy.RequiredStatusChecks {
 		if !seen[name] {

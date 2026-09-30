@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/mail"
 	"net/netip"
@@ -30,6 +31,7 @@ type WorkOSConfig struct {
 	APIKey      string
 	RedirectURL string
 	HTTPClient  *http.Client
+	Logger      *slog.Logger
 }
 
 type workosProvider struct {
@@ -40,6 +42,7 @@ type workosProvider struct {
 	redirectURL string
 	client      *http.Client
 	verifier    *coreoidc.IDTokenVerifier
+	logger      *slog.Logger
 }
 
 type workosTransport struct {
@@ -91,7 +94,7 @@ func NewHostedProvider(provider string, cfg WorkOSConfig) (HostedProvider, error
 		cfg.APIURL = "https://api.workos.com"
 	}
 	if cfg.IssuerURL == "" {
-		cfg.IssuerURL = cfg.APIURL
+		cfg.IssuerURL = DefaultWorkOSIssuer(cfg.APIURL, cfg.ClientID)
 	}
 	if !validWorkOSURL(cfg.APIURL, true) || !validWorkOSURL(cfg.IssuerURL, false) || !validWorkOSURL(cfg.RedirectURL, false) || !validWorkOSID(cfg.ClientID) || strings.TrimSpace(cfg.APIKey) == "" || strings.ContainsAny(cfg.APIKey, "\r\n") {
 		return nil, errors.New("invalid hosted identity configuration")
@@ -111,7 +114,7 @@ func NewHostedProvider(provider string, cfg WorkOSConfig) (HostedProvider, error
 	client.Transport = workosTransport{base: transport}
 	p := &workosProvider{
 		apiURL: strings.TrimSuffix(cfg.APIURL, "/"), issuerURL: strings.TrimSuffix(cfg.IssuerURL, "/"),
-		clientID: cfg.ClientID, apiKey: cfg.APIKey, redirectURL: cfg.RedirectURL, client: &client,
+		clientID: cfg.ClientID, apiKey: cfg.APIKey, redirectURL: cfg.RedirectURL, client: &client, logger: cfg.Logger,
 	}
 	keyContext := context.WithValue(context.Background(), oauth2.HTTPClient, &client)
 	keySet := coreoidc.NewRemoteKeySet(keyContext, p.apiURL+"/sso/jwks/"+url.PathEscape(p.clientID))
@@ -119,6 +122,10 @@ func NewHostedProvider(provider string, cfg WorkOSConfig) (HostedProvider, error
 		SkipClientIDCheck: true, SkipIssuerCheck: true, SupportedSigningAlgs: []string{coreoidc.RS256},
 	})
 	return p, nil
+}
+
+func DefaultWorkOSIssuer(apiURL, clientID string) string {
+	return strings.TrimSuffix(apiURL, "/") + "/user_management/" + clientID
 }
 
 func validWorkOSURL(value string, root bool) bool {
@@ -171,7 +178,7 @@ func (p *workosProvider) AuthorizationURL(state string, _ string, verifier strin
 
 func (p *workosProvider) Exchange(ctx context.Context, code string, verifier string, _ string) (Identity, error) {
 	if strings.TrimSpace(code) == "" {
-		return Identity{}, ErrHostedIdentity
+		return Identity{}, hostedDenial(HostedReasonCodeMissing)
 	}
 	request := struct {
 		GrantType    string `json:"grant_type"`
@@ -180,22 +187,27 @@ func (p *workosProvider) Exchange(ctx context.Context, code string, verifier str
 		Code         string `json:"code"`
 		CodeVerifier string `json:"code_verifier,omitempty"`
 	}{"authorization_code", p.clientID, p.apiKey, code, verifier}
-	var response struct {
-		User           workosUser   `json:"user"`
-		AccessToken    string       `json:"access_token"`
-		OrganizationID string       `json:"organization_id"`
-		Impersonator   *workosActor `json:"impersonator"`
-	}
+	var response workosAuthentication
 	if err := p.request(ctx, http.MethodPost, "/user_management/authenticate", request, &response); err != nil {
-		return Identity{}, err
+		return Identity{}, hostedDenialWrap(HostedReasonExchangeFailed, err)
 	}
 	identity, err := p.verifyToken(ctx, response.AccessToken, response.Impersonator)
-	if err != nil || identity.Subject != response.User.ID || identity.OrganizationID != response.OrganizationID || (strings.TrimSpace(verifier) == "" && identity.SupportActor == "") {
-		return Identity{}, ErrHostedIdentity
+	switch {
+	case err != nil:
+		return Identity{}, err
+	case identity.Subject != response.User.ID:
+		return Identity{}, hostedDenial(HostedReasonSubjectMismatch)
+	case identity.OrganizationID != response.OrganizationID:
+		return Identity{}, hostedDenial(HostedReasonOrganizationMismatch)
+	case strings.TrimSpace(verifier) == "" && identity.SupportActor == "":
+		return Identity{}, hostedDenial(HostedReasonPKCEMissing)
 	}
 	email := normalizeEmail(response.User.Email)
-	if !response.User.EmailVerified || !validWorkOSEmail(email) {
-		return Identity{}, ErrHostedIdentity
+	if !response.User.EmailVerified {
+		return Identity{}, hostedDenial(HostedReasonEmailUnverified)
+	}
+	if !validWorkOSEmail(email) {
+		return Identity{}, hostedDenial(HostedReasonEmailInvalid)
 	}
 	session, err := p.session(ctx, identity)
 	if err != nil {
@@ -207,32 +219,63 @@ func (p *workosProvider) Exchange(ctx context.Context, code string, verifier str
 		identity.ExpiresAt = identity.CreatedAt.Add(time.Hour)
 	}
 	if !identity.ExpiresAt.After(time.Now()) {
-		return Identity{}, ErrHostedIdentity
+		return Identity{}, hostedDenial(HostedReasonSessionExpired)
 	}
-	return Identity{Subject: identity.Subject, Email: email, EmailVerified: true, Hosted: &identity}, nil
+	return Identity{Subject: identity.Subject, Email: email, EmailVerified: true, Hosted: &identity, Tokens: HostedTokens{AccessToken: response.AccessToken, RefreshToken: response.RefreshToken}}, nil
 }
 
-func (p *workosProvider) verifyToken(ctx context.Context, raw string, actor *workosActor) (HostedIdentity, error) {
+type workosAuthentication struct {
+	User           workosUser   `json:"user"`
+	AccessToken    string       `json:"access_token"`
+	RefreshToken   string       `json:"refresh_token"`
+	OrganizationID string       `json:"organization_id"`
+	Impersonator   *workosActor `json:"impersonator"`
+}
+
+type workosAccessClaims struct {
+	ClientID       string          `json:"client_id"`
+	SessionID      string          `json:"sid"`
+	OrganizationID string          `json:"org_id"`
+	Role           string          `json:"role"`
+	Audience       json.RawMessage `json:"aud"`
+	Actor          *struct {
+		Email   string `json:"email"`
+		Subject string `json:"sub"`
+	} `json:"act"`
+}
+
+func (p *workosProvider) parseAccessToken(ctx context.Context, raw string) (*coreoidc.IDToken, workosAccessClaims, error) {
 	token, err := p.verifier.Verify(ctx, raw)
-	if err != nil || (token.Issuer != p.issuerURL && token.Issuer != p.issuerURL+"/") || !validWorkOSID(token.Subject) {
-		return HostedIdentity{}, ErrHostedIdentity
+	if expired := (*coreoidc.TokenExpiredError)(nil); errors.As(err, &expired) {
+		return nil, workosAccessClaims{}, ErrAccessExpired
+	}
+	if err != nil && (ctx.Err() != nil || strings.Contains(err.Error(), "fetching keys")) {
+		// go-oidc flattens the key-set fetch error into a string. A JWKS
+		// that could not be fetched says nothing about the token itself.
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonProviderUnavailable)
+	}
+	if err != nil {
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonTokenInvalid)
+	}
+	if token.Issuer != p.issuerURL && token.Issuer != p.issuerURL+"/" {
+		return nil, workosAccessClaims{}, &HostedIdentityError{Reason: HostedReasonIssuerMismatch, TokenIssuer: loggableIssuer(token.Issuer)}
+	}
+	if !validWorkOSID(token.Subject) {
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonTokenInvalid)
 	}
 	now := time.Now()
-	if token.IssuedAt.IsZero() || token.IssuedAt.After(now.Add(5*time.Minute)) || !token.Expiry.After(token.IssuedAt) || !token.Expiry.After(now) {
-		return HostedIdentity{}, ErrHostedIdentity
+	if token.IssuedAt.IsZero() || token.IssuedAt.After(now.Add(5*time.Minute)) || !token.Expiry.After(token.IssuedAt) {
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonTokenInvalid)
 	}
-	var claims struct {
-		ClientID       string          `json:"client_id"`
-		SessionID      string          `json:"sid"`
-		OrganizationID string          `json:"org_id"`
-		Audience       json.RawMessage `json:"aud"`
-		Actor          *struct {
-			Email   string `json:"email"`
-			Subject string `json:"sub"`
-		} `json:"act"`
+	if !token.Expiry.After(now) {
+		return nil, workosAccessClaims{}, ErrAccessExpired
 	}
-	if err := token.Claims(&claims); err != nil || claims.ClientID != p.clientID || !validWorkOSID(claims.SessionID) || (claims.OrganizationID != "" && !validWorkOSID(claims.OrganizationID)) {
-		return HostedIdentity{}, ErrHostedIdentity
+	var claims workosAccessClaims
+	if err := token.Claims(&claims); err != nil || !validWorkOSID(claims.SessionID) || (claims.OrganizationID != "" && !validWorkOSID(claims.OrganizationID)) {
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonTokenInvalid)
+	}
+	if claims.ClientID != p.clientID {
+		return nil, workosAccessClaims{}, hostedDenial(HostedReasonClientMismatch)
 	}
 	if len(claims.Audience) > 0 {
 		matched := false
@@ -240,21 +283,98 @@ func (p *workosProvider) verifyToken(ctx context.Context, raw string, actor *wor
 			matched = matched || audience == p.clientID
 		}
 		if !matched {
-			return HostedIdentity{}, ErrHostedIdentity
+			return nil, workosAccessClaims{}, hostedDenial(HostedReasonAudienceMismatch)
 		}
+	}
+	return token, claims, nil
+}
+
+func (p *workosProvider) access(ctx context.Context, raw string) (HostedAccess, error) {
+	token, claims, err := p.parseAccessToken(ctx, raw)
+	if err != nil {
+		return HostedAccess{}, err
+	}
+	access := HostedAccess{Subject: token.Subject, OrganizationID: claims.OrganizationID, SessionID: claims.SessionID, Role: claims.Role, ExpiresAt: token.Expiry}
+	if claims.Actor != nil {
+		signedEmail, signedSubject := normalizeEmail(claims.Actor.Email), normalizeEmail(claims.Actor.Subject)
+		if signedEmail != "" && signedSubject != "" && signedEmail != signedSubject {
+			return HostedAccess{}, hostedDenial(HostedReasonSupportActorInvalid)
+		}
+		access.SupportActor = signedEmail
+		if access.SupportActor == "" {
+			access.SupportActor = signedSubject
+		}
+		if !validWorkOSEmail(access.SupportActor) {
+			return HostedAccess{}, hostedDenial(HostedReasonSupportActorInvalid)
+		}
+	}
+	return access, nil
+}
+
+// VerifyAccess checks a stored access token against the cached JWKS without
+// calling the provider API. An expired token returns ErrAccessExpired so the
+// caller refreshes it.
+func (p *workosProvider) VerifyAccess(ctx context.Context, token string) (HostedAccess, error) {
+	if strings.TrimSpace(token) == "" {
+		return HostedAccess{}, hostedDenial(HostedReasonTokenInvalid)
+	}
+	return p.access(ctx, token)
+}
+
+// RefreshAccess redeems a refresh token. WorkOS refresh tokens are single
+// use, so the caller persists the rotated pair before using it again.
+func (p *workosProvider) RefreshAccess(ctx context.Context, refreshToken string) (HostedAccess, HostedTokens, error) {
+	if strings.TrimSpace(refreshToken) == "" {
+		return HostedAccess{}, HostedTokens{}, hostedDenial(HostedReasonSessionInvalid)
+	}
+	request := struct {
+		GrantType    string `json:"grant_type"`
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+		RefreshToken string `json:"refresh_token"`
+	}{"refresh_token", p.clientID, p.apiKey, refreshToken}
+	var response workosAuthentication
+	if err := p.request(ctx, http.MethodPost, "/user_management/authenticate", request, &response); err != nil {
+		return HostedAccess{}, HostedTokens{}, err
+	}
+	access, err := p.access(ctx, response.AccessToken)
+	if errors.Is(err, ErrAccessExpired) {
+		return HostedAccess{}, HostedTokens{}, hostedDenial(HostedReasonTokenInvalid)
+	}
+	if HostedIdentityReason(err) == HostedReasonProviderUnavailable && strings.TrimSpace(response.RefreshToken) != "" {
+		// The old refresh token is spent; hand back the rotated pair so the
+		// caller keeps it and verifies once the key set is reachable.
+		return HostedAccess{}, HostedTokens{AccessToken: response.AccessToken, RefreshToken: response.RefreshToken}, err
+	}
+	if err != nil {
+		return HostedAccess{}, HostedTokens{}, err
+	}
+	if access.Subject != response.User.ID || access.OrganizationID != response.OrganizationID || strings.TrimSpace(response.RefreshToken) == "" {
+		return HostedAccess{}, HostedTokens{}, hostedDenial(HostedReasonProviderInvalid)
+	}
+	return access, HostedTokens{AccessToken: response.AccessToken, RefreshToken: response.RefreshToken}, nil
+}
+
+func (p *workosProvider) verifyToken(ctx context.Context, raw string, actor *workosActor) (HostedIdentity, error) {
+	token, claims, err := p.parseAccessToken(ctx, raw)
+	if errors.Is(err, ErrAccessExpired) {
+		return HostedIdentity{}, hostedDenial(HostedReasonTokenInvalid)
+	}
+	if err != nil {
+		return HostedIdentity{}, err
 	}
 	identity := HostedIdentity{Subject: token.Subject, OrganizationID: claims.OrganizationID, SessionID: claims.SessionID}
 	if (claims.Actor == nil) != (actor == nil) {
-		return HostedIdentity{}, ErrHostedIdentity
+		return HostedIdentity{}, hostedDenial(HostedReasonSupportActorInvalid)
 	}
 	if actor != nil {
 		email := normalizeEmail(actor.Email)
 		if !validWorkOSEmail(email) || !ValidSupportReason(actor.Reason) || identity.OrganizationID == "" {
-			return HostedIdentity{}, ErrHostedIdentity
+			return HostedIdentity{}, hostedDenial(HostedReasonSupportActorInvalid)
 		}
 		signedEmail, signedSubject := normalizeEmail(claims.Actor.Email), normalizeEmail(claims.Actor.Subject)
 		if (signedEmail == "" && signedSubject == "") || (signedEmail != "" && signedEmail != email) || (signedSubject != "" && signedSubject != email) {
-			return HostedIdentity{}, ErrHostedIdentity
+			return HostedIdentity{}, hostedDenial(HostedReasonSupportActorInvalid)
 		}
 		identity.SupportActor, identity.SupportReason = email, actor.Reason
 	}
@@ -262,12 +382,18 @@ func (p *workosProvider) verifyToken(ctx context.Context, raw string, actor *wor
 }
 
 func (p *workosProvider) CurrentSession(ctx context.Context, identity HostedIdentity) (HostedIdentity, error) {
-	if identity.CreatedAt.IsZero() || !identity.ExpiresAt.After(time.Now()) {
-		return HostedIdentity{}, ErrHostedIdentity
+	if identity.CreatedAt.IsZero() {
+		return HostedIdentity{}, hostedDenial(HostedReasonSessionInvalid)
+	}
+	if !identity.ExpiresAt.After(time.Now()) {
+		return HostedIdentity{}, hostedDenial(HostedReasonSessionExpired)
 	}
 	session, err := p.session(ctx, identity)
-	if err != nil || !session.CreatedAt.Equal(identity.CreatedAt) {
-		return HostedIdentity{}, ErrHostedIdentity
+	if err != nil {
+		return HostedIdentity{}, err
+	}
+	if !session.CreatedAt.Equal(identity.CreatedAt) {
+		return HostedIdentity{}, hostedDenial(HostedReasonSessionChanged)
 	}
 	if session.ExpiresAt.Before(identity.ExpiresAt) {
 		identity.ExpiresAt = session.ExpiresAt
@@ -276,14 +402,14 @@ func (p *workosProvider) CurrentSession(ctx context.Context, identity HostedIden
 		identity.ExpiresAt = identity.CreatedAt.Add(time.Hour)
 	}
 	if !identity.ExpiresAt.After(time.Now()) {
-		return HostedIdentity{}, ErrHostedIdentity
+		return HostedIdentity{}, hostedDenial(HostedReasonSessionExpired)
 	}
 	return identity, nil
 }
 
 func (p *workosProvider) session(ctx context.Context, identity HostedIdentity) (workosSession, error) {
 	if !validWorkOSID(identity.Subject) || !validWorkOSID(identity.SessionID) {
-		return workosSession{}, ErrHostedIdentity
+		return workosSession{}, hostedDenial(HostedReasonSessionInvalid)
 	}
 	query := url.Values{"limit": {"100"}}
 	seen := make(map[string]bool)
@@ -295,7 +421,7 @@ func (p *workosProvider) session(ctx context.Context, identity HostedIdentity) (
 		for _, session := range page.Data {
 			if session.ID == identity.SessionID {
 				if !validWorkOSSession(session, identity) {
-					return workosSession{}, ErrHostedIdentity
+					return workosSession{}, hostedDenial(HostedReasonSessionInvalid)
 				}
 				return session, nil
 			}
@@ -304,17 +430,17 @@ func (p *workosProvider) session(ctx context.Context, identity HostedIdentity) (
 			break
 		}
 		if !validWorkOSID(page.Metadata.After) || seen[page.Metadata.After] {
-			return workosSession{}, ErrHostedIdentity
+			return workosSession{}, hostedDenial(HostedReasonProviderInvalid)
 		}
 		seen[page.Metadata.After] = true
 		query.Set("after", page.Metadata.After)
 	}
-	return workosSession{}, ErrHostedIdentity
+	return workosSession{}, hostedDenial(HostedReasonSessionNotFound)
 }
 
 func validWorkOSSession(session workosSession, identity HostedIdentity) bool {
 	now := time.Now()
-	if session.Status != "active" || session.UserID != identity.Subject || session.OrganizationID != identity.OrganizationID || session.EndedAt != nil || session.CreatedAt.IsZero() || session.CreatedAt.After(now.Add(time.Minute)) || !session.ExpiresAt.After(now) || !session.ExpiresAt.After(session.CreatedAt) {
+	if session.Status != "active" || session.UserID != identity.Subject || session.EndedAt != nil || session.CreatedAt.IsZero() || session.CreatedAt.After(now.Add(time.Minute)) || !session.ExpiresAt.After(now) || !session.ExpiresAt.After(session.CreatedAt) {
 		return false
 	}
 	if session.Impersonator == nil {
@@ -524,7 +650,31 @@ func (p *workosProvider) RevokeSession(ctx context.Context, id string) error {
 	return p.request(ctx, http.MethodPost, "/user_management/sessions/revoke", request, nil)
 }
 
+func (p *workosProvider) log() *slog.Logger {
+	if p.logger != nil {
+		return p.logger
+	}
+	return slog.Default()
+}
+
+func loggableIssuer(issuer string) string {
+	if len(issuer) > 256 || strings.ContainsFunc(issuer, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return "invalid"
+	}
+	return issuer
+}
+
+func workosLogPath(path string) string {
+	path, _, _ = strings.Cut(path, "?")
+	const invitationToken = "/user_management/invitations/by_token/"
+	if strings.HasPrefix(path, invitationToken) {
+		return invitationToken + "redacted"
+	}
+	return path
+}
+
 func (p *workosProvider) request(ctx context.Context, method string, path string, payload any, result any) error {
+	logPath := workosLogPath(path)
 	var body io.Reader
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
@@ -544,22 +694,28 @@ func (p *workosProvider) request(ctx context.Context, method string, path string
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return ErrHostedIdentity
+		p.log().DebugContext(ctx, "workos request failed", "method", method, "path", logPath)
+		return hostedDenial(HostedReasonProviderUnavailable)
 	}
 	defer response.Body.Close()
+	p.log().DebugContext(ctx, "workos request", "method", method, "path", logPath, "status", response.StatusCode)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return ErrHostedIdentity
+		reason := HostedReasonProviderRejected
+		if response.StatusCode >= http.StatusInternalServerError || response.StatusCode == http.StatusTooManyRequests {
+			reason = HostedReasonProviderUnavailable
+		}
+		return &HostedIdentityError{Reason: reason, Status: response.StatusCode}
 	}
 	if result == nil {
 		return nil
 	}
 	decoder := json.NewDecoder(response.Body)
 	if err := decoder.Decode(result); err != nil {
-		return ErrHostedIdentity
+		return hostedDenial(HostedReasonProviderInvalid)
 	}
 	var extra json.RawMessage
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return ErrHostedIdentity
+		return hostedDenial(HostedReasonProviderInvalid)
 	}
 	return nil
 }

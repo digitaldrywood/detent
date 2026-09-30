@@ -1,8 +1,6 @@
 name: Portability Stress
 
 on:
-  schedule:
-    - cron: '41 10 * * *'
   workflow_dispatch:
 
 permissions:

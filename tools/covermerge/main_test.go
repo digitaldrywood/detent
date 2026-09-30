@@ -64,6 +64,40 @@ func TestMergeArguments(t *testing.T) {
 	}
 }
 
+func TestUnionProfiles(t *testing.T) {
+	t.Parallel()
+	const header = "mode: atomic\n"
+	const first = "example.com/hub/a.go:1.1,2.2 1 0\nexample.com/hub/b.go:3.1,4.2 2 4\n"
+	for _, tt := range []struct {
+		name, second, want, errorText string
+	}{
+		{"union", "example.com/hub/a.go:1.1,2.2 1 2\nexample.com/hub/b.go:3.1,4.2 2 0\n", "mode: set\nexample.com/hub/a.go:1.1,2.2 1 1\nexample.com/hub/b.go:3.1,4.2 2 1\n", ""},
+		{"missing block", "example.com/hub/a.go:1.1,2.2 1 2\n", "", "coverage blocks differ"},
+		{"changed block", "example.com/hub/a.go:1.1,2.2 1 2\nexample.com/hub/b.go:3.1,5.2 2 0\n", "", "coverage blocks differ"},
+		{"duplicate block", "example.com/hub/a.go:1.1,2.2 1 2\nexample.com/hub/a.go:1.1,2.2 1 0\n", "", "duplicate coverage block"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			paths := []string{filepath.Join(dir, "a.out"), filepath.Join(dir, "b.out")}
+			for i, data := range []string{first, tt.second} {
+				if err := os.WriteFile(paths[i], []byte(header+data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stdout, stderr bytes.Buffer
+			code := run(append([]string{"-union"}, paths...), &stdout, &stderr)
+			if tt.errorText == "" {
+				if code != 0 || stdout.String() != tt.want {
+					t.Fatalf("union = %d, %q: %s", code, &stdout, &stderr)
+				}
+			} else if code == 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), tt.errorText) {
+				t.Fatalf("invalid union = %d, %q: %s", code, &stdout, &stderr)
+			}
+		})
+	}
+}
+
 func TestCoverageLocation(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {

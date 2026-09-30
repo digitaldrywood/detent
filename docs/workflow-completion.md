@@ -10,7 +10,7 @@ Evidence-backed completion of already-merged work needs no prior authorization o
 - `completion_ancestry: verified`: only after the ancestry command exits 0
 - `completion_evidence`: acceptance criteria, commands, results, and ancestry command/exit status
 
-The orchestrator records this evidence and closes the issue; workers never close it or write lane state. If evidence cannot be produced, finish independent investigation and ask a focused human question; do not claim completion. Other no-PR operational work still requires pre-dispatch issue-body `detent-completion` authorization (`schema: 1`, `completion_kind: operational`) and concrete `completion_evidence`. Otherwise the PR gate applies.
+The orchestrator records this evidence and closes the issue; workers never close it or write lane state. If evidence cannot be produced, finish independent investigation and record the specific missing human input as a Workpad `human_action` with `status: blocked`; do not claim completion. Other no-PR operational work still requires pre-dispatch issue-body `detent-completion` authorization (`schema: 1`, `completion_kind: operational`) and concrete `completion_evidence`. Otherwise the PR gate applies.
 
 ## Incident and existing linked-PR completion
 

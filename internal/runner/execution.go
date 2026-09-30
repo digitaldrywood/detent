@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/store"
@@ -28,6 +29,83 @@ type ArtifactExecution interface {
 	PrepareArtifacts(context.Context, string) error
 	ArtifactLog(context.Context, string) error
 	FinalizeArtifacts(context.Context, string) error
+}
+
+// AttemptDiffSource computes the worktree's diff for the stored attempt diff
+// (decisions section 18.5). It fills the base, the head and the files; the
+// execution owns the producer tuple and the generation, because only the
+// execution knows the lease it is fenced by and the event sequence the diff
+// belongs to. It reports false when there is nothing to post.
+type AttemptDiffSource func(context.Context) (tracker.AttemptDiffRequest, bool)
+
+// DiffExecution is an Execution that also stores the attempt's diff before
+// every run event that references it. The runner installs the source once it
+// has a worktree; the execution decides when to call it, so the diff is always
+// posted before the event and always under the lease that fences it.
+type DiffExecution interface {
+	SetDiffSource(AttemptDiffSource)
+}
+
+// ChangeExecution is an Execution that opens a successful work run's Change
+// Request while it still holds the run's lease, when it finishes. It reports
+// what it found, or nil when it had nothing to decide on.
+type ChangeExecution interface {
+	NativeChange() *NativeChange
+}
+
+// ErrLandingNotReviewed says the Change Request a landing run was dispatched
+// for is not a reviewed current version: nothing may be landed, and the
+// item goes back to review with that reason.
+var ErrLandingNotReviewed = errors.New("the Change Request is not reviewed")
+
+// LandingExecution is an Execution for a hub-native landing run: it names
+// the reviewed version the run lands, and records the landing with the hub
+// under the run's lease once the base branch carries it.
+type LandingExecution interface {
+	LandingTarget(context.Context) (NativeLandingTarget, error)
+	RecordLanding(context.Context, NativeLanding) error
+}
+
+// RepositoryExecution is an Execution that publishes the finished run's
+// commits as an immutable Change Request version, which names the repository
+// the commits live in. The runner installs the checkout's https remote once
+// it has a worktree; an execution with no repository to name opens the
+// Change Request but publishes no version, and reports why.
+type RepositoryExecution interface {
+	SetRepository(string)
+}
+
+// attemptDiffSource returns the source for one run's worktree. A diff is
+// best-effort: a failure is logged and reported as "nothing to post", so a
+// worktree the runner cannot read never fails the run it is describing.
+// A run with no pull request base is diffed against the base resolved when
+// the source is made, so every generation of one run shares a base.
+func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, issue workspace.Issue) AttemptDiffSource {
+	base := strings.TrimSpace(issue.BaseRef)
+	if base == "" {
+		base = workspace.AttemptBase(ctx, info.Path)
+	}
+	return func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+		diffs, err := workspace.GitFileDiffs(ctx, info.Path, base, tracker.MaxDiffBytes)
+		if err != nil {
+			r.logger.Warn("attempt diff unavailable", "issue_id", issue.ID, "workspace_path", info.Path, "error", err)
+			return tracker.AttemptDiffRequest{}, false
+		}
+		request := tracker.AttemptDiffRequest{BaseSHA: diffs.BaseSHA, HeadSHA: diffs.HeadSHA, Files: make([]tracker.AttemptDiffFile, 0, len(diffs.Files))}
+		for _, file := range diffs.Files {
+			request.Files = append(request.Files, tracker.AttemptDiffFile{
+				Path: file.Path, OldPath: file.OldPath, Status: file.Status,
+				Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch,
+			})
+		}
+		if diffs.Truncated {
+			// The whole patch output exceeded the bound, so the counts are
+			// posted without patches rather than with a patch set that stops
+			// partway through the change.
+			request.Files = tracker.StripDiffPatches(request.Files)
+		}
+		return request, true
+	}
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -55,6 +133,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	defer cancel()
 	if err := req.Execution.Finish(finishCtx, outcome); err != nil {
 		runErr = errors.Join(runErr, err)
+	}
+	if changes, ok := req.Execution.(ChangeExecution); ok && runErr == nil {
+		result.NativeChange = changes.NativeChange()
 	}
 	return result, runErr
 }

@@ -71,6 +71,9 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"github_imports",
 		"collaboration_events",
 		"collaboration_versions",
+		"attempt_diff_files",
+		"attempt_diffs",
+		"attempt_usage",
 		"hub_identity",
 		"hosted_tenant",
 		"hosted_members",
@@ -81,8 +84,11 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"hosted_audit",
 		"hosted_billing_accounts",
 		"hosted_billing_audit",
+		"hosted_billing_customer_intents",
 		"hosted_billing_events",
 		"hosted_billing_prices",
+		"hosted_billing_retired",
+		"hosted_binding_migrations",
 		"hosted_plans",
 		"hosted_plan_assignments",
 		"hosted_complimentary_grants",
@@ -107,6 +113,9 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"lease_policies",
 		"lease_runners",
 		"policy_revisions",
+		"project_action_runs",
+		"project_actions",
+		"project_observed_policies",
 		"project_onboarding",
 		"project_policies",
 		"provider_reservations",
@@ -123,6 +132,24 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"sync_checkpoints",
 		"work_events",
 		"workflow_states",
+		"conversations",
+		"conversation_messages",
+		"conversation_questions",
+		"conversation_commands",
+		"conversation_events",
+		"conversation_starts",
+		"conversation_audience_events",
+		"conversation_turn_batches",
+		"conversation_attachments",
+		"conversation_attachment_blobs",
+		"message_references",
+		// Workspace sessions and the relay (decisions sections 18.1 and 18.2).
+		"workspace_sessions",
+		"workspace_items",
+		"workspace_occupancy",
+		"workspace_relay_tickets",
+		"workspace_relay_sessions",
+		"workspace_terminal_recordings",
 	}
 	sort.Strings(wantTables)
 	if strings.Join(tables, ",") != strings.Join(wantTables, ",") {
@@ -689,7 +716,9 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
 	started := time.Now()
 	defer func() { t.Logf("hub_fixture_open_seconds=%.6f", time.Since(started).Seconds()) }()
-	cfg.Logger = discardLogger()
+	if cfg.Logger == nil {
+		cfg.Logger = discardLogger()
+	}
 	if len(cfg.InitialAdminToken) == 0 {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)
 	}

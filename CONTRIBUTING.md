@@ -170,12 +170,12 @@ test(scheduler): cover fair-share selection
 
 ## Branch And Pull Request Flow
 
-1. Start from current `origin/main`.
+1. Start from current `origin/develop`.
 2. Create a focused branch for the issue.
 3. Make the smallest complete change that satisfies the issue.
 4. Run focused tests for touched packages.
-5. Run `make check`.
-6. Open a pull request with a clear summary, a `Fixes #N` line, and the exact test plan.
+5. Run `make check-fast` in the dedicated worktree before merging.
+6. Open a pull request against `develop` with a clear summary, a `Fixes #N` line, and the exact test plan.
 7. Address review feedback with follow-up commits on the same branch.
 
-Do not commit directly to `main`. Do not bypass hooks. If validation fails, fix the blocker before requesting review.
+Do not commit directly to `develop` or `main`. Scheduled full validation tags passing `develop` commits; production releases use those tags. `develop` always deploys to staging; see [Branching](docs/branching.md). Do not bypass hooks. If validation fails, fix the blocker before requesting review.

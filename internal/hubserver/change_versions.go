@@ -130,6 +130,11 @@ func (s *Service) publishChangeVersion(c echo.Context) error {
 				return nil, err
 			}
 		}
+		// A policy that requires no review and no checks makes the version
+		// reviewed as published.
+		if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
+			return nil, err
+		}
 		return version, nil
 	})
 }

@@ -47,6 +47,23 @@ func (c *NativeConnector) FetchCandidateIssues(ctx context.Context) ([]connector
 	return c.FetchIssuesByStates(ctx, states)
 }
 
+// WorkflowStates reports the native project's workflow, which is the state
+// model the hub enforces on every transition.
+func (c *NativeConnector) WorkflowStates(ctx context.Context) ([]connector.WorkflowState, error) {
+	project, err := c.client.Project(ctx)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]connector.WorkflowState, 0, len(project.States))
+	for _, state := range project.States {
+		states = append(states, connector.WorkflowState{
+			Name: state.Name, Terminal: state.Terminal, Dispatchable: state.Dispatchable,
+			OperatorOnly: state.OperatorOnly, Transitions: append([]string(nil), state.Transitions...),
+		})
+	}
+	return states, nil
+}
+
 func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
 	var issues []connector.Issue
 	for _, state := range states {
@@ -57,7 +74,11 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 				return nil, err
 			}
 			for _, issue := range page.Items {
-				issues = append(issues, issueFromNative(issue))
+				converted, err := c.issueWithLanding(ctx, issue)
+				if err != nil {
+					return nil, err
+				}
+				issues = append(issues, converted)
 			}
 			connector.ReportProgress(ctx)
 			if page.NextCursor == "" {
@@ -83,9 +104,35 @@ func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []strin
 			}
 			return nil, err
 		}
-		issues = append(issues, issueFromNative(issue))
+		converted, err := c.issueWithLanding(ctx, issue)
+		if err != nil {
+			return nil, err
+		}
+		issues = append(issues, converted)
 	}
 	return issues, nil
+}
+
+func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.NativeIssue) (connector.Issue, error) {
+	issue := issueFromNative(native)
+	if !native.Terminal {
+		return issue, nil
+	}
+	changes, err := c.client.Changes(ctx, native.WorkItemID)
+	if err != nil {
+		return connector.Issue{}, err
+	}
+	for _, change := range changes {
+		if change.WorkItemID != native.WorkItemID || change.Landed == nil {
+			continue
+		}
+		if change.Landed.HeadSHA == "" || change.Landed.MergeSHA == "" {
+			continue
+		}
+		issue.Metadata["hub_landed_head_sha"] = change.Landed.HeadSHA
+		issue.Metadata["hub_landed_merge_sha"] = change.Landed.MergeSHA
+	}
+	return issue, nil
 }
 
 func nativeMutationKey() tracker.Mutation { return tracker.Mutation{IdempotencyKey: uuid.NewString()} }
@@ -100,6 +147,18 @@ func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.Issue
 	}
 	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: project.States[0].Name})
 	return issueFromNative(issue), err
+}
+
+// ChangeReviewed reports whether the given version is the change's current
+// version and is reviewed: accepted by the project's review policy, with
+// every approval and check it asks for in place. Any other current version
+// is not this run's, so it never answers for it.
+func (c *NativeConnector) ChangeReviewed(ctx context.Context, issueID, changeID, versionID string) (bool, error) {
+	detail, err := c.client.Change(ctx, tracker.NativeWorkItemID(issueID), changeID)
+	if err != nil {
+		return false, err
+	}
+	return versionID != "" && detail.Change.CurrentVersion == versionID && detail.Summary.Status == "reviewed", nil
 }
 
 func (c *NativeConnector) CreateComment(ctx context.Context, id, body string) error {
@@ -154,7 +213,7 @@ func (c *NativeConnector) SetField(ctx context.Context, id, field, value string)
 		if err != nil {
 			return err
 		}
-		request.Priority = &priority
+		request.Priority = tracker.SetPriority(&priority)
 	default:
 		return connector.ErrNotImplemented
 	}
@@ -263,10 +322,16 @@ func (c *NativeConnector) dependency(ctx context.Context, id, blockerID, operati
 	return err
 }
 
+// nativeIssueIdentifier is the identifier a run of a native issue keys its
+// worktree on.
+func nativeIssueIdentifier(native tracker.NativeIssue) string {
+	return string(native.ProjectID) + "#" + strconv.Itoa(native.Number)
+}
+
 func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = string(native.WorkItemID)
-	issue.Identifier = string(native.ProjectID) + "#" + strconv.Itoa(native.Number)
+	issue.Identifier = nativeIssueIdentifier(native)
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
 	issue.AuthorID = native.Actor.PrincipalID

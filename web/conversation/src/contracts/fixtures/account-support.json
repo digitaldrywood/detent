@@ -1,0 +1,7 @@
+{
+  "support": {
+    "actor": "support@detent.dev",
+    "reason": "Investigating a stuck lease reported in ticket 4471",
+    "expires_at": "2026-09-10T22:30:00Z"
+  }
+}

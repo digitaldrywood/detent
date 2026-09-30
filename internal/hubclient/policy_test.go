@@ -61,3 +61,76 @@ func TestSchedulerRejectsUnapprovedPolicyBeforeWork(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
+	t.Parallel()
+	changed := func() policy.Descriptor { d := clientTestPolicy(); d.Gates.AutoPromote = true; return d.WithID() }()
+	for _, test := range []struct {
+		name      string
+		approved  *policy.Descriptor
+		status    int
+		local     policy.Descriptor
+		wantError bool
+		reports   int
+	}{
+		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), wantError: true, reports: 1},
+		{name: "approved policy differs", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, reports: 1},
+		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 0},
+		{name: "hub unavailable", status: http.StatusServiceUnavailable, local: clientTestPolicy(), wantError: true, reports: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var reported []policy.Descriptor
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/projects/prj_site/policy/observed"):
+					var descriptor policy.Descriptor
+					if err := json.NewDecoder(r.Body).Decode(&descriptor); err != nil {
+						t.Error(err)
+					}
+					reported = append(reported, descriptor)
+					w.WriteHeader(http.StatusNoContent)
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/projects/prj_site/policy"):
+					w.WriteHeader(test.status)
+					switch test.status {
+					case http.StatusOK:
+						_ = json.NewEncoder(w).Encode(policy.Approval{Policy: *test.approved})
+					case http.StatusConflict:
+						_ = json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "No approved repository policy"})
+					default:
+						_ = json.NewEncoder(w).Encode(map[string]string{"code": "unavailable", "message": "down"})
+					}
+				default:
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			t.Cleanup(server.Close)
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "worker" }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: "org_site", NativeProjects: map[string]tracker.ProjectID{"site": "prj_site"}, Machine: Machine{ID: "machine_a", Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				err = scheduler.CheckProjectPolicy(t.Context(), "site", "", test.local)
+				if (err != nil) != test.wantError {
+					t.Fatalf("CheckProjectPolicy() error = %v, want error %v", err, test.wantError)
+				}
+				if test.reports > 0 && !connector.IsRetryable(err) {
+					t.Fatalf("unapproved policy should keep retrying: %v", err)
+				}
+			}
+			if len(reported) != test.reports {
+				t.Fatalf("reports = %d, want %d", len(reported), test.reports)
+			}
+			if test.reports > 0 && reported[0].ID != test.local.ID {
+				t.Fatalf("reported %s, want %s", reported[0].ID, test.local.ID)
+			}
+		})
+	}
+}
+
+func ptr[T any](value T) *T { return &value }

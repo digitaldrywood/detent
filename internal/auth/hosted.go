@@ -8,6 +8,27 @@ import (
 
 var ErrHostedIdentity = errors.New("hosted identity is unavailable or inactive")
 
+// ErrAccessExpired reports a well-formed access token whose lifetime ended;
+// the caller refreshes it instead of treating the session as revoked.
+var ErrAccessExpired = errors.New("hosted access token expired")
+
+// HostedTokens are the provider tokens behind one signed-in session. They are
+// kept out of HostedIdentity so they are never serialized with it.
+type HostedTokens struct {
+	AccessToken  string
+	RefreshToken string
+}
+
+// HostedAccess is what a verified access token asserts.
+type HostedAccess struct {
+	Subject        string
+	OrganizationID string
+	SessionID      string
+	Role           string
+	SupportActor   string
+	ExpiresAt      time.Time
+}
+
 type HostedIdentity struct {
 	Subject        string    `json:"subject"`
 	OrganizationID string    `json:"organization_id"`
@@ -46,6 +67,8 @@ type Invitation struct {
 type HostedProvider interface {
 	IdentityProvider
 	CurrentSession(context.Context, HostedIdentity) (HostedIdentity, error)
+	VerifyAccess(context.Context, string) (HostedAccess, error)
+	RefreshAccess(context.Context, string) (HostedAccess, HostedTokens, error)
 	Memberships(context.Context, string, string) ([]Membership, error)
 	Organization(context.Context, string) (Organization, error)
 	CreateOrganization(context.Context, string, string) (Organization, error)

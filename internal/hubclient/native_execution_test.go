@@ -56,6 +56,19 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 		t.Fatal("native recovery omitted discussion")
 	}
 	identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+	// The stored attempt diff rides every checkpoint and the finish
+	// (decisions section 18.5). The source is installed the way the runner
+	// installs it, once the worktree exists.
+	diffs, ok := execution.(runner.DiffExecution)
+	if !ok {
+		t.Fatal("a native execution must be able to store attempt diffs")
+	}
+	diffs.SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
+		return tracker.AttemptDiffRequest{
+			BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("c", 40),
+			Files: []tracker.AttemptDiffFile{{Path: "main.go", Status: tracker.DiffStatusModified, Additions: 1, Patch: "@@ diff"}},
+		}, true
+	})
 	checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: strings.Repeat("a", 40), WorkspaceDigest: strings.Repeat("b", 64), ExternalEffect: "none", EffectState: "none"}
 	for _, test := range []struct {
 		name      string
@@ -84,6 +97,36 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 	}
 	if len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence != 3 || recovery.Attempts[0].Status != "succeeded" || recovery.Attempts[0].Checkpoint.WorktreeState != "dirty" {
 		t.Fatalf("retries duplicated/lost progress: %#v", recovery.Attempts)
+	}
+	// One diff per event that references it -- the checkpoint at sequence 2
+	// and the finish at sequence 3 -- and none for run.started. A retried
+	// event re-flushes the same pending event rather than appending again, so
+	// the generations are not duplicated either.
+	attempt := executionID("attempt", string(execution.Recovery().Lease.ID))
+	for _, test := range []struct {
+		name  string
+		query string
+		seq   int64
+	}{
+		{name: "latest is the finish generation", seq: 3},
+		{name: "the checkpoint generation is still readable", query: "?at=2", seq: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stored tracker.AttemptDiff
+			if err := native.client.request(t.Context(), http.MethodGet, native.base()+"/attempts/"+attempt+"/diff"+test.query, nil, &stored); err != nil {
+				t.Fatalf("read stored diff: %v", err)
+			}
+			if stored.Generation.Seq != test.seq || len(stored.Files) != 1 || stored.Files[0].Path != "main.go" {
+				t.Fatalf("stored diff = %#v", stored)
+			}
+			if stored.Producer.Kind != tracker.DiffSourceAttempt || stored.Producer.LeaseID != execution.Recovery().Lease.ID {
+				t.Fatalf("producer = %#v", stored.Producer)
+			}
+		})
+	}
+	var missing tracker.AttemptDiff
+	if err := native.client.request(t.Context(), http.MethodGet, native.base()+"/attempts/"+attempt+"/diff?at=1", nil, &missing); err == nil {
+		t.Fatal("run.started carries no stored diff")
 	}
 	transport.down.Store(true)
 	if err := execution.Validate(guarded); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {

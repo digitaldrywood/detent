@@ -1,0 +1,97 @@
+# Every push to develop redeploys https://staging.hub.detent.build.
+#
+# This repository is public: the job runs on a GitHub-hosted runner and only on
+# develop pushes or a manual dispatch, never for pull requests. The runner builds
+# the binary from the pushed commit and streams it over SSH to a key that can run
+# nothing but the staging deploy script. That script verifies the binary's commit,
+# snapshots the staging database, swaps the binary, restarts staging and rolls back
+# if https health does not report this commit. The deploy key can install any
+# binary that reports the requested commit, so only the develop-limited staging
+# environment holds it, and it reaches staging paths only.
+#
+# Environment "staging" secrets (deployment branch policy: develop only):
+#   STAGING_SSH_KEY          private half of the restricted deploy key
+#   STAGING_SSH_KNOWN_HOSTS  staging.hub.detent.build ed25519 host key
+name: Deploy staging
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy staging
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: staging
+      url: https://staging.hub.detent.build
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Build linux/amd64 binary
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA::9}"
+          go build -trimpath -ldflags "-X main.version=develop-${short} -X main.commit=${short} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/detent" ./cmd/detent
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_KEY" || { echo "STAGING_SSH_KEY secret is not set" >&2; exit 1; }
+          test -n "$KNOWN_HOSTS" || { echo "STAGING_SSH_KNOWN_HOSTS secret is not set" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/ssh/id"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/id" "$RUNNER_TEMP/ssh/known_hosts"
+
+      - name: Deploy develop@${{ github.sha }}
+        run: |
+          set -euo pipefail
+          head=$(git ls-remote origin refs/heads/develop | cut -f1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::develop moved to ${head}; skipping stale deploy of ${GITHUB_SHA}"
+            exit 0
+          fi
+          for attempt in 1 2 3 4; do
+            status=0
+            ssh -i "$RUNNER_TEMP/ssh/id" \
+                -o IdentitiesOnly=yes \
+                -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+                -o StrictHostKeyChecking=yes \
+                -o BatchMode=yes \
+                -o ConnectTimeout=20 \
+                apprunner@staging.hub.detent.build \
+                "deploy ${GITHUB_SHA}" < "$RUNNER_TEMP/detent" 2> "$RUNNER_TEMP/ssh/stderr" || status=$?
+            cat "$RUNNER_TEMP/ssh/stderr" >&2
+            if [ "$status" -ne 255 ] || ! grep -qE '^(kex_exchange_identification:|ssh: connect to host )' "$RUNNER_TEMP/ssh/stderr"; then
+              exit "$status"
+            fi
+            echo "::warning::ssh connection refused before key exchange (attempt ${attempt}/4)"
+            sleep $((attempt * 15))
+          done
+          exit 255
+
+      - name: Clean up SSH material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"

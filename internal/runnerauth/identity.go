@@ -35,6 +35,12 @@ type EnrollmentRequest struct {
 	TTLSeconds    int64               `json:"ttl_seconds"`
 }
 
+// Unbound reports a token-first enrollment: the host generates its IDs later
+// and presents them when it redeems the token.
+func (r EnrollmentRequest) Unbound() bool {
+	return r.Binding == Binding{} && !r.SharedMachine
+}
+
 type Enrollment struct {
 	ID        string    `json:"id"`
 	Token     string    `json:"token"`

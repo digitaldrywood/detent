@@ -1,10 +1,13 @@
 package auth_test
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -90,7 +93,7 @@ func TestWorkOSAuthorizationAndExchange(t *testing.T) {
 		{name: "support", noPKCE: true}, {name: "support-email", noPKCE: true},
 		{name: "support-short-expiry", noPKCE: true},
 		{name: "ordinary-no-pkce", noPKCE: true, wantErr: true},
-		{name: "wrong-issuer", wantErr: true}, {name: "wrong-client", wantErr: true}, {name: "missing-client", wantErr: true},
+		{name: "wrong-issuer", wantErr: true}, {name: "legacy-issuer", wantErr: true}, {name: "wrong-client", wantErr: true}, {name: "missing-client", wantErr: true},
 		{name: "wrong-audience", wantErr: true}, {name: "invalid-signature", wantErr: true}, {name: "missing-token", wantErr: true},
 		{name: "empty-audience", wantErr: true}, {name: "null-audience", wantErr: true},
 		{name: "expired-token", wantErr: true}, {name: "missing-iat", wantErr: true}, {name: "future-iat", wantErr: true},
@@ -102,7 +105,7 @@ func TestWorkOSAuthorizationAndExchange(t *testing.T) {
 		{name: "support-wrong-session-actor", noPKCE: true, wantErr: true}, {name: "support-wrong-session-reason", noPKCE: true, wantErr: true},
 		{name: "support-expired-hour", noPKCE: true, wantErr: true},
 		{name: "session-revoked", wantErr: true}, {name: "session-ended", wantErr: true}, {name: "session-expired", wantErr: true},
-		{name: "session-wrong-user", wantErr: true}, {name: "session-wrong-org", wantErr: true},
+		{name: "session-wrong-user", wantErr: true}, {name: "session-listed-other-org"},
 		{name: "session-missing", wantErr: true}, {name: "session-page-cycle", wantErr: true},
 		{name: "http-error", wantErr: true}, {name: "malformed", wantErr: true}, {name: "oversized", wantErr: true}, {name: "trailing-json", wantErr: true},
 	}
@@ -162,7 +165,7 @@ func TestWorkOSCurrentSessionRevocation(t *testing.T) {
 		{name: "session-extended"},
 		{name: "session-shortened"},
 		{name: "session-revoked", wantErr: true},
-		{name: "session-wrong-org", wantErr: true},
+		{name: "session-listed-other-org"},
 		{name: "session-wrong-user", wantErr: true},
 		{name: "session-ended", wantErr: true},
 		{name: "session-missing", wantErr: true},
@@ -206,6 +209,70 @@ func TestWorkOSCurrentSessionRevocation(t *testing.T) {
 	}
 }
 
+func TestWorkOSOrganizationScopedReauthenticationReusesSession(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		mode    string
+		verify  string
+		noPKCE  bool
+		wantErr bool
+	}{
+		{name: "same session keeps original empty organization", mode: "valid", verify: "valid"},
+		{name: "same session listed with another organization", mode: "valid", verify: "session-listed-other-org"},
+		{name: "session of another user", mode: "session-wrong-user", verify: "session-wrong-user", wantErr: true},
+		{name: "revoked session", mode: "session-revoked", verify: "session-revoked", wantErr: true},
+		{name: "ended session", mode: "session-ended", verify: "session-ended", wantErr: true},
+		{name: "expired session", mode: "session-expired", verify: "session-expired", wantErr: true},
+		{name: "support session", mode: "support", verify: "support", noPKCE: true},
+		{name: "support wrong session actor", mode: "support-wrong-session-actor", verify: "support-wrong-session-actor", noPKCE: true, wantErr: true},
+		{name: "support wrong session reason", mode: "support-wrong-session-reason", verify: "support-wrong-session-reason", noPKCE: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newWorkOSFixture(t)
+			provider := f.provider(t)
+			f.mode.Store("unscoped")
+			first, err := provider.Exchange(t.Context(), "first-sign-in", "verifier", "")
+			if err != nil {
+				t.Fatalf("unscoped Exchange() error = %v", err)
+			}
+			if first.Hosted.OrganizationID != "" || first.Hosted.SessionID != "session_customer" {
+				t.Fatalf("unscoped identity = %#v", first.Hosted)
+			}
+			verifier := "verifier"
+			if tt.noPKCE {
+				verifier = ""
+			}
+			f.mode.Store(tt.mode)
+			scoped, err := provider.Exchange(t.Context(), "organization-sign-in", verifier, "")
+			if tt.wantErr {
+				if !errors.Is(err, auth.ErrHostedIdentity) {
+					t.Fatalf("scoped Exchange() error = %v, want rejection", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("scoped Exchange() error = %v", err)
+			}
+			if scoped.Hosted.OrganizationID != "org_customer" || scoped.Hosted.SessionID != first.Hosted.SessionID {
+				t.Fatalf("scoped identity = %#v", scoped.Hosted)
+			}
+			f.mode.Store(tt.verify)
+			if _, err := provider.CurrentSession(t.Context(), *scoped.Hosted); err != nil {
+				t.Fatalf("CurrentSession() after organization switch error = %v", err)
+			}
+			if tt.noPKCE {
+				return
+			}
+			if _, err := provider.CurrentSession(t.Context(), *first.Hosted); err != nil {
+				t.Fatalf("CurrentSession() for original identity error = %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkOSConfiguredIssuer(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -235,6 +302,151 @@ func TestWorkOSConfiguredIssuer(t *testing.T) {
 				t.Fatalf("configured issuer exchange error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestWorkOSIssuerDefault(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		apiSuffix  string
+		issuer     string
+		tokenIss   func(api string) string
+		wantReason string
+	}{
+		{name: "default issuer", tokenIss: func(api string) string { return api + "/user_management/client_detent" }},
+		{name: "default issuer token trailing slash", tokenIss: func(api string) string { return api + "/user_management/client_detent/" }},
+		{name: "API URL trailing slash", apiSuffix: "/", tokenIss: func(api string) string { return api + "/user_management/client_detent" }},
+		{name: "explicit override", issuer: "https://auth.example.com", tokenIss: func(string) string { return "https://auth.example.com" }},
+		{name: "override trailing slash", issuer: "https://auth.example.com/", tokenIss: func(string) string { return "https://auth.example.com" }},
+		{name: "legacy bare API issuer rejected", tokenIss: func(api string) string { return api }, wantReason: auth.HostedReasonIssuerMismatch},
+		{name: "other client issuer rejected", tokenIss: func(api string) string { return api + "/user_management/client_other" }, wantReason: auth.HostedReasonIssuerMismatch},
+		{name: "override rejects default", issuer: "https://auth.example.com", tokenIss: func(api string) string { return api + "/user_management/client_detent" }, wantReason: auth.HostedReasonIssuerMismatch},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newWorkOSFixture(t)
+			fixture.mode.Store("fixed-issuer")
+			fixture.issuer.Store(tt.tokenIss(fixture.server.URL))
+			provider, err := auth.NewHostedProvider("workos", auth.WorkOSConfig{
+				APIURL: fixture.server.URL + tt.apiSuffix, IssuerURL: tt.issuer, ClientID: "client_detent", APIKey: "fixture-secret",
+				RedirectURL: "https://app.example.com/auth/callback", HTTPClient: fixture.server.Client(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.Exchange(t.Context(), "fixed-issuer", "verifier", "")
+			if tt.wantReason == "" {
+				if err != nil {
+					t.Fatalf("Exchange() error = %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, auth.ErrHostedIdentity) || auth.HostedIdentityReason(err) != tt.wantReason {
+				t.Fatalf("Exchange() error = %v, reason = %q, want %q", err, auth.HostedIdentityReason(err), tt.wantReason)
+			}
+			if _, issuer := auth.HostedIdentityDetails(err); issuer != tt.tokenIss(fixture.server.URL) {
+				t.Fatalf("token issuer detail = %q", issuer)
+			}
+		})
+	}
+	if got := auth.DefaultWorkOSIssuer("https://api.workos.com/", "client_example"); got != "https://api.workos.com/user_management/client_example" {
+		t.Fatalf("DefaultWorkOSIssuer() = %q", got)
+	}
+}
+
+func TestWorkOSDenialReasons(t *testing.T) {
+	t.Parallel()
+	f := newWorkOSFixture(t)
+	provider := f.provider(t)
+	for _, tt := range []struct {
+		mode     string
+		verifier string
+		want     string
+	}{
+		{mode: "legacy-issuer", verifier: "verifier", want: auth.HostedReasonIssuerMismatch},
+		{mode: "wrong-issuer", verifier: "verifier", want: auth.HostedReasonIssuerMismatch},
+		{mode: "wrong-client", verifier: "verifier", want: auth.HostedReasonClientMismatch},
+		{mode: "wrong-audience", verifier: "verifier", want: auth.HostedReasonAudienceMismatch},
+		{mode: "invalid-signature", verifier: "verifier", want: auth.HostedReasonTokenInvalid},
+		{mode: "expired-token", verifier: "verifier", want: auth.HostedReasonTokenInvalid},
+		{mode: "wrong-subject", verifier: "verifier", want: auth.HostedReasonSubjectMismatch},
+		{mode: "wrong-org-response", verifier: "verifier", want: auth.HostedReasonOrganizationMismatch},
+		{mode: "ordinary-no-pkce", want: auth.HostedReasonPKCEMissing},
+		{mode: "unverified-email", verifier: "verifier", want: auth.HostedReasonEmailUnverified},
+		{mode: "missing-email", verifier: "verifier", want: auth.HostedReasonEmailInvalid},
+		{mode: "support-wrong-act", want: auth.HostedReasonSupportActorInvalid},
+		{mode: "session-missing", verifier: "verifier", want: auth.HostedReasonSessionNotFound},
+		{mode: "session-revoked", verifier: "verifier", want: auth.HostedReasonSessionInvalid},
+		{mode: "http-error", verifier: "verifier", want: auth.HostedReasonExchangeFailed},
+		{mode: "malformed", verifier: "verifier", want: auth.HostedReasonExchangeFailed},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			f.mode.Store(tt.mode)
+			_, err := provider.Exchange(t.Context(), tt.mode+"-reason", tt.verifier, "")
+			if !errors.Is(err, auth.ErrHostedIdentity) || auth.HostedIdentityReason(err) != tt.want {
+				t.Fatalf("Exchange() error = %v, reason = %q, want %q", err, auth.HostedIdentityReason(err), tt.want)
+			}
+			if strings.Contains(err.Error(), "fixture-secret") || strings.Contains(err.Error(), "customer@example.com") {
+				t.Fatalf("error exposed private values: %v", err)
+			}
+		})
+	}
+	if _, err := provider.Exchange(t.Context(), "", "verifier", ""); auth.HostedIdentityReason(err) != auth.HostedReasonCodeMissing {
+		t.Fatalf("empty code reason = %q", auth.HostedIdentityReason(err))
+	}
+	f.mode.Store("http-error")
+	if _, err := provider.Exchange(t.Context(), "status-reason", "verifier", ""); err != nil {
+		if status, _ := auth.HostedIdentityDetails(err); status != http.StatusBadGateway {
+			t.Fatalf("exchange status detail = %d", status)
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "nil", want: ""},
+		{name: "bare sentinel", err: auth.ErrHostedIdentity, want: auth.HostedReasonUnknown},
+		{name: "wrapped", err: fmt.Errorf("outer: %w", &auth.HostedIdentityError{Reason: auth.HostedReasonSessionExpired}), want: auth.HostedReasonSessionExpired},
+		{name: "unrelated", err: errors.New("other"), want: auth.HostedReasonUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := auth.HostedIdentityReason(tt.err); got != tt.want {
+				t.Fatalf("HostedIdentityReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWorkOSRequestDebugLogging(t *testing.T) {
+	t.Parallel()
+	f := newWorkOSFixture(t)
+	var output bytes.Buffer
+	provider, err := auth.NewHostedProvider("workos", auth.WorkOSConfig{
+		APIURL: f.server.URL, ClientID: "client_detent", APIKey: "fixture-secret",
+		RedirectURL: "https://app.example.com/auth/callback", HTTPClient: f.server.Client(),
+		Logger: slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Exchange(t.Context(), "valid-logging-code", "verifier", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Invitation(t.Context(), "invitation_token"); err != nil {
+		t.Fatal(err)
+	}
+	logged := output.String()
+	for _, want := range []string{`"path":"/user_management/authenticate"`, `"status":200`, `"method":"POST"`, `"path":"/user_management/invitations/by_token/redacted"`, `"path":"/user_management/users/user_customer/sessions"`} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("debug log missing %s:\n%s", want, logged)
+		}
+	}
+	for _, secret := range []string{"fixture-secret", "valid-logging-code", "invitation_token", "limit=", "customer@example.com", "access_token"} {
+		if strings.Contains(logged, secret) {
+			t.Errorf("debug log exposed %q:\n%s", secret, logged)
+		}
 	}
 }
 
@@ -431,16 +643,18 @@ func TestWorkOSInvalidArgumentsAndRedirects(t *testing.T) {
 }
 
 type workosFixture struct {
-	t        *testing.T
-	server   *httptest.Server
-	key      *rsa.PrivateKey
-	wrongKey *rsa.PrivateKey
-	now      time.Time
-	mode     atomic.Value
-	redirect atomic.Value
-	accepted atomic.Int64
-	mu       sync.Mutex
-	codes    map[string]bool
+	t          *testing.T
+	server     *httptest.Server
+	key        *rsa.PrivateKey
+	wrongKey   *rsa.PrivateKey
+	now        time.Time
+	mode       atomic.Value
+	redirect   atomic.Value
+	issuer     atomic.Value
+	accepted   atomic.Int64
+	mu         sync.Mutex
+	codes      map[string]bool
+	sessionOrg *string
 }
 
 func newWorkOSFixture(t *testing.T) *workosFixture {
@@ -456,6 +670,7 @@ func newWorkOSFixture(t *testing.T) *workosFixture {
 	f := &workosFixture{t: t, key: key, wrongKey: wrongKey, now: time.Now().UTC().Truncate(time.Second), codes: make(map[string]bool)}
 	f.mode.Store("valid")
 	f.redirect.Store("")
+	f.issuer.Store("")
 	f.server = httptest.NewServer(http.HandlerFunc(f.serveHTTP))
 	t.Cleanup(f.server.Close)
 	return f
@@ -483,6 +698,10 @@ func (f *workosFixture) writeJSON(w http.ResponseWriter, value any) {
 func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := f.mode.Load().(string)
 	if r.URL.Path == "/sso/jwks/client_detent" {
+		if mode == "jwks-down" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		f.writeJSON(w, map[string]any{"keys": []any{rsaJWK(&f.key.PublicKey, "primary")}})
 		return
 	}
@@ -575,6 +794,10 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	if request["grant_type"] == "refresh_token" {
+		f.refresh(w, r, request, mode)
+		return
+	}
 	if r.Method != http.MethodPost || request["grant_type"] != "authorization_code" || request["client_id"] != "client_detent" || request["client_secret"] != "fixture-secret" {
 		f.t.Error("incorrect code exchange request")
 	}
@@ -590,7 +813,7 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 		return
 	}
 	claims := map[string]any{
-		"iss": f.server.URL, "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
+		"iss": f.server.URL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
 		"org_id": "org_customer", "iat": f.now.Unix(), "exp": f.now.Add(10 * time.Minute).Unix(),
 	}
 	user := map[string]any{"id": "user_customer", "email": "Customer@Example.com", "email_verified": true}
@@ -602,7 +825,11 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 	}
 	switch mode {
 	case "issuer-slash":
-		claims["iss"] = f.server.URL + "/"
+		claims["iss"] = f.server.URL + "/user_management/client_detent/"
+	case "legacy-issuer":
+		claims["iss"] = f.server.URL
+	case "fixed-issuer":
+		claims["iss"] = f.issuer.Load().(string)
 	case "custom-issuer":
 		claims["iss"] = "https://auth.example.com/user_management/client_default"
 	case "audience":
@@ -651,19 +878,26 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 		claims["act"] = map[string]string{"sub": "other@example.com", "email": "support@example.com"}
 	case "support-unknown-reason":
 		response["impersonator"] = map[string]string{"email": "support@example.com", "reason": "customer content"}
-	case "support-no-org":
+	case "support-no-org", "unscoped":
 		delete(claims, "org_id")
 		delete(response, "organization_id")
 	}
+	f.mu.Lock()
+	if f.sessionOrg == nil {
+		organization, _ := claims["org_id"].(string)
+		f.sessionOrg = &organization
+	}
+	f.mu.Unlock()
 	if mode != "missing-token" {
 		response["access_token"] = signTestJWT(f.t, key, claims)
+		response["refresh_token"] = "refresh_customer"
 	}
 	f.writeJSON(w, response)
 }
 
 func (f *workosFixture) sessions(w http.ResponseWriter, r *http.Request, mode string) {
 	session := map[string]any{
-		"id": "session_customer", "user_id": "user_customer", "organization_id": "org_customer", "status": "active",
+		"id": "session_customer", "user_id": "user_customer", "organization_id": f.originalSessionOrganization(), "status": "active",
 		"created_at": f.now.Add(-10 * time.Minute), "expires_at": f.now.Add(50 * time.Minute), "ended_at": nil,
 	}
 	if strings.HasPrefix(mode, "support") {
@@ -679,7 +913,7 @@ func (f *workosFixture) sessions(w http.ResponseWriter, r *http.Request, mode st
 		session["expires_at"] = f.now.Add(-time.Minute)
 	case "session-wrong-user":
 		session["user_id"] = "user_other"
-	case "session-wrong-org":
+	case "session-listed-other-org":
 		session["organization_id"] = "org_other"
 	case "session-created-changed":
 		session["created_at"] = f.now.Add(-time.Minute)
@@ -705,6 +939,15 @@ func (f *workosFixture) sessions(w http.ResponseWriter, r *http.Request, mode st
 		}
 	}
 	f.writeJSON(w, map[string]any{"data": data, "list_metadata": map[string]string{"after": after}})
+}
+
+func (f *workosFixture) originalSessionOrganization() any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sessionOrg == nil || *f.sessionOrg == "" {
+		return nil
+	}
+	return *f.sessionOrg
 }
 
 func (f *workosFixture) memberships(w http.ResponseWriter, r *http.Request, mode string) {

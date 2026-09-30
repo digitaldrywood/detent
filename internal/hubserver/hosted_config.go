@@ -28,15 +28,23 @@ type HostedConfig struct {
 	StaffEmails              []string
 	SupportActors            []string
 	Directory                []HostedDestination
+	SharedEntry              *HostedSharedEntry
 	Provider                 auth.HostedProvider
 	PlanID                   string
 	StorageQuotaBytes        int64
 	EventQuota               int64
 }
 
+func ValidateHostedConfig(c *HostedConfig) error {
+	return c.validate()
+}
+
 func (c *HostedConfig) validate() error {
 	if c == nil {
 		return nil
+	}
+	if c.Plans.IsZero() {
+		c.Plans = nil
 	}
 	if len(c.EntitlementAdminToken) > 0 && (len(c.EntitlementAdminToken) < 32 || !hostedSafeID(c.EntitlementAdministrator)) || len(c.EntitlementAdminToken) == 0 && c.EntitlementAdministrator != "" {
 		return errors.New("entitlement administration requires an actor ID and a separate token of at least 32 bytes")
@@ -52,6 +60,12 @@ func (c *HostedConfig) validate() error {
 	}
 	if c.PlanID != "" && !hostedSafeID(c.PlanID) || c.StorageQuotaBytes < 0 || c.EventQuota < 0 {
 		return errors.New("hosted plan metadata is invalid")
+	}
+	if c.SharedEntry != nil && len(c.Directory) != 0 {
+		return errors.New("shared-entry tenants use the shared organization chooser instead of a directory")
+	}
+	if err := c.SharedEntry.validate(c.OrganizationID); err != nil {
+		return err
 	}
 	seen := make(map[string]bool)
 	for _, destination := range c.Directory {
@@ -74,6 +88,13 @@ func (c *HostedConfig) validate() error {
 		}
 	}
 	return c.Billing.validate(c.Plans)
+}
+
+func (c *HostedConfig) deployment() (string, int64) {
+	if c.SharedEntry != nil {
+		return "shared", c.SharedEntry.Generation
+	}
+	return "origin", 0
 }
 
 func hostedPublicURL(value string) bool {

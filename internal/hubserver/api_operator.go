@@ -112,26 +112,39 @@ func (s *Service) changeWorkItemPriority(c echo.Context) error {
 	request.Scope = strings.TrimSpace(request.Scope)
 	request.State = strings.TrimSpace(request.State)
 	request.Priority = strings.ToLower(strings.TrimSpace(request.Priority))
-	priority, ok := queuePriority(request.Priority)
-	if request.Scope == "" || request.State == "" || !ok {
+	// "none" removes the priority rather than setting one: the queue entry's
+	// override goes back to NULL and the mirrored `priority:` label is taken
+	// off the issue. Every other word still names a level.
+	removing := request.Priority == "none"
+	level, ok := queuePriority(request.Priority)
+	var priority *int
+	if !removing {
+		priority = &level
+	}
+	if request.Scope == "" || request.State == "" || (!ok && !removing) {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_priority", Message: "Scope, state, and a valid priority are required"})
 	}
 	repositoryID, err := s.database.workItemRepositoryID(c.Request().Context(), id)
 	if err != nil {
 		return trackerAPIError(c, err)
 	}
-	record, err := (WorkflowLabelMutation{
+	mutation := WorkflowLabelMutation{
 		IdempotencyKey: request.IdempotencyKey,
 		RepositoryID:   repositoryID,
 		IssueID:        int64(id),
 		Label:          "priority:" + request.Priority,
 		ManagedPrefix:  "priority:",
-	}).outboxRecord()
+	}
+	if removing {
+		mutation.Label = ""
+		mutation.Clear = true
+	}
+	record, err := mutation.outboxRecord()
 	if err != nil {
 		return operatorAPIError(c, err)
 	}
 	item, err := s.commitOutbox(c.Request().Context(), record, func(tx *sql.Tx, now string) error {
-		return upsertQueueEntry(c.Request().Context(), tx, id, request.Scope, request.State, "", &priority, now)
+		return upsertQueueEntry(c.Request().Context(), tx, id, request.Scope, request.State, "", priority, removing, now)
 	})
 	if err != nil {
 		return operatorAPIError(c, err)
@@ -256,7 +269,7 @@ func (d *database) changeQueueOrder(ctx context.Context, id tracker.WorkItemID, 
 	if err != nil {
 		return err
 	}
-	if err := upsertQueueEntry(ctx, tx, id, request.Scope, request.State, request.Rank, nil, formatHubTime(now)); err != nil {
+	if err := upsertQueueEntry(ctx, tx, id, request.Scope, request.State, request.Rank, nil, false, formatHubTime(now)); err != nil {
 		return err
 	}
 	if err := insertOperatorEvent(ctx, tx, id, "queue_order_changed", map[string]any{"scope": request.Scope, "state": request.State, "rank": request.Rank}, now); err != nil {
@@ -268,7 +281,7 @@ func (d *database) changeQueueOrder(ctx context.Context, id tracker.WorkItemID, 
 	return nil
 }
 
-func upsertQueueEntry(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, scope string, state string, rank string, priority *int, now string) error {
+func upsertQueueEntry(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, scope string, state string, rank string, priority *int, clearPriority bool, now string) error {
 	var workflowStateID sql.NullInt64
 	if err := tx.QueryRowContext(ctx, "SELECT workflow_state_id FROM issues WHERE id = ?", id).Scan(&workflowStateID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -290,9 +303,15 @@ func upsertQueueEntry(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, sc
 		}
 	}
 	var priorityValue any
-	if priority != nil {
+	switch {
+	case clearPriority:
+		// A clear is the one way a caller asks for NULL. A nil `priority`
+		// still means "leave whatever is there", which is what the order
+		// mutation wants.
+		priorityValue = nil
+	case priority != nil:
 		priorityValue = *priority
-	} else if existingPriority.Valid {
+	case existingPriority.Valid:
 		priorityValue = existingPriority.Int64
 	}
 	_, err = tx.ExecContext(ctx, `

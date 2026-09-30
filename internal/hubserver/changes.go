@@ -82,6 +82,7 @@ func (s *Service) registerChangeRoutes(e *echo.Echo) {
 	e.GET(changeBase+"/:change/versions/:version/viewed-files", s.changeViewedFiles, operator)
 	e.POST(changeBase+"/:change/versions/:version/viewed-files", s.viewChangeFile, operator)
 	e.POST(changeBase+"/:change/versions/:version/checks", s.submitChangeCheck, write)
+	e.POST(changeBase+"/:change/versions/:version/landing", s.landChange, write)
 }
 
 func (s *Service) requireChangeReviewPolicyAdmin() echo.MiddlewareFunc {
@@ -144,7 +145,12 @@ AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = t.id AND g.organizat
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		if previous.ID != request.ExpectedID {
+		// A policy that pins no checks follows the repository gate and is
+		// nobody's separate decision, so an approval that expects no review
+		// policy may replace it; any other policy must be named by the
+		// identity the approver read.
+		seeded := followsRepositoryGate(previous)
+		if previous.ID != request.ExpectedID && (request.ExpectedID != "" || !seeded) {
 			return nil, policyMismatch("Review policy changed; supply its current identity")
 		}
 		rules := request.Policy

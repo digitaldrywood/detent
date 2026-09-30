@@ -15,6 +15,8 @@ import (
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 )
 
+const releaseBranchRef = "refs/heads/develop"
+
 func main() {
 	if err := run(os.Args[1:], os.Stderr); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
@@ -28,7 +30,7 @@ func run(args []string, stderr io.Writer) error {
 	repository := flags.String("repository", "", "expected owner/repository")
 	tag := flags.String("tag", "", "expected release tag")
 	commit := flags.String("commit", "", "expected full release commit")
-	defaultBranchRef := flags.String("default-branch-ref", "", "full ref for the authenticated default branch")
+	defaultBranchRef := flags.String("default-branch-ref", "", "full ref for the authenticated default branch; rulesets are evaluated for refs/heads/develop")
 	tagMessagePath := flags.String("tag-message", "", "path containing the annotated tag message")
 	checkRunsPath := flags.String("github-check-runs", "", "authenticated GitHub check-runs response")
 	statusesPath := flags.String("github-statuses", "", "authenticated GitHub combined-status response")
@@ -187,7 +189,7 @@ func loadGitHubEvidence(checkRunsPath string, statusesPath string, rulesetsPath 
 		} else if err != nil {
 			return provenance.GitHubEvidence{}, fmt.Errorf("decode authenticated GitHub rulesets: %w", err)
 		}
-		if !strings.EqualFold(ruleset.Enforcement, "active") || !strings.EqualFold(ruleset.Target, "branch") || !rulesetAppliesToDefaultBranch(ruleset, defaultBranchRef) {
+		if !strings.EqualFold(ruleset.Enforcement, "active") || !strings.EqualFold(ruleset.Target, "branch") || !rulesetAppliesToReleaseBranch(ruleset, defaultBranchRef) {
 			continue
 		}
 		for _, rule := range ruleset.Rules {
@@ -255,9 +257,10 @@ func readJSONFile(path string, target any) error {
 	return nil
 }
 
-func rulesetAppliesToDefaultBranch(ruleset rulesetResponse, defaultBranchRef string) bool {
+func rulesetAppliesToReleaseBranch(ruleset rulesetResponse, defaultBranchRef string) bool {
+	releaseIsDefault := strings.TrimSpace(defaultBranchRef) == releaseBranchRef
 	for _, pattern := range ruleset.Conditions.RefName.Exclude {
-		if refPatternMatches(pattern, defaultBranchRef) {
+		if refPatternMatches(pattern, releaseIsDefault) {
 			return false
 		}
 	}
@@ -265,19 +268,21 @@ func rulesetAppliesToDefaultBranch(ruleset rulesetResponse, defaultBranchRef str
 		return true
 	}
 	for _, pattern := range ruleset.Conditions.RefName.Include {
-		if refPatternMatches(pattern, defaultBranchRef) {
+		if refPatternMatches(pattern, releaseIsDefault) {
 			return true
 		}
 	}
 	return false
 }
 
-func refPatternMatches(pattern string, defaultBranchRef string) bool {
+func refPatternMatches(pattern string, releaseIsDefault bool) bool {
 	pattern = strings.TrimSpace(pattern)
 	switch pattern {
-	case "~ALL", "~DEFAULT_BRANCH":
+	case "~ALL":
 		return true
+	case "~DEFAULT_BRANCH":
+		return releaseIsDefault
 	}
-	matched, err := path.Match(pattern, strings.TrimSpace(defaultBranchRef))
+	matched, err := path.Match(pattern, releaseBranchRef)
 	return err == nil && matched
 }

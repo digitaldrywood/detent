@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -229,6 +232,48 @@ func TestHostedPlanCommandsAndPermissions(t *testing.T) {
 		if strings.Contains(report.Body.String(), forbidden) {
 			t.Fatalf("metadata leaked %q", forbidden)
 		}
+	}
+}
+
+func TestHostedPlanReportRequiresEntitlementAdministrator(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	config := hostedTestPlans(t, f.service, nil)
+	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
+	path := "/api/v2/organizations/org_security/entitlements"
+	until := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	grant := hostedPlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects", "hosted_artifacts"}, ExpiresAt: &until, Reason: "design partner"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
+	for _, test := range []struct {
+		name     string
+		response func() int
+		want     int
+	}{
+		{"owner session", func() int { return f.request(t, owner, http.MethodGet, path, nil).Code }, http.StatusForbidden},
+		{"hub admin token", func() int {
+			return performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil).Code
+		}, http.StatusForbidden},
+		{"entitlement administrator", func() int {
+			return performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil).Code
+		}, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.response(); got != test.want {
+				t.Fatalf("status = %d, want %d", got, test.want)
+			}
+		})
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
+	var report hostedEntitlementReport
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Revision != 2 || report.Base != config.Base || report.EffectiveBase != config.Base || len(report.Plans) != 2 || len(report.Grants) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	recorded := report.Grants[0]
+	if recorded.ID != "comp_report" || recorded.Reason != "design partner" || recorded.GrantedBy != "test-operator" || recorded.GrantedAt == nil || recorded.ExpiresAt == nil || !recorded.ExpiresAt.Equal(until) || recorded.Plan != config.Plans[1].PlanReference {
+		t.Fatalf("grant = %+v", recorded)
 	}
 }
 
@@ -494,8 +539,7 @@ func TestHostedConcurrentProjectsAndInvitationSeats(t *testing.T) {
 						return
 					}
 					response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{
-						"idempotency_key": fmt.Sprintf("project%d", i), "name": fmt.Sprintf("project%d", i),
-						"states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}},
+						"idempotency_key": fmt.Sprintf("project%d", i), "name": fmt.Sprintf("project%d", i), "grant_access": true,
 					})
 					results <- response.Code
 				})
@@ -505,7 +549,7 @@ func TestHostedConcurrentProjectsAndInvitationSeats(t *testing.T) {
 			close(results)
 			winners := 0
 			for status := range results {
-				if status == http.StatusOK {
+				if status == http.StatusOK || status == http.StatusCreated {
 					winners++
 				} else if status != http.StatusTooManyRequests {
 					t.Errorf("allocation status = %d", status)
@@ -599,6 +643,169 @@ func TestHostedPlanPages(t *testing.T) {
 						t.Errorf("plan page omitted %q", expected)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestHostedPlanReportListsOnlyActiveGrants(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		after func(t *testing.T, f *hostedSecurityFixture, path string, clock *leaseTestClock)
+	}{
+		{name: "revoked", after: func(t *testing.T, f *hostedSecurityFixture, path string, _ *leaseTestClock) {
+			revoke := hostedPlanCommand{ID: "report-revoke", Action: "revoke", ExpectedRevision: 2, GrantID: "comp_report", Reason: "partnership ended"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, revoke), http.StatusNoContent)
+		}},
+		{name: "expired", after: func(_ *testing.T, _ *hostedSecurityFixture, _ string, clock *leaseTestClock) {
+			clock.value = clock.value.Add(2 * time.Hour)
+		}},
+		{name: "not started", after: func(_ *testing.T, _ *hostedSecurityFixture, _ string, clock *leaseTestClock) {
+			clock.value = clock.value.Add(-time.Hour)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			config := hostedTestPlans(t, f.service, nil)
+			clock := &leaseTestClock{value: time.Now().UTC()}
+			f.service.database.now = clock.Now
+			path := "/api/v2/organizations/org_security/entitlements"
+			until := clock.value.Add(time.Hour).Truncate(time.Second)
+			grant := hostedPlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, ExpiresAt: &until, Reason: "design partner"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
+			test.after(t, &f, path, clock)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var report hostedEntitlementReport
+			if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Grants) != 0 {
+				t.Fatalf("report grants = %+v, want none", report.Grants)
+			}
+		})
+	}
+}
+
+func TestHostedEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		plans *HostedPlansConfig
+		zero  bool
+	}{
+		{name: "absent", zero: true},
+		{name: "empty mapping", plans: &HostedPlansConfig{}, zero: true},
+		{name: "empty plan list", plans: &HostedPlansConfig{Plans: []HostedPlan{}}, zero: true},
+		{name: "windows only", plans: &HostedPlansConfig{WindowSeconds: 3600}},
+		{name: "base only", plans: &HostedPlansConfig{Base: PlanReference{ID: "pilot_free", Version: 1}}},
+		{name: "default catalog", plans: func() *HostedPlansConfig { c := pilotHostedPlans(); return &c }()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := test.plans.IsZero(); got != test.zero {
+				t.Fatalf("IsZero() = %v, want %v", got, test.zero)
+			}
+			f := newHostedSecurityFixture(t)
+			cfg := *f.service.config.Hosted
+			cfg.Billing = nil
+			cfg.Plans = test.plans
+			err := ValidateHostedConfig(&cfg)
+			if test.zero {
+				if err != nil || cfg.Plans != nil {
+					t.Fatalf("ValidateHostedConfig() = %v, plans = %+v; want default catalog", err, cfg.Plans)
+				}
+				return
+			}
+			if test.name == "default catalog" {
+				if err != nil {
+					t.Fatalf("ValidateHostedConfig() = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("partial entitlements accepted")
+			}
+		})
+	}
+}
+
+func TestHostedPlansConfigDecodesStrictly(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, body string
+		wantErr    bool
+		written    bool
+	}{
+		{name: "valid catalog", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowances: {projects: 3}}\n", written: true},
+		{name: "empty section", body: "{}\n"},
+		{name: "alias to an anchor outside the section", body: "base: *free\nplans:\n  - {id: free, version: 1}\n", written: true},
+		{name: "merge key from an anchor outside the section", body: "base: {<<: *free}\n", written: true},
+		{name: "misspelled nested key", body: "base: {id: free, version: 1}\nplans:\n  - {id: free, version: 1, allowences: {projects: 3}}\n", wantErr: true},
+		{name: "unknown plan reference key", body: "base: {id: free, release: 1}\n", wantErr: true},
+		{name: "misspelled section key", body: "windows_seconds: 3600\n", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			decoder := yaml.NewDecoder(strings.NewReader("free: &free {id: free, version: 1}\nentitlements:\n" + indentYAML(test.body)))
+			decoder.KnownFields(true)
+			var document struct {
+				Free         PlanReference     `yaml:"free"`
+				Entitlements HostedPlansConfig `yaml:"entitlements"`
+			}
+			err := decoder.Decode(&document)
+			config := document.Entitlements
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("Decode() = %+v, want an unknown-field error", config)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.written != test.written {
+				t.Fatalf("written = %t, want %t", config.written, test.written)
+			}
+		})
+	}
+}
+
+func indentYAML(body string) string {
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = "  " + line
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func TestHostedPlansConfigRejectsAliasCycles(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, document string
+		wantErr        bool
+	}{
+		{name: "self-referential section", document: "entitlements: &e {base: *e}\n", wantErr: true},
+		{name: "cycle through a plan", document: "entitlements:\n  plans:\n    - &p {id: free, version: 1, features: [*p]}\n", wantErr: true},
+		{name: "one anchor used twice", document: "free: &free {id: free, version: 1}\nentitlements:\n  base: *free\n  plans:\n    - {<<: *free}\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var document struct {
+				Free         PlanReference     `yaml:"free"`
+				Entitlements HostedPlansConfig `yaml:"entitlements"`
+			}
+			done := make(chan error, 1)
+			go func() { done <- yaml.Unmarshal([]byte(test.document), &document) }()
+			select {
+			case err := <-done:
+				if (err != nil) != test.wantErr {
+					t.Fatalf("Unmarshal() error = %v, want error %t", err, test.wantErr)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("decoding did not finish")
 			}
 		})
 	}

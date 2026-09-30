@@ -49,6 +49,9 @@ func validateNativeRunEvent(request tracker.NativeRunEvent) error {
 			return nativeInvalid("Artifact references must be typed IDs")
 		}
 	}
+	if err := validateNativeRunUsage(request); err != nil {
+		return err
+	}
 	return validateNativeExecution(data, request.Type)
 }
 
@@ -116,6 +119,9 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 			if ordered != 0 {
 				return nil, nativeExecutionConflict("Ordered attempts cannot accept legacy events")
 			}
+		}
+		if err := recordAttemptUsage(ctx, tx, scope, request, s.usagePrices(), now); err != nil {
+			return nil, err
 		}
 		if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), request.Type, tracker.CollaborationData{Run: &request.Data}, now); err != nil {
 			return nil, err

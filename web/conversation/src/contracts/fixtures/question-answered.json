@@ -1,0 +1,31 @@
+{
+  "id": "q_4f81ba07",
+  "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+  "message_id": "msg_6a20f1c7",
+  "status": "answered",
+  "owner": {
+    "attempt_id": "att_18f4",
+    "turn_id": "turn_5"
+  },
+  "questions": [
+    {
+      "id": "renewal-window",
+      "header": "Renewal window",
+      "question": "Which renewal window should the lock use?",
+      "options": [
+        {
+          "label": "Half the lease",
+          "description": "Renew at 50 percent of the lease duration."
+        }
+      ],
+      "free_text": false
+    }
+  ],
+  "answers": {
+    "renewal-window": ["Half the lease"]
+  },
+  "answered_by": "usr_michael",
+  "expires_at": null,
+  "created_at": "2026-09-09T10:03:20Z",
+  "updated_at": "2026-09-09T10:04:05Z"
+}
