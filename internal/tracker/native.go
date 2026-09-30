@@ -51,7 +51,8 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
-	IgnoreDependencies bool `json:"ignore_dependencies,omitempty"`
+	LinkedSource       *LinkedIssueSource `json:"linked_source,omitempty"`
+	IgnoreDependencies bool               `json:"ignore_dependencies,omitempty"`
 	NativeReference
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
@@ -157,13 +158,14 @@ type Mutation struct {
 
 type CreateIssue struct {
 	Mutation
-	Title      string      `json:"title"`
-	Body       string      `json:"body"`
-	State      string      `json:"state"`
-	Priority   *int        `json:"priority,omitempty"`
-	Labels     []string    `json:"labels"`
-	Assignees  []string    `json:"assignees"`
-	Provenance *Provenance `json:"provenance,omitempty"`
+	GitHubIssueURL string      `json:"github_issue_url,omitempty"`
+	Title          string      `json:"title"`
+	Body           string      `json:"body"`
+	State          string      `json:"state"`
+	Priority       *int        `json:"priority,omitempty"`
+	Labels         []string    `json:"labels"`
+	Assignees      []string    `json:"assignees"`
+	Provenance     *Provenance `json:"provenance,omitempty"`
 }
 
 // PriorityPatch is the priority member of UpdateIssue.

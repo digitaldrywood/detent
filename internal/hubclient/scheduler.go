@@ -21,6 +21,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	GitHubIntake      func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	ProviderReports   func() ([]providercapacity.Report, error)
 	OrganizationID    tracker.OrganizationID
 	NativeProjects    map[string]tracker.ProjectID
@@ -32,6 +33,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	githubIntake      func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	providerReports   func() ([]providercapacity.Report, error)
 	claimPolicies     map[string]claimPolicy
 	nativeProjects    map[string]*NativeConnector
@@ -71,6 +73,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		githubIntake:    config.GitHubIntake,
 		providerReports: config.ProviderReports,
 		claimPolicies:   make(map[string]claimPolicy),
 		client:          client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,

@@ -35,6 +35,35 @@ Bindings are immutable. Enable the desired transport capabilities separately.
 Hub's scoped v2 APIs accept its existing operator or enrolled runner
 credentials. Configuration and cutover require administrator authority.
 
+## Link one issue for its first run
+
+In a native project's New issue dialog, paste a GitHub issue URL from the
+project's attached repository. Title and body can stay empty. The equivalent
+scoped request is `POST /work-items` with `github_issue_url`, `state` and
+`idempotency_key`. Repeated links return the same native identity. Linking
+does not enable manual import, GitHub transport on Hub, or background sync.
+
+The issue shows its historical GitHub link and pending intake. Before its first
+agent dispatch, the runner uses its own instance GitHub credential to read the
+current title, body and all accessible comment pages through GraphQL. It posts
+the complete snapshot to `/work-items/{item}/source-intake` under its existing
+claim. Hub saves source IDs, authors, source timestamps and observation time,
+deduplicates discussion, and marks intake complete in one transaction. Native
+title/body edits remain authoritative; the original source snapshot stays
+available separately. GitHub credentials are never included in agent context.
+
+Missing credentials, private-access failures, rate limits, incomplete pagination
+and persistence failures are instance setup/retry diagnostics. The runner releases
+the claim without starting an agent or changing the issue's lane. Correct the
+runner's existing GitHub credential or access and retry. Intake has no separate
+retry loop or configuration. Subsequent runs, native collaboration and native
+landing use Hub alone; closing the historical GitHub issue is not required.
+
+This is execution context intake, not the full historical importer below. Deleted
+or inaccessible comments and edit history are not reconstructed. A source change
+that invalidates pagination requires a fresh complete fetch rather than publishing
+an excerpt.
+
 ## Import and inspect
 
 Enable manual intake on the repository-backed project. All paths below are

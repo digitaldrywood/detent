@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -18,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.SchedulingSource, error) {
+func newHubScheduling(cfg globalconfig.Config, version string, intakeTokens ...githubconnector.TokenSource) (orchestrator.SchedulingSource, error) {
 	clientConfig := cfg.Client
 	if !clientConfig.Configured() {
 		return nil, errors.New("hub client is not configured")
@@ -75,7 +76,16 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 			return providercapacity.Load(clientConfig.ProviderCapacityFile)
 		}
 	}
+	tokenSource := githubconnector.StaticTokenSource("")
+	if len(intakeTokens) > 0 {
+		tokenSource = intakeTokens[0]
+	}
+	github, err := githubconnector.NewClient(githubconnector.ClientConfig{TokenSource: tokenSource, HTTPClient: &http.Client{Timeout: clientConfig.RequestTimeout()}})
+	if err != nil {
+		return nil, err
+	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		GitHubIntake:    github.FetchIssueSnapshot,
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		Machine: hubclient.Machine{

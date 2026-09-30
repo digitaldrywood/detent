@@ -294,12 +294,14 @@ export function makeAccountApi(options: AccountApiOptions) {
       }),
     createFirstIssue: (input: {
       projectId: string;
+	  githubIssueUrl?: string;
       title: string;
       body: string;
       state: string;
       key: string;
     }) =>
       send(Schema.Unknown, "POST", `${project(input.projectId)}/work-items`, {
+	    github_issue_url: input.githubIssueUrl,
         title: input.title,
         body: input.body,
         state: input.state,

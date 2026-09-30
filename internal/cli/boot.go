@@ -340,7 +340,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	})
 	var hubScheduling orchestrator.SchedulingSource
 	if cfg.Global.Client.Configured() {
-		hubScheduling, err = newHubScheduling(cfg.Global, cfg.Version)
+		hubScheduling, err = newHubScheduling(cfg.Global, cfg.Version, newRunnerIntakeTokenSource(runtimeGitHubToken.get, refreshGitHubToken))
 		if err != nil {
 			return err
 		}
