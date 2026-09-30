@@ -170,6 +170,55 @@ health and exclusion reasons come from the existing routing evaluator. Tag edits
 preserve the runner's full access scope and use its expected revision. Other
 projects' grants, leases and provider account records are omitted from readiness.
 
+### Runner in a Fly Sprite
+
+Inside a fresh Sprite, run [sprite-runner-bootstrap.sh](../scripts/sprite-runner-bootstrap.sh)
+with the enrollment command copied from the Hub after `--`:
+
+```sh
+bash scripts/sprite-runner-bootstrap.sh -- detent hub runner register \
+  --url https://cloud.detent.build/organizations/ORGANIZATION_ID \
+  --token TOKEN --name "Sprite runner" --workspace-root "$HOME/detent-runner" --service
+```
+
+Use a repository checkout, or download the script on its own. It reads the Go
+version from the adjacent `go.mod` (or `--go-mod PATH`); a standalone download
+reads `go.mod` from the pinned release tag. It installs Go, `gh`, the working npm
+Codex and Claude Code builds, and the checksum-verified Detent `v0.117.7` binary.
+Use `--version vX.Y.Z` before `--` to select another release, or explicitly opt
+into building a checkout with `--from-source /absolute/path/to/detent`.
+
+The script replaces the host command's `--service` with a Sprite Service named
+`detent-runner`, running Detent in the foreground. Services restart on wake;
+the polling connections keep the Sprite active. This enrolled polling host
+uses idle compute; per-attempt scale-to-zero pooling is future work (see the
+[spike](sprites-cloud-runners-spike.md)). Re-run with the same `--config` and
+`--workspace-root` to reuse the runner identity and restart the same service.
+One runner per Sprite is supported; do not copy its identity to another Sprite.
+
+Before routing work, finish the manual steps printed by the script:
+
+- Run `claude auth login` and/or `codex login` once for the providers the project
+  uses (`codex login --device-auth` works without a browser on the host), or
+  configure a Sprites provider connector and its provider-specific environment
+  for the service.
+- Clone each repository into its printed checkout directory with `WORKFLOW.md`
+  and `detent.yaml`, install project dependencies, and set the git author.
+  For private clones or GitHub pushes, use `gh auth login` and `gh auth setup-git`
+  or the project's normal git credential setup.
+- Approve the project's observed repository policy in the Hub if it is pending.
+- Check `sprite-env services get detent-runner` and the Hub's runner health,
+  then route a Todo issue and verify it publishes a branch. If the service
+  exited before checkouts/auth were ready, re-run the bootstrap to start it.
+
+The final `sprite-env checkpoints create` prints the enrolled, clean checkpoint
+ID. After login and checkout setup, take another checkpoint to include them.
+Reset the same Sprite with `sprite-env checkpoints restore CHECKPOINT_ID`;
+this discards filesystem changes since that checkpoint. Checkpoint errors are
+reported as bootstrap failures; enrollment and the service remain in place for
+a retry. Downloads are removed before the snapshot, and the enrollment token
+is never written into the service launcher.
+
 ## Artifact history and GitHub
 
 Preserve the September 7 choices: local-only history, customer-managed durable
