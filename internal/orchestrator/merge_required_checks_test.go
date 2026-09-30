@@ -202,7 +202,7 @@ func TestMergeRequiredCheckStreakClearsOnTerminalCompletion(t *testing.T) {
 		Attempt:   1,
 		StartedAt: now.Add(2 * time.Minute),
 		Mode:      runpkg.RunModeMerge,
-	}, now.Add(3*time.Minute), TokenTotals{})
+	}, now.Add(3*time.Minute), TokenTotals{}, now.Add(3*time.Minute))
 	runMergeRequiredCheckEvaluation(t, orch, tracker, &state, step, now.Add(4*time.Minute))
 
 	if _, ok := state.Blocked[mergeRequiredCheckTestIssueID]; ok {
