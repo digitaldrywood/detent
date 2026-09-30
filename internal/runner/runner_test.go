@@ -2870,10 +2870,10 @@ func TestSessionTokenUsageNormalizesFreshAndResumedThreads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			usage := newSessionTokenUsage(tt.resumed)
+			normalize := NewTokenUsageNormalizer(tt.resumed)
 			var got AgentTokenUsage
 			for _, update := range tt.updates {
-				got = usage.normalize(update)
+				got = normalize(update)
 			}
 			gotCounts := AgentTokenCounts{
 				InputTokens:           got.InputTokens,

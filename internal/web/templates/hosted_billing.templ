@@ -35,6 +35,11 @@ templ hostedBilling(data HostedPageData) {
 		if data.BillingCheckedAt != "" {
 			<p class="break-words text-xs text-sec">Last verified with Stripe: { data.BillingCheckedAt }</p>
 		}
+		<section aria-label="AI usage this billing period" class="space-y-1 text-sm">
+			<h3 class="font-semibold">AI usage this billing period</h3>
+			<p>{ data.ChatUsage }</p>
+			<p class="text-sec">{ data.ChatUsagePeriod }</p>
+		</section>
 		<div class="flex flex-wrap gap-3">
 			<a href={ hostedURL(data, "/organization/plan") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Plan and usage</a>
 			<a href={ hostedURL(data, "/api/cloud/billing/subscription") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Export billing status</a>

@@ -1,12 +1,5 @@
 [
   {
-    "file": "internal/cli/cloud_test.go",
-    "line": 174,
-    "column": 5,
-    "rule": "Potential nil panic detected",
-    "source_sha256": "bb26507973944344e89c10344ce202330a559a5f211d6c2c4773062d2f5b2167"
-  },
-  {
     "file": "internal/hubclient/native_change_test.go",
     "line": 463,
     "column": 24,

@@ -416,6 +416,7 @@ type coordinatorTurnState struct {
 	projectID      tracker.ProjectID
 	model          string
 	usage          runner.AgentTokenCounts
+	normalizeUsage func(runner.AgentTokenUsage) runner.AgentTokenUsage
 	mu             sync.Mutex
 	assistant      conversationMessageRecord
 	users          []conversationMessageRecord
@@ -536,6 +537,8 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		}
 	}
 	state.model = request.Model
+	_, genkit := c.service.config.Backend.(*genkitbackend.Backend)
+	state.normalizeUsage = runner.NewTokenUsageNormalizer(request.Resume.ThreadID != "" && !genkit)
 	var result runner.AgentTurnResult
 	if runErr == nil {
 		// A turn that cannot read its attachments ends as failed through
@@ -559,22 +562,27 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	stopping := c.stopped
 	c.mu.Unlock()
 	outcome := coordinatorOutcome(runErr, cancelled, stopping)
-	if err := state.finish(writeCtx, outcome, runErr); err != nil {
-		return true, fmt.Errorf("finish coordinator turn: %w", err)
-	}
-	if sink := c.service.config.UsageSink; sink != nil && state.usage.TotalTokens > 0 {
+	var usage *ConversationUsage
+	if state.usage.InputTokens > 0 || state.usage.OutputTokens > 0 {
 		provider := "codex"
 		if _, ok := c.service.config.Backend.(*genkitbackend.Backend); ok {
 			provider = "openai"
 		}
-		if err := sink.RecordConversationUsage(writeCtx, ConversationUsage{
-			OrganizationID: state.organizationID, ProjectID: state.projectID,
-			ConversationID: conversationID, TurnID: state.assistant.ID,
-			Provider: provider, Model: state.model, Tokens: state.usage, Outcome: outcome,
-		}); err != nil {
+		usage = &ConversationUsage{OrganizationID: state.organizationID, ProjectID: state.projectID, ConversationID: conversationID, TurnID: state.assistant.ID, Provider: provider, Model: state.model, Tokens: state.usage, Outcome: outcome, OccurredAt: state.assistant.CreatedAt}
+	}
+	var durableUsage *ConversationUsage
+	if c.service.config.UsageSink == c.service.server.database {
+		durableUsage = usage
+	}
+	if err := state.finish(writeCtx, outcome, runErr, durableUsage); err != nil {
+		return true, fmt.Errorf("finish coordinator turn: %w", err)
+	}
+	if sink := c.service.config.UsageSink; sink != nil && sink != c.service.server.database && usage != nil {
+		if err := sink.RecordConversationUsage(writeCtx, *usage); err != nil {
 			c.logger.Warn("coordinator usage report failed", "conversation_id", conversationID, "error", err)
 		}
 	}
+
 	if runErr != nil && outcome == conversation.DeliveryFailed {
 		c.logger.Warn("coordinator turn failed", "conversation_id", conversationID, "error", runErr)
 	}
@@ -771,6 +779,11 @@ var coordinatorDataDelimiters = strings.NewReplacer("<transcript>", "&lt;transcr
 // logged and never abort the turn: the completion write carries the final
 // text.
 func (s *coordinatorTurnState) handleUpdate(ctx context.Context, update runner.AgentUpdate) {
+	if model := strings.TrimSpace(update.Model); model != "" {
+		s.mu.Lock()
+		s.model = model
+		s.mu.Unlock()
+	}
 	if update.ThreadID != "" {
 		s.observeThread(ctx, update.ThreadID)
 	}
@@ -779,6 +792,9 @@ func (s *coordinatorTurnState) handleUpdate(ctx context.Context, update runner.A
 		s.bufferDelta(ctx, update.Delta)
 	case runner.AgentUpdateTokenUsage:
 		s.mu.Lock()
+		if s.normalizeUsage != nil {
+			update.Tokens = s.normalizeUsage(update.Tokens)
+		}
 		s.usage = runner.AgentTokenCounts{
 			InputTokens: update.Tokens.InputTokens, CachedInputTokens: update.Tokens.CachedInputTokens,
 			OutputTokens: update.Tokens.OutputTokens, ReasoningOutputTokens: update.Tokens.ReasoningOutputTokens,
@@ -945,7 +961,7 @@ func coordinatorToolSummary(update runner.AgentUpdate) string {
 
 // finish persists the outcome of the turn for the assistant message, the
 // user messages and the execution state in one transaction.
-func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.Delivery, runErr error) error {
+func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.Delivery, runErr error, usage *ConversationUsage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	userDelivery := conversation.DeliveryDelivered
@@ -963,6 +979,11 @@ func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.
 		failure = &conversation.ReceiptError{Code: "unknown", Message: "The coordinator turn stopped before it answered"}
 	}
 	return s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+		if usage != nil {
+			if err := s.coordinator.service.server.database.recordConversationUsage(ctx, tx, *usage); err != nil {
+				return err
+			}
+		}
 		s.assistant.Delivery = outcome
 		s.assistant.ThreadID = s.threadID
 		if outcome == conversation.DeliveryFailed {

@@ -116,6 +116,17 @@ function renderBilling(_api: ReturnType<typeof fakeApi>) {
 }
 
 describe("billing screen", () => {
+  it("shows metered tokens and dollars for the billing period", async () => {
+    renderBilling(fakeApi(report({}, { chat_usage: {
+      range: { from: "2026-09-01T00:00:00Z", to: "2026-10-01T00:00:00Z" },
+      input: 1_000_000, cached_input: 400_000, output: 100_000, reasoning_output: 30_000,
+      tokens: 1_100_000, turns: 2, unpriced_turns: 1, cost_usd: .114,
+    } })));
+    expect(await screen.findByText("AI usage this billing period")).toBeTruthy();
+    expect(screen.getByText("1,100,000 tokens · $0.114000 USD")).toBeTruthy();
+    expect(screen.getByText(/2026-09-01 – 2026-10-01 · 2 turns · 1 turn awaiting pricing/)).toBeTruthy();
+  });
+
   it("opens Checkout for a price and keeps the portal closed without a customer", async () => {
     const api = fakeApi(report());
     renderBilling(api);

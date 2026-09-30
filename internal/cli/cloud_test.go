@@ -198,9 +198,12 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 	if err := os.WriteFile(tenantPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tenant, _, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
+	tenant, enabled, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatalf("generated tenant configuration is invalid: %v\n%s", err, raw)
+	}
+	if !enabled || tenant == nil {
+		t.Fatal("generated tenant configuration did not enable hosting")
 	}
 	if tenant.OrganizationID != "org_tenant" || tenant.WorkOSOrganizationID != "org_workos" || tenant.SharedEntry == nil || tenant.SharedEntry.Generation != 1 || tenant.BootstrapSubject != "" {
 		t.Fatalf("tenant = %+v", tenant)

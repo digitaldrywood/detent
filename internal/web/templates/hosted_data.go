@@ -16,6 +16,8 @@ type HostedPageData struct {
 	BillingCanPurchase   bool
 	BillingStatus        string
 	BillingMessage       string
+	ChatUsage            string
+	ChatUsagePeriod      string
 	BillingCheckedAt     string
 	BillingPrices        []HostedBillingPrice
 	BillingAudit         []HostedBillingAudit
