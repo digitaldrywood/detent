@@ -36,7 +36,7 @@ query DetentGitHubLabelIssuePullRequestReferences($issueIds: [ID!]!) {
           ... on UnlabeledEvent { createdAt label { name } actor { __typename login } }
         }
       }
-      closedByPullRequestsReferences(first: 100) {
+      closedByPullRequestsReferences(first: 5) {
         pageInfo { hasNextPage endCursor }
         nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } }
       }
