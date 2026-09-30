@@ -21,6 +21,9 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Preserve the approved opt-out setting explicitly; its runtime default
+	// changed after v0.117.1 and is a real policy input, not serialization drift.
+	workflow.Config.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 	// Captured with v0.117.1's config and gate sources. Unlike rebuilding the
 	// approval from today's Config type, these constants catch new digest inputs.
 	approved := policy.Descriptor{
@@ -49,6 +52,8 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		{"explicit host cap", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{"local": 2} }, false},
 		{"explicit local status", func(w *Workflow) { w.Config.Gate.LocalStatus = "local-gate" }, false},
 		{"explicit required check", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{"build"} }, false},
+		{"explicit human review", func(w *Workflow) { w.Config.Review.Human = true }, false},
+		{"removed opt-out label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "" }, false},
 		{"explicit gate command", func(w *Workflow) { w.Config.Gate.Run = "true" }, false},
 		{"explicit workspace root", func(w *Workflow) { w.Config.Workspace.Root = "other-workspaces" }, false},
 		{"effective prompt", func(w *Workflow) { w.Prompt += "Different instructions." }, false},

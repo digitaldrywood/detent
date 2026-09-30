@@ -1,3 +1,17 @@
+# Issue #3451 handoff
+
+- Reproduced all seven test failures from macOS job 110035613042 in scheduled run 36758716559 on clean develop `640b8abc10f0adb4ad580d1835b349796062130e`: focused diagnostics exited 1 in 20.7s with the recorded release-hook, policy-ID, schema-list, source-fingerprint, missing-audit, blank-label, and capped-skills failures.
+- `internal/config/config.go` omits zero-valued Review from JSON, restoring the pre-field policy representation. The existing historical approval fixture explicitly preserves v0.117.1's opt-out label; added cases reject human-review activation and opt-out removal. Diagnostic digest comparison recovered the exact historical `f984256f...` digest only when the historical label was retained and the zero Review field omitted.
+- Existing fixtures now reflect dependency-only release hooks, migration 49's linked_issue_sources table, explicit routine opt-out settings, expected skill-cap drops, and required-audit waits. The added passing-audit recovery case catches a failure to advance with trusted passing evidence; no new test functions or mechanisms were added.
+- Refreshed the INV-3 fingerprint for the already-landed completion transition after reviewing #3429's receipt freshness and #3281's existing decision-reason routing. `docs/invariants.md` records this review and the policy representation boundary. No orchestrator production behavior changed.
+- All seven targeted regressions pass (15.7s command). Adjacent config/policy/routine/skills package tests, prompt rendering, required-gate/audit evaluation, and schema constraints pass; config/policy/routine/skills vet passes (6.9s combined commands). Whitespace inspection passes. No generated inputs changed; no full gate, coverage, race suite, or Actions rerun/wait.
+- Configured gate is `true`, to run on the committed head immediately before publication. Current-head check/review and final publication evidence belong in the canonical #3451 issue Workpad. Next scheduled integrated validation confirms the macOS repair and owns issue closure; orchestrator owns promotion, squash merge, and lane transitions.
+- No dependencies, out-of-scope findings, or live-instance mutation. Skill draft: no — existing debugging guidance covers these fixture and serialization repairs.
+
+## Historical handoffs from develop
+
+The records below concern earlier heads and other issues; their completion and validation evidence does not apply to #3451.
+
 # Issue #2976 merge fallback handoff (attempt 7212, generation 80)
 
 - PR #3052 is open against `develop` on the assigned isolated branch; its body includes `Fixes #2976`. Fetched published head: `99f99e34cea4fea794c0ddc7a8cea973c24e2957`.
@@ -6,7 +20,7 @@
 - Key issue files remain `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`. Prior resolution retains develop's audit-only Merging path and the PR's In Progress repair-only filter in the non-Merging decision path.
 - Updated handoff notes with one current Workpad/status fence; prior handoffs are historical.
 
-## Codex Workpad
+## Historical Workpad (#2976)
 
 Plan and result: retain the unpublished resolution, finish and commit the current develop merge while preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
 
@@ -14,7 +28,7 @@ Validation: no tests, lint, vet, builds, local gate (including `true`), CI check
 
 Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No push, PR merge, issue-state change or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:

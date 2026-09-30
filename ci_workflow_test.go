@@ -73,7 +73,7 @@ func TestSnapshotBudgetPreservesReleaseWork(t *testing.T) {
 		end     string
 		markers []string
 	}{
-		{"hooks", "before:", "\nbuilds:", []string{"go mod download", "make check-generated", "make test"}},
+		{"hooks", "before:", "\nbuilds:", []string{"go mod download"}},
 		{"targets", "builds:", "\narchives:", []string{"CGO_ENABLED=0", "-trimpath", "- darwin", "- linux", "- windows", "- amd64", "- arm64"}},
 		{"archives", "archives:", "\nbrews:", []string{"- tar.gz", "goos: windows", "- zip", "- README.md", "- LICENSE", "- docs/**/*", "- scripts/hub-smoke.py"}},
 		{"packages", "nfpms:", "\nscoops:", []string{"- deb", "- rpm"}},

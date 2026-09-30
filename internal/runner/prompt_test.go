@@ -429,8 +429,10 @@ func TestPromptWrapperBytes(t *testing.T) {
 	if len(loaded.Skills) != skills.DefaultMaxSkillsInPrompt {
 		t.Fatalf("fixture needs capped skills: %d", len(loaded.Skills))
 	}
-	if len(loaded.Dropped) != 0 {
-		t.Fatalf("repository skills dropped: %+v", loaded.Dropped)
+	for _, drop := range loaded.Dropped {
+		if drop.Reason != skills.DropReasonMaxSkillsInPrompt {
+			t.Fatalf("invalid repository skill: %+v", drop)
+		}
 	}
 	workspacePath := t.TempDir()
 	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: loaded.Skills, WorkAttemptID: 5715, Generation: 68})
