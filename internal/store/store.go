@@ -9,6 +9,7 @@ import (
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/retro"
@@ -584,6 +585,7 @@ type APIUsageLog struct {
 }
 
 type UsageEvent struct {
+	Compute                *compute.Usage
 	ProjectID              string
 	RunID                  int64
 	SessionID              int64
@@ -1002,6 +1004,8 @@ type UsageReport struct {
 }
 
 type UsageReportTotals struct {
+	ComputeUSD            float64
+	ComputeEvents         int64
 	InputTokens           int64
 	CachedInputTokens     int64
 	OutputTokens          int64
@@ -1014,6 +1018,8 @@ type UsageReportTotals struct {
 }
 
 type UsageReportRow struct {
+	ComputeUSD            float64
+	ComputeEvents         int64
 	Key                   string
 	InputTokens           int64
 	CachedInputTokens     int64
@@ -1027,6 +1033,8 @@ type UsageReportRow struct {
 }
 
 type UsageReportModel struct {
+	ComputeUSD            float64
+	ComputeEvents         int64
 	Model                 string
 	InputTokens           int64
 	CachedInputTokens     int64

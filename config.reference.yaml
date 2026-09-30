@@ -615,6 +615,8 @@
 #   terminal_attempt_retry_limit: 3
 # # worker | type: object | default: see child fields | required: No | validation: None
 # worker:
+#   # worker.compute_rates | type: mapping<string, mapping> | default: {} | required: No | validation: None
+#   compute_rates: {}
 #   # worker.ssh_hosts | type: list<string> | default: [] | required: No | validation: must contain unique SSH destinations or local; worker.host_caps.__invalid__ must name a configured worker.ssh_hosts entry
 #   ssh_hosts: []
 #   # worker.host_selection | type: string | default: "least_loaded" | required: No | validation: must be least_loaded or preference

@@ -98,6 +98,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if event.Result.Tokens != (TokenTotals{}) {
 		running.Tokens = event.Result.Tokens
 	}
+	running.Compute = event.Result.Compute
+	running.TokenUSD = event.Result.TokenUSD
 	if event.Result.TurnCount > 0 {
 		running.TurnCount = event.Result.TurnCount
 	}

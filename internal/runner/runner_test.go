@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
@@ -351,6 +352,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
+	measured := &compute.Usage{CPUSeconds: 3.4, AvgMemoryBytes: .43e9, WallSeconds: 10.1, ComputeUSD: .00012}
+	runner.startCompute = func(compute.Rates) func() *compute.Usage { return func() *compute.Usage { return measured } }
 	var usageUpdates []UsageUpdate
 	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
@@ -574,6 +577,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.usage.ModelContextWindow == nil || *sessionStore.usage.ModelContextWindow != modelContextWindow {
 		t.Fatalf("UsageEvent ModelContextWindow = %#v, want %d", sessionStore.usage.ModelContextWindow, modelContextWindow)
+	}
+	if result.Compute != measured || sessionStore.usage.Compute != measured || math.Abs(result.TokenUSD-.00078) > 1e-12 {
+		t.Fatalf("compute/token costs = %+v / %+v", result, sessionStore.usage)
 	}
 	if math.Abs(sessionStore.usage.CostUSD-0.00078) > 0.000000000001 {
 		t.Fatalf("UsageEvent CostUSD = %.12f, want 0.000780000000", sessionStore.usage.CostUSD)
@@ -1467,10 +1473,18 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				t.Fatalf("NewRunner() error = %v", err)
 			}
 
+			runner.startCompute = func(compute.Rates) func() *compute.Usage {
+				return func() *compute.Usage {
+					return &compute.Usage{CPUSeconds: 1, AvgMemoryBytes: 1e9, WallSeconds: 2, ComputeUSD: .001}
+				}
+			}
 			result, runErr := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
 				ID: "issue-18", Identifier: "acme/widgets#18", Title: "Recover delivery", State: "In Progress",
 				BranchName: branch, PRRepository: "acme/widgets",
 			}})
+			if result.Compute == nil || result.Compute.CPUSeconds != 2 || result.Compute.WallSeconds != 4 || result.Compute.ComputeUSD != .002 {
+				t.Fatalf("recovery compute = %+v, want both turns", result.Compute)
+			}
 			if tt.wantInterrupted != nil {
 				var recoveryErr *DeliverableRecoveryError
 				if !errors.Is(runErr, tt.wantInterrupted) || errors.As(runErr, &recoveryErr) || result.FinalState == FinalStateNeedsHumanAttention {
@@ -5867,8 +5881,10 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	}
 	codeBackend := &fakeCodexClient{}
 	workspaceReaped := ""
+	sessionStore := &fakeSessionStore{sessionID: 522}
 
 	runner, err := NewRunner(Dependencies{
+		Store:             sessionStore,
 		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
 		Workflow: config.Workflow{
 			Config: config.Config{
@@ -5908,6 +5924,8 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
+	measured := &compute.Usage{CPUSeconds: 3, AvgMemoryBytes: 1e9, WallSeconds: 4, ComputeUSD: .001}
+	runner.startCompute = func(compute.Rates) func() *compute.Usage { return func() *compute.Usage { return measured } }
 	result, err := runner.Validate(context.Background(), ValidatorRequest{
 		Issue: connector.Issue{
 			ID:          "issue-522",
@@ -5928,6 +5946,9 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 		t.Fatalf("Validate() error = %v", err)
 	}
 
+	if sessionStore.usage.Compute != measured {
+		t.Fatalf("validator compute = %+v", sessionStore.usage.Compute)
+	}
 	if !result.Submitted || result.Verdict != gate.ValidatorVerdictPass || result.Score != 0.93 {
 		t.Fatalf("Validate() result = %#v, want submitted pass score 0.93", result)
 	}

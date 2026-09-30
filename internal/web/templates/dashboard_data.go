@@ -67,6 +67,8 @@ const (
 )
 
 type DashboardData struct {
+	AttemptCosts              []AttemptCostData
+	AttemptCostsError         string
 	latestBoardAttempts       map[string]*telemetry.WorkAttempt
 	ConfiguredAgents          map[string]agentidentity.Identity
 	RunnerFleetEnabled        bool

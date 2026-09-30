@@ -193,6 +193,8 @@ func usageReportTemplateData(response usageReportAPIResponse) templates.UsageRep
 
 func usageTotalsTemplateData(totals usageTotalsAPIResponse) templates.UsageTotalsData {
 	return templates.UsageTotalsData{
+		ComputeUSD:            totals.ComputeUSD,
+		ComputeEvents:         totals.ComputeEvents,
 		InputTokens:           totals.InputTokens,
 		CachedInputTokens:     totals.CachedInputTokens,
 		OutputTokens:          totals.OutputTokens,
@@ -211,6 +213,8 @@ func usageBucketTemplateData(rows []usageBucketAPIResponse) []templates.UsageBuc
 	payload := make([]templates.UsageBucketData, 0, len(rows))
 	for _, row := range rows {
 		payload = append(payload, templates.UsageBucketData{
+			ComputeUSD:            row.ComputeUSD,
+			ComputeEvents:         row.ComputeEvents,
 			Bucket:                row.Bucket,
 			Label:                 row.Label,
 			Date:                  optionalStringValue(row.Date),
@@ -234,6 +238,8 @@ func usageModelsTemplateData(models []usageModelAPIResponse) []templates.UsageMo
 	payload := make([]templates.UsageModelData, 0, len(models))
 	for _, model := range models {
 		payload = append(payload, templates.UsageModelData{
+			ComputeUSD:            model.ComputeUSD,
+			ComputeEvents:         model.ComputeEvents,
 			Model:                 model.Model,
 			InputTokens:           model.InputTokens,
 			CachedInputTokens:     model.CachedInputTokens,

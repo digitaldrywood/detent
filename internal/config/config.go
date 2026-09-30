@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
@@ -330,14 +331,15 @@ type DeliverableElicitationRule struct {
 }
 
 type Worker struct {
-	SSHHosts                       []string       `yaml:"ssh_hosts"`
-	HostSelection                  string         `yaml:"host_selection,omitempty" json:"HostSelection,omitempty"`
-	HostCaps                       map[string]int `yaml:"host_caps,omitempty" json:"HostCaps,omitempty"`
-	MaxConcurrentAgentsPerHost     *int           `yaml:"max_concurrent_agents_per_host"`
-	GitHubToken                    string         `yaml:"github_token,omitempty"`
-	GitHubTokenResolutionTimeoutMS int            `yaml:"github_token_resolution_timeout_ms"`
-	GitHubRESTMinReserve           int            `yaml:"github_rest_min_remaining_reserve"`
-	GitHubRESTPollIntervalMS       int            `yaml:"github_rest_poll_interval_ms"`
+	ComputeRates                   map[string]compute.Rates `yaml:"compute_rates,omitempty" json:"ComputeRates,omitempty"`
+	SSHHosts                       []string                 `yaml:"ssh_hosts"`
+	HostSelection                  string                   `yaml:"host_selection,omitempty" json:"HostSelection,omitempty"`
+	HostCaps                       map[string]int           `yaml:"host_caps,omitempty" json:"HostCaps,omitempty"`
+	MaxConcurrentAgentsPerHost     *int                     `yaml:"max_concurrent_agents_per_host"`
+	GitHubToken                    string                   `yaml:"github_token,omitempty"`
+	GitHubTokenResolutionTimeoutMS int                      `yaml:"github_token_resolution_timeout_ms"`
+	GitHubRESTMinReserve           int                      `yaml:"github_rest_min_remaining_reserve"`
+	GitHubRESTPollIntervalMS       int                      `yaml:"github_rest_poll_interval_ms"`
 }
 
 type Agent struct {
@@ -1697,6 +1699,11 @@ func (c *Config) Validate() error {
 	validatePositive("worker.github_rest_min_remaining_reserve", c.Worker.GitHubRESTMinReserve, &problems)
 	if c.Worker.GitHubRESTPollIntervalMS < 60000 {
 		problems = append(problems, "worker.github_rest_poll_interval_ms must be greater than or equal to 60000")
+	}
+	for host, rates := range c.Worker.ComputeRates {
+		if err := rates.Validate(); err != nil {
+			problems = append(problems, "worker.compute_rates."+host+": "+err.Error())
+		}
 	}
 	c.Agent.validate("agent", &problems)
 	c.validateStopRun(&problems)

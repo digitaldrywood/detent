@@ -82,6 +82,8 @@ type UsageReportData struct {
 }
 
 type UsageTotalsData struct {
+	ComputeUSD            float64
+	ComputeEvents         int64
 	InputTokens           int64
 	CachedInputTokens     int64
 	OutputTokens          int64
@@ -96,6 +98,8 @@ type UsageTotalsData struct {
 }
 
 type UsageBucketData struct {
+	ComputeUSD            float64
+	ComputeEvents         int64
 	Bucket                string
 	Label                 string
 	Date                  string
@@ -113,6 +117,8 @@ type UsageBucketData struct {
 }
 
 type UsageModelData struct {
+	ComputeUSD            float64
+	ComputeEvents         int64
 	Model                 string
 	InputTokens           int64
 	CachedInputTokens     int64

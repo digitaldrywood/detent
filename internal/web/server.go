@@ -624,6 +624,9 @@ func (s *Server) apiBoardCard(c echo.Context) error {
 	activityData := boardActivityBaseData(issue, activityRequest)
 	activityData.Pending = true
 	sessionData := boardSessionSnapshotData(data.Snapshot, issue, projectID)
+	if !demo {
+		s.loadBoardAttemptCosts(c.Request().Context(), &data, card.ProjectID, card.IssueID, card.Identifier)
+	}
 	return render(c, templates.BoardCardSheet(data, card, boardActions, expanded, conversation, activityData, sessionData))
 }
 
