@@ -12,6 +12,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -86,6 +87,7 @@ func newHubScheduling(cfg globalconfig.Config, version string, intakeTokens ...g
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
 		GitHubIntake:    github.FetchIssueSnapshot,
+		IsolationReport: func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		Machine: hubclient.Machine{

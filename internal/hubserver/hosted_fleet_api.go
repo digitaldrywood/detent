@@ -169,7 +169,7 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
-		view := hostedFleetRunnerView(runner, entry.version, visible)
+		view := hostedFleetRunnerView(runner, entry.version, visible, s.config.now())
 		if editable {
 			view.Routing = &runner.Routing
 			view.Revision = runner.Revision
@@ -196,9 +196,9 @@ func scopeHostUsage(runners []hostedFleetRunner) {
 	}
 }
 
-func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map[tracker.ProjectID]bool) hostedFleetRunner {
+func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map[tracker.ProjectID]bool, now time.Time) hostedFleetRunner {
 	view := hostedFleetRunner{
-		ID: runner.RunnerID, DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Health,
+		ID: runner.RunnerID, DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Status(now),
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},

@@ -362,6 +362,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 
 	if event.Err != nil {
+		interrupted := runpkg.IsAvailabilityInterruption(event.Err)
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
 			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
 			telemetry.DetentSessionIDKey, running.DetentSessionID,
@@ -381,7 +382,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		progress := implementCompletionProgressDecision{}
 		progressMetadata := map[string]any{}
-		if !mergeWorkerIssue(running.Issue) && strings.TrimSpace(event.Request.Mode) != runpkg.RunModePlan && strings.TrimSpace(running.Mode) != runpkg.RunModePlan {
+		if !interrupted && !mergeWorkerIssue(running.Issue) && strings.TrimSpace(event.Request.Mode) != runpkg.RunModePlan && strings.TrimSpace(running.Mode) != runpkg.RunModePlan {
 			if diffStatsPresent(event.Result.DiffStats) {
 				running.DiffStats = event.Result.DiffStats
 			}
@@ -391,7 +392,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			progressMetadata = implementCompletionProgressMetadata(progress)
 		}
 		spendProgress := spendProgressDecision{}
-		if !mergeWorkerIssue(running.Issue) {
+		if !interrupted && !mergeWorkerIssue(running.Issue) {
 			evidenceWarning := ""
 			if !pushEvidenceRefreshed && o.spendProgressEnabled() {
 				running.Issue, evidenceWarning = o.refreshSpendProgressIssue(ctx, running.Issue)
@@ -407,6 +408,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		errorMessage := event.Err.Error()
 		phase := "failed"
 		statusMessage := "worker failed"
+		if interrupted {
+			phase = "cancelled"
+		}
 		if running.Cancellation != nil {
 			statusMessage = running.Cancellation.Error()
 		}
@@ -442,67 +446,71 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			deliverableCommandEvidenceMetadata(event.Result),
 		))
 		attempt := event.RetryAttempt
-		if attempt < 1 {
+		if interrupted {
+			attempt = running.Attempt
+		} else if attempt < 1 {
 			attempt = nextAttempt(running.Attempt)
 		}
-		if deliverableRecoveryMachineOwned(deliverableLookup) {
-			running.Issue = o.returnMissingDeliverableBranchToRework(ctx, state, running.Issue, deliverableLookup, event.CompletedAt)
-		} else if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
-			return
-		}
-		if projectionFailure && o.blockHumanOwnedWorkerFailure(
-			ctx,
-			state,
-			event,
-			running,
-			budgetProjectionCeilingFailureCause,
-			fmt.Sprintf("session cost %.6f USD exceeded the admitted projection %.6f USD using estimate source %q", projectionErr.ObservedCostUSD, projectionErr.ProjectedCostUSD, projectionErr.EstimateSource),
-			"inspect the preserved worktree and either narrow the task or adjust the budget policy before moving the issue to Rework",
-			"worker_budget_projection_ceiling_tripped",
-			"estimate_source", projectionErr.EstimateSource,
-		) {
-			return
-		}
-		if o.tripTokenCeilingCircuitBreaker(ctx, state, event, running, attempt) {
-			return
-		}
-		if progress.Block && progress.BlockReason == dispatchLoopDetectedReason && o.blockImplementProgress(ctx, state, running, progress, event.CompletedAt) {
-			return
-		}
-		if spendProgress.Block && o.blockSpendProgress(ctx, state, running, spendProgress, event.CompletedAt) {
-			return
-		}
-		if mergeWorkerIssue(running.Issue) {
-			o.logMergeWorkerFailure(running.Issue, "runner_failed", event.Err)
-			o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
-		}
-		if mergeWorkerIssue(running.Issue) && attempt > maxMergeWorkerRunnerFailures {
-			if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, mergeWorkerRetryExhaustedReason, attempt, event.Err) {
+		if !interrupted {
+			if deliverableRecoveryMachineOwned(deliverableLookup) {
+				running.Issue = o.returnMissingDeliverableBranchToRework(ctx, state, running.Issue, deliverableLookup, event.CompletedAt)
+			} else if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
 				return
 			}
-		}
-		if o.tripInstantFailureCircuitBreaker(ctx, state, event, running, attempt) {
-			return
-		}
-		if o.tripRepeatedFailureCircuitBreaker(ctx, state, event, running, attempt) {
-			return
-		}
-		if terminalAttemptStateRetryDemotable(terminalState) {
-			var parked bool
-			running.Issue, _, parked = o.demoteTerminalAttemptRetry(
+			if projectionFailure && o.blockHumanOwnedWorkerFailure(
 				ctx,
 				state,
-				running.Issue,
-				running.WorkProductPushed,
-				terminalAttemptRetryLimitCause,
-				attemptCompleted,
-				running.Mode,
-				running.DiffStats,
-				event.CompletedAt,
-				terminalAttemptFailureEvidence(running, terminalState, errorClass, errorMessage, event.CompletedAt),
-			)
-			if parked {
+				event,
+				running,
+				budgetProjectionCeilingFailureCause,
+				fmt.Sprintf("session cost %.6f USD exceeded the admitted projection %.6f USD using estimate source %q", projectionErr.ObservedCostUSD, projectionErr.ProjectedCostUSD, projectionErr.EstimateSource),
+				"inspect the preserved worktree and either narrow the task or adjust the budget policy before moving the issue to Rework",
+				"worker_budget_projection_ceiling_tripped",
+				"estimate_source", projectionErr.EstimateSource,
+			) {
 				return
+			}
+			if o.tripTokenCeilingCircuitBreaker(ctx, state, event, running, attempt) {
+				return
+			}
+			if progress.Block && progress.BlockReason == dispatchLoopDetectedReason && o.blockImplementProgress(ctx, state, running, progress, event.CompletedAt) {
+				return
+			}
+			if spendProgress.Block && o.blockSpendProgress(ctx, state, running, spendProgress, event.CompletedAt) {
+				return
+			}
+			if mergeWorkerIssue(running.Issue) {
+				o.logMergeWorkerFailure(running.Issue, "runner_failed", event.Err)
+				o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
+			}
+			if mergeWorkerIssue(running.Issue) && attempt > maxMergeWorkerRunnerFailures {
+				if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, mergeWorkerRetryExhaustedReason, attempt, event.Err) {
+					return
+				}
+			}
+			if o.tripInstantFailureCircuitBreaker(ctx, state, event, running, attempt) {
+				return
+			}
+			if o.tripRepeatedFailureCircuitBreaker(ctx, state, event, running, attempt) {
+				return
+			}
+			if terminalAttemptStateRetryDemotable(terminalState) {
+				var parked bool
+				running.Issue, _, parked = o.demoteTerminalAttemptRetry(
+					ctx,
+					state,
+					running.Issue,
+					running.WorkProductPushed,
+					terminalAttemptRetryLimitCause,
+					attemptCompleted,
+					running.Mode,
+					running.DiffStats,
+					event.CompletedAt,
+					terminalAttemptFailureEvidence(running, terminalState, errorClass, errorMessage, event.CompletedAt),
+				)
+				if parked {
+					return
+				}
 			}
 		}
 		delay := event.RetryDelay

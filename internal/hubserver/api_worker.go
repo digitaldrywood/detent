@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -350,6 +351,11 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now); err != nil {
 			return tracker.Lease{}, err
 		}
+		if !query.WorkspaceLane {
+			if err := validateRunnerIsolation(ctx, tx, *query.NativeScope, now); err != nil {
+				return tracker.Lease{}, err
+			}
+		}
 	}
 	claimableRepositories := make(map[tracker.RepositoryID]struct{})
 	if query.NativeScope == nil {
@@ -431,7 +437,15 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 		}
 		if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO lease_runners (lease_id, runner_id) VALUES (?, ?)", lease.ID, query.NativeScope.credential.Runner.RunnerID); err != nil {
+			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, query.NativeScope.organization, query.NativeScope.credential.Runner.RunnerID)
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			policy, err := json.Marshal(isolation.Policy{Tier: snapshot.Routing.IsolationTier, HostServices: snapshot.Routing.HostServices})
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			if _, err := tx.ExecContext(ctx, "INSERT INTO lease_runners (lease_id, runner_id, isolation_policy_json) VALUES (?, ?, ?)", lease.ID, query.NativeScope.credential.Runner.RunnerID, string(policy)); err != nil {
 				return tracker.Lease{}, err
 			}
 		}
