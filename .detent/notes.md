@@ -2,21 +2,27 @@
 
 ## Codex Workpad
 
-Plan: recover merge `9b8c9a360e7a2ca400a1afcb01926229828e4d02`, incorporate fetched develop `3ce76fc185cf1d090eacaa27779ac77cfc84587c`, review the full issue diff, run configured `true` on the committed head, and publish ready PR #3472 with an exact lease. Rework was caused by target advancement during the preceding fallback; no actionable reviews or threads existed at inspection.
+Plan and result: attempt 7300 / generation 9 recovers merge 9b8c9a360e7a2ca400a1afcb01926229828e4d02 and merges fetched develop 3ce76fc185cf1d090eacaa27779ac77cfc84587c into retained PR history (merge f69dcbc3773bb3ec6873ef6971ab362c29706bb0). Rework followed target advancement during the prior fallback, with no actionable review findings. Both published head bb4bb74e83bdd5eebeac0aa86a3cb89a75dfe807 and the fetched target remain ancestors; no rebase was performed. A final target fetch remains at the same commit.
 
-Recovery: inspected all 20 changed paths in the recovered merge. Its 18 source paths exactly match its target `69781ca9505d8356771e2e4d5c1552d5316cbac5`; docs/invariants.md combines incoming enforcement documentation with the issue's existing INV-2 intake boundary, and notes retain the conflict resolution. Retain this issue-owned merge for publication; no stray artifacts or dirty source were present. Current target merge conflicts only in notes; preserve both branches' historical handoffs.
+Recovery: inspected every one of the recovered merge's 20 changed paths. Its 18 source paths match its earlier target exactly; docs/invariants.md retains the issue's INV-2 intake documentation alongside incoming enforcement documentation; notes preserve the manual conflict resolution. Retained this issue-owned merge for publication, with no stray artifacts or dirty source. The current target merge conflicted only in notes; historical handoffs from both branches are retained.
 
-Key files: internal/hubserver/onboarding_issue_intake.go, linked_issue_sources.go, migrations/00051_onboarding_issue_intake.sql, internal/hubclient/github_batch.go, internal/connector/github/issue_discovery.go, and web/conversation/src/app/account/IssueIntake.tsx. Existing migration collision and typed-return resolutions remain present. Dependency #3257 is merged in develop at 3844f54e75edc8df931d7221c7f62dcb3d71b37e.
+Key files: internal/hubserver/onboarding_issue_intake.go, linked_issue_sources.go, migrations/00051_onboarding_issue_intake.sql, internal/hubclient/github_batch.go, internal/connector/github/issue_discovery.go, and web/conversation/src/app/account/IssueIntake.tsx. Existing typed-return and migration collision resolutions are retained. Dependency #3257 is verified as an ancestor of fetched develop at 3844f54e75edc8df931d7221c7f62dcb3d71b37e.
 
-Validation: source review and any focused diagnostics are pending. Prior implementation tests/browser evidence and fallback generation are historical. No full checks or CI waiting are authorized or required; configured gate is true and confers no test credit.
+Repair: the existing TestOpenCreatesHubSchemaAndConfiguresSQLite failed because its expected-table list omitted onboarding_issue_intake. Added that table to the existing fixture; no new test or runtime behavior was added. Full issue diff reviewed. Except for this fixture, all issue source/tests, generated client assets and browser evidence exactly match the published resolution. No generated inputs changed, so no generation or new browser session was needed.
 
-Open items: finish review, gate and publication; update exact-head feedback/check evidence in the canonical issue Workpad. Orchestrator owns tracker lanes and squash merging. Live port 4000 remains untouched.
+Validation: Go 1.26.6 focused intake, discovery, snapshots, linked-source/native landing, schema creation and migration preservation tests pass across hubserver (2.326s), hubclient (2.890s), and connector/github (1.008s); command 8.1s, GOMAXPROCS=4 and -p 4, DETENT_API_TOKEN cleared. Initial command failed solely on the omitted schema-table expectation (19.9s); fixture repaired before the passing run. Frontend typecheck and all five issue-intake/checkout component tests passed (17.3s combined command). Whitespace inspection passed. Prior Chrome evidence covers identical UI source/assets. Configured true runs on the final committed head immediately before publication and supplies no test credit or status; exact-head publication/gate evidence is recorded in the canonical issue Workpad. No full suite, coverage, race suite, CI wait or live-instance mutation performed.
+
+Handoff: PR #3472 is ready, targets develop and includes Fixes #3258. At initial inspection, reviews and threads were empty; the review bot hit its usage limit without findings. Current-head checks were absent, an expected skip with no test credit. Final head, feedback and checks are recorded in the canonical issue Workpad after publication. No quiet window, PR CI or merge-group workflow applies. Detent owns promotion, tracker lanes, squash merging and scheduled integrated validation. No out-of-scope finding or dependency remains.
 
 Skill draft: no — existing recovery, Go review and merge guidance covers this work.
 
 ```detent-status
 schema: 1
-status: in_progress
+status: complete
+fields:
+  completion_work_attempt_id: "7300"
+  completion_generation: "9"
+  completion_cleanliness_resolution: committed
 blockers: []
 human_action: null
 ```
