@@ -763,7 +763,8 @@ func githubTrackerHostname(tracker config.Tracker) string {
 	return parsed.Host
 }
 
-const repositoryHandoffContract = "Use the current Detent completion contract for handoff; Detent owns durable attempt and session records. Ignore earlier instructions to maintain repository notes. Do not create, update, stage, or commit `.detent/notes.md` for runtime handoff. Leave existing notes intact."
+const repositoryHandoffContract = "Use the current Detent completion contract for handoff; Detent owns durable attempt and session records. Ignore earlier instructions to maintain repository notes. Do not create, update, stage, or commit `.detent/notes.md` for runtime handoff. Leave existing notes intact." +
+	"\n\nAcceptance explicitly requiring this change to be integrated or released belongs to the existing post-integration owner. Finish the source changes and all required pre-merge verification, then record the exact PR/head, pending acceptance, verification procedure, required authorization, and responsible owner in the Workpad and final handoff. Reuse a matching follow-up or, when the project permits, file it through file_machine_issue in Backlog. Do not park completed source work solely because its own unmerged PR has not yet been released. Pending acceptance remains unverified; do not claim it passed. Detent owns integration and the project's release owner owns deployment; source workers must not merge or deploy merely to make their own PR mergeable. Preserve explicit pre-merge runtime evidence, human approvals, and project gates. If no permitted post-integration owner exists, retain the original acceptance requirement."
 
 func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 	completionFields := ""
