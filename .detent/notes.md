@@ -355,20 +355,22 @@ human_action: null
 
 ## Codex Workpad
 
-Plan: #3417 repairs the existing operator-move regression fixture. Reproduced the timeout on fetched develop 9826088a821ba72ecfd033bc60b9ed3138762507. Transition snapshot reuse (#3393) skips reads for already-fetched cards, leaving the untargeted injected failure for dispatch hydration. The fixture now supplies the unrelated Blocked card through the observed feed initially, then omits it from both feeds to force its transition lookup to fail. The existing assertions prove Rework dispatch and preservation of the unrelated block; a failure-consumption assertion prevents passing without the injected failure. Production behavior and invariants are unchanged.
+Plan and result: #3417 repairs the existing operator-move regression fixture. The prior attempt reproduced the timeout on develop 9826088a821ba72ecfd033bc60b9ed3138762507: snapshot reuse skipped transition reads for fetched cards, leaving the untargeted injected error for dispatch hydration. The fixture supplies the unrelated Blocked card through the initial observed feed, then omits it from both feeds to force its transition lookup to fail. Existing assertions prove Rework dispatch and preservation of the unrelated block; the added assertion proves error consumption. Production behavior and invariants are unchanged.
 
-Validation: original focused reproduction failed at orchestrator_test.go:2285 with the dispatch hydration warning. Repaired regression passed (0.616s package time). Related operator-move, blocked-status, and transition-snapshot tests passed five repetitions (0.774s package time; 3.1s command wall time). No source changes followed diagnostics; no generated inputs changed. Configured gate: true, to run on committed head before publication; no full suite, coverage, race suite, or CI wait. Current-head PR review/check evidence belongs in the canonical issue Workpad. Quiet window not configured; no-op gate under 1s; no PR or merge-group CI configured; post-merge validation belongs to Detent.
+Rework attempt 7162 / generation 33: verified clean local HEAD matched published PR #3435 head 44d367cc86a9d96650ded69e3cc78da189bf4e30 and read the canonical issue Workpad and feedback. Rework was caused by merge conflicts, with no actionable review findings. Rebased onto fetched develop 4e4334ef3e97a4bf593b81654b3be8d457c8b1e4. Only .detent/notes.md conflicted; preserved target historical handoffs and consolidated one current Workpad/status fence. The repaired Go test file exactly matches the prior published source.
 
-Handoff: PR #3435 targets develop and includes Fixes #3417. Initial published head had no reviews, comments, threads, or status checks. Final committed-head gate, publication, ready state, and feedback evidence are recorded in the canonical issue Workpad. Merge and post-merge validation remain orchestrator-owned. No dependency or out-of-scope finding. No tracker lane writes.
+Validation: related operator-move, blocked-status, and transition-snapshot diagnostics passed five repetitions on the rebased source: env -u DETENT_API_TOKEN GOMAXPROCS=4 go test -p 4 ./internal/orchestrator -run '^(TestRunDispatchesOperatorMovedBlockedIssueDuringDegradedTransitionRefresh|TestHandleOperatorMove.*|TestRunTracksBlockedStatusIssuesForDisplayOnly|TestRefreshTransitionSets.*|TestTrackBlockedStatusIssuesResolvesCauseByPrecedence)$' -count=5 (0.692s package time; 8.2s command wall time). Original reproduction and prior repaired tests are recorded in the canonical issue Workpad. Whitespace inspection passed. No generated inputs changed; subsequent edits are notes only. Configured gate: true, to run on the committed head immediately before publication. No full gate, coverage, race suite, or CI wait.
 
-Skill draft: no — existing operator-mutation-runtime-reconciliation guidance covers this regression; no new reusable procedure needed.
+Handoff: PR #3435 remains open, non-draft, targets develop, and includes Fixes #3417. At inspection, reviews and review threads were empty; the review bot reported its usage limit without findings. Current-head checks were absent, an expected skip with no test credit. Final committed-head gate, publication, mergeability, and feedback evidence are recorded in the canonical issue Workpad. Quiet window not configured; no-op gate under 1s; PR CI, merge-group CI, and slow checks not applicable. Merge and post-merge integrated develop validation remain orchestrator-owned. No dependency, out-of-scope finding, tracker lane writes, or live-instance mutation.
+
+Skill draft: no — existing guidance covers this fixture repair and notes conflict resolution.
 
 ```detent-status
 schema: 1
 status: complete
 fields:
-  completion_work_attempt_id: "7136"
-  completion_generation: "7"
+  completion_work_attempt_id: "7162"
+  completion_generation: "33"
 blockers: []
 human_action: null
 ```
