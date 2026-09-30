@@ -47,6 +47,11 @@ iterating:
 make nilaway-audit
 ```
 
+The scheduled audit uses `make nilaway-changed`. Despite its historical name,
+it analyzes all Go packages so changes to a provider's inferred nilability also
+check unchanged importers. It accepts only reviewed legacy diagnostics whose
+location and source-line hash match `scripts/nilaway-baseline.json`.
+
 The project uses the standalone NilAway command instead of golangci-lint
 integration because the linter integration requires a custom module-plugin
 binary. Go 1.26's experimental `runtime/pprof` `goroutineleak` profile remains a

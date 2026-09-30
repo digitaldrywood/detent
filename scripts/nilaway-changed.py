@@ -12,25 +12,12 @@ DIAGNOSTIC = re.compile(r"^(?P<path>\S+\.go):(?P<line>\d+):(?P<column>\d+):\s*(?
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def git(*args):
-    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
-
-
 def main():
     version, include_packages = sys.argv[1:]
-    try:
-        previous = git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD")
-        changed = git("diff", "--name-only", "--diff-filter=ACMRT", previous, "HEAD", "--", "*.go")
-    except subprocess.CalledProcessError:
-        changed = git("ls-files", "--", "*.go")
-    packages = sorted({"./" + str(Path(name).parent) for name in changed.splitlines() if (ROOT / name).is_file()})
-    if not packages:
-        print("No changed Go packages to audit")
-        return 0
-
     baseline = json.loads(BASELINE.read_text())
     allowed = {(entry["file"], entry["line"], entry["column"], entry["rule"]): entry["source_sha256"] for entry in baseline}
-    command = ["go", "run", f"go.uber.org/nilaway/cmd/nilaway@{version}", f"-include-pkgs={include_packages}", *packages]
+    # A provider's inferred nilability can create diagnostics in unchanged importers.
+    command = ["go", "run", f"go.uber.org/nilaway/cmd/nilaway@{version}", f"-include-pkgs={include_packages}", "./..."]
     result = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
     unexpected = []
     diagnostics = 0
@@ -62,7 +49,7 @@ def main():
     if result.returncode and not diagnostics:
         print(result.stdout)
         return result.returncode
-    print(f"Audited {len(packages)} changed Go packages; {diagnostics} reviewed legacy diagnostics")
+    print(f"Audited all Go packages; {diagnostics} reviewed legacy diagnostics")
     return 0
 
 
