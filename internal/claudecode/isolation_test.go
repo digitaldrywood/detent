@@ -122,10 +122,7 @@ func TestCommandRejectsIsolationFailures(t *testing.T) {
 }
 
 func TestEffectiveIsolationRejectsWeakenedSettings(t *testing.T) {
-	expected, err := IsolationSettings(isolation.Policy{Tier: isolation.Sandbox, WritableRoots: []string{t.TempDir()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	expected := sandboxSettings(t)
 	for _, change := range []string{"none", "disabled", "unsandboxed", "domains", "sockets", "excluded commands"} {
 		t.Run(change, func(t *testing.T) {
 			encoded, _ := json.Marshal(expected)
@@ -154,10 +151,7 @@ func TestEffectiveIsolationRejectsWeakenedSettings(t *testing.T) {
 }
 
 func TestSandboxHandshakeVerifiesBeforePrompt(t *testing.T) {
-	settings, err := IsolationSettings(isolation.Policy{Tier: isolation.Sandbox, WritableRoots: []string{t.TempDir()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	settings := sandboxSettings(t)
 	for _, valid := range []bool{true, false} {
 		expected := settings
 		var effective any = settings
@@ -253,4 +247,19 @@ func TestSandboxShellHelper(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+func sandboxSettings(t *testing.T) map[string]any {
+	t.Helper()
+	settings, err := IsolationSettings(isolation.Policy{Tier: isolation.Sandbox, WritableRoots: []string{t.TempDir()}})
+	if !isolation.SandboxAvailable() {
+		if !errors.Is(err, isolation.ErrSandboxUnavailable) {
+			t.Fatalf("error = %v, want sandbox unavailable", err)
+		}
+		t.Skip("the sandbox tier is unavailable on this platform")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return settings
 }
