@@ -92,7 +92,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	}
 
 	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
-	for _, issue := range o.autoPromoteEvaluationIssues(state, issues, cfg) {
+	for _, issue := range o.autoPromoteEvaluationIssues(ctx, state, issues, cfg) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
@@ -163,6 +163,14 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			var hydrated bool
 			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
 			if !hydrated {
+				continue
+			}
+		}
+		if normalizeState(issue.State) == normalizeState(blockedStatusState) && normalizeState(cfg.SourceState) != normalizeState(blockedStatusState) {
+			completed := state.Completed[issueID]
+			accepted := completed.gateWaitEvidence.PullRequest
+			if accepted == nil || issue.PullRequest == nil || accepted.Number != issue.PullRequest.Number ||
+				strings.TrimSpace(accepted.HeadSHA) == "" || strings.TrimSpace(accepted.HeadSHA) != strings.TrimSpace(issue.PullRequest.HeadSHA) {
 				continue
 			}
 		}
@@ -345,6 +353,7 @@ func recordAutoPromoteSnapshotDecision(state *State, issueID string, decision Au
 }
 
 func (o *Orchestrator) autoPromoteEvaluationIssues(
+	ctx context.Context,
 	state *State,
 	issues []connector.Issue,
 	cfg AutoPromoteConfig,
@@ -357,6 +366,33 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 	seen := make(map[string]struct{}, len(out))
 	for _, issue := range out {
 		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+			seen[issueID] = struct{}{}
+		}
+	}
+
+	if !cfg.humanReviewEnabled() && state != nil {
+		for _, issue := range issuesInStates(issues, []string{blockedStatusState}) {
+			issueID := strings.TrimSpace(issue.ID)
+			if issueID == "" {
+				continue
+			}
+			if _, running := state.Running[issueID]; running {
+				continue
+			}
+			if _, included := seen[issueID]; included || o.issueHasStickyBlockReason(ctx, state, issue) || issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
+				continue
+			}
+			entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+			if !ok || normalizeState(entry.Event.PhaseName) != normalizeState(issue.State) ||
+				!workflowLaneEntryMatchesCurrent(issue, entry.Event) || entry.Event.Reason != "completed_active_review_transition" {
+				continue
+			}
+			attempt, ok, err := o.latestSuccessfulGateWaitAttempt(ctx, issue)
+			if err != nil || !ok {
+				continue
+			}
+			state.Completed[issueID] = completedFromGateWaitAttempt(issue, attempt)
+			out = append(out, cloneIssue(issue))
 			seen[issueID] = struct{}{}
 		}
 	}
@@ -671,6 +707,19 @@ func gateWaitAttemptMatchesPullRequest(attempt store.WorkAttempt, issue connecto
 	}
 	if issue.PullRequest == nil {
 		return false
+	}
+	if record.CurrentSignature.HeadSHA == "" && record.CurrentSignature.PRNumber == 0 {
+		var metadata struct {
+			RunMode           string `json:"run_mode"`
+			PRNumber          int64  `json:"pr_number"`
+			PRHeadSHA         string `json:"pr_head_sha"`
+			WorkProductPushed bool   `json:"work_product_pushed"`
+		}
+		if err := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata); err != nil || metadata.RunMode != runpkg.RunModeImplement || !metadata.WorkProductPushed {
+			return false
+		}
+		record.CurrentSignature.PRNumber = metadata.PRNumber
+		record.CurrentSignature.HeadSHA = metadata.PRHeadSHA
 	}
 	currentHeadSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
 	attemptHeadSHA := strings.TrimSpace(record.CurrentSignature.HeadSHA)

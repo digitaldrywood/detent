@@ -23,7 +23,7 @@ func TestMergingSecurityAuditCandidate(t *testing.T) {
 			issue := securityAuditTestIssue()
 			issue.State = "Merging"
 			state := newState(o.cfg)
-			got := o.autoPromoteEvaluationIssues(&state, []connector.Issue{issue}, normalizeAutoPromoteConfig(o.cfg.AutoPromote))
+			got := o.autoPromoteEvaluationIssues(t.Context(), &state, []connector.Issue{issue}, normalizeAutoPromoteConfig(o.cfg.AutoPromote))
 			if (len(got) == 1) != enabled {
 				t.Fatalf("candidates = %d, audit enabled = %v", len(got), enabled)
 			}
