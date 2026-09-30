@@ -98,7 +98,8 @@ func (o *Orchestrator) stopWorkspaceCleanup() {
 }
 
 func cleanupIssueOrder(issues []connector.Issue, cursor string) []connector.Issue {
-	ordered := append([]connector.Issue(nil), issues...)
+	ordered := make([]connector.Issue, len(issues))
+	copy(ordered, issues)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	next := sort.Search(len(ordered), func(i int) bool { return ordered[i].ID > cursor })
 	return append(ordered[next:], ordered[:next]...)

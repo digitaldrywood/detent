@@ -49,20 +49,6 @@
     "source_sha256": "50d2c510d0242e4fa3007ac689aa08e03882af2d95e62c97db3b0ef4eacbe346"
   },
   {
-    "file": "internal/orchestrator/workspace_cleanup.go",
-    "line": 104,
-    "column": 16,
-    "rule": "Potential nil panic detected",
-    "source_sha256": "e495a7a514460abf45d55257c12271a791fd74a8cfb64827bc5c1e11889dbfd0"
-  },
-  {
-    "file": "internal/workspace/workspace_session_test.go",
-    "line": 458,
-    "column": 4,
-    "rule": "Potential nil panic detected",
-    "source_sha256": "ae0bbf763e2702344a7b587531c12483648fef5e753f3444165bab267172b293"
-  },
-  {
     "file": "internal/workspacerunner/actions.go",
     "line": 143,
     "column": 7,
