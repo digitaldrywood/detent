@@ -422,33 +422,22 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 
 func TestPromptWrapperBytes(t *testing.T) {
 	t.Parallel()
-	loaded, err := skills.Load("../..", skills.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(loaded.Skills) != skills.DefaultMaxSkillsInPrompt {
-		t.Fatalf("fixture needs capped skills: %d", len(loaded.Skills))
-	}
-	if len(loaded.Dropped) != 0 {
-		t.Fatalf("repository skills dropped: %+v", loaded.Dropped)
+	// Keep the size fixture independent of the repository's changing catalog.
+	available := make([]skills.Skill, skills.DefaultMaxSkillsInPrompt)
+	for i := range available {
+		available[i] = skills.Skill{Name: "repository-skill-" + strconv.Itoa(i)}
 	}
 	workspacePath := t.TempDir()
-	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: loaded.Skills, WorkAttemptID: 5715, Generation: 68})
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: available, WorkAttemptID: 5715, Generation: 68})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !strings.Contains(prompt, "ambient-auth-test-isolation (includes: ambient-cleanup-test-isolation") {
-		t.Fatal("merged ambient cleanup skill is missing from the prompt")
-	}
-	if !strings.Contains(prompt, "provider-impersonation-browser-binding (includes: provider-fixture-account-continuity)") {
-		t.Fatal("merged provider fixture skill is missing from the prompt")
 	}
 	for _, section := range strings.Split(prompt, "\n## ") {
 		t.Logf("section %s: %d", strings.SplitN(section, "\n", 2)[0], len(section))
 	}
 	// The wrapper budget measures authored text, not the worker's temp-root length.
 	size := len(strings.ReplaceAll(prompt, workspacePath, "/workspace")) - len("WORKFLOW")
-	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(loaded.Skills)))
+	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(available)))
 	if size >= 7000 {
 		t.Errorf("wrapper is %d bytes, want under 7000", size)
 	}

@@ -1,3 +1,33 @@
+# Issue #3448 merge fallback handoff — 2026-09-30
+
+- Verified PR #3464 is open against `develop`, on the assigned isolated branch, and includes `Fixes #3448`. The clean starting local head and fetched published PR head both match `dc3c6172c300086e1a9d88df8450e7cc37aea2c6`. No rebase or merge was in progress after the restart.
+- Verified the preceding #3448 retry notes against the starting commit: its parent is `0721153854edcd0bd1fecd81edc90edbfc1853ba`, and its changes are the fingerprint, INV-3 evidence, and handoff notes. Prior diagnostics are historical only.
+- Merged freshly fetched develop `09011d003ef74adb8a0fab414e7be80cbce6661a` into the published PR history without rebasing. The published head is preserved as the first parent.
+- Conflicts only: `.detent/notes.md` and `docs/invariants.md`. Preserved both sides' historical handoffs and consolidated their equivalent completed-run fingerprint explanations in INV-3. `internal/invariants/source_policy.json` already agrees on both branches and merged unchanged; no manual source edits or out-of-scope findings.
+
+## Codex Workpad
+
+Plan and result: finish and commit the resolved target merge, retaining the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace. Key issue files: `internal/invariants/source_policy.json` and INV-3 in `docs/invariants.md`.
+
+Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks, or validation waits run in this session. Current-head checks were not inspected; historical diagnostics below do not validate this head. Gate/CI and post-merge timings are unmeasured.
+
+Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7242"
+  completion_generation: "1"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+The following records concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
+
 # Issue #3448 handoff
 
 - Key files: `internal/invariants/source_policy.json`, INV-3 in `docs/invariants.md`. Refreshed one reviewed dynamic-reason fingerprint; production code, approved reasons, scanner behavior, and generated inputs are unchanged.
@@ -16,6 +46,64 @@ Skill draft: no — existing source-scan and fingerprint-review procedures cover
 Retry verification: starting local HEAD and ready PR #3464 both matched `e467f8fd79830803279b0fe025f4969975398c06`. Rebased onto fetched develop `0721153854edcd0bd1fecd81edc90edbfc1853ba`; only these notes conflicted. Preserved both handoffs. The fingerprint repair and completion-transition source are unchanged; current-head invariant diagnostics and final publication evidence are recorded in the canonical Workpad. Automated review reported its usage limit, with no findings or review threads.
 
 ## Historical incoming develop handoff
+
+# Issue #3451 merge fallback handoff — 2026-09-30
+
+- Verified PR #3467 is open against `develop`, on the assigned isolated branch, and includes `Fixes #3451`. Source-clean starting local and fetched published PR head: `2429cc3d68638044edef991268dcdbce35b8fbdd`. No rebase or merge was in progress; prior implementation notes match that commit's scoped changes. Their diagnostics are historical only.
+- Merged freshly fetched target `3169b2f5f54519a049d156283658709f57828b71` into the published PR history without rebasing; the published head remains the first parent.
+- Conflicts: `.detent/notes.md`, `ci_workflow_test.go`, `docs/invariants.md`, `internal/config/runner_policy_test.go`, `internal/orchestrator/blocked_cause_recovery_test.go`, and `internal/runner/prompt_test.go`. Retained develop's removal of the release-configuration text test and fixed capped-skills fixture; retained the PR's passing-audit recovery case. The historical approval fixture retains the PR's explicit historical opt-out label and zero-Review representation with develop's portable shell pins. Its existing label-removal case rejects changed review defaults; the incompatible post-change digest baseline is superseded by the historical baseline. INV-3 documents the combined resolution.
+- Required automatic-merge blocker: removed the duplicate `linked_issue_sources` schema expectation; `internal/hubserver/database_test.go` now matches fetched develop exactly, retaining incoming project-secret tables.
+- Notes preserve both sides' historical handoffs below. No unrelated source edits, generated-input changes, or out-of-scope findings.
+
+## Historical Workpad (#3451 merge fallback)
+
+Plan and result: finish and commit the resolved target merge, preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
+
+Validation: no tests, lint, vet, builds, local gate (including `true`), CI checks, or validation waits run in this session. Historical diagnostics below do not validate the resolved head. Gate/CI and post-merge timings are unmeasured.
+
+Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```yaml
+schema: 1
+status: complete
+fields:
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+The following records concern earlier heads or other issues. Their validation and completion metadata do not apply to this resolved head or authorize validation or publication in this session.
+
+## Historical PR implementation handoff
+
+# Issue #3451 handoff
+
+- Reproduced all seven test failures from macOS job 110035613042 in scheduled run 36758716559 on clean develop `640b8abc10f0adb4ad580d1835b349796062130e`: focused diagnostics exited 1 in 20.7s with the recorded release-hook, policy-ID, schema-list, source-fingerprint, missing-audit, blank-label, and capped-skills failures.
+- `internal/config/config.go` omits zero-valued Review from JSON, restoring the pre-field policy representation. The existing historical approval fixture explicitly preserves v0.117.1's opt-out label; added cases reject human-review activation and opt-out removal. Diagnostic digest comparison recovered the exact historical `f984256f...` digest only when the historical label was retained and the zero Review field omitted.
+- Existing fixtures now reflect dependency-only release hooks, migration 49's linked_issue_sources table, explicit routine opt-out settings, expected skill-cap drops, and required-audit waits. The added passing-audit recovery case catches a failure to advance with trusted passing evidence; no new test functions or mechanisms were added.
+- Refreshed the INV-3 fingerprint for the already-landed completion transition after reviewing #3429's receipt freshness and #3281's existing decision-reason routing. `docs/invariants.md` records this review and the policy representation boundary. No orchestrator production behavior changed.
+- All seven targeted regressions pass (15.7s command). Adjacent config/policy/routine/skills package tests, prompt rendering, required-gate/audit evaluation, and schema constraints pass; config/policy/routine/skills vet passes (6.9s combined commands). Whitespace inspection passes. No generated inputs changed; no full gate, coverage, race suite, or Actions rerun/wait.
+- Configured gate is `true`, to run on the committed head immediately before publication. Current-head check/review and final publication evidence belong in the canonical #3451 issue Workpad. Next scheduled integrated validation confirms the macOS repair and owns issue closure; orchestrator owns promotion, squash merge, and lane transitions.
+- No dependencies, out-of-scope findings, or live-instance mutation. Skill draft: no — existing debugging guidance covers these fixture and serialization repairs.
+
+## Historical handoffs from develop
+
+The records below concern earlier heads and other issues; their completion and validation evidence does not apply to #3451.
+
+## Historical incoming develop handoffs
+
+# Issue #3447 implementation handoff
+
+- Scheduled Test Coverage job 110035612791 failed on develop 3844f54e75edc8df931d7221c7f62dcb3d71b37e before threshold evaluation. Seven failures reproduce without instrumentation on current baseline 640b8abc1; the eighth (terminal helper exit 2) reproduces with focused coverage instrumentation. Canonical Workpad: digitaldrywood/detent#3447.
+- Key files: ci_workflow_test.go removes the obsolete release-configuration text test; internal/config/runner_policy_test.go pins both shells and the post-#3281 approval, while asserting the intentionally changed defaults reject the old approval; develop #3456 already repairs internal/hubserver/database_test.go with linked_issue_sources; internal/routine/manager_test.go supplies its opt-out label; internal/orchestrator/blocked_cause_recovery_test.go holds missing audits; internal/runner/prompt_test.go uses a fixed capped skill fixture; internal/workspaceterminal/close_unix_test.go gives coverage teardown writable stdout after its PTY closes.
+- INV-3: reviewed #3281's dynamic completion-transition reason selection and refreshed only its source fingerprint in internal/invariants/source_policy.json, documented in docs/invariants.md. No production Go, runtime behavior, mechanism, reason code, configuration, or generated input changed.
+- Passed: selected regressions across root/config/Hub/invariants/orchestrator/routine/runner/terminal packages (11.0s command); terminal close with coverage enabled, both close modes, five repetitions (2.0s command). Baseline reproduction exited 1; focused instrumented terminal reproduction exited 1. Shell pinning is portable fixture setup, not native Windows validation.
+- Configured gate is true. No full suite, coverage threshold gate, race suite, make check/check-fast, Actions rerun, or CI wait. Run true on the committed head before publication. Publication rebase onto develop 072115385 conflicted only in notes; preserved incoming historical handoffs. The first rebased diagnostic exited 1 because the automatic merge duplicated linked_issue_sources, now already supplied by develop #3456 alongside project_secrets. Removed this PR's duplicate so the Hub schema fixture matches develop exactly. All other selected diagnostics passed on the rebased source (11.3s command); the resolved Hub schema regression then passed (5.8s command). Other issue source files remain identical to the previously tested repair, including the instrumented terminal helper. Ready promotion, current-head review/check evidence, and completion for attempt 7218 / generation 86 belong to the canonical issue Workpad. The next scheduled validation confirms the integrated repair; the orchestrator owns merge and lane transitions.
+- No dependencies or out-of-scope findings. Live port 4000 untouched. Scratch stayed in provided TMPDIR. Skill draft: no — existing guidance covers focused fixture repair and helper output teardown.
+
+# Historical notes
 
 # Issue #3446 implementation handoff
 
