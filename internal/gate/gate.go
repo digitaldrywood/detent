@@ -458,10 +458,10 @@ func InstructionsForGitHubHost(cfg Config, hostname string) string {
 			"```\n\n" +
 			"Allowed pass statuses: " + strings.Join(cfg.Artifact.PassStatuses, ", ") + ". Allowed wait statuses: " + strings.Join(cfg.Artifact.WaitStatuses, ", ") + ". Allowed rework statuses: " + strings.Join(cfg.Artifact.ReworkStatuses, ", ") + "."
 	default:
-		instructions := "Run `" + cfg.Run + "` from the workspace root; require eligible current-head checks before promotion. Skipped is not a test pass. For merge-group-only CI, require passing merge-group checks before merge. " +
+		instructions := "Run `" + cfg.Run + "` from the workspace root; " +
 			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) + ciTriggerLabelInstructions(cfg, hostname) +
 			"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation; otherwise rerun `" + cfg.Run + "`. " +
-			"Use REST backoff for CI. Record quiet-window, gate/CI, slow-check, and post-merge main-CI timings in Workpad."
+			"Use REST backoff when CI applies. Record timings for applicable quiet-window, gate, CI, and merge work in Workpad."
 
 		switch AutomatedReviewMode(cfg) {
 		case AutomatedReviewRequired:
@@ -502,10 +502,13 @@ func encodeCITriggerLabelArgument(value string) string {
 
 func requiredStatusCheckInstructions(checks []string) string {
 	checks = NormalizeRequiredStatusChecks(checks)
-	if len(checks) == 0 {
-		return ""
+	if checks == nil {
+		return "require eligible current-head checks before promotion. Skipped is not a test pass. For merge-group-only CI, require passing merge-group checks before merge. "
 	}
-	return "Configured required status checks must be present on the current PR head, completed, and successful; missing, skipped, failed, cancelled, or still-running required checks block promotion. "
+	if len(checks) == 0 {
+		return "required_status_checks is explicitly empty: Detent defers to the base branch's native required checks. When that branch requires no checks, do not wait for a CI producer or require aggregate CI to turn green. Native required checks and red CI still block promotion and merge. "
+	}
+	return "Configured required status checks must be present on the current PR head, completed, and successful; missing, skipped, failed, cancelled, or still-running required checks block promotion. Native required checks and red CI still block promotion and merge. "
 }
 
 func EvaluatePlan(cfg PlanConfig, labels []string, summary Summary) Decision {

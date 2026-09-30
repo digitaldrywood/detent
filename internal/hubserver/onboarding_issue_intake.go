@@ -185,11 +185,10 @@ func (s *Service) commandGitHubBatch(c echo.Context) error {
 				if !errors.Is(err, sql.ErrNoRows) {
 					return nil, err
 				}
-				created, err := createLinkedIssueTx(ctx, tx, scope, tracker.CreateIssue{GitHubIssueURL: preview.URL, State: destination}, now)
+				issue, err := createLinkedIssueTx(ctx, tx, scope, tracker.CreateIssue{GitHubIssueURL: preview.URL, State: destination}, now)
 				if err != nil {
 					return nil, err
 				}
-				issue := created.(tracker.NativeIssue)
 				batch.Items = append(batch.Items, tracker.GitHubBatchItem{Number: number, WorkItemID: issue.WorkItemID, Status: "pending"})
 			}
 			batch.Status = "importing"
