@@ -30,6 +30,9 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 // planner remains usable for previews that cannot perform remote reads.
 func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
 	planner := o.dispatchPlanner()
+	if o.workerHostChecker != nil {
+		planner.workerHostAvailable = func(host string) bool { return o.workerHostChecker.WorkerHostAvailable(ctx, host) }
+	}
 	planner.operatorRejectedHead = func(issue connector.Issue) (bool, error) {
 		return o.operatorRejectedHead(ctx, issue)
 	}
@@ -159,11 +162,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
 	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
 	rankingIssues := issues
-	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
-	issues = o.filterImplementDependencyDeferrals(ctx, issues)
-	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
-	o.enforceLifetimeLimits(ctx, state, issues, now)
-	o.observePullRequestHydrationRecovery(state, issues, now)
+	issues = o.prepareDispatchCandidates(ctx, state, issues, now)
 	planner := o.liveDispatchPlanner(ctx)
 	blockerCache := make(map[string]dependencyBlocker)
 	o.logOwnershipEligibilityStartup(planner, issues)
@@ -215,7 +214,6 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 				return
 			}
 			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
-			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
 			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
 			rescheduled := state.Retry[issue.ID]
 			rescheduled.RecoveryAttemptID = retry.RecoveryAttemptID
@@ -225,8 +223,6 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			rescheduled.ForgeUnavailable = retry.ForgeUnavailable
 			rescheduled.ForgeHost = retry.ForgeHost
 			rescheduled.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
-			rescheduled.GitHubMonitor = retry.GitHubMonitor
-			rescheduled.GitHubCredential = retry.GitHubCredential
 			rescheduled.Wait = retry.Wait
 			rescheduled.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 			state.Retry[issue.ID] = rescheduled
@@ -254,6 +250,51 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	o.reconcileMergeControlDemand(decisions, outcomes)
 	o.releaseDeferredSchedulingClaims(ctx, state, issues)
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
+}
+
+func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
+	issues = o.filterImplementDependencyDeferrals(ctx, issues)
+	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
+	o.enforceLifetimeLimits(ctx, state, issues, now)
+	o.observePullRequestHydrationRecovery(state, issues, now)
+	return issues
+}
+
+// refillProjectSlots runs on the event loop, using the same planner and
+// pre-dispatch checks as a tick.
+func (o *Orchestrator) refillProjectSlots(ctx context.Context, state *State, now time.Time) {
+	o.refillProjectSlotsExcluding(ctx, state, now, "")
+}
+
+func (o *Orchestrator) refillProjectSlotsExcluding(ctx context.Context, state *State, now time.Time, excludedIssueID string) {
+	if len(o.lastDispatchCandidates) == 0 || o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
+		state.Draining || o.dispatchQuiesced() {
+		return
+	}
+	fresh, err := o.fetchCandidateIssuesForTick(ctx, state)
+	if err != nil {
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+		if o.logger != nil {
+			o.logger.Warn("refill candidate read failed", "error", err)
+		}
+		return
+	}
+	priorIDs := make(map[string]bool, len(o.lastDispatchCandidates))
+	for _, prior := range o.lastDispatchCandidates {
+		priorIDs[prior.ID] = true
+	}
+	candidates := make([]connector.Issue, 0, len(fresh))
+	for _, current := range fresh {
+		if current.ID == excludedIssueID {
+			o.releaseDeferredSchedulingClaims(ctx, state, []connector.Issue{current})
+			continue
+		}
+		if o.scheduling != nil || priorIDs[current.ID] {
+			candidates = append(candidates, current)
+		}
+	}
+	o.dispatchReadyIssues(ctx, state, candidates, now)
 }
 
 func (o *Orchestrator) releaseDeferredSchedulingClaims(ctx context.Context, state *State, issues []connector.Issue) {
@@ -311,11 +352,6 @@ func dispatchFailureRetryReason(reason string) string {
 }
 
 func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
-	if retry.GitHubMonitor {
-		if _, exists := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; exists {
-			return true
-		}
-	}
 	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
 		return false
 	}
@@ -441,7 +477,6 @@ const (
 	dispatchIssueFailureGitHubLookupPaused    = "github_lookup_backoff"
 	dispatchIssueFailureTrackerUnavailable    = "tracker_unavailable"
 	dispatchIssueFailureForgeUnavailable      = "forge_unavailable"
-	dispatchIssueFailureGitHubMonitor         = "worker_github_budget_monitor_unavailable"
 	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
 	dispatchIssueFailureMemoryPressure        = "memory_pressure_high"
 	dispatchIssueFailureIOPressure            = "io_pressure_high"
@@ -585,9 +620,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, queuedRetry, now) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
 	}
-	if workerGitHubMonitorBlocks(state, issue.ID, queuedRetry, now) {
-		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubMonitor}
-	}
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
@@ -681,15 +713,13 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}
 	mergeControlEligible := allowMergeControl && !modelPermitRequired && queuedRetry.MergePrecheck == nil && o.dispatchPlanner().readyMergeControlCandidate(state, issue)
-	mergeControl := mergeControlEligible && (o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
-		o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) ||
-		o.dispatchPlanner().forgeReadAllowsMerge(state, issue))
+	mergeControl := mergeControlEligible
 	if !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
 		return dispatchIssueOutcome{reason: dispatchSkipProjectCapacityFull}
 	}
 	projectStats := o.projectStateSlotStats(slotIssue, state)
 
-	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
+	workerHost, ok := o.liveDispatchPlanner(ctx).selectWorkerHost(state, preferredWorkerHost)
 	if !ok && !mergeControlEligible {
 		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
 		o.recordMergeFailed(state, issue, now, "worker_host_unavailable", nil)
@@ -982,7 +1012,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		CapacityScope:          capacityScope,
 		CapacityProbe:          capacityProbeKey != "",
 		ForgeProbeHost:         reservedForgeProbeHost(state, issue.ID),
-		GitHubCredential:       reservedGitHubCredential(state, issue.ID),
 		ModelPermitExempt:      !modelPermitRequired,
 		StopDestination:        o.cfg.StopRunTargetState,
 		StopPriorityOptions:    stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
@@ -1040,6 +1069,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if retryQueued {
 		request.RetryMode = queuedRetry.RetryMode
 		request.ResumeState = queuedRetry.ResumeState
+		if queuedRetry.WorkerHost != workerHost {
+			request.RetryMode = runpkg.RetryModeFresh
+			request.ResumeState = store.AgentResumeState{}
+		}
 	}
 	if priorAttempt.ExplainBeforeRetry {
 		delete(state.PriorAttempts, issue.ID)

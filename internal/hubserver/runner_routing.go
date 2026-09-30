@@ -52,11 +52,15 @@ WHERE r.organization_id = ? AND r.id = ?`, organization, id).Scan(&r.RunnerID, &
 	case now.Before(r.LastHeartbeatAt) || !now.Before(r.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)):
 		r.Health = "offline"
 	}
+	r.ConnectionHealth = r.Health
 	r.ProjectIDs, err = readRunnerProjects(ctx, db, token)
 	if err != nil {
 		return r, err
 	}
 	r.Routing = r.Normalized()
+	if err := readRunnerProblems(ctx, db, &r); err != nil {
+		return r, err
+	}
 	if dry.Valid {
 		since, err := parseTimeValue(dry.String)
 		if err != nil {
@@ -271,6 +275,9 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 				return nil, err
 			}
 		}
+		if err := refreshRunnerProblems(ctx, tx, organization, r.RunnerID, now); err != nil {
+			return nil, err
+		}
 		return readRunner(ctx, tx, organization, r.RunnerID, now)
 	})
 }
@@ -374,7 +381,7 @@ func requireCredentialAuthority(ctx context.Context, tx *sql.Tx, credential apiC
 	if err != nil {
 		return err
 	}
-	if hash != credential.Hash || revoked.Valid || expires.Valid && !runnerTimeValid(now, created, expires.String) {
+	if hash != credential.Hash || revoked.Valid || !credential.timeValid(now, created, expires) {
 		return runnerUnauthorized()
 	}
 	return nil

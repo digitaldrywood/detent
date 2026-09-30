@@ -875,3 +875,23 @@ func testSocketEndpoint(name string) string {
 	}
 	return "unix:" + filepath.Join(root, "tenants", name)
 }
+
+func pilotPlans() *hubserver.HostedPlansConfig {
+	free := map[string]int64{
+		"members": 10, "projects": 1, "repositories": 10, "registered_runners": 4, "connected_runners": 4, "concurrent_work": 2,
+		"api_mutations": 10000, "ingested_events": 10000, "collaboration_bytes": 64 << 20, "history_records": 10000,
+	}
+	plus := make(map[string]int64, len(free))
+	for name, limit := range free {
+		plus[name] = limit
+	}
+	plus["projects"] = 5
+	features := []string{"collaboration", "native_execution"}
+	return &hubserver.HostedPlansConfig{
+		Base: hubserver.PlanReference{ID: "pilot_free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400,
+		Plans: []hubserver.HostedPlan{
+			{PlanReference: hubserver.PlanReference{ID: "pilot_free", Version: 1}, Features: features, Allowances: free},
+			{PlanReference: hubserver.PlanReference{ID: "pilot_plus", Version: 1}, Features: features, Allowances: plus},
+		},
+	}
+}

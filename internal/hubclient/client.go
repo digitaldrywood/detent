@@ -48,6 +48,7 @@ type Client struct {
 }
 
 type Machine struct {
+	Problems         []runnerauth.Problem      `json:"-"`
 	BackendIsolation isolationpolicy.Report    `json:"-"`
 	ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
 	ID               tracker.MachineID         `json:"id"`
@@ -67,6 +68,7 @@ type Machine struct {
 	// through workspaceReport instead.
 	WorkspaceCapabilities workspacesession.Capabilities `json:"-"`
 	WorkspaceIsolation    string                        `json:"-"`
+	CheckoutRepository    *string                       `json:"-"`
 }
 
 // workspaceReport is what the native machine endpoints send for the workspace

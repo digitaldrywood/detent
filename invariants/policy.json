@@ -7,6 +7,7 @@
       "TestOperatorRejectionPromotion",
       "TestOperatorRejectionRepairDispatch",
       "TestCompletedActiveReviewRequiresFinishedWork",
+      "TestOperationalBodyCompletionSurvivesRestart",
       "TestUnfinishedCompletionClassification",
       "TestCompletionRebaseProgress",
       "TestCompletionForgeEvidence",
@@ -71,14 +72,18 @@
       "TestAttemptAllowanceNoteFormat",
       "TestAttemptAllowanceMergeTimeAndRunningOwnership",
       "TestAttemptAllowancePreservesOperatorCompletionLane",
-      "TestTransitionAlreadyMergedCompletion"
+      "TestTransitionAlreadyMergedCompletion",
+      "TestSSHHostLossUsesInstanceRetry",
+      "TestSSHHostLossClearsResumeOnSpillover",
+      "TestSSHQueuedPreferenceAndHostCaps"
     ],
     "./internal/runner": [
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
       "TestWorkerCredentialBlockerError",
       "TestRunnerTriageIsReadOnly",
       "TestINV12WorkerInheritsToolchainEnvironment",
-      "TestINV12BackendToolchainEnvironment"
+      "TestINV12BackendToolchainEnvironment",
+      "TestSSHCallbackDoesNotPublishRemotePID"
     ],
     "./internal/store": [
       "TestLegacyHumanQuestionReceiptsReadable",
@@ -122,7 +127,10 @@
       "TestDoctorInvariantAdmissionUnavailableEvidence",
       "TestINV12DoctorNativeCaches",
       "TestINV12DoctorWorkspaceKinds",
-      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns"
+      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns",
+      "TestSSHLocalTargetIntegration",
+      "TestSSHServiceProxyKeepsCentralAuthority",
+      "TestSSHProbeRequiresProvidedScratch"
     ],
     "./internal/connector/github": [
       "TestRefreshBoardFilterCost",

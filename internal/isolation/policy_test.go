@@ -1,6 +1,9 @@
 package isolation
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestReportSupports(t *testing.T) {
 	for _, test := range []struct {
@@ -41,7 +44,14 @@ func TestPolicyValidation(t *testing.T) {
 		{"unknown", Policy{Tier: "container"}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := test.policy.Validate(); (err == nil) != test.want {
+			err := test.policy.Validate()
+			if test.policy.Tier == Sandbox && !SandboxAvailable() {
+				if !errors.Is(err, ErrSandboxUnavailable) {
+					t.Fatalf("Validate = %v, want sandbox unavailable", err)
+				}
+				return
+			}
+			if (err == nil) != test.want {
 				t.Fatalf("Validate = %v", err)
 			}
 		})

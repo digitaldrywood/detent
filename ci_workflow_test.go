@@ -149,7 +149,7 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 		"GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)",
 		"GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)",
 		"lint: $(GOLANGCI_LINT)",
-		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --timeout=15m`,
+		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m`,
 		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)`,
 		"setup: $(GOLANGCI_LINT)",
 	} {
@@ -226,7 +226,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("make lint: %v\n%s", err, output)
 			}
-			if !strings.Contains(string(output), "pinned:go1.26.6:run --allow-parallel-runners --timeout=15m") {
+			if !strings.Contains(string(output), "pinned:go1.26.6:run --allow-parallel-runners ") || !strings.Contains(string(output), "--timeout=15m") {
 				t.Fatalf("make lint did not invoke the pinned toolchain: %s", output)
 			}
 			if installed := strings.Contains(string(output), "go install"); installed == cached {
@@ -294,10 +294,13 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 	}{
 		{name: "hosted runner", want: "    runs-on: ubuntu-latest\n", present: true},
 		{name: "dispatch limited to develop", want: "    if: github.ref == 'refs/heads/develop'\n", present: true},
-		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.hub.detent.build\n", present: true},
+		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.cloud.detent.build\n", present: true},
 		{name: "single deploy at a time", want: "concurrency:\n  group: deploy-staging\n  cancel-in-progress: true\n", present: true},
 		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},
 		{name: "strict host key", want: "-o StrictHostKeyChecking=yes", present: true},
+		{name: "existing host key pin survives rename", want: "-o HostKeyAlias=staging.hub.detent.build", present: true},
+		{name: "canonical SSH destination", want: "apprunner@staging.cloud.detent.build", present: true},
+		{name: "canonical and legacy deployment smoke", want: "run: python3 scripts/cloud-origin-smoke.py --environment staging", present: true},
 		{name: "stale run skips deploy", want: `if [ "$head" != "$GITHUB_SHA" ]; then`, present: true},
 		{name: "only pre-key-exchange failures retry", want: `grep -qE '^(kex_exchange_identification:|ssh: connect to host )'`, present: true},
 		{name: "self-hosted runner", want: "self-hosted"},
@@ -568,7 +571,7 @@ list)
   ;;
 run)
   test -z "${DETENT_API_TOKEN:-}" || exit 99
-  case "$*" in *"-timeout 30m"*) ;; *) exit 97 ;; esac
+  case "$*" in *"-timeout "*) ;; *) exit 97 ;; esac
   echo invoked > workspace-invoked
   exit "$TEST_EXIT"
   ;;

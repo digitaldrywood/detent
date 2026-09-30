@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
@@ -54,6 +55,10 @@ type lifetimeTotalsSource interface {
 
 type autoUpdateStatusSource interface {
 	Status() detentupdate.AutoStatus
+}
+
+type runnerHeartbeatSource interface {
+	Heartbeat(context.Context) error
 }
 
 type agentPoolSnapshotSource interface {
@@ -186,7 +191,7 @@ func buildRunner(
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
-	return run, nil
+	return &sshRunner{Runner: run, workdir: projectWorkdir, projectID: projectID, memory: memory, goBuildSlots: goBudget.Slots, connection: serviceConnection, logger: logger, command: sshCommand}, nil
 }
 
 func hostGoBudget(slots int) gobudget.Budget {
@@ -320,9 +325,26 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 		Logger: logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create workspace backend: %w", err)
+		context := fmt.Sprintf("create workspace backend for workspace root %q and source root %q", root, sourceRoot)
+		return nil, classifyWorkspaceBackendError(context, err)
 	}
 	return backend, nil
+}
+
+func classifyWorkspaceBackendError(context string, err error) error {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && (errors.Is(err, os.ErrNotExist) ||
+		isInvalidConfiguredPath(err)) {
+		return fmt.Errorf("%w: %s: %w", project.ErrProjectDefinition, context, err)
+	}
+	return fmt.Errorf("%s: %w", context, err)
+}
+
+func isInvalidConfiguredPath(err error) bool {
+	return errors.Is(err, syscall.ENOTDIR) ||
+		errors.Is(err, syscall.ELOOP) ||
+		errors.Is(err, syscall.ENAMETOOLONG) ||
+		errors.Is(err, syscall.ENOTSUP)
 }
 
 func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBackend, error) {
@@ -467,6 +489,7 @@ func publishSnapshots(
 	providerStatus providerStatusEnricher,
 	interval time.Duration,
 	now func() time.Time,
+	runnerHeartbeat runnerHeartbeatSource,
 	updateSources ...autoUpdateStatusSource,
 ) {
 	if registry == nil || snapshotPublisher == nil {
@@ -485,10 +508,32 @@ func publishSnapshots(
 	trend := newTokenTrendRecorder(defaultTokenTrendWindowSize)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var heartbeatDone chan error
+	defer func() {
+		if heartbeatDone != nil {
+			<-heartbeatDone
+		}
+	}()
 
 	for {
 		if err := publishSnapshotOnce(ctx, registry, poolSource, snapshotPublisher, seq, shutdown, now(), trend, lifetimeSource, dashboardURL, providerStatus, updateSources...); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
+		}
+		if heartbeatDone != nil {
+			select {
+			case err := <-heartbeatDone:
+				if err != nil && ctx.Err() == nil {
+					slog.Default().Warn("report runner heartbeat failed", "error", err)
+				}
+				heartbeatDone = nil
+			default:
+			}
+		}
+		if runnerHeartbeat != nil && heartbeatDone == nil && ctx.Err() == nil {
+			heartbeatDone = make(chan error, 1)
+			go func(result chan<- error) {
+				result <- runnerHeartbeat.Heartbeat(ctx)
+			}(heartbeatDone)
 		}
 		select {
 		case <-ctx.Done():

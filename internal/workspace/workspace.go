@@ -231,18 +231,19 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
-	ProjectID             string
-	ID                    string
-	Identifier            string
-	Terminal              bool
-	LandedHeadSHA         string
-	BranchName            string
-	BaseRef               string
-	ProgressBaseRef       string
-	PullRequestHeadSHA    string
-	PullRequestRepository string
-	PullRequestNumber     int
-	PullRequestBranch     string
+	ProjectID               string
+	ID                      string
+	Identifier              string
+	Terminal                bool
+	LandedHeadSHA           string
+	CleanupDeliveredHeadSHA string
+	BranchName              string
+	BaseRef                 string
+	ProgressBaseRef         string
+	PullRequestHeadSHA      string
+	PullRequestRepository   string
+	PullRequestNumber       int
+	PullRequestBranch       string
 	// WorkspaceSession marks a workspace session checkout (decisions 18.1
 	// `worktree: "fresh"`): a worktree opened so a person can look at a
 	// commit, not one an attempt commits into. It takes its own branch
@@ -2367,7 +2368,7 @@ func canonicalExistingPath(path string) (string, error) {
 	}
 	canonical, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", fmt.Errorf("canonicalize %s: %w", abs, err)
+		return "", &os.PathError{Op: "canonicalize", Path: abs, Err: err}
 	}
 	return filepath.Clean(canonical), nil
 }

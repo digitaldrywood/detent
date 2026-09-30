@@ -1,4 +1,4 @@
-# Every push to develop redeploys https://staging.hub.detent.build.
+# Every push to develop redeploys https://staging.cloud.detent.build.
 #
 # This repository is public: the job runs on a GitHub-hosted runner and only on
 # develop pushes or a manual dispatch, never for pull requests. The runner builds
@@ -11,7 +11,7 @@
 #
 # Environment "staging" secrets (deployment branch policy: develop only):
 #   STAGING_SSH_KEY          private half of the restricted deploy key
-#   STAGING_SSH_KNOWN_HOSTS  staging.hub.detent.build ed25519 host key
+#   STAGING_SSH_KNOWN_HOSTS  pinned staging server ed25519 host key (legacy alias below)
 name: Deploy staging
 
 on:
@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 20
     environment:
       name: staging
-      url: https://staging.hub.detent.build
+      url: https://staging.cloud.detent.build
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -77,11 +77,12 @@ jobs:
             status=0
             ssh -i "$RUNNER_TEMP/ssh/id" \
                 -o IdentitiesOnly=yes \
+                -o HostKeyAlias=staging.hub.detent.build \
                 -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
                 -o StrictHostKeyChecking=yes \
                 -o BatchMode=yes \
                 -o ConnectTimeout=20 \
-                apprunner@staging.hub.detent.build \
+                apprunner@staging.cloud.detent.build \
                 "deploy ${GITHUB_SHA}" < "$RUNNER_TEMP/detent" 2> "$RUNNER_TEMP/ssh/stderr" || status=$?
             cat "$RUNNER_TEMP/ssh/stderr" >&2
             if [ "$status" -ne 255 ] || ! grep -qE '^(kex_exchange_identification:|ssh: connect to host )' "$RUNNER_TEMP/ssh/stderr"; then
@@ -91,6 +92,9 @@ jobs:
             sleep $((attempt * 15))
           done
           exit 255
+
+      - name: Verify Cloud origin and legacy integrations
+        run: python3 scripts/cloud-origin-smoke.py --environment staging
 
       - name: Clean up SSH material
         if: always()

@@ -45,6 +45,9 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 		if !ok {
 			continue
 		}
+		if completed.CompletionKind == workpad.CompletionOperational && !operationalCompletionEvidenceCurrent(completed.Issue, issue) {
+			continue
+		}
 		if gate.Effective(cfg.Gate).Validator.Enabled &&
 			strings.TrimSpace(completed.GateWaitReason) == completedReworkGateWaitReason {
 			if hydrated, attempted := validatorHeadHydration[issueID]; attempted {
@@ -238,7 +241,7 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 
 	summary := AutoPromoteSummaryFromIssue(issue)
 	summary.CompletedFinalState = completedFinalState
-	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue.ID)
+	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
 	unresolvedReviewThreads := gateRequiresPullRequest(cfg.Gate) && len(summary.UnresolvedReviewThreads) > 0
 	validatorRework := gate.Effective(cfg.Gate).Validator.Enabled &&
 		normalizeState(issue.State) == normalizeState(cfg.ReworkState)
@@ -469,7 +472,7 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 	if cfg.GateWaitTimeoutAction == autoPromoteGateWaitTimeoutMerge {
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = completed.FinalState
-		summary.OperationalCompletionAccepted = strings.TrimSpace(completed.CompletionKind) == workpad.CompletionOperational
+		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
 		summary.AutomatedReviewWaitExpired = true
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) {

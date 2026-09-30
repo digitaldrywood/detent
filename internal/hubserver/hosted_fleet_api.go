@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -28,13 +29,14 @@ type hostedFleetLease struct {
 }
 
 type hostedFleetRunner struct {
-	ID           string `json:"id"`
-	DisplayName  string `json:"display_name"`
-	Hostname     string `json:"hostname"`
-	Health       string `json:"health"`
-	State        string `json:"state"`
-	OS           string `json:"os"`
-	Architecture string `json:"architecture"`
+	Problems     []runnerauth.Problem `json:"problems"`
+	ID           string               `json:"id"`
+	DisplayName  string               `json:"display_name"`
+	Hostname     string               `json:"hostname"`
+	Health       string               `json:"health"`
+	State        string               `json:"state"`
+	OS           string               `json:"os"`
+	Architecture string               `json:"architecture"`
 	// Version is the Detent build this runner's host reported. The settings
 	// screen compares it against the response's Current to draw the update
 	// state the footer's pill points at.
@@ -204,9 +206,14 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},
 		IsolationTier: runner.IsolationTier, Availability: runner.Availability, HomeProjectIDs: []tracker.ProjectID{},
 		HomeStatus: runner.HomeStatus, HomeDrySince: runner.HomeDrySince,
+		Problems: runner.Problems,
 	}
 	if view.ProviderCapacity == nil {
 		view.ProviderCapacity = []providercapacity.View{}
+	}
+	view.Problems = slices.Clone(runner.Problems)
+	if view.Problems == nil {
+		view.Problems = []runnerauth.Problem{}
 	}
 	for _, project := range runner.HomeProjectIDs {
 		if visible[project] {
@@ -216,6 +223,11 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 	if len(view.HomeProjectIDs) != len(runner.HomeProjectIDs) {
 		view.HomeStatus = ""
 		view.HomeDrySince = nil
+		view.Problems = slices.DeleteFunc(view.Problems, func(p runnerauth.Problem) bool { return p.Code == "home_project_unservable" })
+		if len(view.Problems) == 0 && runner.Health == "needs_attention" {
+			runner.Health = runner.ConnectionHealth
+			view.Health = runner.Status(now)
+		}
 	}
 	for _, lease := range runner.Leases {
 		if !visible[lease.ProjectID] {

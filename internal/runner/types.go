@@ -230,6 +230,10 @@ type Backend interface {
 	Run(context.Context, RunRequest) (RunResult, error)
 }
 
+type WorkerHostChecker interface {
+	WorkerHostAvailable(context.Context, string) bool
+}
+
 type BlockedRecoveryInspector interface {
 	BlockedRecoverySnapshot(context.Context, RunRequest) BlockedRecoverySnapshot
 }
@@ -595,7 +599,7 @@ type RunRequest struct {
 
 	// ProviderReports supplies the scheduling snapshot; dispatch never starts an agent.
 	ProviderReports           []providercapacity.Report
-	Execution                 Execution
+	Execution                 Execution `json:"-"`
 	Policy                    policy.Descriptor
 	ProjectID                 string
 	Issue                     connector.Issue
@@ -611,16 +615,16 @@ type RunRequest struct {
 	RetryMode                 RetryMode
 	ResumeState               store.AgentResumeState
 	SelectorContext           selector.Context
-	OnUsageUpdate             UsageUpdateHandler
-	OnActivityUpdate          AgentActivityUpdateHandler
-	OnOverrideRejected        AgentOverrideRejectionHandler
-	ProgressProbe             SessionProgressProbe
-	CheckpointValidate        func(context.Context) error
+	OnUsageUpdate             UsageUpdateHandler            `json:"-"`
+	OnActivityUpdate          AgentActivityUpdateHandler    `json:"-"`
+	OnOverrideRejected        AgentOverrideRejectionHandler `json:"-"`
+	ProgressProbe             SessionProgressProbe          `json:"-"`
+	CheckpointValidate        func(context.Context) error   `json:"-"`
 	Routine                   *RoutineRequest
 	Admission                 *AdmissionRequest
 	AgentTools                []AgentTool
-	AgentToolHandler          AgentToolHandler
-	AcquireModelPermit        ModelPermitAcquirer
+	AgentToolHandler          AgentToolHandler    `json:"-"`
+	AcquireModelPermit        ModelPermitAcquirer `json:"-"`
 	MergePrecheck             *MergePrecheck
 	MergeRefreshHeadSHA       string
 	ForgeRetry                *ForgeRetry
@@ -789,12 +793,14 @@ type RunResult struct {
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
-	ChangeID  string
-	VersionID string
-	HeadSHA   string
-	Method    string
-	Title     string
-	Number    int64
+	ChangeID          string
+	VersionID         string
+	HeadSHA           string
+	Method            string
+	Repository        string
+	GitHubPullRequest bool
+	Title             string
+	Number            int64
 }
 
 // NativeLanding reports a landing run's outcome. A landed version names the

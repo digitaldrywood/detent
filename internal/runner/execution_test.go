@@ -366,7 +366,7 @@ func TestRunnerAvailabilityInterruptionFinishesAfterWIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	held, released := false, false
-	r.sleepInhibitor = func(context.Context) (func(), error) { held = true; return func() { released = true }, nil }
+	r.sleepInhibitor = func(context.Context, func()) (func(), error) { held = true; return func() { released = true }, nil }
 	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("run error = %v", err)

@@ -23,7 +23,7 @@ func TestPilotIdleRunnerReconciliation(t *testing.T) {
 	for _, count := range []int{0, 1, 16} {
 		t.Run(fmt.Sprintf("runners_%d", count), func(t *testing.T) {
 			t.Parallel()
-			f := newNativeFixture(t, nil, "", "pilot")
+			f := newDefaultNativeFixture(t, Config{})
 			if err := f.service.stopGitHubReconciliation(); err != nil {
 				t.Fatal(err)
 			}

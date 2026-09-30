@@ -9,6 +9,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/intake"
 )
 
 func TestRunDoctorStartupPreflight(t *testing.T) {
@@ -60,6 +61,41 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 			assertDoctorCheck(t, report, "Project alpha startup", tt.wantStatus, tt.wantDetail)
 			if got := report.HasFailures(); got != tt.wantFailure {
 				t.Fatalf("HasFailures() = %t, want %t", got, tt.wantFailure)
+			}
+		})
+	}
+}
+
+func TestRunDoctorStartupPreflightExplainsMappedNativeMigration(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, feature, want string
+		globalIntake        bool
+	}{
+		{name: "intake", feature: "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", want: "intake.sources"},
+		{name: "routines", feature: "schedule_ownership:\n  enabled: true\n  key: acme/alpha\n  repository: acme/alpha\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", want: "routines"},
+		{name: "global intake override", globalIntake: true, want: "intake.sources"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "global.yaml")
+			global := validDoctorGlobalWithProjects(configPath, "alpha")
+			global.Client.NativeProjects = map[string]string{"alpha": "prj_test"}
+			if test.globalIntake {
+				global.Projects[0].IntakeConfigured = true
+				global.Projects[0].Intake = intake.Config{Sources: []intake.Source{{Name: "errors", Kind: intake.KindWebhook, Secret: "test-secret", Creates: intake.Creates{Status: "Backlog"}}}}
+			}
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/alpha\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			deps := successfulDoctorDeps()
+			deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) { return workflow, nil }
+			report := runDoctorStartupPreflight(t.Context(), doctorConfig{ConfigPath: configPath}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+			assertDoctorCheck(t, report, "Candidate startup", doctorOK, "candidate resolved")
+			assertDoctorCheck(t, report, "Project alpha startup", doctorFail, test.want)
+			assertDoctorCheck(t, report, "Project alpha startup", doctorFail, "migrate")
+			if !report.HasFailures() {
+				t.Fatal("preflight accepted a mapped native project that cannot start")
 			}
 		})
 	}

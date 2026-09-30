@@ -119,6 +119,47 @@ func TestMergePromptHandsOffPushedHeadBeforeCI(t *testing.T) {
 	}
 }
 
+func TestSourcePromptHandsOffReadyHeadBeforeCI(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		state string
+		want  bool
+	}{
+		{state: "Todo", want: true},
+		{state: "Rework", want: true},
+		{state: "In Progress", want: true},
+		{state: "Merging"},
+		{state: "Human Review"},
+	} {
+		t.Run(tt.state, func(t *testing.T) {
+			workflow := config.Workflow{
+				Prompt: "Watch CI after pushing the head.",
+				Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}},
+			}
+			issue := connector.Issue{Identifier: "digitaldrywood/detent#3076", State: tt.state}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := strings.Index(prompt, "## Source CI handoff")
+			if (index >= 0) != tt.want {
+				t.Fatalf("source CI handoff present = %t, want %t", index >= 0, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			if strings.Index(prompt, "Watch CI after pushing the head.") >= index {
+				t.Fatal("source CI handoff must follow the project workflow instruction")
+			}
+			for _, required := range []string{"required local gate", "full-diff review", "Workpad handoff", "current-head CI is the only remaining work", "without watching or waiting for CI", "failing check requires normal Rework", "required runtime evidence is unfinished"} {
+				if !strings.Contains(prompt[index:], required) {
+					t.Errorf("source CI handoff missing %q", required)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	t.Parallel()
 
@@ -176,7 +217,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		WorkspacePath: workspace,
 		AutoBranch:    &autoBranch,
 		AvailableSkills: []skills.Skill{
-			{Name: "migrate", Description: "Add migrations.", WhenToUse: "Issue mentions schema changes.", BodyPath: "migrate.md"},
+			{Name: "migrate", Description: "Add migrations.", WhenToUse: "Issue mentions schema changes.", Aliases: []string{"schema-migration"}, BodyPath: "migrate.md"},
 		},
 	})
 	if err != nil {
@@ -202,7 +243,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"## Validation gate",
 		"Run `make check` from the workspace root",
 		"## Available skills",
-		"- migrate",
+		"- migrate (includes: schema-migration)",
 		"## Skill creation loop",
 		"Draft only reusable methods",
 		"Rerun validation after drafting; PR review approves it.",
@@ -215,7 +256,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		}
 	}
 	if strings.Contains(prompt, "Add migrations.") || strings.Contains(prompt, "Issue mentions schema changes.") {
-		t.Fatalf("prompt included skill description, want names only:\n%s", prompt)
+		t.Fatalf("prompt included skill description or trigger prose:\n%s", prompt)
 	}
 }
 
@@ -388,10 +429,19 @@ func TestPromptWrapperBytes(t *testing.T) {
 	if len(loaded.Skills) != skills.DefaultMaxSkillsInPrompt {
 		t.Fatalf("fixture needs capped skills: %d", len(loaded.Skills))
 	}
+	if len(loaded.Dropped) != 0 {
+		t.Fatalf("repository skills dropped: %+v", loaded.Dropped)
+	}
 	workspacePath := t.TempDir()
 	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: loaded.Skills, WorkAttemptID: 5715, Generation: 68})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "ambient-auth-test-isolation (includes: ambient-cleanup-test-isolation") {
+		t.Fatal("merged ambient cleanup skill is missing from the prompt")
+	}
+	if !strings.Contains(prompt, "provider-impersonation-browser-binding (includes: provider-fixture-account-continuity)") {
+		t.Fatal("merged provider fixture skill is missing from the prompt")
 	}
 	for _, section := range strings.Split(prompt, "\n## ") {
 		t.Logf("section %s: %d", strings.SplitN(section, "\n", 2)[0], len(section))
@@ -399,8 +449,8 @@ func TestPromptWrapperBytes(t *testing.T) {
 	// The wrapper budget measures authored text, not the worker's temp-root length.
 	size := len(strings.ReplaceAll(prompt, workspacePath, "/workspace")) - len("WORKFLOW")
 	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(loaded.Skills)))
-	if size >= 6000 {
-		t.Errorf("wrapper is %d bytes, want under 6000", size)
+	if size >= 7000 {
+		t.Errorf("wrapper is %d bytes, want under 7000", size)
 	}
 }
 
@@ -1568,6 +1618,24 @@ func TestBuildPromptGoTestScopeFollowsGoModule(t *testing.T) {
 			}
 			if tt.want && !strings.Contains(prompt, "instead of `go test ./...` sweeps") {
 				t.Fatalf("Go test scope block missing targeted-package guidance:\n%s", prompt)
+			}
+		})
+	}
+}
+
+func TestPlanOnlyPromptOmitsCIImplementationHandoff(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"Todo", "Rework", "In Progress", "Merging"} {
+		t.Run(state, func(t *testing.T) {
+			workflow := config.Workflow{Prompt: "Prepare a plan.", Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}}}
+			prompt, err := BuildPrompt(workflow, connector.Issue{Identifier: "digitaldrywood/detent#3076", State: state}, PromptOptions{PlanOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"## Source CI handoff", "## Merge CI handoff", "Complete the source changes"} {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("plan-only prompt contains %q", forbidden)
+				}
 			}
 		})
 	}

@@ -16,41 +16,46 @@ import (
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
-	IsolationReport   func(context.Context) isolationpolicy.Report
-	ProviderReports   func() ([]providercapacity.Report, error)
-	OrganizationID    tracker.OrganizationID
-	NativeProjects    map[string]tracker.ProjectID
-	Machine           Machine
-	HeartbeatInterval time.Duration
-	LeaseTTL          time.Duration
-	Now               func() time.Time
-	SessionID         func() (string, error)
+	Problems           func() []runnerauth.Problem
+	IsolationReport    func(context.Context) isolationpolicy.Report
+	ProviderReports    func() ([]providercapacity.Report, error)
+	OrganizationID     tracker.OrganizationID
+	NativeProjects     map[string]tracker.ProjectID
+	CheckoutRepository func(project string) string
+	Machine            Machine
+	HeartbeatInterval  time.Duration
+	LeaseTTL           time.Duration
+	Now                func() time.Time
+	SessionID          func() (string, error)
 }
 
 type Scheduler struct {
-	isolationReport   func(context.Context) isolationpolicy.Report
-	providerReports   func() ([]providercapacity.Report, error)
-	claimPolicies     map[string]claimPolicy
-	nativeProjects    map[string]*NativeConnector
-	nativeClaims      map[string]nativeClaim
-	nativeHeartbeats  map[tracker.ProjectID]time.Time
-	reportedPolicies  map[string]string
-	client            *Client
-	machine           Machine
-	heartbeatInterval time.Duration
-	leaseTTL          time.Duration
-	now               func() time.Time
-	sessionID         func() (string, error)
-	mu                sync.Mutex
-	registered        bool
-	lastHeartbeat     time.Time
-	claims            map[string]tracker.Lease
+	problems           func() []runnerauth.Problem
+	isolationReport    func(context.Context) isolationpolicy.Report
+	providerReports    func() ([]providercapacity.Report, error)
+	claimPolicies      map[string]claimPolicy
+	nativeProjects     map[string]*NativeConnector
+	nativeClaims       map[string]nativeClaim
+	nativeHeartbeats   map[tracker.ProjectID]time.Time
+	checkoutRepository func(project string) string
+	reportedPolicies   map[string]string
+	client             *Client
+	machine            Machine
+	heartbeatInterval  time.Duration
+	leaseTTL           time.Duration
+	now                func() time.Time
+	sessionID          func() (string, error)
+	mu                 sync.Mutex
+	registered         bool
+	lastHeartbeat      time.Time
+	claims             map[string]tracker.Lease
 }
 
 func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
@@ -74,12 +79,14 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		problems:        config.Problems,
 		isolationReport: config.IsolationReport,
 		providerReports: config.ProviderReports,
 		claimPolicies:   make(map[string]claimPolicy),
 		client:          client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
 		leaseTTL: config.LeaseTTL, now: now, sessionID: sessionID, claims: make(map[string]tracker.Lease),
 		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
+		checkoutRepository: config.CheckoutRepository,
 	}
 	for project, id := range config.NativeProjects {
 		native, err := client.Native(config.OrganizationID, id)

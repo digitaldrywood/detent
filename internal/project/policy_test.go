@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,99 @@ import (
 type policyTestScheduling struct {
 	testSchedulingSource
 	approved map[string]policy.Descriptor
+}
+
+type mappedPolicyScheduling struct {
+	testSchedulingSource
+	approved policy.Descriptor
+	observed policy.Descriptor
+}
+
+func (s *mappedPolicyScheduling) ConnectorForProject(string) (connector.Connector, bool) {
+	return memory.New(memory.Config{}), true
+}
+
+func (s *mappedPolicyScheduling) CheckProjectPolicy(_ context.Context, _, _ string, descriptor policy.Descriptor) error {
+	s.observed = descriptor
+	return descriptor.Match(s.approved)
+}
+
+func TestMappedNativeStartupUsesInspectedPolicy(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, feature, wantError string
+	}{
+		{name: "supported workflow"},
+		{name: "intake needs migration", feature: "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", wantError: "intake.sources"},
+		{name: "routines need migration", feature: "schedule_ownership:\n  enabled: true\n  key: acme/orders\n  repository: acme/orders\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", wantError: "routines"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := globalconfig.Project{ID: "orders", Workdir: t.TempDir()}
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow.Definition.Revision = strings.Repeat("a", 40)
+			workflow.SourceHash = policy.Digest([]byte("source"))
+			inspected := workflow
+			inspected.Config = MapNativeTracker(inspected.Config, true)
+			descriptor, inspectErr := ResolvePolicy(cfg, inspected)
+			if test.wantError != "" {
+				if inspectErr == nil || !strings.Contains(inspectErr.Error(), test.wantError) || !strings.Contains(inspectErr.Error(), "migrate") {
+					t.Fatalf("inspection error = %v, want %s migration", inspectErr, test.wantError)
+				}
+			} else if inspectErr != nil {
+				t.Fatal(inspectErr)
+			}
+			scheduling := &mappedPolicyScheduling{approved: descriptor}
+			loaded, startupErr := New(Config{Project: cfg, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: orchestrator.FakeRunner{}})
+			if test.wantError != "" {
+				if startupErr == nil || !strings.Contains(startupErr.Error(), test.wantError) || !strings.Contains(startupErr.Error(), "migrate") {
+					t.Fatalf("startup error = %v, want %s migration", startupErr, test.wantError)
+				}
+				return
+			}
+			if startupErr != nil {
+				t.Fatal(startupErr)
+			}
+			t.Cleanup(func() {
+				if err := loaded.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			if err := scheduling.observed.Match(descriptor); err != nil {
+				t.Fatalf("startup policy differs from inspected policy: %v", err)
+			}
+			if loaded.Workflow().Config.Tracker.Kind != workflowconfig.TrackerHubNative {
+				t.Fatal("startup did not select native tracker")
+			}
+		})
+	}
+}
+
+func TestMappedNativeReloadRetainsPolicySchedulingSource(t *testing.T) {
+	t.Parallel()
+	updated, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\nintake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n---\nPrompt\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A local tracker does not use Hub scheduling for dispatch, but the
+	// unfiltered source still determines how a changed workflow is mapped.
+	scheduling := &mappedPolicyScheduling{}
+	p := &Project{
+		id:               "orders",
+		cfg:              globalconfig.Project{ID: "orders", Workdir: t.TempDir()},
+		workflow:         workflowconfig.Workflow{Config: workflowconfig.Config{Policy: policy.Descriptor{ID: "approved-local"}}},
+		policyScheduling: scheduling,
+		logger:           slog.Default(),
+	}
+	if p.orchDeps.Scheduling != nil {
+		t.Fatal("local tracker unexpectedly has Hub dispatch scheduling")
+	}
+	err = p.handleWorkflowUpdate(t.Context(), configwatcher.Update{Path: "WORKFLOW.md", Workflow: updated})
+	if err == nil || !strings.Contains(err.Error(), "intake.sources") || !strings.Contains(err.Error(), "migrate") {
+		t.Fatalf("mapped reload error = %v, want native intake migration", err)
+	}
 }
 
 func (s *policyTestScheduling) CheckProjectPolicy(_ context.Context, project, _ string, descriptor policy.Descriptor) error {

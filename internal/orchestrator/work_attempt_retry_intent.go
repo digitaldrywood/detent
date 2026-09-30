@@ -258,9 +258,6 @@ func (o *Orchestrator) currentWorkAttemptRecoveryBlockers(ctx context.Context, s
 	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, Retry{}, now) {
 		blockers = append(blockers, "forge unavailable")
 	}
-	if workerGitHubMonitorBlocks(state, issue.ID, Retry{}, now) {
-		blockers = append(blockers, "worker GitHub monitor unavailable")
-	}
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		blockers = append(blockers, "GitHub REST capacity paused")
 	}
@@ -285,7 +282,7 @@ func (o *Orchestrator) currentWorkAttemptRecoveryBlockers(ctx context.Context, s
 	if state.Draining || o.dispatchQuiesced() {
 		blockers = append(blockers, "dispatch is draining or paused")
 	}
-	if retry, held := state.Retry[issue.ID]; held && (retry.CIUnavailable || retry.TrackerUnavailable || retry.ForgeUnavailable || retry.CompletionDeferred || retry.GitHubMonitor || retry.Wait.Kind != "") {
+	if retry, held := state.Retry[issue.ID]; held && (retry.CIUnavailable || retry.TrackerUnavailable || retry.ForgeUnavailable || retry.CompletionDeferred || retry.Wait.Kind != "") {
 		blockers = append(blockers, "existing resource wait: "+retry.Error+"; recheck "+retry.DueAt.Format(time.RFC3339))
 	}
 	if scope, known := o.backendCapacityScope(runpkg.RunRequest{Issue: issue, Mode: workAttemptRunMode(receipt.Attempt), SelectorContext: o.selectorContext()}); known {

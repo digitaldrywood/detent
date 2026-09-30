@@ -131,8 +131,8 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	if !backendVersionAtLeast(output, minimum) {
 		return errors.New("backend lacks required fail-closed sandbox settings")
 	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		return errors.New("backend sandbox is unavailable on this platform")
+	if !isolation.SandboxAvailable() {
+		return isolation.ErrSandboxUnavailable
 	}
 	base, err := os.MkdirTemp("", "detent-isolation-probe-")
 	if err != nil {

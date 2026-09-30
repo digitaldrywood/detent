@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -12,6 +13,12 @@ const (
 	Sandbox       = "sandbox"
 	NativeTrusted = "native-trusted"
 )
+
+var ErrSandboxUnavailable = errors.New("backend sandbox is unavailable on this platform")
+
+func SandboxAvailable() bool {
+	return runtime.GOOS == "darwin" || runtime.GOOS == "linux"
+}
 
 type Policy struct {
 	Tier          string   `json:"tier"`
@@ -56,6 +63,9 @@ func (p Policy) Validate() error {
 	}
 	if p.Tier == NativeTrusted {
 		return nil
+	}
+	if !SandboxAvailable() {
+		return ErrSandboxUnavailable
 	}
 	if len(p.WritableRoots) == 0 {
 		return errors.New("sandbox requires a worktree")

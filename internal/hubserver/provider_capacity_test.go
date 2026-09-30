@@ -197,7 +197,7 @@ func TestProviderStartRevalidation(t *testing.T) {
 	t.Parallel()
 	for _, change := range []string{"exhausted", "model", "account", "active"} {
 		t.Run(change, func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "revalidation")
+			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
@@ -236,7 +236,7 @@ func TestProviderStartRevalidation(t *testing.T) {
 
 func TestProviderQueueOrderAndSelectors(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "fairness")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
@@ -291,7 +291,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 
 func TestProviderOlderReportsCannotRestoreQuota(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "observations")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
 	report := capacityReport(f.service.config.now().Add(-time.Second))
@@ -311,7 +311,7 @@ func TestProviderOlderReportsCannotRestoreQuota(t *testing.T) {
 
 func TestProviderPoolIsolation(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "isolation")
+	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
