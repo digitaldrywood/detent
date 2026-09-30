@@ -126,12 +126,37 @@ func TestDispatchPlannerBoundsGitHubIssueReads(t *testing.T) {
 	now := time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
 	var candidates []connector.Issue
 	for i := 150; i > 0; i-- {
-		candidates = append(candidates, connector.Issue{ID: fmt.Sprintf("I_%03d", i), Identifier: fmt.Sprintf("fixture/dispatch#%d", i), Title: "candidate", State: "Todo", AssignedToWorker: true, CreatedAt: new(now.Add(time.Duration(i) * time.Second))})
+		candidates = append(candidates, connector.Issue{
+			ID: fmt.Sprintf("I_%03d", i), Identifier: fmt.Sprintf("fixture/dispatch#%d", i),
+			URL:   fmt.Sprintf("https://github.test/fixture/dispatch/issues/%d", i),
+			Title: "candidate", State: "Todo", AssignedToWorker: true,
+			CreatedAt: new(now.Add(time.Duration(i) * time.Second)),
+			PRNumber:  new(900 + i), PRRepository: "fixture/dispatch",
+			PullRequest: &connector.PullRequest{Number: 900 + i, HeadSHA: fmt.Sprintf("head-%d", i)},
+		})
 	}
 	orch := Orchestrator{cfg: cfg, connector: tracker}
-	newDispatchPlanner(cfg).plan(&state, candidates, now, dispatchPlanHooks{hydrate: func(issue connector.Issue) (connector.Issue, bool) {
-		return orch.hydrateDispatchIssue(t.Context(), &state, issue, now)
-	}})
+	decisions := 0
+	plan := newDispatchPlanner(cfg).plan(&state, candidates, now, dispatchPlanHooks{
+		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
+			return orch.hydrateDispatchIssue(t.Context(), &state, issue, now)
+		},
+		decision: func(decision dispatchPlanDecision) {
+			decisions++
+			number := decisions
+			issue := decision.Issue
+			if decision.SkipReason != dispatchSkipHydrationFailed || decision.Selected ||
+				issue.ID != fmt.Sprintf("I_%03d", number) || issue.Identifier != fmt.Sprintf("fixture/dispatch#%d", number) ||
+				issue.URL != fmt.Sprintf("https://github.test/fixture/dispatch/issues/%d", number) || issue.State != "Todo" ||
+				issue.PRRepository != "fixture/dispatch" || issue.PRNumber == nil || *issue.PRNumber != 900+number ||
+				issue.PullRequest == nil || issue.PullRequest.Number != 900+number || issue.PullRequest.HeadSHA != fmt.Sprintf("head-%d", number) {
+				t.Errorf("failed hydration lost candidate evidence or became selected: %+v", decision)
+			}
+		},
+	})
+	if len(plan.Dispatches) != 0 || decisions != 10 {
+		t.Fatalf("failed hydration dispatches=%d decisions=%d; want 0 and 10", len(plan.Dispatches), decisions)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if !slices.Equal(reads, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
