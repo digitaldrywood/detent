@@ -162,6 +162,10 @@ func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 			if _, ok := state.Claimed[issue.ID]; ok {
 				t.Fatalf("Claimed[%q] present after Rework handoff", issue.ID)
 			}
+			issue.State = tracker.updates[0].state
+			if got := orch.dispatchMode(t.Context(), &state, issue); got != runpkg.RunModeImplement {
+				t.Fatalf("dispatch after Rework handoff = %q, want implementation for unchanged dirty PR", got)
+			}
 		})
 	}
 }
