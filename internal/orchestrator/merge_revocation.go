@@ -123,7 +123,7 @@ func mergeRevocationForIssue(
 		return mergeRevocation{
 			issue:       cloneIssue(issue),
 			reason:      mergeRevocationApprovalLabelRemoved,
-			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(),
 		}, true
 	}
 	if !checkPullRequest {
@@ -135,7 +135,7 @@ func mergeRevocationForIssue(
 		return mergeRevocation{
 			issue:       cloneIssue(issue),
 			reason:      mergeRevocationMissingPullRequest,
-			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(),
 		}, true
 	}
 	if pullRequestHydrationBlocksProgress(pullRequest) {
@@ -145,7 +145,7 @@ func mergeRevocationForIssue(
 		return mergeRevocation{
 			issue:       cloneIssue(issue),
 			reason:      mergeRevocationCITriggerLabelRemoved,
-			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(),
 		}, true
 	}
 	switch normalizePullRequestState(pullRequest.State) {
@@ -180,7 +180,7 @@ func draftMergingPullRequestDecision(issue connector.Issue, cfg Config) staleMer
 	if mergeWorkerCIFailed(issue.PullRequest) {
 		return staleMergingPullRequestDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonCINotGreen)}
 	}
-	return staleMergingPullRequestDecision{targetState: config.SourceState, reason: mergeRevocationDraftPullRequest}
+	return staleMergingPullRequestDecision{targetState: config.reviewTargetState(), reason: mergeRevocationDraftPullRequest}
 }
 
 func mergeReworkComment(issue connector.Issue, reason, target string) string {
@@ -813,7 +813,7 @@ func (o *Orchestrator) escalateMergeRevocationCommentLoss(
 	at time.Time,
 	reason string,
 ) bool {
-	targetState := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
+	targetState := normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
 	if err := o.updateIssueStateByID(
 		ctx,
 		state,

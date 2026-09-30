@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -40,6 +41,43 @@ func TestDescriptorValidation(t *testing.T) {
 				t.Fatalf("Validate() = %v, want valid %t", err, test.valid)
 			}
 		})
+	}
+}
+
+func TestLegacyDescriptorWithoutHumanReview(t *testing.T) {
+	t.Parallel()
+	descriptor := testDescriptor()
+	// Computed by the descriptor implementation before HumanReview existed.
+	const legacyID = "policy_04c9b13714beb9260ef3a36518f2646dc6d4525e51f2cef8202ff89bf34510f3"
+	if descriptor.ID != legacyID {
+		t.Fatalf("descriptor ID = %q, want pre-upgrade ID %q", descriptor.ID, legacyID)
+	}
+	raw, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"human_review"`) {
+		t.Fatalf("legacy descriptor unexpectedly includes human_review: %s", raw)
+	}
+	var restored Descriptor
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Validate(); err != nil {
+		t.Fatalf("legacy descriptor rejected after round trip: %v", err)
+	}
+
+	descriptor.Gates.HumanReview = true
+	descriptor = descriptor.WithID()
+	raw, err = json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"human_review":true`) {
+		t.Fatalf("opted-in descriptor is missing human_review: %s", raw)
+	}
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("opted-in descriptor rejected: %v", err)
 	}
 }
 

@@ -305,12 +305,13 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 
 // HostedProjectStates is the workflow a new hosted project starts with. A
 // completed run whose version the project's review policy already accepts,
-// the default unless the repository gate asks for a person, moves from In
+// the default unless review.human asks for a person, moves from In
 // Progress straight to Merging, where the runner that holds the project lands
 // it and the Hub finishes it in Done. Human Review is where a Change Request
-// waits for a person: when the project requires review, and when a landing
-// was refused. It neither ends nor dispatches the work, and it is not
-// operator-only, so the orchestrator can move a finished run there. A person
+// waits for a person when the project requires review. Blocked holds a
+// refused landing when human review is disabled. Neither lane ends nor
+// dispatches the work, and neither is operator-only, so the orchestrator
+// can move a finished run there. A person
 // approves the change, which moves it to Merging, or sends it back to In
 // Progress. Human Review is the default auto_promote.source_state, which is
 // how the orchestrator names its review lane. Migrations 36, 38 and 39 move
@@ -318,9 +319,10 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 func HostedProjectStates() []tracker.NativeState {
 	return []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Merging", "Done"}},
-		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
-		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}},
+		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}
 }
