@@ -490,9 +490,14 @@ evidence batches for comments and native dependencies; incomplete observations
 retain the existing REST fallback. Non-routing observed lanes remain metadata
 only, matching ProjectV2 refresh. Overlapping PR reads use observed freshness
 once, preserving lane entry, actor, association, head and required-check policy.
+The existing author, assignee and label selectors run before enrichment and
+filter both returned routing sets; all lane metadata remains diagnostic input.
+Native off-selector human prerequisites retain their current authority.
 No cache, loop, reason or configuration is added.
 `TestLabelRefreshSharesFreshSchedulerEvidence` covers read counts, unchanged
 issue timestamps with changed comments, lane actors and incomplete evidence.
+`TestLabelRefreshSelectorsExcludeUnownedEvidence` covers all selector predicates
+in complete and fallback readers, including off-selector human dependencies.
 
 Workspace Git-read failures no longer apply a second admission brake to
 unrelated merge workers (#3487). The affected operation retains its existing

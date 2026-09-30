@@ -521,6 +521,7 @@ func (c *Connector) CombinedRefreshEnabled() bool {
 }
 
 func (c *Connector) fetchLabelRefreshIssues(ctx context.Context, candidateStates, observedStates []string, hint connector.IssueFilterHint) connector.RefreshIssueResult {
+	matches := refreshSelector(hint)
 	candidateStates = normalizeStateList(candidateStates, nil)
 	observedStates = normalizeStateList(observedStates, nil)
 	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
@@ -532,7 +533,7 @@ func (c *Connector) fetchLabelRefreshIssues(ctx context.Context, candidateStates
 	var indexes, fallbackIndexes []int
 	var nodes []githubIssueNode
 	for i, issue := range issues {
-		if stateInList(issue.State, c.terminalStates) || !(stateInList(issue.State, candidateStates) || stateInList(issue.State, c.activeStates) || stateInList(issue.State, hint.SchedulerStates)) {
+		if !matches(issue) || stateInList(issue.State, c.terminalStates) || !(stateInList(issue.State, candidateStates) || stateInList(issue.State, c.activeStates) || stateInList(issue.State, hint.SchedulerStates)) {
 			continue
 		}
 		selected = append(selected, issue)
@@ -592,7 +593,13 @@ func (c *Connector) fetchLabelRefreshIssues(ctx context.Context, candidateStates
 	for i, index := range indexes {
 		issues[index] = selected[i]
 	}
-	return connector.RefreshIssueResult{Candidates: issuesInStates(issues, candidateStates), Statuses: issuesInStates(issues, observedStates), LaneSignalCandidates: issues}
+	eligible := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if matches(issue) {
+			eligible = append(eligible, issue)
+		}
+	}
+	return connector.RefreshIssueResult{Candidates: issuesInStates(eligible, candidateStates), Statuses: issuesInStates(eligible, observedStates), LaneSignalCandidates: issues}
 }
 
 func (c *Connector) fetchProjectRefreshIssues(
