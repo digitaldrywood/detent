@@ -17,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/knowledge"
 	"github.com/digitaldrywood/detent/internal/lessons"
-	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -109,11 +108,6 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	}
 
 	rendered, err = appendKnowledgeBlock(rendered, workflow.Config.Agent.Knowledge)
-	if err != nil {
-		return "", err
-	}
-
-	rendered, err = appendNotesBlock(rendered, opts.WorkspacePath)
 	if err != nil {
 		return "", err
 	}
@@ -309,10 +303,6 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 	prompt := prependWorkspaceIsolationBlock(b.String(), workflow.Config, opts.WorkspacePath, opts.Branch)
 	var err error
 	prompt, err = appendKnowledgeBlock(prompt, workflow.Config.Agent.Knowledge)
-	if err != nil {
-		return "", err
-	}
-	prompt, err = appendNotesBlock(prompt, opts.WorkspacePath)
 	if err != nil {
 		return "", err
 	}
@@ -872,111 +862,6 @@ func appendKnowledgeBlock(prompt string, cfg config.Knowledge) (string, error) {
 		return prompt, nil
 	}
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block, nil
-}
-
-func appendNotesBlock(prompt string, workspacePath string) (string, error) {
-	if strings.TrimSpace(workspacePath) == "" {
-		return prompt, nil
-	}
-
-	notesPath, err := notes.WorkspacePath(workspacePath)
-	if err != nil {
-		return "", err
-	}
-
-	content, err := notes.Read(notesPath, notes.ReadOptions{MaxBytes: notes.DefaultMaxBytes})
-	if err != nil {
-		content = ""
-	}
-	content = compactFailedRunNotes(content)
-	if strings.TrimSpace(content) == "" {
-		content = "No handoff notes have been recorded yet."
-	}
-
-	block := "## Handoff notes\n\n" +
-		"Verify prior notes. Maintain `.detent/notes.md`: key files, validation, open items.\n\n" +
-		content
-	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block, nil
-}
-
-var noteSectionHeading = regexp.MustCompile(`(?m)^## \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z - .+$`)
-
-// compactFailedRunNotes keeps the latest appended failure and its last 40 output
-// lines. The persisted notes remain available for full failure diagnostics.
-func compactFailedRunNotes(content string) string {
-	// Captured output can itself contain note headings. Only headings outside
-	// Markdown fences delimit entries in the rendered notes.
-	var headings [][]int
-	var fence byte
-	fenceLength := 0
-	offset := 0
-	for line := range strings.SplitAfterSeq(content, "\n") {
-		text := strings.TrimSuffix(line, "\n")
-		trimmed := strings.TrimSpace(text)
-		if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
-			length := 0
-			for length < len(trimmed) && trimmed[length] == trimmed[0] {
-				length++
-			}
-			if fence == 0 && length >= 3 {
-				fence, fenceLength = trimmed[0], length
-			} else if trimmed[0] == fence && length >= fenceLength && strings.TrimSpace(trimmed[length:]) == "" {
-				fence, fenceLength = 0, 0
-			}
-		} else if fence == 0 && noteSectionHeading.MatchString(text) {
-			headings = append(headings, []int{offset, offset + len(text)})
-		}
-		offset += len(line)
-	}
-	latest := -1
-	for i, heading := range headings {
-		if strings.HasSuffix(content[heading[0]:heading[1]], " - Failed run output tail") {
-			latest = i
-		}
-	}
-	if latest < 0 {
-		return content
-	}
-	var b strings.Builder
-	for i, heading := range headings {
-		if i == 0 {
-			b.WriteString(content[:heading[0]])
-		}
-		end := len(content)
-		if i+1 < len(headings) {
-			end = headings[i+1][0]
-		}
-		section := content[heading[0]:end]
-		if !strings.HasSuffix(content[heading[0]:heading[1]], " - Failed run output tail") {
-			b.WriteString(section)
-			continue
-		}
-		if i != latest {
-			continue
-		}
-		prefix, output, fenced := strings.Cut(section, "```text\n")
-		if fenced {
-			output = strings.TrimSuffix(strings.TrimRight(output, "\n"), "```")
-		} else {
-			prefix, output, _ = strings.Cut(section, "\n")
-			prefix += "\n"
-		}
-		lines := strings.Split(strings.Trim(output, "\n"), "\n")
-		if len(lines) <= 40 {
-			b.WriteString(section)
-			continue
-		}
-		b.WriteString(prefix)
-		if fenced {
-			b.WriteString("```text\n")
-		}
-		b.WriteString(strings.Join(lines[len(lines)-40:], "\n"))
-		if fenced {
-			b.WriteString("\n```")
-		}
-		b.WriteString("\n\n")
-	}
-	return strings.TrimRight(b.String(), "\n")
 }
 
 func appendPriorAttemptBlock(prompt string, prior PriorAttempt) string {

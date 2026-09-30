@@ -12,7 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
-	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -662,7 +661,6 @@ func TestBuildPromptAppendsTeamKnowledge(t *testing.T) {
 		"Use allowlist terminology.",
 		"### Project",
 		"Run project smoke tests.",
-		"## Handoff notes",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -674,8 +672,8 @@ func TestBuildPromptAppendsTeamKnowledge(t *testing.T) {
 	if strings.Index(prompt, "Use allowlist terminology.") > strings.Index(prompt, "Run project smoke tests.") {
 		t.Fatalf("prompt knowledge order = %q, want global before project", prompt)
 	}
-	if strings.Index(prompt, "## Team knowledge") > strings.Index(prompt, "## Handoff notes") {
-		t.Fatalf("prompt places handoff notes before team knowledge:\n%s", prompt)
+	if strings.Index(prompt, "## Team knowledge") > strings.Index(prompt, "## Blocked handoff") {
+		t.Fatalf("prompt places the completion contract before team knowledge:\n%s", prompt)
 	}
 }
 
@@ -704,16 +702,17 @@ func TestBuildPromptReturnsKnowledgeReadError(t *testing.T) {
 	}
 }
 
-func TestBuildPromptAppendsNotesAndPriorAttempt(t *testing.T) {
+func TestBuildPromptUsesPriorAttemptWithoutRepoNotes(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
 	notesPath := filepath.Join(workspace, ".detent", "notes.md")
-	if err := notes.Append(notesPath, notes.Entry{
-		Title: "Implementation handoff",
-		Body:  "Key file: internal/runner/prompt.go\nValidation: go test ./internal/runner",
-	}, notes.AppendOptions{Now: time.Date(2026, 7, 2, 21, 45, 0, 0, time.UTC)}); err != nil {
-		t.Fatalf("append note: %v", err)
+	const note = "Existing user handoff notes"
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notesPath, []byte(note), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	prompt, err := BuildPrompt(config.Workflow{
@@ -745,11 +744,6 @@ func TestBuildPromptAppendsNotesAndPriorAttempt(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"## Handoff notes",
-		"Verify prior notes",
-		"Maintain `.detent/notes.md`",
-		"## 2026-07-02T21:45:00Z - Implementation handoff",
-		"Key file: internal/runner/prompt.go",
 		"## Prior attempt handoff",
 		"- source: auto_promote",
 		"- failing gate reason: validator_rework",
@@ -761,6 +755,13 @@ func TestBuildPromptAppendsNotesAndPriorAttempt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, note) || strings.Contains(prompt, ".detent/notes.md") || !strings.Contains(prompt, "```detent-status") {
+		t.Fatal("repository notes replaced the current handoff contract")
+	}
+	after, err := os.ReadFile(notesPath)
+	if err != nil || string(after) != note {
+		t.Fatalf("existing notes changed: %v", err)
 	}
 }
 
@@ -1425,116 +1426,53 @@ func TestBuildAdmissionPromptUsesCurrentDependencyEvidence(t *testing.T) {
 	}
 }
 
-func TestBuildPromptCapsFailedRunNotes(t *testing.T) {
+func TestPromptDoesNotUseRepositoryNotes(t *testing.T) {
 	t.Parallel()
-	for _, count := range []int{0, 1, 40, 41, 100} {
-		t.Run(strconv.Itoa(count), func(t *testing.T) {
-			t.Parallel()
-			workspace := t.TempDir()
-			path := filepath.Join(workspace, ".detent", "notes.md")
-			var lines []string
-			for i := range count {
-				lines = append(lines, "output-line-"+strconv.Itoa(i))
-			}
-			entries := []notes.Entry{
-				{Title: "Implementation handoff", Body: "preserve earlier context"},
-				{Title: "Failed run output tail", Body: "obsolete failure"},
-				{Title: "Implementation handoff", Body: "preserve intervening context"},
-				{Title: "Failed run output tail", Body: failedRunNoteBody(RunResult{Output: strings.Join(lines, "\n")}, nil)},
-				{Title: "Implementation handoff", Body: "preserve later context"},
-			}
-			for i, entry := range entries {
-				if err := notes.Append(path, entry, notes.AppendOptions{Now: time.Date(2026, 9, 14, 0, i, 0, 0, time.UTC)}); err != nil {
-					t.Fatal(err)
+	for _, profile := range []string{"code", "plan", "merge fallback", "native"} {
+		for _, exists := range []bool{false, true} {
+			t.Run(profile+"/exists="+strconv.FormatBool(exists), func(t *testing.T) {
+				t.Parallel()
+				path := t.TempDir()
+				notePath := filepath.Join(path, ".detent", "notes.md")
+				const notes = "Private notes from a different issue"
+				if exists {
+					if err := os.MkdirAll(filepath.Dir(notePath), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(notePath, []byte(notes), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
-			before, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{}, PromptOptions{WorkspacePath: workspace})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if strings.Count(prompt, " - Failed run output tail") != 1 || strings.Contains(prompt, "obsolete failure") {
-				t.Fatal("prompt retained obsolete failure")
-			}
-			for _, text := range []string{"preserve earlier context", "preserve intervening context", "preserve later context", "- final_state: failed"} {
-				if !strings.Contains(prompt, text) {
-					t.Errorf("prompt missing %q", text)
+				workflow := config.Workflow{Prompt: "Current issue"}
+				opts := PromptOptions{WorkspacePath: path, PlanOnly: profile == "plan", MergeFallback: profile == "merge fallback"}
+				if profile == "native" {
+					workflow.Config.Tracker.Kind = config.TrackerHubNative
 				}
-			}
-			want := lines[max(0, len(lines)-40):]
-			if strings.Count(prompt, "output-line-") != len(want) {
-				t.Errorf("output line count = %d, want %d", strings.Count(prompt, "output-line-"), len(want))
-			}
-			if len(want) > 0 && !strings.Contains(prompt, "```text\n"+strings.Join(want, "\n")+"\n```") {
-				t.Error("prompt missing fenced latest output tail")
-			}
-			after, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(before) != string(after) {
-				t.Fatal("prompt rendering modified persisted notes")
-			}
-		})
-	}
-}
-
-func TestBuildPromptIgnoresFencedNoteHeadings(t *testing.T) {
-	t.Parallel()
-	for _, title := range []string{"Implementation handoff", "Failed run output tail"} {
-		t.Run(title, func(t *testing.T) {
-			t.Parallel()
-			workspace := t.TempDir()
-			path := filepath.Join(workspace, ".detent", "notes.md")
-			embedded := "## 2099-01-01T00:00:00Z - " + title
-			oldOutput := "old-start\n" + embedded + "\n" + strings.Repeat("obsolete-output\n", 100)
-			latestOutput := "latest-start\n" + embedded + "\n" + strings.Repeat("latest-output\n", 60)
-			for i, output := range []string{oldOutput, latestOutput} {
-				err := notes.Append(path, notes.Entry{Title: "Failed run output tail", Body: failedRunNoteBody(RunResult{Output: output}, nil)}, notes.AppendOptions{Now: time.Date(2026, 9, 14, 0, i, 0, 0, time.UTC)})
+				prompt, err := BuildPrompt(workflow, connector.Issue{Identifier: "owner/repo#1"}, opts)
 				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			if err := notes.Append(path, notes.Entry{Title: "Implementation handoff", Body: "keep neighboring note"}, notes.AppendOptions{}); err != nil {
-				t.Fatal(err)
-			}
-			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{}, PromptOptions{WorkspacePath: workspace})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if strings.Contains(prompt, "obsolete-output") || strings.Contains(prompt, "latest-start") || strings.Contains(prompt, embedded) {
-				t.Fatal("prompt retained output preceding the latest 40 lines")
-			}
-			if got := strings.Count(prompt, "latest-output"); got != 40 {
-				t.Fatalf("latest output lines = %d, want 40", got)
-			}
-			if !strings.Contains(prompt, "keep neighboring note") {
-				t.Fatal("lost neighboring note")
-			}
-		})
-	}
-}
-
-func TestCompactFailedRunNotesPreservesPrefix(t *testing.T) {
-	t.Parallel()
-	const first = "## 2026-09-14T00:00:00Z - Failed run output tail\nold failure\n"
-	const last = "## 2026-09-14T00:01:00Z - Failed run output tail\nlatest failure\n"
-	for _, tt := range []struct{ name, input, want string }{
-		{"empty", "", ""},
-		{"no headings", "handoff\n", "handoff\n"},
-		{"no failures", "preamble\n## 2026-09-14T00:00:00Z - Handoff\nkeep\n", "preamble\n## 2026-09-14T00:00:00Z - Handoff\nkeep\n"},
-		{"first heading is failure", first + last, strings.TrimRight(last, "\n")},
-		{"preamble before removed failure", "preamble\n\n" + first + last, "preamble\n\n" + strings.TrimRight(last, "\n")},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := compactFailedRunNotes(tt.input); got != tt.want {
-				t.Fatalf("compactFailedRunNotes() = %q, want %q", got, tt.want)
-			}
-		})
+				for _, absent := range []string{notes, ".detent/notes.md", "## Handoff notes", "Verify prior notes"} {
+					if strings.Contains(prompt, absent) {
+						t.Fatalf("prompt injected repository notes: %q", absent)
+					}
+				}
+				contract := "```detent-status"
+				if profile == "native" {
+					contract = "Native completion contract"
+				}
+				if !strings.Contains(prompt, contract) {
+					t.Fatalf("current handoff contract missing: %q", contract)
+				}
+				after, err := os.ReadFile(notePath)
+				if exists && (err != nil || string(after) != notes) {
+					t.Fatalf("existing notes changed: %v", err)
+				}
+				if !exists && !os.IsNotExist(err) {
+					t.Fatalf("prompt created repository notes: %v", err)
+				}
+			})
+		}
 	}
 }
 

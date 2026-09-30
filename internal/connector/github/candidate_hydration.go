@@ -246,6 +246,10 @@ func (c *Connector) hydratePullRequestWithEvidence(ctx context.Context, issue co
 		if node.CandidatePR.pullRequest != nil {
 			issues[0].PRSource = node.CandidatePR.source
 			attachPullRequestToIssue(&issues[0], node.CandidatePR.repo, *node.CandidatePR.pullRequest)
+			if c.usesLabelStatus() {
+				issues[0].PRHeadSHA = node.CandidatePR.pullRequest.HeadSHA
+				issues[0].PRHeadCommittedAt = cloneGitHubTime(node.CandidatePR.pullRequest.HeadCommittedAt)
+			}
 		}
 		if err := c.attachRequiredBranchChecks(ctx, &issues[0]); err != nil {
 			return issues[0], err
