@@ -1149,7 +1149,7 @@ func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue con
 	// Conflict repair uses the merge precheck and verified fallback even before
 	// the card is ready for Merging, independently of programmatic merge policy.
 	switch normalizeState(issue.State) {
-	case "rework", "in progress":
+	case "in progress":
 		if issue.PullRequest != nil && !issue.PullRequest.Draft && connector.PullRequestConflicts(issue.PullRequest.MergeableState) {
 			return runpkg.RunModeMerge
 		}
