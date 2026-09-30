@@ -1287,7 +1287,7 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		pullRequest = &connector.PullRequest{Number: *prNumber}
 	}
 	out := &telemetry.PullRequest{
-
+		Draft:                      pullRequest.Draft,
 		Number:                     pullRequest.Number,
 		URL:                        pullRequest.URL,
 		BranchName:                 pullRequest.BranchName,

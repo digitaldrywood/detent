@@ -13250,6 +13250,10 @@ func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) 
 	return store.LifetimeTotals{}, nil
 }
 
+func (storeProbe) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
 func (storeProbe) UsageReport(_ context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
 	return store.UsageReport{By: query.By}, nil
 }

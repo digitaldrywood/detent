@@ -130,6 +130,7 @@ templ BoardCardSheetHeader(data DashboardData, card projectKanbanCard) {
 
 templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardActions bool) {
 	{{ session := sheetSessionFor(data.Snapshot, card) }}
+	{{ selection := sheetModelEffort(data, card) }}
 	{{ projectID, issueIdentity, scope := boardCardDetailIdentity(data, card) }}
 	{{ syncLabel, _, syncTitle, syncKind := workItemSync(data, card) }}
 	{{ leaseAge, leaseTitle := workItemLease(card, pipelineNow(data.Snapshot)) }}
@@ -151,6 +152,7 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 					{ card.Stage }
 				</span>
 			}
+			@sheetRowValue("Model / Effort", selection, "")
 			if card.TimeInStage != "" && card.TimeInStage != "n/a" {
 				@sheetRowValue("Time in stage", card.TimeInStage, card.TimeInStageTitle)
 			}
@@ -183,9 +185,6 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 			}
 			if activity := boardCardFullActivity(data.Snapshot, card); activity != "" {
 				@sheetRowValue("Latest activity", activity, "")
-			}
-			if summary.Effort != "" {
-				@sheetRowValue("Configured effort", summary.Effort, "")
 			}
 			if card.Origin != "" {
 				@sheetRowValue("Origin", boardCardOriginDetail(card.Origin, card.OriginActor), "Mechanism that placed this issue in its current state")

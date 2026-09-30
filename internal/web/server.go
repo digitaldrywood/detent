@@ -896,21 +896,23 @@ func cleanProjectRouteParam(projectID string) string {
 func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
 	instanceName := s.instanceName()
 	snapshot = s.fleetKanbanSnapshotWithPendingStates(snapshot)
+	agents, stages := s.boardAgentIdentitiesForProject(snapshot, "")
 	return templates.DashboardData{
-		RunnerFleetEnabled: s.runnerFleet != nil,
-		Title:              instancePageTitle(instanceName, "Detent"),
-		ApplicationName:    applicationName(instanceName),
-		InstanceName:       instanceName,
-		Version:            s.version,
-		Build:              s.build,
-		ConnectorName:      s.connector.Name(),
-		DashboardURL:       s.dashboardURL,
-		Snapshot:           snapshot,
-		ConfiguredAgents:   s.boardConfiguredAgents(snapshot),
-		Projects:           s.projectSmallMultiples(ctx, snapshot),
-		Kanban:             s.dashboardKanbanData(ctx, "", snapshot),
-		Assets:             s.assets.templatePaths(),
-		ActiveNav:          "fleet",
+		RunnerFleetEnabled:    s.runnerFleet != nil,
+		Title:                 instancePageTitle(instanceName, "Detent"),
+		ApplicationName:       applicationName(instanceName),
+		InstanceName:          instanceName,
+		Version:               s.version,
+		Build:                 s.build,
+		ConnectorName:         s.connector.Name(),
+		DashboardURL:          s.dashboardURL,
+		Snapshot:              snapshot,
+		ConfiguredAgents:      agents,
+		ConfiguredStageAgents: stages,
+		Projects:              s.projectSmallMultiples(ctx, snapshot),
+		Kanban:                s.dashboardKanbanData(ctx, "", snapshot),
+		Assets:                s.assets.templatePaths(),
+		ActiveNav:             "fleet",
 	}
 }
 
@@ -930,22 +932,24 @@ func (s *Server) boardFirstPaintData(ctx context.Context, snapshot telemetry.Sna
 func (s *Server) dashboardFirstPaintData(ctx context.Context, snapshot telemetry.Snapshot, pendingEnrichment bool) templates.DashboardData {
 	instanceName := s.instanceName()
 	snapshot = s.fleetKanbanSnapshotWithPendingStates(snapshot)
+	agents, stages := s.boardAgentIdentitiesForProject(snapshot, "")
 	return templates.DashboardData{
-		Title:              instancePageTitle(instanceName, "Detent"),
-		ApplicationName:    applicationName(instanceName),
-		InstanceName:       instanceName,
-		Version:            s.version,
-		Build:              s.build,
-		ConnectorName:      s.connector.Name(),
-		DashboardURL:       s.dashboardURL,
-		Snapshot:           snapshot,
-		ConfiguredAgents:   s.boardConfiguredAgents(snapshot),
-		Projects:           s.cachedProjectSmallMultiples(snapshot),
-		Kanban:             s.dashboardKanbanData(ctx, "", snapshot),
-		Assets:             s.assets.templatePaths(),
-		ActiveNav:          "fleet",
-		PendingEnrichment:  pendingEnrichment,
-		RunnerFleetEnabled: s.runnerFleet != nil,
+		Title:                 instancePageTitle(instanceName, "Detent"),
+		ApplicationName:       applicationName(instanceName),
+		InstanceName:          instanceName,
+		Version:               s.version,
+		Build:                 s.build,
+		ConnectorName:         s.connector.Name(),
+		DashboardURL:          s.dashboardURL,
+		Snapshot:              snapshot,
+		ConfiguredAgents:      agents,
+		ConfiguredStageAgents: stages,
+		Projects:              s.cachedProjectSmallMultiples(snapshot),
+		Kanban:                s.dashboardKanbanData(ctx, "", snapshot),
+		Assets:                s.assets.templatePaths(),
+		ActiveNav:             "fleet",
+		PendingEnrichment:     pendingEnrichment,
+		RunnerFleetEnabled:    s.runnerFleet != nil,
 	}
 }
 
@@ -1018,6 +1022,7 @@ func (s *Server) projectDashboardDataFromProjects(
 		name = strings.TrimSpace(project.ID)
 	}
 	instanceName := s.instanceName()
+	agents, stages := s.boardAgentIdentitiesForProject(scopedSnapshot, project.ID)
 	data := templates.DashboardData{
 		RunnerFleetEnabled:        s.runnerFleet != nil,
 		Title:                     instancePageTitle(instanceName, name+" - Detent"),
@@ -1028,7 +1033,8 @@ func (s *Server) projectDashboardDataFromProjects(
 		ConnectorName:             s.connector.Name(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scopedSnapshot,
-		ConfiguredAgents:          s.boardConfiguredAgentsForProject(scopedSnapshot, project.ID),
+		ConfiguredAgents:          agents,
+		ConfiguredStageAgents:     stages,
 		Projects:                  projects,
 		Kanban:                    s.dashboardKanbanData(ctx, project.ID, scopedSnapshot),
 		Assets:                    s.assets.templatePaths(),

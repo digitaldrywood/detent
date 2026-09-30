@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/compute"
 	"io"
 	"net"
 	"sync"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/compute"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
