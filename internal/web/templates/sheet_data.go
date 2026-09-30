@@ -276,3 +276,70 @@ func sheetStateKind(data DashboardData, card projectKanbanCard) primitives.Kind 
 	}
 	return primitives.KindInfo
 }
+
+// sheetModelEffort keeps the model and effort attributable to one stage/source.
+func sheetModelEffort(data DashboardData, card projectKanbanCard) string {
+	key := BoardIssueKey(telemetry.Issue{ProjectID: card.ProjectID, ID: card.IssueID, Identifier: card.Identifier})
+	configured, ok := data.ConfiguredStageAgents[key]
+	if !ok {
+		configured = data.ConfiguredAgents[key]
+	}
+	observed := card.RuntimeIdentity
+	attempts := data.latestBoardAttempts
+	if attempts == nil {
+		attempts = latestBoardAttempts(data.Snapshot.WorkAttempts)
+	}
+	source := "last attempt"
+	running := false
+	if latest := attempts[key]; latest != nil && !latest.RuntimeIdentity.IsZero() {
+		observed = latest.RuntimeIdentity
+		if latest.Status == "running" {
+			running = true
+			source = "current attempt"
+		}
+	}
+	for _, row := range data.Snapshot.Running {
+		if BoardIssueKey(row.Issue) == key {
+			running = true
+			source = "current attempt"
+			observed = row.RuntimeIdentity
+			if observed.IsZero() {
+				observed = card.RuntimeIdentity
+			}
+			break
+		}
+	}
+	selected := observed
+	terminal := projectKanbanTerminalState(card.Stage, projectKanbanTerminalStateSetForProject(data, card.ProjectID))
+	if observed.IsZero() || (!running && !terminal && configured.Role != "" && observed.Role != "" && observed.Role != configured.Role) {
+		selected = configured
+		source = "configured default"
+	}
+	role := selected.Role
+	if role == "" {
+		role = configured.Role
+	}
+	if role == "" {
+		switch strings.ToLower(strings.TrimSpace(card.Stage)) {
+		case "rework":
+			role = "rework"
+		case "merging":
+			role = "merge"
+		default:
+			role = "code"
+		}
+	}
+	stage := map[string]string{"code": "Build", "plan": "Plan", "validator": "Validate", "rework": "Rework", "merge": "Merge"}[role]
+	if stage == "" {
+		stage = role
+	}
+	model := selected.Model()
+	if model == "" {
+		model = "unknown"
+	}
+	effort := strings.TrimSpace(selected.ReasoningEffort.Value)
+	if effort == "" {
+		effort = "unknown"
+	}
+	return stage + ": " + model + " · " + effort + " (" + source + ")"
+}
