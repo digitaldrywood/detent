@@ -43,7 +43,7 @@ const (
 	liveDiffStatsInterval          = 2 * time.Second
 	recentActivityLimit            = 5
 	defaultProjectID               = "default"
-	orphanResumePrompt             = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work."
+	orphanResumePrompt             = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work.\n\n" + repositoryHandoffContract
 	implausibleUsageRuntimeSeconds = int64(1800)
 	implausibleUsageOutputTokens   = int64(1000)
 )

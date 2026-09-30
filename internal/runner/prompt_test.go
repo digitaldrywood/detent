@@ -756,7 +756,7 @@ func TestBuildPromptUsesPriorAttemptWithoutRepoNotes(t *testing.T) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	if strings.Contains(prompt, note) || strings.Contains(prompt, ".detent/notes.md") || !strings.Contains(prompt, "```detent-status") {
+	if strings.Contains(prompt, note) || !strings.Contains(prompt, repositoryHandoffContract) || !strings.Contains(prompt, "```detent-status") {
 		t.Fatal("repository notes replaced the current handoff contract")
 	}
 	after, err := os.ReadFile(notesPath)
@@ -1452,7 +1452,7 @@ func TestPromptDoesNotUseRepositoryNotes(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				for _, absent := range []string{notes, ".detent/notes.md", "## Handoff notes", "Verify prior notes"} {
+				for _, absent := range []string{notes, "Maintain `.detent/notes.md`", "## Handoff notes", "Verify prior notes"} {
 					if strings.Contains(prompt, absent) {
 						t.Fatalf("prompt injected repository notes: %q", absent)
 					}
@@ -1461,7 +1461,7 @@ func TestPromptDoesNotUseRepositoryNotes(t *testing.T) {
 				if profile == "native" {
 					contract = "Native completion contract"
 				}
-				if !strings.Contains(prompt, contract) {
+				if !strings.Contains(prompt, contract) || !strings.Contains(prompt, repositoryHandoffContract) {
 					t.Fatalf("current handoff contract missing: %q", contract)
 				}
 				after, err := os.ReadFile(notePath)

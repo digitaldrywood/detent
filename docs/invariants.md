@@ -1526,7 +1526,9 @@ exercise these boundaries without adding a brake, lease, or recovery mechanism.
 
 Repository notes handoff (#3498) is removed from normal, planning and merge
 fallback prompts. Failed turns no longer append diagnostics to a repository
-file. Existing issue Workpads, native completion contracts, attempt outcomes,
+file. The canonical handoff contract and orphan restart nudge explicitly revoke
+earlier notes instructions retained in provider history; normal completion
+ownership remains unchanged. Existing issue Workpads, native completion contracts, attempt outcomes,
 usage updates and provider/session records own handoff and diagnostics; no new
 artifact or coordination mechanism is added. Existing notes files remain intact.
 `TestPromptDoesNotUseRepositoryNotes`,

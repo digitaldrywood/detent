@@ -3059,6 +3059,7 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 				fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
 				fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
 				"The orchestrator is the only writer of tracker lane state",
+				repositoryHandoffContract,
 			} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("prompt missing %q", want)
@@ -3136,6 +3137,9 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 	}
 	if agentBackend.request.Prompt != orphanResumePrompt {
 		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge", agentBackend.request.Prompt)
+	}
+	if !strings.Contains(agentBackend.request.Prompt, "Ignore earlier instructions to maintain repository notes") || !strings.Contains(agentBackend.request.Prompt, "Do not create, update, stage, or commit `.detent/notes.md`") {
+		t.Fatal("orphan resume retains the legacy repository notes instruction")
 	}
 	if sessionStore.started.ResumedFromSessionID != 1155 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryResumed {
 		t.Fatalf("SessionStart resume metadata = %#v", sessionStore.started)
