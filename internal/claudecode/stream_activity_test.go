@@ -78,6 +78,14 @@ func TestTurnStateEmitsToolContent(t *testing.T) {
 	if updates[1].Type != runner.AgentUpdateToolOutput || updates[1].ItemID != "tool-1" || updates[1].Delta != "ok package" {
 		t.Fatalf("tool output = %#v", updates[1])
 	}
+	var failed runner.AgentUpdate
+	if err := state.emitContentBlock(contentBlock{Type: "tool_result", ToolUseID: "failed", IsError: true, Content: json.RawMessage(`"private command failure"`)}, "", func(u runner.AgentUpdate) error { failed = u; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != "failed" {
+		t.Fatalf("failed result status=%s", failed.Status)
+	}
+
 }
 
 func TestTurnStateDoesNotRepeatPartialToolStart(t *testing.T) {

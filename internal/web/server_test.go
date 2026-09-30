@@ -52,6 +52,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 const sseTestOperationTimeout = 30 * time.Second
@@ -11638,6 +11639,15 @@ func TestServerWorkflowTimelineAPI(t *testing.T) {
 		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
 	}
 
+	profile := workflowmetrics.ActivityProfile{Schema: 1, SessionID: 42, AttemptID: 3390, Stage: "implementation", StartedAt: startedAt, AsOf: finishedAt, Coverage: "partial", Spans: []workflowmetrics.ActivitySpan{{ID: "test", Kind: "local_validation", StartedAt: startedAt, FinishedAt: startedAt.Add(time.Minute), Outcome: "completed", Fingerprint: "safe-fingerprint", Repeat: 2}}}
+	data, _ := json.Marshal(profile)
+	writer := backend.(interface {
+		SaveWorkflowActivityProfile(context.Context, int64, store.WorkflowPhaseEvent, workflowmetrics.ActivityProfile) (int64, error)
+	})
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, 0, store.WorkflowPhaseEvent{ProjectID: "detent", IssueID: "issue-722", Identifier: "digitaldrywood/detent#722", SessionID: 42, PhaseType: workflowmetrics.PhaseTypeAgentActivity, PhaseName: "instruction_activity", StartedAt: startedAt, MetadataJSON: string(data)}, profile); err != nil {
+		t.Fatal(err)
+	}
+
 	deps := testDeps(t)
 	deps.Store = backend
 	server, err := newServerWithLaneWriter(web.Config{}, deps)
@@ -11656,12 +11666,21 @@ func TestServerWorkflowTimelineAPI(t *testing.T) {
 
 	payload := requestJSON(t, server, http.MethodGet, "/api/v1/workflow/timeline?project_id=detent&identifier=digitaldrywood/detent%23722", http.StatusOK)
 	events := payload["events"].([]any)
-	if len(events) != 1 {
-		t.Fatalf("events len = %d, want 1", len(events))
+	if len(events) != 2 {
+		t.Fatalf("events len = %d, want 2", len(events))
 	}
 	event := events[0].(map[string]any)
 	if event["phase_type"] != "lane" || event["phase_name"] != "Todo" || event["duration_seconds"] != float64(1800) {
 		t.Fatalf("timeline event = %#v, want Todo lane duration", event)
+	}
+	activity := payload["activity"].([]any)
+	if len(activity) != 1 {
+		t.Fatalf("activity=%+v", activity)
+	}
+	audit := activity[0].(map[string]any)
+	breakdown := audit["breakdown"].(map[string]any)
+	if breakdown["observed_seconds"] != float64(60) || breakdown["unknown_seconds"] != float64(1740) || audit["unobserved_tail_seconds"].(float64) <= 0 {
+		t.Fatalf("audit=%+v", audit)
 	}
 }
 
