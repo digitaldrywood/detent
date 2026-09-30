@@ -1,3 +1,15 @@
+# Issue #3452 Windows portability repair
+
+- Recorded evidence: scheduled run 36758716559, Windows job 110035613055, failed eight GitHub landing cases and the API-refusal case by launching installed gh (exit 4, missing GH_TOKEN), plus two retention cases based on POSIX chmod semantics. The workspace script stopped before other packages ran.
+- Key files: `internal/workspace/land_github_test.go` installs a native copy of the test executable as gh/gh.exe under a path containing spaces and asserts PATH resolution; `workspace_test.go` dispatches that helper before normal test initialization. Existing fixture responses, Git mutations, operation receipts, and landing assertions are preserved. No new sibling tests or production changes.
+- `internal/workspace/retention_test.go` compares the symlink target's observed pre-sweep permissions and still checks preserved content. The chmod-denial fixture is explicitly POSIX-only; Windows does not deny directory removal through those mode bits.
+- Diagnostics: original selected tests passed on macOS, confirming no local reproduction of the Windows failure. Repaired selected landing/API-refusal/quarantine tests, affected workspace vet, and Windows/amd64 test cross-compilation pass with Go 1.26.6 and a four-process budget. Cross-compilation is not native Windows execution. Final source diagnostics and exact-head publication are recorded in the canonical issue Workpad.
+- No generated inputs or invariants changed; no full checks, coverage, race suite, Actions rerun, CI wait, or live-instance changes. Configured gate: `true`. No out-of-scope findings or dependencies.
+- Open items: next scheduled native Windows validation confirms the repair. PR publication/readiness and completion belong to the canonical issue Workpad; merging and tracker lanes remain orchestrator-owned.
+- Skill draft: no — existing native helper and portable fixture guidance cover this repair.
+
+# Historical notes from develop
+
 # Issue #2976 merge fallback handoff (attempt 7212, generation 80)
 
 - PR #3052 is open against `develop` on the assigned isolated branch; its body includes `Fixes #2976`. Fetched published head: `99f99e34cea4fea794c0ddc7a8cea973c24e2957`.
@@ -6,7 +18,7 @@
 - Key issue files remain `internal/orchestrator/autopromote_tick.go`, `internal/orchestrator/autopromote_tick_test.go`, and INV-3 in `docs/invariants.md`. Prior resolution retains develop's audit-only Merging path and the PR's In Progress repair-only filter in the non-Merging decision path.
 - Updated handoff notes with one current Workpad/status fence; prior handoffs are historical.
 
-## Codex Workpad
+## Historical Workpad
 
 Plan and result: retain the unpublished resolution, finish and commit the current develop merge while preserving the published PR head and fetched target as ancestors, then return immediately with a source-clean workspace.
 
@@ -14,7 +26,7 @@ Validation: no tests, lint, vet, builds, local gate (including `true`), CI check
 
 Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No push, PR merge, issue-state change or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
