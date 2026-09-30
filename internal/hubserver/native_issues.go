@@ -194,25 +194,25 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	})
 }
 
-func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (any, error) {
+func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
 	if request.GitHubIssueURL != "" {
 		return createLinkedIssueTx(ctx, tx, scope, request, now)
 	}
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	if err := requireUnreservedLabels(ctx, request.Labels); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	if err := validateNativeProvenance(scope, request.Provenance); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	if project.Profile != "native" {
-		return nil, nativeInvalid("Compatibility project content is externally owned")
+		return tracker.NativeIssue{}, nativeInvalid("Compatibility project content is externally owned")
 	}
 	var sourceKey any
 	if request.Provenance != nil {
@@ -224,12 +224,12 @@ func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 			return issue, err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
+			return tracker.NativeIssue{}, err
 		}
 	}
 	var workflowID int64
 	if err := tx.QueryRowContext(ctx, "SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, request.State).Scan(&workflowID); err != nil {
-		return nil, nativeInvalid("Workflow state does not exist")
+		return tracker.NativeIssue{}, nativeInvalid("Workflow state does not exist")
 	}
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Revision: 1, Profile: "native"},
 		Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
@@ -243,7 +243,7 @@ func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 	for _, state := range project.States {
 		if state.Name == issue.State {
 			if state.OperatorOnly && scope.credential.Scope == apiScopeWorker {
-				return nil, nativeInvalid("Workflow target requires an operator")
+				return tracker.NativeIssue{}, nativeInvalid("Workflow target requires an operator")
 			}
 			issue.Terminal = state.Terminal
 		}
@@ -255,23 +255,23 @@ func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 		issue.Assignees = []string{}
 	}
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&issue.Number); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	labels, err := marshalNative(issue.Labels)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	assignees, err := marshalNative(issue.Assignees)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	actor, err := marshalNative(issue.Actor)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	provenance, err := marshalNative(issue.Provenance)
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	author := issue.Actor.PrincipalID
 	if issue.Provenance != nil {
@@ -280,17 +280,17 @@ func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 	result, err := tx.ExecContext(ctx, `INSERT INTO issues (native_id, organization_id, project_id, number, workflow_state_id, title, body, url, github_state, labels_json, assignees_json, source_version, source_updated_at, synchronized_at, created_at, updated_at, author_login, actor_json, provenance_json, native_source_key, native_created_at, native_updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, '', 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?)`, issue.WorkItemID, scope.organization, scope.project, issue.Number, workflowID, issue.Title, issue.Body, labels, assignees, formatHubTime(now), formatHubTime(now), author, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now))
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO queue_entries (issue_id, workflow_state_id, scope, state, rank, priority_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, workflowID, scope.project, issue.State, string(issue.WorkItemID), issue.Priority, formatHubTime(now), formatHubTime(now)); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	if err := recordNativeChange(ctx, tx, scope, issue, string(issue.WorkItemID), issue.Revision, "issue.created", tracker.CollaborationData{Revision: issue.Revision}, now); err != nil {
-		return nil, err
+		return tracker.NativeIssue{}, err
 	}
 	return issue, nil
 }
