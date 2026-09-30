@@ -1656,43 +1656,6 @@ func TestManagerAutoAdmissionRespectsEligibilityAndCaps(t *testing.T) {
 	}
 }
 
-func TestManagerAutoAdmissionRespectsOpenProposalCap(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	first := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	second := admissionIssueFixture("issue-2", "DD-2", 2, now)
-	tracker := memory.New(memory.Config{
-		Issues:   []connector.Issue{first, second},
-		Stateful: true,
-		Now:      func() time.Time { return now },
-	})
-	backend := openManagerTestStore(t)
-	proposal := admissionTestProposalForIssue("proposal-open", first, now)
-	proposal.Confidence = 0.5
-	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
-		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
-	}
-	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
-	settings := admissionTestSettings(tracker, agent)
-	settings.Config.AutoAdmit = true
-	settings.Config.AutoAdmitMinConfidence = 0.9
-	settings.Config.MaxOpenProposals = 1
-	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
-
-	result, err := manager.RunOnce(t.Context())
-	if err != nil {
-		t.Fatalf("RunOnce() error = %v", err)
-	}
-	if agent.calls != 0 || result.Skipped["open_proposal_cap"] != 1 {
-		t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
-	}
-	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{first.ID, second.ID})
-	if err != nil || len(issues) != 2 || issues[0].State != "Backlog" || issues[1].State != "Backlog" {
-		t.Fatalf("issues = %#v, %v", issues, err)
-	}
-}
-
 func TestManagerImplicitAcceptanceReleasesOpenProposalCapacity(t *testing.T) {
 	t.Parallel()
 
@@ -4674,6 +4637,82 @@ func TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity(t *testing.T) {
 			}
 			if result.Candidates != 0 || agent.calls != 0 || local.requests != 0 || global.requests != 0 {
 				t.Fatalf("result=%+v evaluations=%d capacity calls=%d/%d", result, agent.calls, local.requests, global.requests)
+			}
+		})
+	}
+}
+
+func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		automatic    bool
+		confidence   float64
+		failCriteria bool
+		author       string
+		human        bool
+		wantCalls    int
+		wantState    string
+	}{
+		{name: "automatic qualifies", automatic: true, confidence: .95, author: "octocat", wantCalls: 1, wantState: "Todo"},
+		{name: "automatic disabled", confidence: .95, author: "octocat", wantState: "Backlog"},
+		{name: "low confidence", automatic: true, confidence: .83, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "failed criteria", automatic: true, confidence: .95, failCriteria: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "unknown author", automatic: true, confidence: .95, author: "unknown", wantState: "Backlog"},
+		{name: "human owned", automatic: true, confidence: .95, author: "octocat", human: true, wantState: "Backlog"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 30, 22, 30, 0, 0, time.UTC)
+			issues := make([]connector.Issue, 0, 11)
+			for i := range 10 {
+				issue := admissionIssueFixture(fmt.Sprintf("human-%d", i), fmt.Sprintf("owner/repo#%d", i+1), 0, now)
+				issue.AuthorID = "octocat"
+				issues = append(issues, issue)
+			}
+			candidate := admissionIssueFixture("candidate", "owner/repo#3242", 0, now)
+			candidate.AuthorID = tt.author
+			if tt.human {
+				candidate.Labels = []string{"human-owned"}
+			}
+			issues = append(issues, candidate)
+			tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+			backend := openManagerTestStore(t)
+			for i := range 10 {
+				proposal := admissionTestProposalForIssue(fmt.Sprintf("human-proposal-%d", i), issues[i], now)
+				proposal.Confidence = .5
+				if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+					t.Fatalf("create pending: %t %v", created, err)
+				}
+				if err := backend.MarkAdmissionProposalCommented(t.Context(), proposal.ID, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
+				proposals := proposeEveryCandidateAtConfidence(tt.confidence)(request)
+				if tt.failCriteria {
+					for i := range proposals {
+						proposals[i].Findings[0].Matched = false
+					}
+				}
+				return proposals
+			}}
+			settings := admissionTestSettings(tracker, agent)
+			settings.Config.AutoAdmit = tt.automatic
+			settings.Config.AutoAdmitMinConfidence = .85
+			settings.Config.Authors.Allow = []string{"octocat"}
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+			result, err := manager.RunOnce(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{candidate.ID})
+			if err != nil || len(fresh) != 1 || fresh[0].State != tt.wantState || agent.calls != tt.wantCalls {
+				t.Fatalf("state=%+v calls=%d wantState=%s wantCalls=%d err=%v result=%+v", fresh, agent.calls, tt.wantState, tt.wantCalls, err, result)
+			}
+			open, err := backend.CountOpenAdmissionProposals(t.Context(), settings.ProjectID)
+			if err != nil || open != 10 {
+				t.Fatalf("pending human count=%d err=%v", open, err)
 			}
 		})
 	}

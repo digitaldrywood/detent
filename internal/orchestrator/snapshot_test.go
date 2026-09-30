@@ -1966,3 +1966,24 @@ func (c *slowPromotionHydrator) HydratePullRequest(ctx context.Context, issue co
 		return issue, ctx.Err()
 	}
 }
+
+func TestDependencyIssuesUsesPublishedCohortWithoutWaiting(t *testing.T) {
+	t.Parallel()
+	o := &Orchestrator{}
+	if got := o.DependencyIssues(); got != nil {
+		t.Fatalf("unpublished=%+v", got)
+	}
+	issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", State: "Rework"}
+	issue.BlockedBy = []connector.BlockedRef{{ID: "blocker", State: "Backlog"}}
+	o.latestState.Store(&State{BoardIssues: []connector.Issue{issue}})
+	got := o.DependencyIssues()
+	if len(got) != 1 || got[0].ID != issue.ID {
+		t.Fatalf("published=%+v", got)
+	}
+	got[0].State = "Done"
+	got[0].BlockedBy[0].State = "Done"
+	retained := o.DependencyIssues()
+	if retained[0].State != "Rework" || retained[0].BlockedBy[0].State != "Backlog" {
+		t.Fatalf("modified owner=%+v", retained)
+	}
+}

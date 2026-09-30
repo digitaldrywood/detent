@@ -3,11 +3,13 @@ package admission
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -53,6 +55,14 @@ func (m *Manager) orderCandidateWindow(ctx context.Context, settings Settings, c
 	}
 	// Existing dispatch ordering breaks ties within the same evaluation time.
 	// Unseen or changed candidates sort first, followed by least recently evaluated.
+	if settings.PrioritizeBlockers && settings.DependencyIssues != nil {
+		dependents := slices.Clone(settings.DependencyIssues(ctx))
+		dependents = slices.DeleteFunc(dependents, func(issue connector.Issue) bool {
+			return issue.Closed || connector.NonExecutableReason(issue) != "" ||
+				(!containsFold(settings.DispatchStates, issue.State) && !strings.EqualFold(strings.TrimSpace(issue.State), "Blocked"))
+		})
+		dispatchpriority.AnnotateUnblockerCounts(out, dependents, settings.Config.Sources.States, settings.TerminalStates, true)
+	}
 	sortCandidates(out, settings)
 	sort.SliceStable(out, func(i, j int) bool {
 		return lastEvaluated[out[i].ID].Before(lastEvaluated[out[j].ID])

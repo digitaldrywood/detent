@@ -1201,6 +1201,18 @@ func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) 
 	}
 }
 
+func (o *Orchestrator) DependencyIssues() []connector.Issue {
+	state := o.latestState.Load()
+	if state == nil {
+		return nil
+	}
+	issues := make([]connector.Issue, len(state.BoardIssues))
+	for i, issue := range state.BoardIssues {
+		issues[i] = cloneIssue(issue)
+	}
+	return issues
+}
+
 func (o *Orchestrator) State(ctx context.Context) (State, error) {
 	if ctx == nil {
 		ctx = context.Background()
