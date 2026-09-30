@@ -841,3 +841,22 @@ func TestSharedEntrySupportAccess(t *testing.T) {
 		})
 	}
 }
+
+func TestStoreDSN(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ path, want string }{
+		{"/tmp/registry.db", "/tmp/registry.db"},
+		{"C:/entry/registry.db", "/C:/entry/registry.db"},
+		{"c:/entry/a #?.db", "/c:/entry/a #?.db"},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			parsed, err := url.Parse(storeDSN(tt.path))
+			if err != nil || parsed.Host != "" || parsed.Path != tt.want {
+				t.Fatalf("store URI = %v, %v; want local path %q", parsed, err, tt.want)
+			}
+			if len(parsed.Query()["_pragma"]) != 4 {
+				t.Fatalf("pragmas = %v", parsed.Query())
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -176,7 +177,12 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if strings.Contains(output, "det_enroll_example") {
 		t.Fatal("register output echoed the enrollment token")
 	}
-	if len(started) != 0 || !strings.Contains(output, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(output, "detent start --config") {
+	var registration runnerRegistration
+	if err := json.Unmarshal([]byte(output), &registration); err != nil {
+		t.Fatal(err)
+	}
+	steps := strings.Join(registration.NextSteps, "\n")
+	if len(started) != 0 || !strings.Contains(steps, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(steps, "detent start --config") {
 		t.Fatalf("service started before every checkout exists (%v):\n%s", started, output)
 	}
 
@@ -185,7 +191,7 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 		t.Fatalf("written config = %+v, %v", written, err)
 	}
 	info, err := os.Stat(configPath)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %v, %v", info, err)
 	}
 

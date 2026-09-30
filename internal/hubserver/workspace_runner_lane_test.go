@@ -119,6 +119,7 @@ func laneSourceRepository(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	laneGit(t, root, "init", "-q", ".")
+	laneGit(t, root, "config", "core.longpaths", "true")
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Lane\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
