@@ -2487,9 +2487,6 @@ func (o *Orchestrator) reworkMergeWorkerResult(
 	issueID := strings.TrimSpace(event.IssueID)
 	running.Issue = issue
 	metadata := workflowLaneMetadata{}
-	if event.Result.MergePrecheck != nil {
-		metadata.LessonEvidence.ConflictPaths = event.Result.MergePrecheck.ConflictPaths
-	}
 	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, autoPromoteReworkState, event.CompletedAt, reason, metadata); err != nil {
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
 		return

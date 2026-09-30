@@ -503,6 +503,19 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Session token ceilings record their existing typed outcome, usage, and agent
+session phase in the database without writing a repository lesson. Removing the
+automatic lesson append keeps runtime failure evidence out of committable files
+and prevents a filesystem error from changing the token ceiling failure.
+Rework transitions also use existing lane database events instead of automatic
+lesson captures in the primary project checkout. Project loading does not enable
+or resolve an orchestration lesson file. Configured agent lesson recall still
+reads project-authored knowledge when enabled.
+`TestRunnerRunKillsSessionAtTokenCeilingWithoutLessonWrites` covers absent and
+existing default/configured lesson paths with recall enabled or disabled.
+`TestReworkTransitionsKeepDatabaseOwnership` covers separate projects and issues
+recording their Rework exit/entry pairs and PR/provenance attribution.
+
 The pull-request hydration recovery ramp is removed (#3497). Request-family
 budget enforcement and each PR's existing hydration predicate own admission;
 a second project-wide ramp no longer limits healthy candidates after reads
@@ -1526,7 +1539,9 @@ exercise these boundaries without adding a brake, lease, or recovery mechanism.
 
 Repository notes handoff (#3498) is removed from normal, planning and merge
 fallback prompts. Failed turns no longer append diagnostics to a repository
-file. Existing issue Workpads, native completion contracts, attempt outcomes,
+file. The canonical handoff contract and orphan restart nudge explicitly revoke
+earlier notes instructions retained in provider history; normal completion
+ownership remains unchanged. Existing issue Workpads, native completion contracts, attempt outcomes,
 usage updates and provider/session records own handoff and diagnostics; no new
 artifact or coordination mechanism is added. Existing notes files remain intact.
 `TestPromptDoesNotUseRepositoryNotes`,

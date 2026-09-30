@@ -42,7 +42,6 @@ type workflowLaneMetadata struct {
 	TerminalOutcome       string                                     `json:"terminal_outcome,omitempty"`
 	StateFieldID          int                                        `json:"-"`
 	StateFieldValue       string                                     `json:"-"`
-	LessonEvidence        reworkLessonEvidence                       `json:"-"`
 	Reconciliation        string                                     `json:"reconciliation,omitempty"`
 	PullRequest           *workflowLanePullRequestMetadata           `json:"pull_request,omitempty"`
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
@@ -276,9 +275,6 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	}
 	o.recordLaneTransition(ctx, issue, targetState, at, reason, metadata)
 	receiptErr = errors.Join(receiptErr, o.finishTrackerRecoveryPark(ctx, issueID, park, "applied"))
-	if normalizeState(targetState) == normalizeState(autoPromoteReworkState) && normalizeState(issue.State) != normalizeState(targetState) {
-		o.captureReworkLesson(issue, at, reason, metadata.LessonEvidence)
-	}
 	return receiptErr
 }
 

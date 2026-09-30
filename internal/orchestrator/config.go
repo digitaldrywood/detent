@@ -140,10 +140,6 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		GitHubRESTMinReserve:          int64(cfg.Tracker.GitHubRESTMinReserve),
 		ForgeHost:                     forgeavailability.HostFromEndpoint(cfg.Tracker.Endpoint),
 		OutputTruncationMaxBytes:      cfg.Agent.OutputTruncation.MaxBytes,
-		Lessons: LessonCaptureConfig{
-			Path:       cfg.Agent.Lessons.Path,
-			MaxEntries: cfg.Agent.Lessons.MaxEntries,
-		},
 		EfficiencyThresholds: efficiency.Thresholds{
 			TokensMultiple:   cfg.Observability.Efficiency.AnomalyTokensMultiple,
 			SessionsMultiple: cfg.Observability.Efficiency.AnomalySessionsMultiple,
