@@ -570,8 +570,24 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 func (o *Orchestrator) reconcileAttemptTriagePark(ctx context.Context, state *State, issue connector.Issue, now time.Time) bool {
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	if !ok || entry.Event.Reason != attemptAllowanceExhaustedReason ||
-		!workflowLaneEntryMatchesCurrent(issue, entry.Event) || entry.Metadata.PullRequest == nil ||
-		strings.TrimSpace(entry.Metadata.PullRequest.HeadSHA) == "" || o.mergeLaneUnavailableReason() != "" {
+		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
+		return false
+	}
+	if o.workAttempts != nil && stateIn(entry.Event.PreviousPhaseName, normalizedStates([]string{"In Progress", autoPromoteReworkState})) {
+		allowance, err := o.issueAttemptAllowance(ctx, issue)
+		if err != nil {
+			return false
+		}
+		if !allowance.exhausted() {
+			if err := o.updateIssueState(ctx, state, issue, entry.Event.PreviousPhaseName, now, workflowActionRecordedBlockerRecovery); err != nil {
+				return false
+			}
+			delete(state.Blocked, issue.ID)
+			o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+			return true
+		}
+	}
+	if entry.Metadata.PullRequest == nil || strings.TrimSpace(entry.Metadata.PullRequest.HeadSHA) == "" || o.mergeLaneUnavailableReason() != "" {
 		return false
 	}
 	hydrator, ok := o.connector.(connector.PullRequestHydrator)
