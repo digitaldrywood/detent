@@ -17,6 +17,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+// Limit expensive candidate evaluation to current capacity plus a small
+// lookahead, including candidates that fail hydration or cannot start.
+const dispatchCandidateLookahead = 8
+
 type dispatchPlanner struct {
 	operatorRejectedHead func(connector.Issue) (bool, error)
 	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
@@ -105,6 +109,8 @@ func (p dispatchPlanner) plan(
 	plan := DispatchPlan{}
 	continuations := 0
 	mergeControlAvailable := true
+	evaluationLimit := p.hardAvailableSlots(state) + dispatchCandidateLookahead
+	evaluated := 0
 	for index, issue := range plannedCandidates {
 		queuePosition := index + 1
 		if correctableDispatchEscalated(state, issue.ID, dispatchSkipOwnershipAssigneeRequired) {
@@ -129,6 +135,14 @@ func (p dispatchPlanner) plan(
 			logDecision(decision)
 			continue
 		}
+		if _, retryDue := dueRetries[issue.ID]; !retryDue && p.hardAvailableSlots(state) == 0 && !p.readyMergeControlCandidate(state, issue) {
+			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipProjectCapacityFull})
+			continue
+		}
+		if evaluated >= evaluationLimit {
+			break
+		}
+		evaluated++
 		if retry, ok := dueRetries[issue.ID]; ok {
 			if retry.Wait.Kind == retryWaitCurrentHeadCI || retry.Wait.Kind == retryWaitWorkspaceBranchHeld {
 				var handled bool
@@ -189,10 +203,6 @@ func (p dispatchPlanner) plan(
 			} else if hooks.retryDispatchFailed != nil {
 				hooks.retryDispatchFailed(action.issue, retry)
 			}
-			continue
-		}
-		if p.hardAvailableSlots(state) == 0 && !p.readyMergeControlCandidate(state, issue) {
-			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipProjectCapacityFull})
 			continue
 		}
 		if hooks.hydrate != nil {
