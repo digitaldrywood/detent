@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,9 @@ func TestRetentionQuarantineWarningOncePerPath(t *testing.T) {
 
 func TestRetentionUnremovableQuarantineWarnsOnce(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod on Windows does not deny directory removal; warning deduplication is covered by TestRetentionQuarantineWarningOncePerPath")
+	}
 	root := filepath.Join(t.TempDir(), "workspaces")
 	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: t.TempDir()})
 	if err != nil {

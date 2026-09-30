@@ -90,7 +90,7 @@ func (o *Orchestrator) warnRetentionFailure(err error) {
 	}
 	var pathError *os.PathError
 	if errors.As(err, &pathError) {
-		const parent = ".detent/quarantine"
+		parent := filepath.Join(".detent", "quarantine")
 		path := filepath.Clean(pathError.Path)
 		if relative, ok := strings.CutPrefix(path, parent+string(filepath.Separator)); ok {
 			name, _, _ := strings.Cut(relative, string(filepath.Separator))
