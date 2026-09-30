@@ -31,7 +31,7 @@ func TestAutoPromoteReviewAtHead(t *testing.T) {
 			issue.PullRequest = &connector.PullRequest{State: "OPEN", HeadSHA: "ced1be0", CIStatus: "success", CodexReviewState: tt.review, LatestCodexReviewState: "COMMENTED", LatestCodexReviewCommitSHA: "156b300", UnresolvedReviewThreads: make([]connector.PullRequestReviewThread, tt.threads)}
 			summary := AutoPromoteSummaryFromIssue(issue)
 			summary.AutomatedReviewWaitExpired = tt.expired
-			got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, time.Now())
+			got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(true)}}, time.Now())
 			if got.Reason != tt.want {
 				t.Fatalf("reason = %s, want %s", got.Reason, tt.want)
 			}

@@ -29,7 +29,10 @@ func TestStartupRefreshKeepsStateAndWorkerProgressObservable(t *testing.T) {
 					for i := range candidates {
 						issues = append(issues, testIssue(fmt.Sprintf("done-%d", i), fmt.Sprintf("repo#%d", i), "Done"))
 					}
-					tracker := &pendingDispatchConnector{fakeConnector: newFakeConnector(issues...), started: make(chan struct{}), release: make(chan struct{})}
+					// Completed issues belong to the cleanup/status query, not the
+					// active candidate query's bounded dispatch lookahead.
+					tracker := &pendingDispatchConnector{fakeConnector: newFakeConnector(issues[:2]...), started: make(chan struct{}), release: make(chan struct{})}
+					tracker.setStateIssues(issues[2:]...)
 					reaper := &startupStalledReaper{started: make(chan struct{}), release: make(chan struct{})}
 					runner := newBlockingRunner()
 					orch, err := orchestrator.New(orchestrator.Config{

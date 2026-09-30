@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,6 +124,16 @@ func TestSSHHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+func sshGitHubCLIHelper() {
+	if len(os.Args) >= 3 && os.Args[1] == "auth" && os.Args[2] == "token" {
+		if _, err := os.Stat(filepath.Join(os.Getenv("GH_CONFIG_DIR"), "hosts.yml")); err != nil {
+			os.Exit(1)
+		}
+		fmt.Fprint(os.Stdout, "fixture-token")
+	}
+	os.Exit(0)
+}
+
 func sshTestProvider() error {
 	decoder, encoder := json.NewDecoder(os.Stdin), json.NewEncoder(os.Stdout)
 	for {
@@ -206,6 +217,9 @@ func TestSSHLocalTargetIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("local SSH integration requires a daemon")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("local SSH daemon fixture requires POSIX sshd configuration; TestSSHWorkerLifecycle covers the worker protocol")
+	}
 	testSSHWorkerLifecycle(t, true)
 }
 
@@ -221,6 +235,9 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH bool) {
 		}
 	}
 	t.Setenv("HOME", localHome)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", localHome)
+	}
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_COUNT"} {
@@ -266,8 +283,17 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH bool) {
 	}
 	git(root, "clone", "-b", "develop", bare, remoteSource)
 	// Fake gh reads the same private hosts.yml as the production GitHub CLI.
-	gh := "#!/bin/sh\nif [ \"$1 $2\" = 'auth token' ]; then test -f \"$GH_CONFIG_DIR/hosts.yml\" || exit 1; printf fixture-token; exit 0; fi\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(root, "bin", "gh"), []byte(gh), 0o700); err != nil {
+	// Use a native executable: Go launches gh directly, without a shell to
+	// interpret a script or batch file on Windows.
+	ghName := "gh"
+	if runtime.GOOS == "windows" {
+		ghName += ".exe"
+	}
+	gh, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bin", ghName), gh, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -291,13 +317,17 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH bool) {
 	cfg.Agent.MaxTurns = 1
 	cfg.Agent.MaxSessionDurationMS = 30000
 	cfg.Agent.NoProgressTimeoutMS = 30000
-	gate := "test -f " + sshQuote(filepath.Join(remoteHome, "before-run")) + " && test -f \"$GH_CONFIG_DIR/hosts.yml\" && printf passed > " + sshQuote(filepath.Join(remoteHome, "gate"))
-	cfg.Codex.Command = "env DETENT_SSH_TEST_HELPER=provider DETENT_SSH_TEST_GATE=" + sshQuote(gate) + " " + sshQuote(executable) + " -test.run=^TestSSHHelperProcess$"
+	// The fixture commands use POSIX syntax on every host, including Git's
+	// sh on Windows. Native default-shell behavior is covered by shell tests.
+	cfg.Codex.Shell = "sh"
+	cfg.Hooks.Shell = "sh"
+	gate := "test -f \"$HOME/before-run\" && test -f \"$GH_CONFIG_DIR/hosts.yml\" && printf passed > \"$HOME/gate\""
+	cfg.Codex.Command = "env DETENT_SSH_TEST_HELPER=provider DETENT_SSH_TEST_GATE=" + sshQuote(gate) + " " + sshQuote(filepath.ToSlash(executable)) + " -test.run=^TestSSHHelperProcess$"
 	cfg.Gate.Run = gate
 	cfg.Budget.Enabled = false
-	cfg.Hooks.AfterCreate = "printf created > " + sshQuote(filepath.Join(localHome, "after-create"))
-	cfg.Hooks.BeforeRun = "printf before > " + sshQuote(filepath.Join(localHome, "before-run"))
-	cfg.Hooks.AfterRun = "printf after > " + sshQuote(filepath.Join(localHome, "after-run"))
+	cfg.Hooks.AfterCreate = "printf created > \"$HOME/after-create\""
+	cfg.Hooks.BeforeRun = "printf before > \"$HOME/before-run\""
+	cfg.Hooks.AfterRun = "printf after > \"$HOME/after-run\""
 	sessions, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: filepath.Join(root, "sessions.db")})
 	if err != nil {
 		t.Fatal(err)
@@ -309,7 +339,7 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH bool) {
 		t.Fatal(err)
 	}
 	run := built.(*sshRunner)
-	environment := []string{"HOME=" + remoteHome, "TMPDIR=" + root, "PATH=" + filepath.Join(root, "bin") + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "DETENT_SSH_TEST_HELPER=worker"}
+	environment := []string{"HOME=" + filepath.ToSlash(remoteHome), "USERPROFILE=" + remoteHome, "TMPDIR=" + root, "PATH=" + filepath.Join(root, "bin") + string(os.PathListSeparator) + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "DETENT_SSH_TEST_HELPER=worker"}
 	var lastCommand *exec.Cmd
 	var commandMu sync.Mutex
 	var commandFactory func(context.Context, string, string) *exec.Cmd
