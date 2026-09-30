@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -224,11 +223,10 @@ func TestRunnerHomeProviderEligibility(t *testing.T) {
 	for _, f := range []nativeFixture{home, general} {
 		approveHubTestPolicy(t, home.service, f.base+"/policy", hubTestPolicy())
 	}
-	homeIssue := home.create(t, "unavailable model")
+	home.create(t, "unavailable model")
 	generalIssue := general.create(t, "available model")
 	publishCapacity(t, home, r, capacityReport(now))
 	claim := providerClaim(r, generalIssue, "general-provider")
-	claim.ProviderCandidates = append(claim.ProviderCandidates, tracker.NativeCapacityCandidate{WorkItemID: homeIssue.WorkItemID, Revision: homeIssue.Revision, Requirement: providercapacity.Requirement{Role: "implement", Backend: "codex", Model: "unsupported"}})
 	response := performHubAPIRequest(t, home.service, http.MethodPost, general.base+"/claims", r.redemption.Credential, claim)
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
@@ -249,5 +247,31 @@ func TestRunnerHomeFleetVisibility(t *testing.T) {
 	view = hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{"prj_visible": true, "prj_hidden": true})
 	if len(view.HomeProjectIDs) != 2 || view.HomeStatus != "Spilled over" || view.HomeDrySince == nil {
 		t.Fatalf("visible home state lost: %#v", view)
+	}
+}
+
+func TestRunnerHomeWorkflowFilter(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "home-workflow")
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	r.enroll(t)
+	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Home runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}, HomeProjectIDs: []tracker.ProjectID{f.project.ID}}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	f.create(t, "earlier todo")
+	rework := f.create(t, "eligible rework")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET detent_state = 'Rework' WHERE project_id = ? AND detent_state = 'In Progress'", f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Rework') WHERE native_id = ?", f.project.ID, rework.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: r.binding.MachineID, SessionID: "rework-only", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}, WorkflowStates: []string{" Rework "}}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	if lease.WorkItemID != rework.WorkItemID {
+		t.Fatalf("rework claim = %#v", lease)
 	}
 }

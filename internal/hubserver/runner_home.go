@@ -27,9 +27,16 @@ func (d *database) runnerHomeSelection(ctx context.Context, tx *sql.Tx, query cl
 	probe.NativeScope = &scope
 	probe.Scope = ""
 	probe.HomeProjects = r.HomeProjectIDs
-	ids, err := claimCandidateIDs(ctx, tx, probe, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), []string{"todo", "rework"}, normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude), nil)
-	if err != nil {
-		return 0, false, err
+	homeStates := []string{"todo", "rework"}
+	if requested := normalizedQueryStrings(query.WorkflowStates); len(requested) != 0 {
+		homeStates = slices.DeleteFunc(homeStates, func(state string) bool { return !slices.Contains(requested, state) })
+	}
+	var ids []tracker.WorkItemID
+	if len(homeStates) != 0 {
+		ids, err = claimCandidateIDs(ctx, tx, probe, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), homeStates, normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude), nil)
+		if err != nil {
+			return 0, false, err
+		}
 	}
 	var selected tracker.WorkItemID
 	for _, id := range ids {
@@ -58,17 +65,11 @@ func (d *database) runnerHomeSelection(ctx context.Context, tx *sql.Tx, query cl
 		if found && current.session.ExpiresAt.After(now) {
 			continue
 		}
-		var nativeID tracker.NativeWorkItemID
-		if err := tx.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE id = ?", id).Scan(&nativeID); err != nil {
-			return 0, false, err
-		}
-		if project == query.NativeScope.project || slices.ContainsFunc(query.ProviderCandidates, func(candidate tracker.NativeCapacityCandidate) bool { return candidate.WorkItemID == nativeID }) {
-			if _, _, err := selectProviderCapacity(ctx, tx, query, id, now); err != nil {
-				if errors.Is(err, ErrNoClaimableWork) || isProviderWait(err) {
-					continue
-				}
-				return 0, false, err
+		if _, _, err := selectProviderCapacity(ctx, tx, query, id, now); err != nil {
+			if errors.Is(err, ErrNoClaimableWork) || isProviderWait(err) {
+				continue
 			}
+			return 0, false, err
 		}
 		selected = id
 		break
