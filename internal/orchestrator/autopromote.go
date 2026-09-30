@@ -13,6 +13,7 @@ import (
 
 type AutoPromoteConfig struct {
 	Enabled               bool
+	HumanReview           *bool
 	QuietDuration         time.Duration
 	OptoutLabel           string
 	AllowedIssueLabels    []string
@@ -26,6 +27,17 @@ type AutoPromoteConfig struct {
 	NoProgressLimit       int
 	WorkpadStructuredOnly bool
 	Gate                  gate.Config
+}
+
+func (cfg AutoPromoteConfig) humanReviewEnabled() bool {
+	return cfg.HumanReview == nil || *cfg.HumanReview
+}
+
+func (cfg AutoPromoteConfig) reviewTargetState() string {
+	if !cfg.humanReviewEnabled() {
+		return blockedStatusState
+	}
+	return cfg.SourceState
 }
 
 type AutoPromoteSummary struct {
@@ -269,6 +281,9 @@ func operationalCompletionWithAuthorization(issue connector.Issue, authorized bo
 
 func autoPromoteHumanReviewRequired(issue connector.Issue, cfg AutoPromoteConfig, gateCfg gate.Config) bool {
 	cfg = normalizeAutoPromoteConfig(cfg)
+	if !cfg.humanReviewEnabled() {
+		return false
+	}
 	if !cfg.Enabled {
 		return true
 	}
@@ -369,12 +384,9 @@ func normalizeAutoPromoteGateWaitState(state string) string {
 }
 
 func autoPromoteOptoutLabel(issue connector.Issue, cfg AutoPromoteConfig) bool {
-	if cfg.OptoutLabel == "" {
-		return false
-	}
-
 	for _, label := range issue.Labels {
-		if normalizeLabel(label) == cfg.OptoutLabel {
+		normalized := normalizeLabel(label)
+		if normalized == "requires-human-review" || cfg.OptoutLabel != "" && normalized == cfg.OptoutLabel {
 			return true
 		}
 	}

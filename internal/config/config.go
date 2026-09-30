@@ -148,6 +148,7 @@ type WorkflowOverlay struct {
 
 type Config struct {
 	Policy            policy.Descriptor    `yaml:"-" json:"-"`
+	Review            Review               `yaml:"review,omitempty"`
 	Runners           Runners              `yaml:"runners,omitempty"`
 	Identity          Identity             `yaml:"identity,omitempty"`
 	ActiveHours       activehours.Config   `yaml:"active_hours,omitempty"`
@@ -177,6 +178,10 @@ type Config struct {
 	BacklogAdmission  BacklogAdmission     `yaml:"backlog_admission,omitempty"`
 
 	configuredFields map[string]struct{}
+}
+
+type Review struct {
+	Human bool `yaml:"human"`
 }
 
 type Recovery struct {
@@ -1542,7 +1547,7 @@ func Default() Config {
 			PrioritizeUnblockers:       true,
 			AutoPromote: AutoPromote{
 				QuietSeconds:           600,
-				OptoutLabel:            "requires-human-review",
+				OptoutLabel:            "",
 				AllowedIssueLabels:     []string{},
 				GateWaitState:          AutoPromoteGateWaitStateSource,
 				GateWaitTimeoutSeconds: DefaultAutoPromoteGateWaitTimeoutSeconds,
@@ -2738,9 +2743,6 @@ func validatePriorityValues(field string, priorities []int, problems *[]string) 
 func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	if a.QuietSeconds < 0 {
 		*problems = append(*problems, prefix+".quiet_seconds must be greater than or equal to 0")
-	}
-	if strings.TrimSpace(a.OptoutLabel) == "" {
-		*problems = append(*problems, prefix+".optout_label must not be blank")
 	}
 	for _, label := range a.AllowedIssueLabels {
 		if strings.TrimSpace(label) == "" {

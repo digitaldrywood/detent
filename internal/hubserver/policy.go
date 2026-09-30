@@ -238,12 +238,12 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 
 // defaultChangeReviewPolicy is the review expectation a native project starts
 // with: no CI check is pinned, and a person reviews each version only when
-// the repository gate asks for one. Under any other gate a published version
+// review.human asks for one. Under any other setting a published version
 // is already reviewed, so the runner lands it without waiting for anybody.
 // It is what approving the repository policy means for a project nobody
 // configured further.
 func defaultChangeReviewPolicy(descriptor policy.Descriptor) tracker.ChangeReviewPolicy {
-	rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: descriptor.Gates.Kind == "human_review", RequiredChecks: []tracker.ChangeCheckSpec{}}
+	rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: descriptor.Gates.HumanReview, RequiredChecks: []tracker.ChangeCheckSpec{}}
 	rules.ID = changerequest.PolicyID(rules)
 	return rules
 }
