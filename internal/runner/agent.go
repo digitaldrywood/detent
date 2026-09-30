@@ -1162,8 +1162,22 @@ func (r *Runner) runAgentTurn(
 	workerProcessObserved := false
 	conversation := conversationRunFromContext(ctx)
 	turnRequest = conversation.prepareTurn(turnRequest)
+	profileWorkflow, _, _, _ := r.runtimeSnapshot()
+	profileStage := "implementation"
+	if runRole(runRequest.Mode, runRequest.Issue) == RoleRework {
+		profileStage = "rework"
+	}
+	if runRequest.Mode == RunModePlan {
+		profileStage = "planning"
+	}
+	if runRequest.Mode == RunModeMerge {
+		profileStage = "merging"
+	}
+	activityProfile := r.startActivityProfile(runRequest, detentSessionID, info.Path, profileWorkflow, profileStage)
+	defer activityProfile.close()
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsCheckedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
 		}
@@ -3162,6 +3176,8 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if resolvedSelection.Effort != "" {
 		effort = resolvedSelection.Effort
 	}
+	activityProfile := r.startActivityProfile(runReq, sessionID, info.Path, workflow, "validation")
+	defer activityProfile.close()
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
@@ -3180,6 +3196,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		processRSS:         r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		activityProfile.observe(update, eventAt, workspaceIssue.PullRequestHeadSHA, runStartedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
 		}
