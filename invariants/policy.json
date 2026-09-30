@@ -113,7 +113,7 @@
       "TestPrepareCodexCommandForServiceIsolatesInstructions",
       "TestPrepareWorkerCodexHomeExistingInstructions",
       "TestDoctorInvariantEvidence",
-      "TestDoctorInvariantWorkflowVerdict",
+      "TestDoctorRespectsProjectCIPolicy",
       "TestDoctorLocalGateCommitStatusProducer",
       "TestDoctorInvariantAdmission",
       "TestDoctorInvariantAdmissionBatches",

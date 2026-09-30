@@ -110,7 +110,12 @@ artifact workflows. GitHub PR delivery remains the default.
 - `GoReleaser Snapshot` validates integration on pushes to `main` and manual
   workflow dispatch; it is not a PR-required check.
 
-### Main Branch Protection
+### Detent Repository Branch Protection
+
+This section describes development of the Detent repository. Managed projects
+choose their own CI and branch protection policies, including PR-triggered CI,
+merge-group CI, required checks, and strict freshness. The orchestrator honors
+each project's configured gate and repository rules.
 
 Pull requests run `make check-fast` in their own worktree before merge. The
 command has no shared validation lock. No GitHub Actions workflow starts on a

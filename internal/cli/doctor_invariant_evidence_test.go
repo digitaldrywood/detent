@@ -67,7 +67,7 @@ func TestDoctorInvariantEvidence(t *testing.T) {
 				`INSERT INTO lane_ledger(project_id,written_at) VALUES ('alpha','` + recent + `')`,
 			},
 			policy: ghconnector.BranchMergePolicy{Branch: "main", MergeQueue: true},
-			want:   map[string]doctorStatus{"INV-1": doctorOK, "INV-2": doctorOK, "INV-3": doctorOK, "INV-4": doctorOK, "INV-8": doctorOK, "INV-9": doctorOK},
+			want:   map[string]doctorStatus{"INV-1": doctorOK, "INV-2": doctorOK, "INV-3": doctorOK, "INV-4": doctorOK, "INV-9": doctorOK},
 		},
 		{
 			name: "transitions without ledger writes",
@@ -102,7 +102,7 @@ func TestDoctorInvariantEvidence(t *testing.T) {
 				`INSERT INTO work_attempts(project_id,identifier,error_class,completed_at) VALUES ('alpha','owner/repo#3','programmatic_merge_failed','` + recent + `')`,
 			},
 			policy: ghconnector.BranchMergePolicy{Branch: "main", MergeQueue: true, Strict: true},
-			want:   map[string]doctorStatus{"INV-4": doctorFail, "INV-8": doctorFail},
+			want:   map[string]doctorStatus{"INV-4": doctorFail},
 		},
 		{
 			name: "successful programmatic merge beside a queue",
@@ -136,7 +136,7 @@ func TestDoctorInvariantEvidence(t *testing.T) {
 		{
 			name:   "rules unavailable on plan",
 			policy: ghconnector.BranchMergePolicy{RulesUnavailableOnPlan: true},
-			want:   map[string]doctorStatus{"INV-8": doctorOK},
+			want:   map[string]doctorStatus{},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -159,48 +159,44 @@ func TestDoctorInvariantEvidence(t *testing.T) {
 	}
 }
 
-func TestDoctorInvariantWorkflowVerdict(t *testing.T) {
+func TestDoctorRespectsProjectCIPolicy(t *testing.T) {
 	t.Parallel()
-	for _, tt := range []struct {
-		name    string
-		sources map[string][]byte
-		want    doctorStatus
-		detail  string
-	}{
-		{"main push only", map[string][]byte{"ci.yml": []byte("on:\n  push:\n    branches: [main]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n")}, doctorOK, "no workflow has a pull_request or merge_group trigger"},
-		{"PR placeholder still triggers", map[string][]byte{"ci.yml": []byte("on:\n  pull_request:\njobs:\n  placeholder:\n    if: github.event_name == 'pull_request'\n")}, doctorWarn, "ci.yml:pull_request"},
-		{"merge group still triggers", map[string][]byte{"ci.yml": []byte("on:\n  merge_group:\n    types: [checks_requested]\n")}, doctorWarn, "ci.yml:merge_group"},
-		{"target still triggers", map[string][]byte{"ci.yml": []byte("on:\n  pull_request_target:\n")}, doctorWarn, "ci.yml:pull_request_target"},
-		{"second workflow triggers", map[string][]byte{"ci.yml": []byte("on:\n  push:\n"), "extra.yaml": []byte("on:\n  pull_request:\n")}, doctorWarn, "extra.yaml:pull_request"},
-		{"malformed", map[string][]byte{"ci.yml": []byte("on: [\n")}, doctorWarn, "could not be parsed"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, event := range []string{"pull_request", "merge_group", "pull_request_target"} {
+		t.Run(event, func(t *testing.T) {
 			t.Parallel()
-			got := doctorInvariantWorkflowVerdict("alpha", tt.sources)
-			if got.Status != tt.want || !strings.Contains(got.Detail, tt.detail) {
-				t.Fatalf("status = %s (%s), want %s containing %q", got.Status, got.Detail, tt.want, tt.detail)
+			root := t.TempDir()
+			workflows := filepath.Join(root, ".github", "workflows")
+			if err := os.MkdirAll(workflows, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workflows, "ci.yml"), []byte("on:\n  "+event+":\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = "github"
+			cfg.Tracker.Repository = "owner/repo"
+			cfg.Workspace.SourceRoot = root
+			cfg.Deliverable.Kind = workflowconfig.DeliverablePullRequest
+			deps := successfulDoctorDeps()
+			deps.githubBranchPolicy = func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error) {
+				return ghconnector.BranchMergePolicy{Branch: "main", Strict: true}, nil
+			}
+			checks := checkDoctorInvariantEvidence(t.Context(), "alpha", globalconfig.Project{ID: "alpha"}, cfg, doctorInvariantFixtureDB(t), deps)
+			foundPolicy := false
+			for _, check := range checks {
+				if strings.Contains(check.Name, " INV-5 ") || strings.Contains(check.Name, " INV-8 ") || strings.Contains(check.Hint, "zero PR CI") || strings.Contains(check.Hint, "Disable strict") {
+					t.Errorf("repository development policy leaked into project diagnostics: %#v", check)
+				}
+				if check.Name == "Project alpha branch policy" {
+					foundPolicy = true
+					if check.Status != doctorOK || !strings.Contains(check.Detail, "requires up-to-date branches: true") || check.Hint != "" {
+						t.Errorf("strict branch policy must remain supported: %#v", check)
+					}
+				}
+			}
+			if !foundPolicy {
+				t.Fatal("missing branch policy evidence")
 			}
 		})
-	}
-}
-
-func TestDoctorInvariantWorkflowCheckReadsEverySourceRootWorkflow(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	workflows := filepath.Join(root, ".github", "workflows")
-	if err := os.MkdirAll(workflows, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workflows, "ci.yml"), []byte("on:\n  push:\n    branches: [main]\njobs:\n  verify:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workflows, "preview.yaml"), []byte("on:\n  pull_request:\njobs:\n  preview:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := doctorInvariantWorkflowCheck("alpha", root); got.Status != doctorWarn || !strings.Contains(got.Detail, "preview.yaml:pull_request") {
-		t.Fatalf("check = %#v", got)
-	}
-	if got := doctorInvariantWorkflowCheck("alpha", filepath.Join(root, "missing")); got.Status != doctorOK {
-		t.Fatalf("missing checkout = %#v", got)
 	}
 }
