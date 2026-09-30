@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -21,11 +22,13 @@ import (
 )
 
 type runnerCredentialSource struct {
-	routingMu      sync.Mutex
-	routing        *runnerauth.RoutingSnapshot
-	routingChanged chan struct{}
-	mu             sync.Mutex
-	path           string
+	problems         []runnerauth.Problem
+	settingsRejected bool
+	routingMu        sync.Mutex
+	routing          *runnerauth.RoutingSnapshot
+	routingChanged   chan struct{}
+	mu               sync.Mutex
+	path             string
 }
 
 func runnerOrganizationPath(organization tracker.OrganizationID) (string, error) {
@@ -173,7 +176,7 @@ func EnrollRunner(ctx context.Context, path string, organization tracker.Organiz
 		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
 			return identity, err
 		}
-		request := runnerauth.Redemption{Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
+		request := runnerauth.Redemption{BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
 		if err := client.runnerRequest(ctx, enrollment, http.MethodPost, base+"/runner-enrollments/redeem", request, &identity); err != nil {
 			return identity, err
 		}
@@ -233,19 +236,29 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 
 func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, capacity int, refresh bool) error {
 	capabilities, isolation := machine.workspaceReport()
+	problems := machine.Problems
+	var rejected bool
+	if c.client.runner != nil {
+		problems, rejected = c.client.runner.heartbeatProblems(ctx, machine)
+	}
 	request := struct {
-		LocalChecks     *runnerauth.LocalChecks   `json:"local_checks,omitempty"`
-		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
-		DisplayName     string                    `json:"display_name"`
-		Capacity        int                       `json:"capacity"`
-		Version         string                    `json:"version"`
-		OS              string                    `json:"os"`
-		Architecture    string                    `json:"architecture"`
+		LocalChecks      *runnerauth.LocalChecks   `json:"local_checks,omitempty"`
+		Problems         []runnerauth.Problem      `json:"problems"`
+		ProtocolMajor    int                       `json:"protocol_major,omitempty"`
+		SettingsRejected bool                      `json:"settings_rejected,omitempty"`
+		BackendIsolation isolationpolicy.Report    `json:"backend_isolation"`
+		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
+		DisplayName      string                    `json:"display_name"`
+		Capacity         int                       `json:"capacity"`
+		Version          string                    `json:"version"`
+		OS               string                    `json:"os"`
+		Architecture     string                    `json:"architecture"`
 		// The workspace claim gate matches these against a workspace's
 		// requires set and checks the heartbeat that carried them is fresh.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
-	}{machine.LocalChecks, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
+		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
+	}{machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
 	if c.client.runner == nil {
 		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 	}
@@ -262,11 +275,15 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		return errors.Join(ErrUnavailable, errors.New("hub returned an unexpected runner routing identity"))
 	}
 	if err := snapshot.Routing.Validate(); err != nil {
+		c.client.runner.rejectSettings(true)
 		return errors.Join(ErrUnavailable, err)
 	}
 	c.client.runner.setRouting(snapshot)
 	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
+		c.client.runner.rejectSettings(true)
 		slog.Default().Warn("runner routing cache not updated", "error", err)
+	} else {
+		c.client.runner.rejectSettings(false)
 	}
 	status, err := snapshot.Routing.Availability.Evaluate(time.Now())
 	if err != nil {

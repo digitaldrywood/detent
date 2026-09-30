@@ -61,6 +61,8 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		workpadBlockerRef  string
 		runningWorkpadBody string
 		currentWorkpadBody string
+		bodyWorkpad        bool
+		generation         uint64
 		resolvedBlockers   []connector.Issue
 		completionErr      error
 		wantClaimed        bool
@@ -295,6 +297,56 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantReview:         true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
+		},
+		{
+			name: "current body operational completion is attributed",
+			runningIssue: func() connector.Issue {
+				issue := implementProgressIssueWithoutPR()
+				issue.Description = operationalCompletionAuthorizationBody()
+				return issue
+			}(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			bodyWorkpad:        true,
+			generation:         25,
+			currentWorkpadBody: strings.Replace(operationalCompletionWorkpadBody("Backfill verified."), "fields:\n", "fields:\n  completion_work_attempt_id: \"42\"\n  completion_generation: \"25\"\n", 1),
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         string(AutoPromoteReasonOperationalCompletion),
+			wantProgressKinds:  []string{"operational_completion"},
+			wantCompletionKind: workpad.CompletionOperational,
+			wantReview:         true,
+		},
+		{
+			name: "body operational completion rejects another attempt",
+			runningIssue: func() connector.Issue {
+				issue := implementProgressIssueWithoutPR()
+				issue.Description = operationalCompletionAuthorizationBody()
+				return issue
+			}(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			bodyWorkpad:        true,
+			generation:         25,
+			currentWorkpadBody: strings.Replace(operationalCompletionWorkpadBody("Backfill verified."), "fields:\n", "fields:\n  completion_work_attempt_id: \"41\"\n  completion_generation: \"25\"\n", 1),
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         implementProgressOutcomeNoProgress,
+			wantRetry:          true,
+		},
+		{
+			name: "body operational completion rejects another generation",
+			runningIssue: func() connector.Issue {
+				issue := implementProgressIssueWithoutPR()
+				issue.Description = operationalCompletionAuthorizationBody()
+				return issue
+			}(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			bodyWorkpad:        true,
+			generation:         25,
+			currentWorkpadBody: strings.Replace(operationalCompletionWorkpadBody("Backfill verified."), "fields:\n", "fields:\n  completion_work_attempt_id: \"42\"\n  completion_generation: \"24\"\n", 1),
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         implementProgressOutcomeNoProgress,
+			wantRetry:          true,
 		},
 		{
 			name: "operational completion with undelivered commits is stranded",
@@ -573,7 +625,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			if tt.refreshedState != "" {
 				refreshed.State = tt.refreshedState
 			}
-			if tt.currentWorkpadBody != "" {
+			if tt.bodyWorkpad {
+				refreshed.Description += "\n" + tt.currentWorkpadBody
+			} else if tt.currentWorkpadBody != "" {
 				refreshed.Comments = []connector.IssueComment{{Body: tt.currentWorkpadBody, URL: "https://github.test/workpad"}}
 			} else if tt.workpadHumanAction != "" || tt.workpadBlockerRef != "" {
 				refreshed.Comments = []connector.IssueComment{{
@@ -607,6 +661,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				Issue:            tt.runningIssue,
 				Attempt:          1,
 				WorkAttemptID:    42,
+				Generation:       tt.generation,
 				Mode:             runpkg.RunModeImplement,
 				StartedAt:        base.Add(-time.Minute),
 				DiffStats:        tt.diffStats,

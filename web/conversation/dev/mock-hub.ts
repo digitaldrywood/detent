@@ -94,6 +94,7 @@ interface IntegrationRow {
   projection: string;
   repository_enabled: boolean;
   repository?: string;
+  checkout_repository?: string;
   authority: Record<string, string>;
 }
 
@@ -873,6 +874,7 @@ interface AccountState {
   /** False once `POST /__mock/usage {"usage": null}` has run: §17.5's empty report. */
   usage: boolean;
   integrations: Map<string, IntegrationRow>;
+  checkoutReports: Map<string, string>;
   policies: Map<string, PolicyRow>;
   /** What runners last reported they resolved and could not run, per project, newest first. */
   observedPolicies: Map<string, Array<{ policy: Record<string, unknown>; runner_id: string; observed_at: string }>>;
@@ -906,6 +908,7 @@ function initialAccountState(organization: OrganizationMode = "seeded"): Account
     spend: true,
     usage: true,
     integrations: new Map(empty ? [] : Object.entries(clone(SEED_INTEGRATIONS))),
+    checkoutReports: new Map(empty ? [] : [["proj_beta", "mockorg/private"]]),
     policies: new Map(empty ? [] : [["proj_alpha", clone(SEED_POLICY)]]),
     observedPolicies: new Map(),
     progress: new Map(empty ? [] : Object.entries(clone(SEED_PROGRESS))),
@@ -2953,18 +2956,21 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             payload: { code: "invalid_request", message: "A repository is owner/name." },
           };
         }
-        // Already bound to exactly this repository: the wizard's retry is a
-        // no-op, and a no-op must not spend the key it was retried with.
-        if ((current.repository ?? "").toLowerCase() === repository.toLowerCase()) {
+        if (body.source !== "runner_checkout") {
+          return { status: 422, payload: { code: "invalid_request", message: "Use the runner checkout association." } };
+        }
+        if ((current.checkout_repository ?? "").toLowerCase() === repository.toLowerCase()) {
           return { status: 200, payload: clone(current), store: false };
         }
         if (String(body.expected_revision ?? "") !== current.revision) {
           return { status: 409, payload: REVISION_CONFLICT };
         }
+        if (account.checkoutReports.get(projectId)?.toLowerCase() !== repository.toLowerCase()) {
+          return { status: 422, payload: { code: "checkout_unavailable", message: "Start an enrolled runner with this project's Git checkout and matching GitHub origin, then retry." } };
+        }
         const next: IntegrationRow = {
           ...current,
-          repository,
-          repository_enabled: true,
+          checkout_repository: repository,
           revision: String(Number(current.revision) + 1),
         };
         account.integrations.set(projectId, next);

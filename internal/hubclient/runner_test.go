@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -8,12 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -82,7 +85,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := Machine{ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 1, Version: "test"}
+	machine := Machine{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 1, Version: "test"}
 	identity, err := EnrollRunner(t.Context(), path, organization, enrollment.Token, machine)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +141,41 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := fleetWorker.UpdateHost(t.Context(), machine.ID, runnerauth.HostChange{}); err == nil {
 		t.Fatal("worker changed host")
 	}
+	t.Run("diagnostics without a project orchestrator", func(t *testing.T) {
+		report := isolation.Report{"native/workflow": {}}
+		now := time.Now()
+		scheduler, err := NewScheduler(client, SchedulerConfig{
+			OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine,
+			HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, Now: func() time.Time { return now },
+			IsolationReport: func(context.Context) isolation.Report { return report },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := scheduler.Heartbeat(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		view, err := fleetAdmin.Fleet(t.Context())
+		if err != nil || len(view.Runners) != 1 || view.Runners[0].Health != "needs_attention" {
+			t.Fatalf("failed startup fleet = %#v, %v", view, err)
+		}
+		found := false
+		for _, problem := range view.Runners[0].Problems {
+			found = found || problem.Code == "settings_invalid"
+		}
+		if !found {
+			t.Fatal("invalid workflow diagnostic was not reported")
+		}
+		report = machine.BackendIsolation
+		now = now.Add(time.Minute)
+		if err := scheduler.Heartbeat(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		view, err = fleetAdmin.Fleet(t.Context())
+		if err != nil || len(view.Runners[0].Problems) != 0 || view.Runners[0].Health != "online" {
+			t.Fatalf("recovered startup fleet = %#v, %v", view, err)
+		}
+	})
 	descriptor := clientTestPolicy()
 	descriptor.Requirements = policy.Requirements{RequiredTags: []string{"build"}, RunnerID: file.Identity.RunnerID, MachineID: string(file.Identity.MachineID)}
 	descriptor = descriptor.WithID()
@@ -156,8 +194,17 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil || len(candidates) != 1 || candidates[0].ID != string(issue.WorkItemID) {
 		t.Fatalf("enrolled scheduler: candidates=%d err=%v", len(candidates), err)
 	}
-	if _, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+	cachedClaim, cacheErr := runnerauth.LoadRoutingCache(path)
+	if cacheErr != nil || cachedClaim.Revision != 2 || cachedClaim.Routing.IsolationTier != "native-trusted" {
+		t.Fatalf("claim routing cache = %#v, %v", cachedClaim, cacheErr)
+	}
+	candidates[0].IsolationPolicy = nil
+	adopted, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
+	if err != nil {
 		t.Fatalf("runner-side validation: %v", err)
+	}
+	if adopted.Issue.IsolationPolicy == nil || adopted.Issue.IsolationPolicy.Tier != isolation.NativeTrusted {
+		t.Fatalf("adopted isolation policy = %#v", adopted.Issue.IsolationPolicy)
 	}
 	eligibility, err := fleetAdmin.ProjectEligibility(t.Context(), "native")
 	if err != nil || len(eligibility.Exclusions) != 1 || len(eligibility.Runners) != 1 {
@@ -177,7 +224,10 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
-		t.Fatalf("accepted heartbeat failed on cache permission error: %v", err)
+		t.Fatalf("heartbeat with validated in-memory routing: %v", err)
+	}
+	if _, err := runnerauth.LoadRoutingCache(path); runtime.GOOS != "windows" && err == nil {
+		t.Fatal("accepted an insecure routing cache")
 	}
 	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o600); err != nil {
 		t.Fatal(err)
@@ -291,6 +341,52 @@ func TestRunnerRequestsDoNotFollowCredentialRedirects(t *testing.T) {
 	}
 }
 
+func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer server.Close()
+	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	scheduler := &Scheduler{client: client, now: time.Now, heartbeatInterval: time.Second, machine: Machine{ID: "machine", Capacity: 1}, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": time.Now().Add(-time.Minute)}, isolationReport: func(ctx context.Context) isolation.Report {
+		close(entered)
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 5*time.Second {
+			t.Error("probe has no bounded aggregate deadline")
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return isolation.Report{}
+	}}
+	done := make(chan error, 1)
+	go func() { done <- scheduler.ensureNativeMachine(t.Context(), &NativeConnector{client: native}) }()
+	<-entered
+	acquired := make(chan struct{})
+	go func() { scheduler.mu.Lock(); close(acquired); scheduler.mu.Unlock() }()
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("probe blocked scheduler mutex")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("probe exceeded aggregate deadline")
+	}
+}
+
 func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "private", "runner.json")
@@ -325,6 +421,7 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 			body = string(encoded)
 		} else if strings.HasSuffix(request.URL.Path, "/claims") {
 			claims++
+			body = `{"isolation_policy":{"tier":"sandbox"}}`
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 	})

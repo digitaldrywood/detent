@@ -125,6 +125,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"pull_requests",
 		"queue_entries",
 		"repositories",
+		"runner_checkout_repositories",
 		"runner_enrollment_projects",
 		"runner_enrollments",
 		"runner_identities",
@@ -724,6 +725,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	if len(cfg.InitialAdminToken) == 0 {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)
 	}
+	seedHubDatabaseTemplate(t, cfg.DatabasePath)
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)

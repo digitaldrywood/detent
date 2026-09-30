@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -13,48 +12,64 @@ import (
 
 func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
-	if err := os.WriteFile(path, []byte("---\ntracker:\n  kind: memory\ngate:\n  kind: command\n  run: make check-fast\n---\nRun the work.\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	workflow, err := LoadProjectDefinition(path)
+	// Pin the workspace root: the default includes os.TempDir(), which differs
+	// across hosts and worker attempts and is itself an approved policy input.
+	workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
+		WorkflowPath: "WORKFLOW.md",
+		Workflow:     []byte("---\ntracker:\n  kind: memory\nworkspace:\n  root: policy-upgrade-workspaces\nworker:\n  ssh_hosts: [local]\ngate:\n  kind: command\n  run: make check-fast\n---\nRun the work.\n"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyRaw, err := json.Marshal(struct {
-		Config Config
-		Prompt string
-	}{workflow.Config, workflow.Prompt})
-	if err != nil {
-		t.Fatal(err)
+	// Captured with v0.117.1's config and gate sources. Unlike rebuilding the
+	// approval from today's Config type, these constants catch new digest inputs.
+	approved := policy.Descriptor{
+		SourceRevision: "a4be9735c9116bbea42695a69cb91e0bd3d89fd72875c983f709d4a7cdf86811",
+		SourceDigest:   "a4be9735c9116bbea42695a69cb91e0bd3d89fd72875c983f709d4a7cdf86811",
+		ConfigDigest:   "f984256fbdabf8b6ff53fa36ec96ce13e435594e630ae36452a6f769d5631a32",
+		Gates: policy.Gates{
+			Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")),
+			AutomatedReview: "required", MergeMethod: "squash",
+		},
+	}.WithID()
+	const approvedID = "policy_512e9d9ac6d0d92d5a6097e1194a94e8f3bfa02a70c3a536486a4a5e1550e89a"
+	if approved.ID != approvedID {
+		t.Fatalf("historical approval ID = %s, want %s", approved.ID, approvedID)
 	}
-	legacyRaw = bytes.Replace(legacyRaw, []byte(`,"LocalStatus":""`), nil, 1)
-	if bytes.Contains(legacyRaw, []byte(`"LocalStatus"`)) {
-		t.Fatal("legacy policy still includes the later binary field")
-	}
-	current, err := ResolvePolicy(workflow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	approved := current
-	approved.ConfigDigest = policy.Digest(legacyRaw)
-	approved = approved.WithID()
-	if err := current.Match(approved); err != nil {
-		t.Fatalf("unchanged repository policy after binary upgrade: %v", err)
-	}
-	workflow.Config.Gate.LocalStatus = "local-gate"
-	changed, err := ResolvePolicy(workflow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed.Match(approved) == nil {
-		t.Fatal("explicit local status change matched the old approval")
+	for _, test := range []struct {
+		name   string
+		change func(*Workflow)
+		match  bool
+	}{
+		{"unchanged upgrade", func(*Workflow) {}, true},
+		{"absent host selection", func(w *Workflow) { w.Config.Worker.HostSelection = "" }, true},
+		{"empty host caps", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{} }, true},
+		{"empty required checks", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{} }, true},
+		{"explicit host preference", func(w *Workflow) { w.Config.Worker.HostSelection = "preference" }, false},
+		{"explicit host cap", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{"local": 2} }, false},
+		{"explicit local status", func(w *Workflow) { w.Config.Gate.LocalStatus = "local-gate" }, false},
+		{"explicit required check", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{"build"} }, false},
+		{"explicit gate command", func(w *Workflow) { w.Config.Gate.Run = "true" }, false},
+		{"explicit workspace root", func(w *Workflow) { w.Config.Workspace.Root = "other-workspaces" }, false},
+		{"effective prompt", func(w *Workflow) { w.Prompt += "Different instructions." }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := workflow
+			test.change(&candidate)
+			current, err := ResolvePolicy(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := current.Match(approved); (err == nil) != test.match {
+				t.Fatalf("upgraded policy match = %v, want match %t (config digest %s)", err, test.match, current.ConfigDigest)
+			}
+		})
 	}
 }
 
 func TestRunnerPolicyCompatibility(t *testing.T) {
 	t.Parallel()
-	shared := "tracker:\n  kind: memory\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n"
+	shared := "tracker:\n  kind: memory\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n  github_pull_request: true\n"
 	for _, test := range []struct {
 		name         string
 		split, local bool
@@ -93,7 +108,7 @@ func TestRunnerPolicyCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if descriptor.Gates.AutoPromote || descriptor.Gates.Kind != "human_review" || descriptor.Gates.MergeMethod != "rebase" {
+			if descriptor.Gates.AutoPromote || descriptor.Gates.Kind != "human_review" || descriptor.Gates.MergeMethod != "rebase" || !descriptor.Gates.GitHubPullRequest {
 				t.Fatalf("lost repository gates: %#v", descriptor.Gates)
 			}
 			if test.local && (len(descriptor.Requirements.RequiredTags) != 0 || descriptor.Requirements.MachineID != "") {

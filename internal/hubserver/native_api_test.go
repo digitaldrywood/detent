@@ -34,11 +34,7 @@ func newNativeFixture(t *testing.T, service *Service, organization tracker.Organ
 			t.Fatal(err)
 		}
 	}
-	states := []tracker.NativeState{
-		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
-		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	}
+	states := nativeFixtureStates()
 	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "project-" + name, "name": name, "states": states})
 	requireNativeStatus(t, response, http.StatusOK)
 	var project tracker.NativeProject
@@ -75,7 +71,7 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 			name = "hosted"
 		}
 		t.Run(name, func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "workflow-refusal-"+name)
+			f := newDefaultNativeFixture(t, Config{})
 			issue := f.create(t, "workflow-refusal")
 			response := performHubAPIRequest(t, f.service, http.MethodPost,
 				f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", f.token,
@@ -106,7 +102,7 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 
 func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "native")
+	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "one")
 	if !strings.HasPrefix(string(issue.WorkItemID), "wi_") || issue.Revision != 1 || len(issue.Body) < 500 {
 		t.Fatalf("issue = %#v", issue)
@@ -167,7 +163,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 
 func TestNativeCommentsProvenanceAndIdempotency(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "comments")
+	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "discussion")
 	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/comments"
 	sourceTime := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -224,7 +220,7 @@ func TestNativeCommentsProvenanceAndIdempotency(t *testing.T) {
 
 func TestNativeImportsAndAdministrationBoundaries(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "imports")
+	f := newDefaultNativeFixture(t, Config{})
 	sourceTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "import"}, Title: "Imported issue", Body: "Complete body", State: "Todo", Provenance: &tracker.Provenance{Provider: "github", ExternalID: "external-issue", AuthorID: "source-author", CreatedAt: sourceTime, UpdatedAt: sourceTime, ObservedAt: sourceTime.Add(time.Hour)}}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
@@ -265,7 +261,7 @@ func TestNativeImportsAndAdministrationBoundaries(t *testing.T) {
 
 func TestNativeDependenciesDoNotLeakThroughCompatibility(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "graph-isolation")
+	f := newDefaultNativeFixture(t, Config{})
 	native := f.create(t, "private-native-title")
 	_, legacyID := seedProjection(t, f.service.database.db)
 	var nativeID int64
@@ -286,7 +282,7 @@ func TestNativeDependenciesDoNotLeakThroughCompatibility(t *testing.T) {
 
 func TestNativeConcurrentDependencyCycle(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "concurrent-graph")
+	f := newDefaultNativeFixture(t, Config{})
 	a, b := f.create(t, "a"), f.create(t, "b")
 	start := make(chan struct{})
 	results := make(chan int, 2)
@@ -313,7 +309,7 @@ func TestNativeConcurrentDependencyCycle(t *testing.T) {
 
 func TestNativeTenantIsolationAndCursorBinding(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "tenant-one")
+	f := newDefaultNativeFixture(t, Config{})
 	one := f.create(t, "one")
 	f.create(t, "two")
 	otherProject := newNativeFixture(t, f.service, f.project.OrganizationID, "same-org")
@@ -359,7 +355,7 @@ func TestNativeTenantIsolationAndCursorBinding(t *testing.T) {
 
 func TestNativeDependencyReadPermissions(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "dependency-visibility")
+	f := newDefaultNativeFixture(t, Config{})
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "private-dependency")
 	issue := f.create(t, "visible")
 	blocker := other.create(t, "private")
@@ -388,7 +384,7 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 
 func TestNativeDependenciesAndTransitions(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "dependencies")
+	f := newDefaultNativeFixture(t, Config{})
 	a := f.create(t, "a")
 	b := f.create(t, "b")
 	c := f.create(t, "c")

@@ -176,3 +176,51 @@ func TestLaunchdState(t *testing.T) {
 		}
 	}
 }
+
+func TestLaunchdBootstrapFailureDiagnosesDisabledLabel(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, disabled string
+		queryErr       bool
+		wantHint       bool
+	}{
+		{name: "runner disabled", disabled: "disabled services = {\n\t\"com.digitaldrywood.detent.runner\" => disabled\n}", wantHint: true},
+		{name: "board disabled only", disabled: "disabled services = {\n\t\"com.digitaldrywood.detent\" => disabled\n}"},
+		{name: "runner enabled", disabled: "disabled services = {\n\t\"com.digitaldrywood.detent.runner\" => enabled\n}"},
+		{name: "query fails", queryErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			bootstrapErr := errors.New("Bootstrap failed: 5: Input/output error")
+			manager := newLaunchdManager(normalizeConfig(Config{
+				Name: "detent.runner", UID: "501", HomeDir: t.TempDir(),
+				RunCommand: func(_ context.Context, name string, args ...string) (string, error) {
+					switch args[0] {
+					case "print":
+						return "Could not find service", errors.New("exit status 113")
+					case "bootstrap":
+						return "", bootstrapErr
+					case "print-disabled":
+						if !reflect.DeepEqual(args, []string{"print-disabled", "gui/501"}) {
+							t.Fatalf("command = %s %v", name, args)
+						}
+						if test.queryErr {
+							return "", errors.New("query failed")
+						}
+						return test.disabled, nil
+					default:
+						t.Fatalf("unexpected command = %s %v", name, args)
+						return "", nil
+					}
+				},
+			}))
+			err := manager.Start(t.Context())
+			if !errors.Is(err, bootstrapErr) {
+				t.Fatalf("err = %v; lost bootstrap failure", err)
+			}
+			if got := strings.Contains(err.Error(), "launchctl enable gui/501/com.digitaldrywood.detent.runner"); got != test.wantHint {
+				t.Fatalf("err = %v, want disabled hint %v", err, test.wantHint)
+			}
+		})
+	}
+}

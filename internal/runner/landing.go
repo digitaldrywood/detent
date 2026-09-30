@@ -34,7 +34,17 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		message = "Land " + target.HeadSHA
 	}
 	message += fmt.Sprintf("\n\nChange Request %s, round %d, head %s.", target.ChangeID, target.Number, target.HeadSHA)
-	result, err := lander.LandChange(ctx, info, issue, workspace.LandOptions{HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true})
+	options := workspace.LandOptions{HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository}
+	var result workspace.LandResult
+	if target.GitHubPullRequest {
+		github, supported := backend.(workspace.GitHubPRLander)
+		if !supported {
+			return RunResult{}, errors.New("workspace backend cannot land through a GitHub pull request")
+		}
+		result, err = github.LandChangeViaGitHub(ctx, info, issue, options)
+	} else {
+		result, err = lander.LandChange(ctx, info, issue, options)
+	}
 	var refusal *workspace.LandRefusal
 	if errors.As(err, &refusal) {
 		r.logWorkerEvent(req.Issue, "worker_native_landing_refused",

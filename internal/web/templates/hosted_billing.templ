@@ -3,6 +3,22 @@ package templates
 templ hostedBilling(data HostedPageData) {
 	<section class="space-y-4 rounded-card border border-line bg-surface p-4 md:p-6" aria-label="Organization billing">
 		<h2 class="break-words text-lg font-semibold">{ data.PlanName }</h2>
+        <p class="text-sm">{ data.PlanPrice }</p>
+        <dl class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            for _, row := range data.Allowances {
+                <div class="text-sm">
+                    <dt class="capitalize">{ row.Label }</dt>
+                    <dd>{ row.Consumption } used / { row.Allowance } allowed · { row.Remaining } remaining</dd>
+                    if row.OverLimit {
+                        if row.Label == "unarchived issues" {
+                            <dd class="text-warn">Over limit. Upgrade or archive issues to free capacity.</dd>
+                        } else {
+                            <dd class="text-warn">Over limit. Upgrade to increase project capacity.</dd>
+                        }
+                    }
+                </div>
+            }
+        </dl>
 		<p class="font-medium" data-billing-status>{ data.BillingStatus }</p>
 		<p class="break-words text-sm" role="status">{ data.BillingMessage }</p>
 		<p class="text-sm text-sec">Detent subscriptions cover the hosted service. Your model provider accounts, keys, usage, and charges remain separate.</p>
@@ -11,7 +27,7 @@ templ hostedBilling(data HostedPageData) {
 		}
 		<p class="text-sm text-sec">Cancellation, payment failure, or downgrade preserves running work, artifacts, reading, and export. New allocations must fit your current allowances.</p>
 		if data.BillingEnabled {
-			<p class="text-sm text-sec">Test billing pilot. Stripe shows the configured amount before purchase.</p>
+			<p class="text-sm text-sec">Stripe confirms the configured amount before purchase.</p>
 			if data.BillingCanPurchase {
 				<form method="post" action={ hostedURL(data, "/organization/billing/checkout") } class="max-w-md space-y-3">
 					@hostedCSRF(data.CSRF)

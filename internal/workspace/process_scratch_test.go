@@ -22,6 +22,7 @@ func TestReapScratchProcessesOutsideWorkspace(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
 			root := t.TempDir()
+			useRealProcessScan(t, root)
 			scratch := filepath.Join(root, ".detent", "worker-tmp", "attempt-example")
 			if legacy {
 				scratch = filepath.Join(root, ".detent", "tmp")

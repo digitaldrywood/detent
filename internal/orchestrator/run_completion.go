@@ -45,7 +45,6 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	o.trackRunningHeartbeat(state, running, state.Claimed[event.issueID], o.clockNow())
 	if event.usage.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
-		o.recoverWorkerGitHubMonitorFromUpdate(state, running, event.usage.RateLimits, event.usage.LastEventAt)
 		o.recoverBackendCapacityFromStatus(state, running, event.usage.RateLimits, event.usage.LastEventAt)
 	}
 	if event.usage.TurnCount > 0 || strings.TrimSpace(event.usage.SessionID) != "" && !state.FailureBreaker.PreTurn {
@@ -92,11 +91,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
-		o.recoverWorkerGitHubMonitorFromUpdate(state, running, event.Result.RateLimits, event.CompletedAt)
 	}
-	// A completed canary must release its probe even when lane refresh defers
-	// the rest of completion processing.
-	defer releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", "worker completed without a GitHub REST monitor observation", event.CompletedAt)
 	// The final result includes checkpoint and recovery segments; live progress
 	// can still describe only the last segment. Use the session totals for every
 	// completion path, retaining progress when a runner has no final usage.
@@ -113,7 +108,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if running.Generation > 0 {
 		refreshed, err := o.refreshCompletionLane(ctx, running)
 		if err != nil {
-			if !errors.Is(event.Err, runpkg.ErrWorkerGitHubBudgetMonitor) && !errors.Is(event.Err, runpkg.ErrWorkerGitHubTokenResolution) {
+			if !errors.Is(event.Err, runpkg.ErrWorkerGitHubTokenResolution) {
 				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 				return
 			}
@@ -202,9 +197,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if o.handleWorkerGitHubTokenResolutionCompletion(ctx, state, event, running) {
-		return
-	}
-	if o.handleGitHubMonitorCompletion(ctx, state, event, running) {
 		return
 	}
 	if mergeWorkerIssue(running.Issue) && nativeMergeQueueOwnsIssue(state, running.Issue, o.cfg) {
@@ -1565,7 +1557,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		issue,
 		o.cfg,
 		true,
-		autoPromoteOperationalCompletionAccepted(state, issue.ID),
+		autoPromoteOperationalCompletionAccepted(state, issue),
 	); revoked &&
 		mergeRevocationRequiresImmediateStop(revocation, event.Result) {
 		o.finishMergeRevocation(ctx, state, event, running, revocation)
@@ -1588,7 +1580,11 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.blockPersistentlyMissingRequiredChecks(ctx, state, event, running, issue, persistent)
 		return true
 	}
-	if event.Result.PullRequestHeadPushed {
+	requiredChecks := gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks
+	branchPolicyOnly := requiredChecks != nil && len(requiredChecks) == 0
+	headWithoutCI := mergeWorkerCheckedPullRequest(issue) && strings.TrimSpace(issue.PullRequest.BaseRef) != "" &&
+		len(issue.PullRequest.Checks) == 0 && issue.PullRequest.CheckRunCount == 0 && issue.PullRequest.StatusContextCount == 0
+	if event.Result.PullRequestHeadPushed && (!branchPolicyOnly || !headWithoutCI) {
 		o.recordMergeReservationWait(state, issue, event.CompletedAt)
 		triggerPending := false
 		if !event.Result.CITriggerLabelReapplied {
@@ -1767,6 +1763,7 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	issue connector.Issue,
 ) {
 	attempt := running.Attempt
+	reconcileMergeWorkerCurrentHeadCIWait(state, issue, event.CompletedAt)
 	if attempt < 1 {
 		attempt = 1
 	}
@@ -1809,6 +1806,7 @@ func (o *Orchestrator) pollMergeWorkerCurrentHeadCI(
 		return retry, false, ""
 	}
 	if !mergeWorkerProgrammaticMergeWaiting(issue) {
+		finishMergeWorkerCurrentHeadCIWait(state, issue, now)
 		retry.Attempt = nextAttempt(retry.Attempt)
 		retry.Wait = RetryWait{}
 		state.Retry[issue.ID] = retry

@@ -1,4 +1,4 @@
-// The shared entry's screens at `https://hub.detent.build`: sign-in, the
+// The shared entry's screens at `https://cloud.detent.build`: sign-in, the
 // organization chooser, creation with its provisioning progress, and joining
 // with an invitation token. They sit outside every organization's base path,
 // so links here are plain root paths and opening an organization is a full

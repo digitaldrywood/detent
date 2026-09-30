@@ -137,12 +137,12 @@ type Dependencies struct {
 	ReapWorkspaceProcesses workspaceProcessReapFunc
 	sessionLimit           durationLimitContextFactory
 	turnLimit              durationLimitContextFactory
-	progressTicker         sessionProgressTickerFactory
 	lookupEnv              func(string) string
 }
 
 type Runner struct {
-	sleepInhibitor            func(context.Context) (func(), error)
+	sleepInhibitor            func(context.Context, func()) (func(), error)
+	sleepFailures             int
 	mu                        sync.RWMutex
 	promptHistory             map[string]sessionPrompt
 	projectID                 string
@@ -173,7 +173,6 @@ type Runner struct {
 	waitWorkerArtifactCleanup func(context.Context, time.Duration) error
 	sessionLimit              durationLimitContextFactory
 	turnLimit                 durationLimitContextFactory
-	progressTicker            sessionProgressTickerFactory
 	admissionLeaks            admissionWorkspaceLeakTracker
 	lookupEnv                 func(string) string
 	goBudget                  gobudget.Budget
@@ -215,9 +214,6 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.turnLimit == nil {
 		deps.turnLimit = withAgentDurationLimit
-	}
-	if deps.progressTicker == nil {
-		deps.progressTicker = newSessionProgressTicker
 	}
 	if deps.lookupEnv == nil {
 		deps.lookupEnv = os.Getenv
@@ -277,7 +273,6 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		waitWorkerArtifactCleanup: waitForPathRemovalRetry,
 		sessionLimit:              deps.sessionLimit,
 		turnLimit:                 deps.turnLimit,
-		progressTicker:            deps.progressTicker,
 		lookupEnv:                 deps.lookupEnv,
 		goBudget:                  deps.GoBudget,
 	}, nil
@@ -1116,8 +1111,7 @@ func withAgentDurationLimit(ctx context.Context, duration time.Duration, limit e
 func durationLimitError(err error) bool {
 	return errors.Is(err, ErrTurnDurationExceeded) ||
 		errors.Is(err, ErrSessionDurationExceeded) ||
-		errors.Is(err, ErrSessionTurnLimitExceeded) ||
-		errors.Is(err, ErrSessionNoProgress)
+		errors.Is(err, ErrSessionTurnLimitExceeded)
 }
 
 func (r *Runner) runAgentTurn(
@@ -1827,18 +1821,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		runStartedAt,
 		sessionDuration,
 		workflow.Config.Agent.MaxTurns,
-		durationFromMillis(workflow.Config.Agent.NoProgressTimeoutMS),
 		cancelSessionBrake,
 		func(probeCtx context.Context) (sessionProgressSnapshot, error) {
 			return r.sessionProgressSnapshot(probeCtx, runWorkspace, info, workspaceIssue, req.ProgressProbe)
 		},
 		r.now,
-		r.progressTicker,
 		r.logger,
 		req.Issue,
 		r.sessionProgressJournal(sessionID, resumeState.DetentSessionID),
 	)
-	defer sessionBrake.Stop()
 	req.sessionBrake = sessionBrake
 
 	commandStartedAttrs := []any{
@@ -2020,7 +2011,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			)
 		}
 	}
-	sessionBrake.Stop()
 	var checkpointBrake *SessionBrakeError
 	if errors.As(execution.err, &checkpointBrake) {
 		checkpointBrake.Checkpoint = execution.result.Checkpoint
@@ -3139,18 +3129,15 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runStartedAt,
 		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
 		workflow.Config.Agent.MaxTurns,
-		durationFromMillis(workflow.Config.Agent.NoProgressTimeoutMS),
 		cancelSessionBrake,
 		func(probeCtx context.Context) (sessionProgressSnapshot, error) {
 			return r.sessionProgressSnapshot(probeCtx, r.workspace, info, workspaceIssue, nil)
 		},
 		r.now,
-		r.progressTicker,
 		r.logger,
 		req.Issue,
 		r.sessionProgressJournal(sessionID, 0),
 	)
-	defer sessionBrake.Stop()
 	runReq.sessionBrake = sessionBrake
 
 	checkStartedAttrs := []any{
@@ -3258,7 +3245,6 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	turnErr = sessionBrake.wrapTurnLimit(ctx, turnErr)
 	turnErr = sessionBrake.wrapDuration(ctx, turnErr, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
-	sessionBrake.Stop()
 	if brakeDiff := sessionBrake.resultDiffStats(); !diffStatsEmpty(brakeDiff) {
 		runResult.DiffStats = brakeDiff
 	}
@@ -3875,8 +3861,6 @@ func workerProcessReapReason(ctx context.Context, turnErr error) string {
 	switch {
 	case errors.Is(combined, ErrSessionDurationExceeded):
 		return "maximum_session_lifetime_exceeded"
-	case errors.Is(combined, ErrSessionNoProgress):
-		return SessionBrakeReasonNoProgress
 	case errors.Is(combined, ErrTurnDurationExceeded):
 		return "maximum_turn_lifetime_exceeded"
 	case errors.As(combined, &cancellation):
@@ -4292,9 +4276,6 @@ func finalStateForTurnError(err error) string {
 	if errors.Is(err, ErrSessionTurnLimitExceeded) {
 		return FinalStateTurnLimitExceeded
 	}
-	if errors.Is(err, ErrSessionNoProgress) {
-		return FinalStateNoProgress
-	}
 	return FinalStateFailed
 }
 
@@ -4330,9 +4311,6 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 	if issue.PullRequest != nil {
 		switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.State)) {
 		case "MERGED":
-			if landedHeadSHA == "" {
-				landedHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
-			}
 			issue.PullRequest = nil
 		case "CLOSED":
 			issue.PullRequest = nil
@@ -4345,18 +4323,19 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		progressBaseRef = strings.TrimSpace(issue.PullRequest.BaseRef)
 	}
 	return workspace.Issue{
-		ProjectID:             projectID,
-		ID:                    issue.ID,
-		Identifier:            issue.Identifier,
-		Terminal:              issue.Closed,
-		LandedHeadSHA:         landedHeadSHA,
-		BranchName:            issue.BranchName,
-		BaseRef:               baseRef,
-		ProgressBaseRef:       progressBaseRef,
-		PullRequestHeadSHA:    pullRequestHeadSHA(issue.PullRequest),
-		PullRequestRepository: strings.TrimSpace(issue.PRRepository),
-		PullRequestNumber:     workspacePullRequestNumber(issue.PullRequest),
-		PullRequestBranch:     pullRequestBranch(issue.PullRequest),
+		ProjectID:               projectID,
+		ID:                      issue.ID,
+		Identifier:              issue.Identifier,
+		Terminal:                issue.Closed,
+		LandedHeadSHA:           landedHeadSHA,
+		CleanupDeliveredHeadSHA: issue.CleanupDeliveredHeadSHA,
+		BranchName:              issue.BranchName,
+		BaseRef:                 baseRef,
+		ProgressBaseRef:         progressBaseRef,
+		PullRequestHeadSHA:      pullRequestHeadSHA(issue.PullRequest),
+		PullRequestRepository:   strings.TrimSpace(issue.PRRepository),
+		PullRequestNumber:       workspacePullRequestNumber(issue.PullRequest),
+		PullRequestBranch:       pullRequestBranch(issue.PullRequest),
 	}
 }
 

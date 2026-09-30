@@ -333,6 +333,9 @@ func (m *Manager) run(ctx context.Context, scheduledFor time.Time, scheduled boo
 }
 
 func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor time.Time, scheduled bool) (result Result, runErr error) {
+	restScope := &connector.RESTScope{ProjectID: settings.ProjectID, Name: "admission"}
+	ctx = connector.WithRESTScope(ctx, restScope)
+	defer connector.LogRESTScope(m.logger, restScope)
 	settings.dependencies = make(map[string]*runner.AdmissionDependencies)
 	result = newResult()
 	result.ProjectID = strings.TrimSpace(settings.ProjectID)

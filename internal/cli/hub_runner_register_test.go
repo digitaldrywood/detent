@@ -22,6 +22,35 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if got := runnerCheckoutRepository(t.Context(), root); got != "" {
+		t.Fatalf("missing checkout = %q", got)
+	}
+	runDoctorWorkflowSourceGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte("# Workflow\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index, test := range []struct {
+		name, remote, want string
+	}{
+		{"private HTTPS origin", "https://alice:private-secret@github.com/Acme/Private.git", "Acme/Private"},
+		{"SSH origin", "git@github.com:Acme/Private.git", "Acme/Private"},
+		{"unsupported origin", "https://alice:private-secret@example.test/Acme/Private.git", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if index > 0 {
+				runDoctorWorkflowSourceGit(t, root, "remote", "remove", "origin")
+			}
+			runDoctorWorkflowSourceGit(t, root, "remote", "add", "origin", test.remote)
+			if got := runnerCheckoutRepository(t.Context(), root); got != test.want || strings.Contains(got, "private-secret") {
+				t.Fatalf("repository = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRunnerHubTarget(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -32,14 +61,16 @@ func TestRunnerHubTarget(t *testing.T) {
 		wantOrg      tracker.OrganizationID
 		wantErr      bool
 	}{
-		{name: "shared entry URL", url: "https://hub.detent.build/organizations/org_abc/", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "shared entry URL", url: "https://cloud.detent.build/organizations/org_abc/", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "legacy hosted URL remains stable", url: "https://hub.detent.build/organizations/org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "staging Cloud URL", url: "https://staging.cloud.detent.build/organizations/org_abc", wantBase: "https://staging.cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
 		{name: "self-hosted with flag", url: "https://hub.example.test", organization: "org_self", wantBase: "https://hub.example.test", wantOrg: "org_self"},
-		{name: "flag agrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
-		{name: "flag disagrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
+		{name: "flag agrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "flag disagrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
 		{name: "no organization", url: "https://hub.example.test", wantErr: true},
 		{name: "not an organization ID", url: "https://hub.example.test/organizations/acme", wantErr: true},
 		{name: "empty", url: " ", wantErr: true},
-		{name: "query string", url: "https://hub.detent.build/organizations/org_abc?x=1", wantErr: true},
+		{name: "query string", url: "https://cloud.detent.build/organizations/org_abc?x=1", wantErr: true},
 		{name: "no host", url: "/organizations/org_abc", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -237,6 +268,69 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	}
 	if file.Identity.OrganizationID != "org_example" || !strings.Contains(output, file.Identity.RunnerID) {
 		t.Fatalf("identity = %+v", file.Identity)
+	}
+}
+
+func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		ready         bool
+		workspaceRoot bool
+	}{
+		{name: "kept checkout with default root", ready: true},
+		{name: "kept checkout overrides supplied root", ready: true, workspaceRoot: true},
+		{name: "missing kept checkout ignores supplied checkout", workspaceRoot: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build"})
+			root := t.TempDir()
+			configPath := filepath.Join(root, "config", "global.yaml")
+			workdir := filepath.Join(root, "actual-checkout")
+			paths := runnerPaths{config: configPath, identity: filepath.Join(root, "config", "identity.json"), workspaces: filepath.Join(root, "unused-root")}
+			kept := runnerConfig(hub.server.URL+"/organizations/org_example", "org_example", "Build host", 2, paths, []runnerRegisteredCheck{{Name: "local-project", ID: "prj_site", Workdir: workdir}})
+			if _, err := writeRunnerConfig(configPath, kept); err != nil {
+				t.Fatal(err)
+			}
+			kept.ServiceName = "" // Runner configs predating service_name remain supported.
+			body, err := yaml.Marshal(kept)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			checkout(t, workdir)
+			if !test.ready {
+				if err := os.Remove(filepath.Join(workdir, ".git")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--service"}
+			if test.workspaceRoot {
+				checkout(t, filepath.Join(paths.workspaces, "detent.build"))
+				args = append(args, "--workspace-root", paths.workspaces)
+			}
+			started := false
+			output, err := runRegisterInTestWorkspace(t, nil, func(_ *cobra.Command, path string) error { started = true; return nil }, args...)
+			if err != nil {
+				t.Fatalf("register: %v\n%s", err, output)
+			}
+			var result runnerRegistration
+			if err := json.Unmarshal([]byte(output), &result); err != nil {
+				t.Fatal(err)
+			}
+			if started != test.ready || result.ServiceRun != test.ready || len(result.Projects) != 1 || result.Projects[0].Workdir != workdir || result.Projects[0].Checkout != test.ready {
+				t.Fatalf("started %v, registration %+v", started, result)
+			}
+			if !test.ready && !strings.Contains(strings.Join(result.NextSteps, "\n"), "detent start --config "+shellQuote(configPath)+" --yes") {
+				t.Fatalf("next steps = %v", result.NextSteps)
+			}
+			if mustRead(t, configPath) != string(body) {
+				t.Fatal("kept config was rewritten")
+			}
+		})
 	}
 }
 

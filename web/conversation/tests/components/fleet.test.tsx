@@ -5,7 +5,7 @@
 // allowance totals grid and the spend-by-project breakdown moved there with
 // the numbers they measure (decisions.md §17.5), and their cover moved to
 // `tests/components/usage.test.tsx` and `tests/usage.test.ts`.
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
@@ -26,6 +26,20 @@ function renderSection(fleet: FleetResponse = FLEET) {
 }
 
 describe("host cards", () => {
+  it("shows contextual diagnostics and filters from the attention count", () => {
+    const problem = { code: "tier_unavailable", message: "Sandbox tooling is unavailable", fix_hint: "Repair the sandbox tooling", first_seen: "2026-09-10T12:00:00Z" };
+    const fleet = { ...FLEET, runners: FLEET.runners.map((runner, index) => index === 0 ? { ...runner, health: "needs_attention", problems: [problem] } : runner) };
+    renderSection(fleet);
+    expect(screen.getByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText(problem.message)).toBeTruthy();
+    expect(screen.getByText(problem.fix_hint)).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "1 runner needs attention" }));
+    expect(window.location.search).toBe("?health=needs_attention");
+    expect(screen.getAllByTestId("host-card")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("link", { name: "All runners" }));
+    expect(window.location.search).toBe("");
+    expect(screen.getAllByTestId("host-card")).toHaveLength(FLEET.runners.length);
+  });
   it("draws one card per runner, with the host's own slot numbers", () => {
     renderSection();
     const cards = screen.getAllByTestId("host-card");

@@ -35,7 +35,6 @@ func TestCancellationFirstCause(t *testing.T) {
 		{"session duration", ErrSessionDurationExceeded, "session_duration_exceeded"},
 		{"turn duration", ErrTurnDurationExceeded, "turn_duration_exceeded"},
 		{"memory", ErrSessionMemoryCeilingExceeded, "session_memory_ceiling_exceeded"},
-		{"no progress", ErrSessionNoProgress, "session_no_progress"},
 		{"deadline", context.DeadlineExceeded, "deadline_exceeded"},
 		{"shutdown", context.Canceled, "context_cancelled"},
 	} {
@@ -127,7 +126,6 @@ func TestCancellationProcessReapAttribution(t *testing.T) {
 		{ErrLaneRevoked, "lane_revoked:test.source"},
 		{ErrSessionDurationExceeded, "maximum_session_lifetime_exceeded"},
 		{ErrTurnDurationExceeded, "maximum_turn_lifetime_exceeded"},
-		{ErrSessionNoProgress, SessionBrakeReasonNoProgress},
 	} {
 		t.Run(tt.cause.Error(), func(t *testing.T) {
 			t.Parallel()
@@ -223,6 +221,27 @@ func TestSleepInhibitorCommand(t *testing.T) {
 			name, args := sleepInhibitorCommand(tt.platform)
 			if name != tt.name || strings.Join(args, "|") != strings.Join(tt.args, "|") {
 				t.Fatalf("command = %s %v", name, args)
+			}
+		})
+	}
+}
+
+func TestKeepAwakeProblems(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fail), func(t *testing.T) {
+			r := &Runner{logger: slog.Default(), sleepInhibitor: func(_ context.Context, report func()) (func(), error) {
+				if fail {
+					return nil, errors.New("inhibitor unavailable")
+				}
+				return func() {}, nil
+			}}
+			release := r.keepAwake(t.Context())
+			if got := len(r.Problems()) > 0; got != fail {
+				t.Fatalf("has problems=%v want=%v", got, fail)
+			}
+			release()
+			if len(r.Problems()) != 0 {
+				t.Fatal("finished job retained sleep diagnostic")
 			}
 		})
 	}

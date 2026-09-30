@@ -260,6 +260,7 @@ export const ProjectIntegration = Schema.Struct({
   projection: Schema.String,
   repository_enabled: Schema.Boolean,
   repository: Schema.optional(Schema.String),
+  checkout_repository: Schema.optional(Schema.String),
   authority: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ProjectIntegration = typeof ProjectIntegration.Type;
@@ -286,6 +287,7 @@ export const PolicyGates = Schema.Struct({
   validator: Schema.Boolean,
   security_audit: Schema.Boolean,
   merge_method: Schema.String,
+  github_pull_request: Schema.optional(Schema.Boolean),
 });
 export type PolicyGates = typeof PolicyGates.Type;
 
@@ -530,6 +532,12 @@ export const FleetRunner = Schema.Struct({
   display_name: Schema.String,
   hostname: Schema.String,
   health: Schema.String,
+  problems: Schema.optional(Schema.Array(Schema.Struct({
+    code: Schema.String,
+    message: Schema.String,
+    fix_hint: Schema.String,
+    first_seen: Schema.String,
+  }))),
   state: Schema.String,
   os: Schema.String,
   architecture: Schema.String,
@@ -626,6 +634,8 @@ export type PlanGrant = typeof PlanGrant.Type;
 
 /** `GET /plan`: `hubserver.HostedEntitlement`, verbatim. */
 export const PlanReport = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
   organization_id: Schema.String,
   base: PlanReference,
   effective_base: PlanReference,

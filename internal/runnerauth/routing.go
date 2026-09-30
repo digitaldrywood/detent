@@ -60,6 +60,7 @@ type HostChange struct {
 }
 
 type Runner struct {
+	Problems         []Problem               `json:"problems"`
 	HomeDrySince     *time.Time              `json:"home_dry_since"`
 	HomeStatus       string                  `json:"home_status"`
 	ProviderCapacity []providercapacity.View `json:"provider_capacity,omitempty"`
@@ -77,6 +78,7 @@ type Runner struct {
 	OS               string                 `json:"os"`
 	Architecture     string                 `json:"architecture"`
 	Health           string                 `json:"health"`
+	ConnectionHealth string                 `json:"connection_health"`
 	LastHeartbeatAt  time.Time              `json:"last_heartbeat_at"`
 	Operations       []string               `json:"operations"`
 	Leases           []RunnerLease          `json:"leases"`
@@ -243,7 +245,7 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 	if r.Health == "revoked" || r.Health == "expired" {
 		add("runner_"+r.Health, "Runner credential is "+r.Health)
 	}
-	if !activeLease && r.Health == "offline" {
+	if !activeLease && (r.Health == "offline" || r.ConnectionHealth == "offline") {
 		add("runner_offline", "Runner heartbeat is stale; work stays queued for this target")
 	}
 	if err := requirements.Match(r.RunnerID, string(r.MachineID), r.Tags); err != nil {

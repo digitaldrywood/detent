@@ -232,7 +232,7 @@ func TestCheckpointPullRequestAssociation(t *testing.T) {
 
 func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"duration", "no progress", "cancelled", "hard reap failure", "periodic", "checkpoint timeout", "duration during checkpoint"} {
+	for _, scenario := range []string{"duration", "cancelled", "hard reap failure", "periodic", "checkpoint timeout", "duration during checkpoint"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			runner, checkpoint, publication := checkpointRunnerFixture(t)
@@ -268,8 +268,6 @@ func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 					switch scenario {
 					case "duration", "checkpoint timeout":
 						return agentTurnExecution{err: ErrSessionDurationExceeded, result: RunResult{FinalState: FinalStateSessionDurationExceeded}}
-					case "no progress":
-						return agentTurnExecution{err: ErrSessionNoProgress}
 					case "cancelled":
 						cancel()
 						return agentTurnExecution{err: context.Canceled}

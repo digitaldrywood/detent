@@ -55,6 +55,7 @@ function renderView(overrides: Partial<ChangeRequestViewProps> = {}) {
     diff: ATTEMPT_DIFF,
     diffLoading: false,
     canWrite: true,
+    canReview: true,
     busy: false,
     now: NOW,
     viewerPrincipalId: "tok_mock",
@@ -103,9 +104,19 @@ describe("the Change Request page", () => {
   });
 
   it("offers no decision to a reader who may not write", () => {
-    renderView({ canWrite: false });
+    renderView({ canWrite: false, canReview: false });
     expect(screen.queryByTestId("change-review-actions")).toBeNull();
     expect(screen.getByTestId("change-reviews")).not.toBeNull();
+  });
+
+  it("lets a member with a write grant discuss without deciding", async () => {
+    const { onComment, onReview } = renderView({ canWrite: true, canReview: false });
+    expect(screen.queryByTestId("change-approve")).toBeNull();
+    expect(screen.queryByTestId("change-request-changes")).toBeNull();
+    await userEvent.type(screen.getByLabelText("Review comment"), "Please check the docs.");
+    fireEvent.click(screen.getByTestId("change-comment"));
+    expect(onComment).toHaveBeenCalledWith("Please check the docs.");
+    expect(onReview).not.toHaveBeenCalled();
   });
 
   it("only approves the current round", () => {

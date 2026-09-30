@@ -29,7 +29,7 @@ import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
-import type { Onboarding, OnboardingStep } from "../../contracts/account.ts";
+import type { Onboarding, OnboardingStep, ProjectIntegration } from "../../contracts/account.ts";
 import { ONBOARDING_STEPS } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import { AccountError } from "./api.ts";
@@ -335,6 +335,7 @@ export function SetupRoute({
   const bootstrap = useAccountBootstrap();
   const project = bootstrap?.projects.find((candidate) => candidate.id === projectId) ?? null;
   const onboarding = useResource<Onboarding>(() => api.onboarding(projectId), [api, projectId]);
+  const integration = useResource<ProjectIntegration>(() => api.integration(projectId), [api, projectId]);
 
   const steps = orderedSteps(onboarding.value);
   const [activeIndex, setActiveIndex] = React.useState(0);
@@ -431,16 +432,20 @@ export function SetupRoute({
   const bindRepository = useMutation(async (name: string) => {
     const current = onboarding.value;
     if (current === undefined) return null;
-    const integration = await api.integration(projectId);
-    const body = { expected_revision: integration.revision, repository: name };
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name)) {
+      throw new AccountError({ status: 422, code: "invalid_request", message: "Enter the repository as owner/name, then retry." });
+    }
+    const currentIntegration = await api.integration(projectId);
+    const body = { expected_revision: currentIntegration.revision, repository: name, source: "runner_checkout" };
     const bound = await withSetupKey(`${base}/onboarding/repository`, body, (key) =>
       api.bindRepository({
         projectId,
         repository: name,
-        revision: integration.revision,
+        revision: currentIntegration.revision,
         key,
       }),
     );
+    integration.set(bound);
     await onboarding.refresh();
     return bound;
   });
@@ -579,23 +584,31 @@ export function SetupRoute({
         />
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5 sm:flex-row sm:items-end">
           <div className="flex flex-1 flex-col gap-1.5">
-            <Label htmlFor="setup-repository">Attach a GitHub repository</Label>
+            <Label htmlFor="setup-repository">Associate the runner checkout</Label>
             <Input
               id="setup-repository"
               placeholder="owner/name"
               value={repositoryName}
               onChange={(event) => setRepositoryName(event.currentTarget.value)}
+              disabled={Boolean(integration.value?.checkout_repository)}
             />
+            <p className="text-[13px] text-muted-foreground">
+              Clone this repository on an enrolled runner, including private repositories, and start the runner. Its Git origin must match owner/name. GitHub API integration is optional.
+            </p>
+            {integration.value?.checkout_repository ? (
+              <p className="text-[13px] text-success-foreground">Verified runner checkout: <code className="font-mono">{integration.value.checkout_repository}</code></p>
+            ) : null}
           </div>
           <Button
             variant="outline"
-            disabled={bindRepository.pending || repositoryName.trim().length === 0}
+            disabled={bindRepository.pending || repositoryName.trim().length === 0 || Boolean(integration.value?.checkout_repository)}
             onClick={() => void bindRepository.call(repositoryName.trim())}
           >
-            {bindRepository.pending ? "Attaching…" : "Attach"}
+            {bindRepository.pending ? "Associating…" : "Associate"}
           </Button>
         </div>
         <ControlError message={bindRepository.error?.message ?? null} />
+        <ControlError message={integration.error?.message ?? null} />
         {onboarding.value.observed_policies?.[0] ? (
           <details className="mb-2.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
             <summary className="cursor-pointer text-sm">Review runner-reported policy</summary>
