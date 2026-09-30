@@ -10,8 +10,10 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -50,10 +52,19 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 	http.DefaultTransport = denied
 	t.Cleanup(func() { http.DefaultTransport = previous })
 
-	for _, name := range []string{"code"} {
+	for _, name := range []string{"code", "linked source"} {
 		t.Run(name, func(t *testing.T) {
-			h := newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates())
-			issue := h.createInProgress(t, "Update the README")
+			var h *nativeChangeHub
+			var issue connector.Issue
+			if name == "linked source" {
+				var linked tracker.NativeIssue
+				h, linked = newLinkedChangeHub(t)
+				h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) { return intakeSnapshot(), nil }
+				issue = issueFromNative(linked)
+			} else {
+				h = newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates())
+				issue = h.createInProgress(t, "Update the README")
+			}
 			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
 			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: nativeChangeSourceRepo(t), AutoBranch: true})
