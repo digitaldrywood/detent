@@ -338,6 +338,10 @@ type IssueStateProber interface {
 	FetchIssueStateProbe(context.Context, []string, int) ([]Issue, error)
 }
 
+type IssueStateIDProber interface {
+	FetchIssueStateProbeByIDs(context.Context, []string) ([]Issue, error)
+}
+
 type StatusDriftReader interface {
 	FetchStatusDrift(context.Context) (StatusDrift, error)
 }

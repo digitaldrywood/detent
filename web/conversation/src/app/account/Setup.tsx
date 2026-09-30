@@ -362,14 +362,10 @@ export function SetupRoute({
   // endpoint replaces the object, so sending half of it would clear the rest.
   const progress = onboarding.value?.progress;
   const [repository, setRepository] = React.useState("");
-  const [doctor, setDoctor] = React.useState(false);
-  const [provider, setProvider] = React.useState(false);
   const [artifacts, setArtifacts] = React.useState("");
   React.useEffect(() => {
     if (progress === undefined) return;
     setRepository(progress.repository);
-    setDoctor(progress.doctor);
-    setProvider(progress.provider);
     setArtifacts(progress.artifacts);
   }, [progress]);
 
@@ -426,7 +422,7 @@ export function SetupRoute({
 
   const approve = useMutation(async () => {
     const current = onboarding.value?.policy?.policy;
-    const descriptor = pastedPolicy.trim().length > 0 ? parsePolicyDescriptor(pastedPolicy) : current;
+    const descriptor = pastedPolicy.trim().length > 0 ? parsePolicyDescriptor(pastedPolicy) : onboarding.value?.observed_policies?.[0]?.policy ?? current;
     if (descriptor === undefined) {
       throw new AccountError({
         status: 422,
@@ -632,6 +628,12 @@ export function SetupRoute({
         </div>
         <ControlError message={bindRepository.error?.message ?? null} />
         <ControlError message={integration.error?.message ?? null} />
+        {onboarding.value.observed_policies?.[0] ? (
+          <details className="mb-2.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
+            <summary className="cursor-pointer text-sm">Review runner-reported policy</summary>
+            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{JSON.stringify(onboarding.value.observed_policies[0].policy, null, 2)}</pre>
+          </details>
+        ) : null}
         <div className="mb-2.5 flex flex-col gap-1.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
           <div className="flex items-center gap-1">
             <Label htmlFor="setup-policy-descriptor">Resolved policy descriptor</Label>
@@ -648,15 +650,14 @@ export function SetupRoute({
             onChange={(event) => setPastedPolicy(event.currentTarget.value)}
           />
           <p className="text-[13px] text-muted-foreground">
-            Run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on the execution host and
-            paste what it prints. Approving records exactly that descriptor.
+            The runner reports its resolved policy above. If needed, run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on the execution host and paste its output. Approving records the descriptor you reviewed.
           </p>
         </div>
         <OptionRow
           label="Approve the resolved policy"
-          name="Approved policy"
+          name="Approve resolved policy"
           help="An owner or admin approves this exact resolved descriptor. Hub records its policy identity; runners must resolve a matching policy to claim work. Approval does not run doctor or sign in to a provider."
-          detail={onboarding.value.policy?.policy.policy_id ?? "Not approved yet"}
+          detail={<span className="break-all">{onboarding.value.observed_policies?.[0]?.policy.policy_id ?? onboarding.value.policy?.policy.policy_id ?? "Waiting for the runner to report its policy"}</span>}
           right={
             <Button size="sm" disabled={approve.pending} onClick={() => void approve.call()}>
               {approve.pending ? "Approving…" : "Approve"}
@@ -668,26 +669,29 @@ export function SetupRoute({
     ),
     "Local validation": (
       <>
-        <OptionRow
-          label="detent doctor passes on the execution host"
-          checked={doctor}
-          onCheckedChange={setDoctor}
-          name="`detent doctor` passes"
-          help="Run detent doctor on the execution host, then check this to report success. Hub stores your report; it does not run doctor remotely. Leaving it unchecked keeps Local validation incomplete, but checking it does not override runner dispatch checks."
-          detail="Run it on the machine that will execute work"
-        />
-        <OptionRow
-          label="Signed in to the provider on the execution host"
-          checked={provider}
-          onCheckedChange={setProvider}
-          name="Signed in to your provider"
-          help="Sign in to the selected provider on the execution host, then report it here. Hub stores your confirmation, not your credentials, and does not test the sign-in. Missing confirmation keeps Local validation incomplete; actual provider access and capacity still limit execution."
-          detail="Your ChatGPT, Claude or API credentials stay on that machine"
-        />
-        <p className="text-[13px] text-muted-foreground">
-          Detent never holds your provider credentials. These two are what you report, and the hub
-          records them as reported by you.
-        </p>
+        {(onboarding.value.runners ?? []).length === 0 ? (
+          <p className="mb-3 text-sm text-muted-foreground">Enroll a runner to observe checks on its execution host.</p>
+        ) : null}
+        {(onboarding.value.runners ?? []).map((entry) => {
+          const checks = entry.local_checks;
+          const offline = entry.runner.health !== "online";
+          return (
+            <div key={entry.runner.runner_id} className="mb-3">
+              <p className="mb-2 text-sm font-medium">{entry.runner.display_name}{offline ? " · Offline" : ""}</p>
+              {([
+                ["Project checkout and configuration", "The runner checks its project checkout and configuration on the execution host. Prepare the files there, restart the runner, then refresh these observations.", checks?.checkout, "Prepare the checkout with WORKFLOW.md and detent.yaml at the path printed by registration."],
+                ["detent doctor", "The runner runs detent doctor on the execution host and reports a sanitized result. Hub stores this observation, not a browser confirmation. Run doctor locally for details, restart the runner after fixes, then refresh.", checks?.doctor, "Run detent doctor --config <global.yaml> --project <project> on this host for details and fixes."],
+                ["Provider sign-in", "The runner checks sign-in to the configured provider on its execution host. Credentials and account details stay local. Sign in there, restart the runner, then refresh these observations.", checks?.provider, `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the selected provider"} on this host, then restart the runner.`],
+              ] as const).map(([name, help, state, hint]) => (
+                <OptionRow key={name} label={name} name={name} help={help}
+                  detail={state === "passed" ? "Observed on the execution host" : hint}
+                  right={<><StatusDot tone={state === "passed" && !offline ? "ok" : "warn"} />{state === "passed" ? "Passed" : state === "failed" ? "Failed" : state === "warning" ? "Warnings" : "Waiting"}</>} />
+              ))}
+              {checks?.observed_at ? <p className="text-xs text-muted-foreground">Reported {new Date(checks.observed_at).toLocaleString()}. {offline ? "Reconnect the host to use these results." : "Credentials and command output stay local."}</p> : null}
+            </div>
+          );
+        })}
+        <Button variant="outline" onClick={() => void onboarding.refresh()}>Refresh runner checks</Button>
       </>
     ),
     "Execution runner": (
@@ -739,7 +743,6 @@ export function SetupRoute({
           />
         ))}
         <ControlError message={route.error?.message ?? null} />
-        {(integration.value?.checkout_repository || integration.value?.repository) ? <GitHubIssueIntake projectId={projectId} repository={integration.value.checkout_repository || integration.value.repository || ""} runners={(onboarding.value?.runners ?? []).map(entry => ({ id: entry.runner.runner_id, name: entry.runner.display_name }))} /> : null}
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
           <div className="text-[14.5px]">Enroll a host</div>
           <p className="text-[13px] text-muted-foreground">
@@ -758,6 +761,7 @@ export function SetupRoute({
             onEnrolled={() => void onboarding.refresh()}
           />
         </div>
+        {(integration.value?.checkout_repository || integration.value?.repository) ? <GitHubIssueIntake projectId={projectId} repository={integration.value.checkout_repository || integration.value.repository || ""} runners={(onboarding.value?.runners ?? []).map(entry => ({ id: entry.runner.runner_id, name: entry.runner.display_name }))} /> : null}
       </>
     ),
     "Artifact history": (
@@ -889,7 +893,7 @@ export function SetupRoute({
 
   const saveAndContinue = () => {
     void saveProgress
-      .call({ repository, doctor, provider, artifacts })
+      .call({ repository, doctor: false, provider: false, artifacts })
       .then(() => {
         if (activeIndex < steps.length - 1) next();
       });

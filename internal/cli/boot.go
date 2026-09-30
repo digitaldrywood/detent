@@ -345,7 +345,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	var hubScheduling orchestrator.SchedulingSource
 	var manager *project.Manager
 	if cfg.Global.Client.Configured() {
-		hubScheduling, err = newHubScheduling(cfg.Global, cfg.Version, hubSchedulingOptions{
+		hubScheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
 			intakeToken: newRunnerIntakeTokenSource(runtimeGitHubToken.get, refreshGitHubToken),
 			problems: func() []runnerauth.Problem {
 				var problems []runnerauth.Problem

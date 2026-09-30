@@ -1083,6 +1083,14 @@ func (c *Connector) VerifyStatusOptions(ctx context.Context, stateNames []string
 }
 
 func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]connector.Issue, error) {
+	return c.fetchIssueStatesByIDs(ctx, issueIDs, true)
+}
+
+func (c *Connector) FetchIssueStateProbeByIDs(ctx context.Context, issueIDs []string) ([]connector.Issue, error) {
+	return c.fetchIssueStatesByIDs(ctx, issueIDs, false)
+}
+
+func (c *Connector) fetchIssueStatesByIDs(ctx context.Context, issueIDs []string, includeDependencies bool) ([]connector.Issue, error) {
 	ids := uniqueNonBlank(issueIDs)
 	if len(ids) == 0 {
 		return []connector.Issue{}, nil
@@ -1103,12 +1111,17 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 			if err != nil {
 				return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
 			}
+			if ok && !includeDependencies && issue.ID != id {
+				return nil, fmt.Errorf("fetch github cleanup issue identity: %w", ErrInvalidResponse)
+			}
 			if ok {
 				issues = append(issues, c.normalizeLabelIssueStateRead(issue))
 			}
 		}
-		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
-			return nil, err
+		if includeDependencies {
+			if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+				return nil, err
+			}
 		}
 		sortIssuesByRequestedIDs(issues, ids)
 		return issues, nil
@@ -1129,12 +1142,17 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 			if err != nil {
 				return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
 			}
+			if ok && !includeDependencies && issue.ID != id {
+				return nil, fmt.Errorf("fetch github cleanup issue identity: %w", ErrInvalidResponse)
+			}
 			if ok {
 				issues = append(issues, issue)
 			}
 		}
-		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
-			return nil, err
+		if includeDependencies {
+			if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+				return nil, err
+			}
 		}
 		sortIssuesByRequestedIDs(issues, ids)
 		return issues, nil
@@ -1161,9 +1179,14 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 		if err != nil {
 			return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
 		}
+		if ok && !includeDependencies && issue.ID != id {
+			return nil, fmt.Errorf("fetch github cleanup issue identity: %w", ErrInvalidResponse)
+		}
 		if ok {
-			if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
-				return nil, err
+			if includeDependencies {
+				if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
+					return nil, err
+				}
 			}
 			issues = append(issues, issue)
 		}

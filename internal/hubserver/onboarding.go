@@ -92,7 +92,15 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		runner.ProjectIDs = []tracker.ProjectID{scope.project}
 		runner.Leases = nil
 		runner.ProviderCapacity = nil
-		result.Runners = append(result.Runners, runnerauth.Eligibility{Runner: runner, Exclusions: exclusions})
+		var checksJSON string
+		if err := s.database.db.QueryRowContext(ctx, "SELECT local_checks_json FROM runner_identities WHERE id=? AND organization_id=?", id, scope.organization).Scan(&checksJSON); err != nil {
+			return result, err
+		}
+		var checks map[tracker.ProjectID]*runnerauth.LocalChecks
+		if err := json.Unmarshal([]byte(checksJSON), &checks); err != nil {
+			return result, err
+		}
+		result.Runners = append(result.Runners, runnerauth.Eligibility{Runner: runner, Exclusions: exclusions, LocalChecks: checks[scope.project]})
 	}
 	rows, err = s.database.db.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id", scope.organization, scope.project)
 	if err != nil {

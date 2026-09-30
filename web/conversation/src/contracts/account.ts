@@ -351,9 +351,9 @@ export type OnboardingStep = typeof OnboardingStep.Type;
 
 /** The four steps `Evaluate()` emits, in its order. */
 export const ONBOARDING_STEPS = [
-  "Repository configuration",
-  "Local validation",
   "Execution runner",
+  "Local validation",
+  "Repository configuration",
   "Artifact history",
 ] as const;
 
@@ -378,7 +378,16 @@ export type RunnerExclusion = typeof RunnerExclusion.Type;
  * take this project's work. An empty `exclusions` is what makes step three
  * ready.
  */
+export const RunnerLocalChecks = Schema.Struct({
+  checkout: Schema.String,
+  doctor: Schema.String,
+  provider: Schema.String,
+  provider_kinds: Schema.optional(Schema.Array(Schema.String)),
+  observed_at: Schema.String,
+});
+
 export const RunnerEligibility = Schema.Struct({
+  local_checks: Schema.optional(Schema.NullOr(RunnerLocalChecks)),
   runner: Schema.Struct({
     runner_id: Schema.String,
     machine_id: Schema.optional(Schema.String),

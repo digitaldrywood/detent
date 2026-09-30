@@ -1482,3 +1482,45 @@ func TestConnectorFetchIssueParentsLabelModeAvoidsProjectItems(t *testing.T) {
 func containsProjectItems(query string) bool {
 	return strings.Contains(query, "projectItems")
 }
+
+func TestConnectorCleanupIDProbeReadsOnlyFreshMetadata(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		body       string
+		status     int
+		wantState  string
+		wantClosed bool
+		wantAbsent bool
+		wantError  bool
+	}{
+		{name: "closed", body: `{"node_id":"I_433","number":433,"title":"Issue","state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/433","updated_at":"2026-09-30T22:03:00Z","labels":[{"name":"detent:done"}]}`, wantState: "Done", wantClosed: true},
+		{name: "routing", body: `{"node_id":"I_433","number":433,"title":"Issue","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/433","labels":[{"name":"detent:todo"}]}`, wantState: "Todo"},
+		{name: "unknown lane", body: `{"node_id":"I_433","number":433,"title":"Issue","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/433","labels":[]}`},
+		{name: "missing", body: `{"message":"Not Found"}`, status: http.StatusNotFound, wantAbsent: true},
+		{name: "read failure", body: `{"message":"Forbidden"}`, status: http.StatusForbidden, wantError: true},
+		{name: "wrong identity", body: `{"node_id":"I_OTHER","number":433,"title":"Issue","state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/433","labels":[{"name":"detent:done"}]}`, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			responses := []graphqlTestResponse{{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/433", status: tt.status, body: tt.body}}
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			c.projectCache.SetIssueRef("I_433", issueRef{Owner: "digitaldrywood", Name: "detent", Number: 433})
+			issues, err := c.FetchIssueStateProbeByIDs(t.Context(), []string{"I_433", "I_433", " "})
+			if (err != nil) != tt.wantError {
+				t.Fatalf("error=%v wantError=%v", err, tt.wantError)
+			}
+			if !tt.wantError && !tt.wantAbsent {
+				if len(issues) != 1 || issues[0].ID != "I_433" || issues[0].State != tt.wantState || issues[0].Closed != tt.wantClosed || issues[0].PullRequest != nil || len(issues[0].Comments) != 0 || len(issues[0].BlockedBy) != 0 {
+					t.Fatalf("cleanup metadata=%+v", issues)
+				}
+			} else if len(issues) != 0 {
+				t.Fatalf("unverified metadata=%+v", issues)
+			}
+			if len(server.requests()) != 1 {
+				t.Fatalf("cleanup requested evidence: %+v", server.requests())
+			}
+		})
+	}
+}

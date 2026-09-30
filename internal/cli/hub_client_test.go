@@ -45,9 +45,9 @@ func TestNewHubSchedulingRegistersRuntimeCapacityAndVersion(t *testing.T) {
 		Client: globalconfig.HubClient{URL: server.URL, TokenEnvironment: "HUB_WORKER_TOKEN", MachineID: "machine-a"},
 		Global: globalconfig.Settings{MaxConcurrentAgents: 4},
 	}
-	source, err := newHubScheduling(cfg, "")
+	source, err := newHubScheduling(t.Context(), cfg, "")
 	if err != nil {
-		t.Fatalf("newHubScheduling() error = %v", err)
+		t.Fatalf("newHubScheduling(t.Context(), ) error = %v", err)
 	}
 	issues, err := source.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Repository: "acme/widgets", Policy: descriptor})
 	if err != nil || len(issues) != 0 {
@@ -85,7 +85,7 @@ func TestHubSchedulingUsesEnrolledIdentity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := globalconfig.Config{Client: globalconfig.HubClient{URL: file.HubURL, IdentityFile: path, OrganizationID: "org_example", NativeProjects: map[string]string{"native": "prj_example"}}, Global: globalconfig.Settings{MaxConcurrentAgents: 1}}
 			test.change(&cfg.Client)
-			_, err := newHubScheduling(cfg, "test")
+			_, err := newHubScheduling(t.Context(), cfg, "test")
 			if (err == nil) != test.valid {
 				t.Fatalf("configured=%v, want %v: %v", err == nil, test.valid, err)
 			}
@@ -95,8 +95,8 @@ func TestHubSchedulingUsesEnrolledIdentity(t *testing.T) {
 
 func TestNewHubSchedulingRequiresConfiguredToken(t *testing.T) {
 	t.Setenv("EMPTY_HUB_TOKEN", "")
-	_, err := newHubScheduling(globalconfig.Config{Client: globalconfig.HubClient{URL: "https://hub.example.test", TokenEnvironment: "EMPTY_HUB_TOKEN"}}, "dev")
+	_, err := newHubScheduling(t.Context(), globalconfig.Config{Client: globalconfig.HubClient{URL: "https://hub.example.test", TokenEnvironment: "EMPTY_HUB_TOKEN"}}, "dev")
 	if err == nil {
-		t.Fatal("newHubScheduling() error = nil, want missing token error")
+		t.Fatal("newHubScheduling(t.Context(), ) error = nil, want missing token error")
 	}
 }

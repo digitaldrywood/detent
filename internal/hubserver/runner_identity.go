@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
@@ -167,6 +168,7 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
+		LocalChecks      *runnerauth.LocalChecks   `json:"local_checks,omitempty"`
 		Problems         []runnerauth.Problem      `json:"problems"`
 		ProtocolMajor    int                       `json:"protocol_major,omitempty"`
 		SettingsRejected bool                      `json:"settings_rejected,omitempty"`
@@ -224,12 +226,29 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
 				return nil, err
 			}
+			if request.LocalChecks != nil {
+				if err := request.LocalChecks.Validate(); err != nil {
+					return nil, nativeInvalid(err.Error())
+				}
+				request.LocalChecks.ObservedAt = now
+				raw, err := json.Marshal(request.LocalChecks)
+				if err != nil {
+					return nil, err
+				}
+				_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET local_checks_json = json_set(local_checks_json, ?, json(?)) WHERE id = ? AND organization_id = ?", "$."+string(scope.project), string(raw), scope.credential.Runner.RunnerID, scope.organization)
+				if err != nil {
+					return nil, err
+				}
+			}
 			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID)
 			if err != nil {
 				return nil, err
 			}
 			snapshot.GitHubIntake, err = readGitHubBatchTask(ctx, tx, scope)
 			return snapshot, err
+		}
+		if request.LocalChecks != nil {
+			return nil, nativeInvalid("Local checks require an enrolled runner")
 		}
 		if len(request.ProviderReports) != 0 {
 			return nil, nativeInvalid("Provider reports require an enrolled runner")

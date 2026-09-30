@@ -358,13 +358,13 @@ describe("the first-run wizard", () => {
     const project = bootstrap.projects[0]!;
     const opened = await api.onboarding(project.id);
     expect(opened.steps.map((step) => step.name)).toEqual([
-      "Repository configuration",
-      "Local validation",
       "Execution runner",
+      "Local validation",
+      "Repository configuration",
       "Artifact history",
     ]);
 
-    // Step two: the reader reports what is true on their own machine.
+    // Legacy browser attestations do not become observed local evidence.
     const progress = await api.saveProgress({
       projectId: project.id,
       key: "progress-1",
@@ -378,7 +378,7 @@ describe("the first-run wizard", () => {
     const afterValidation = await api.onboarding(project.id);
     expect(
       afterValidation.steps.find((step) => step.name === "Local validation")?.state,
-    ).toBe("ready");
+    ).toBe("action_required");
 
     // Step four: local history needs no service.
     await api.saveProgress({

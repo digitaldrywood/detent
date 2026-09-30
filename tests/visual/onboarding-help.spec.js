@@ -29,7 +29,7 @@ test.afterAll(async () => {
 });
 
 async function help(page, label, content, interaction = "click", screenshot) {
-  const trigger = page.getByRole("button", { name: `Help for ${label}`, exact: true });
+  const trigger = page.getByRole("button", { name: `Help for ${label}`, exact: true }).first();
   if (interaction === "hover") await trigger.hover();
   else if (interaction === "focus") {
     // Actual keyboard focus, including the focus-visible browser behavior.
@@ -58,7 +58,8 @@ for (const width of [1280, 390]) {
     const tap = width === 390 ? "tap" : "click";
     await page.goto(new URL("/projects/proj_alpha/setup", origin).href);
     const steps = page.getByRole("list", { name: "Setup steps" });
-    await steps.getByRole("button").nth(0).click();
+    await expect(steps.getByRole("button").nth(0)).toContainText("Execution runner");
+    await steps.getByRole("button").nth(2).click();
     await help(page, "Use an existing repository", "This saves your setup choice", width === 1280 ? "hover" : tap);
     await expect(page.getByRole("radio", { name: "Use an existing repository" })).toBeChecked();
     await help(page, "Generate the configuration", "Associate does not generate files", tap);
@@ -69,21 +70,25 @@ for (const width of [1280, 390]) {
     await help(page, "Approve the resolved policy", "runners must resolve a matching policy", tap);
 
     await steps.getByRole("button").nth(1).click();
-    const doctor = page.getByRole("checkbox", { name: /^detent doctor passes on the execution host/ });
-    const checked = await doctor.isChecked();
-    await help(page, "detent doctor passes on the execution host", "Hub stores your report", tap);
-    expect(await doctor.isChecked()).toBe(checked);
-    await help(page, "Signed in to the provider on the execution host", "does not test the sign-in", tap);
+    await expect(page.getByRole("checkbox")).toHaveCount(0);
+    await help(page, "Project checkout and configuration", "execution host", tap);
+    await help(page, "detent doctor", "not a browser confirmation", tap);
+    await help(page, "Provider sign-in", "Credentials and account details stay local", tap);
 
-    await steps.getByRole("button").nth(2).click();
+    await steps.getByRole("button").nth(0).click();
     await help(page, "Runner eligibility", "runner-reported heartbeat and capacity", tap);
     await help(page, "Route here", "does not fix a stale heartbeat", tap);
-    await page.getByRole("button", { name: "Enroll a runner", exact: true }).click();
-    const capacity = page.getByLabel("Runs at once", { exact: true });
+    const enroll = page.getByRole("button", { name: "Enroll a runner", exact: true });
+    const intake = page.getByRole("region", { name: "Import GitHub issues", exact: true });
+    await expect(intake).toBeVisible();
+    expect(await enroll.evaluate(element => Boolean(element.compareDocumentPosition(document.querySelector('[aria-label="Import GitHub issues"]')) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+    await enroll.click();
+    const capacity = page.getByLabel("Concurrent work items", { exact: true });
+    await expect(capacity).toHaveValue("1");
     await capacity.fill("6");
-    await help(page, "Runs at once", "it does not enroll six runners", width === 1280 ? "hover" : tap);
-    await help(page, "Runs at once", "Start with 1", width === 1280 ? "focus" : tap);
-    await help(page, "Runs at once", "limits can lower effective concurrency", tap, testInfo.outputPath(`capacity-help-${width}.png`));
+    await help(page, "Concurrent work items", "it does not enroll six runners", width === 1280 ? "hover" : tap);
+    await help(page, "Concurrent work items", "Start with 1", width === 1280 ? "focus" : tap);
+    await help(page, "Concurrent work items", "limits can lower effective concurrency", tap, testInfo.outputPath(`capacity-help-${width}.png`));
     await expect(capacity).toHaveValue("6");
     const projects = page.locator('[data-slot="checkbox"][id^="enroll-project-"]');
     const projectState = await projects.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-checked")));
@@ -91,7 +96,7 @@ for (const width of [1280, 390]) {
     expect(await projects.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-checked")))).toEqual(projectState);
     await page.screenshot({ path: testInfo.outputPath(`enrollment-${width}.png`) });
     await capacity.fill("0");
-    await help(page, "Runs at once", "distinct jobs concurrently", tap);
+    await help(page, "Concurrent work items", "independent work items concurrently", tap);
     await expect(page.getByText("A whole number from 1 to 16")).toBeVisible();
     await expect(page.getByRole("button", { name: "Create command" })).toBeDisabled();
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
