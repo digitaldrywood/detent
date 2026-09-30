@@ -81,7 +81,6 @@ func TestCheckedMergeUnderForgeCondition(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 24, 17, 0, 0, 0, time.UTC)
 	cfg := normalizeConfig(Config{MergeFastPathEnabled: true, ForgeHost: "github.test", ActiveStates: []string{"Merging"}})
-	issue := readyMergeCapacityIssue("ready", 2371)
 	for _, tt := range []struct {
 		name, operation, class string
 		wantBlocked            bool
@@ -91,14 +90,32 @@ func TestCheckedMergeUnderForgeCondition(t *testing.T) {
 		{name: "Git write transport", operation: "git push", class: forgeavailability.ClassTransport, wantBlocked: true},
 		{name: "credential", operation: "git fetch", class: forgeavailability.ClassWorkerGitHubCredentialUnavailable, wantBlocked: true},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			state := newState(cfg)
-			state.ForgeUnavailable["github.test"] = ForgeCondition{Host: "github.test", Operation: tt.operation, ErrorClass: tt.class, NextProbeAt: now.Add(time.Hour)}
-			if got := newDispatchPlanner(cfg).forgeAvailabilityBlocks(&state, issue, Retry{}, now); got != tt.wantBlocked {
-				t.Fatalf("forge availability blocks checked merge = %v, want %v", got, tt.wantBlocked)
-			}
-		})
+		for _, shape := range []string{"checked", "dirty", "pending", "red"} {
+			t.Run(tt.name+"/"+shape, func(t *testing.T) {
+				t.Parallel()
+				state := newState(cfg)
+				state.ForgeUnavailable["github.test"] = ForgeCondition{Host: "github.test", Operation: tt.operation, ErrorClass: tt.class, NextProbeAt: now.Add(time.Hour)}
+				issue := readyMergeCapacityIssue("ready", 2371)
+				switch shape {
+				case "dirty":
+					issue.PullRequest.MergeableState = "dirty"
+				case "pending":
+					issue.PullRequest.CIStatus = "pending"
+				case "red":
+					issue.PullRequest.CIStatus = "failure"
+				}
+				planner := newDispatchPlanner(cfg)
+				if got := planner.forgeAvailabilityBlocks(&state, issue, Retry{}, now); got != tt.wantBlocked {
+					t.Fatalf("forge availability blocks merge = %v, want %v", got, tt.wantBlocked)
+				}
+				if shape != "checked" && planner.readyMergeControlCandidate(&state, issue) {
+					t.Fatal("unprepared merge became ready for merge control")
+				}
+				if got := planner.forgeAvailabilityBlocks(&state, issue, Retry{ForgeUnavailable: true, ForgeHost: "github.test"}, now); !got {
+					t.Fatal("failed operation lost its forge retry backoff")
+				}
+			})
+		}
 	}
 }
 

@@ -303,8 +303,10 @@ preserve the checked head and a non-strict base policy; advancement of a
 non-strict base does not require workspace synchronization or a CI retry.
 `TestReadyMergeAllowsNonStrictBaseAdvancement` covers the native merge of the
 unchanged checked head; the safety matrix retains changed-head, strict-policy,
-CI, draft, thread, and operator-withdrawal controls. The same checked merge may continue
-when the matching forge condition came from a Git read; forge write and
+CI, draft, thread, and operator-withdrawal controls. A Git-read condition holds
+its failed operation retry, not unrelated merge preparation. Dirty or unchecked
+PRs still require their ordinary preparation and merge eligibility; removing
+the separate read hold does not make them ready to merge. Forge write and
 credential conditions retain their existing merge hold.
 `TestClassifyWorkspaceForgeReadFailure`,
 `TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
@@ -471,6 +473,14 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Workspace Git-read failures no longer apply a second admission brake to
+unrelated merge workers (#3487). The affected operation retains its existing
+forge retry and backoff; ordinary preparation owns its actual remote reads,
+and normal merge policy owns eligibility. No probe, recovery loop, reason,
+or configuration is added. `TestCheckedMergeUnderForgeCondition` covers dirty,
+pending and failing heads without granting merge-control readiness, and
+retains write, credential and affected-retry holds.
 
 Review routing for projects with `review.human: false` uses the existing Blocked
 lane and existing decision reasons (#3211). The reviewed fingerprints cover the
