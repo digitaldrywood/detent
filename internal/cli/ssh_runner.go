@@ -44,8 +44,14 @@ func sshScratchRoot() string {
 
 func SSHWorkerReady() bool {
 	root := sshScratchRoot()
+	if root == "" {
+		return false
+	}
 	info, err := os.Stat(root)
-	return root != "" && err == nil && info.IsDir()
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }
 
 type sshRunner struct {
