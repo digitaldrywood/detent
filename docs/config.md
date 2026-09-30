@@ -967,6 +967,16 @@ parks the issue on a hard hold until an operator raises or disables the cap, or
 explicitly retries after resetting the hold. `refusal_cooldown_seconds` applies
 only to resettable budget pacing and never clears a per-issue hard hold.
 
+Omitting `gate.required_status_checks` preserves aggregate evaluation of all
+observed check runs and commit statuses. A nonempty list also requires those
+named checks while preserving the aggregate. An explicitly empty list (`[]`)
+evaluates only the PR base branch's native ruleset and branch-protection checks,
+in every lane and for both REST hydration and cached candidate observations.
+With no native required checks, CI passes even when optional statuses are absent,
+failed, or obsolete. Missing, unfinished, or failed native checks still block;
+unavailable branch-policy reads do not grant a pass. Review, merge conflicts,
+ownership, and dependencies keep their existing rules.
+
 <!-- BEGIN GENERATED CONFIG REFERENCE -->
 
 | Key | Type | Default | Required | Validation |
@@ -1219,7 +1229,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `gate.kind` | `string` | `"command"` | No | must be one of command, human_review, artifact |
 | `gate.local_status` | `string` | `none` | No | None |
 | `gate.require_automated_review` | `boolean` | `true` | No | None |
-| `gate.required_status_checks` | `list<string>` | `[]` | No | None |
+| `gate.required_status_checks` | `list<string>` | `omitted (aggregate observed CI)` | No | None |
 | `gate.run` | `string` | `"make check"` | No | None |
 | `gate.security_audit` | `object` | `see child fields` | No | None |
 | `gate.security_audit.block_on` | `list<string>` | `["p1","p2"]` | No | severities must be p1, p2, or p3 |

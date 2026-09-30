@@ -1346,7 +1346,15 @@ PR CI, merge-group CI, and required status checks remain supported.
 **Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
 `merge_group`, and no branch ruleset requires a status check. Pull requests do
 not wait for CI or local validation gates before push or merge. The self-hosted
-project uses the existing no-op command `true` and publishes no local status.
+project uses the existing no-op command `true`, publishes no local status, and
+opts into `gate.required_status_checks: []`. That explicit empty list evaluates
+only native requirements on the PR base branch in all lanes and hydration paths.
+With none, absent or obsolete optional CI does not block advancement. Missing,
+pending, or failed native requirements still block; unavailable policy does not
+authorize a pass. Omission and nonempty lists retain aggregate evaluation for
+other projects. Normalization and orchestration snapshots preserve list presence.
+`TestExplicitEmptyRequiredChecks`, `TestParseWorkflowRequiredChecksPresence`, and
+`TestCloneGateRequiredChecksPresence` cover this policy (#3378).
 
 `make check-fast`, focused tests, and vet remain available for optional
 diagnostics. When invoked, checks preserve failures. The local tools take no

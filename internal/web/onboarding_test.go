@@ -670,7 +670,7 @@ func TestOnboardingWriteWorkflowAppliesFullAutopilotProfile(t *testing.T) {
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"auto_promote:\n    enabled: true\n    quiet_seconds: 0\n    gate_wait_state: source",
 		"# Skills guide: https://github.com/digitaldrywood/detent/blob/main/docs/ONBOARDING.md#skills-and-skill-creation",
-		"gate:\n  kind: command\n  run: make check\n  required_status_checks: []\n  require_automated_review: false",
+		"gate:\n  kind: command\n  run: make check\n  require_automated_review: false",
 		"server:\n  host: 127.0.0.1\n  kanban:\n    mode: integration",
 		"Full autopilot still requires linked PRs, green CI, clear gates, and no blocking P1 automated findings.",
 		"Use live reload or a project-scoped refresh after onboarding changes; do not restart Detent or interrupt running agents unless the operator explicitly authorizes it.",

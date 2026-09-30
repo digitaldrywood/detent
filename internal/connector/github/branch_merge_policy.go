@@ -186,9 +186,11 @@ func (c *Client) recordBranchRulesAvailability(ctx context.Context, repository s
 
 // attachRequiredBranchChecks shares the merge-queue policy cache. It enriches
 // current-head observations rather than creating missing evidence on read errors.
+// An explicitly empty configured list selects only native base-branch checks.
 func (c *Connector) attachRequiredBranchChecks(ctx context.Context, issue *connector.Issue) error {
 	pr := issue.PullRequest
-	if normalizeStateName(issue.State) != normalizeStateName("Merging") || pr == nil || pr.BaseRef == "" || pr.HeadSHA == "" || pr.HydrationUnavailableReason != "" || !strings.EqualFold(pr.State, "open") {
+	nativeOnly := c.requiredChecks != nil && len(c.requiredChecks) == 0
+	if (!nativeOnly && normalizeStateName(issue.State) != normalizeStateName("Merging")) || pr == nil || pr.BaseRef == "" || pr.HeadSHA == "" || pr.HydrationUnavailableReason != "" || !strings.EqualFold(pr.State, "open") {
 		return nil
 	}
 	repo, _, ok := hydratedPullRequestRef(*issue)
@@ -198,6 +200,20 @@ func (c *Connector) attachRequiredBranchChecks(ctx context.Context, issue *conne
 	policy, err := c.branchMergePolicy(ctx, pullRequestRepoName(repo), pr.BaseRef)
 	if err != nil {
 		return fmt.Errorf("read required status policy: %w", err)
+	}
+	if nativeOnly && policy.RulesUnavailableOnPlan {
+		return errors.New("read required status policy: branch rules unavailable on this plan")
+	}
+	// Copy the PR because snapshots may share a cached pointer. Native-only
+	// mode replaces the optional aggregate in every lane, using the same
+	// current-head inventory and classifier as REST required-check evaluation.
+	if nativeOnly {
+		enriched := *pr
+		enriched.BaseBranchStrict = policy.Strict
+		enriched.RequiredCheckFailures = requiredInventoryCheckFailures(pr.Checks, policy.RequiredStatusChecks)
+		enriched.CIStatus = normalizePullRequestCIStatus(combinedCIState(requiredStatusCheckState(enriched.RequiredCheckFailures), "success"))
+		issue.PullRequest = &enriched
+		return nil
 	}
 	seen := make(map[string]bool)
 	for _, check := range pr.Checks {

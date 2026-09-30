@@ -599,7 +599,6 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("gate:\n")
 	b.WriteString("  kind: command\n")
 	b.WriteString("  run: make check\n")
-	b.WriteString("  required_status_checks: []\n")
 	if hasDeliveryProfile {
 		writeScalar(&b, "  ", "require_automated_review", onboardingBool(settings.GateRequireAutomatedReview))
 	}

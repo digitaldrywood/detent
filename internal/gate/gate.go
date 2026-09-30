@@ -356,6 +356,9 @@ func AutomatedReviewMode(cfg Config) string {
 }
 
 func NormalizeRequiredStatusChecks(checks []string) []string {
+	if checks == nil {
+		return nil
+	}
 	normalized := make([]string, 0, len(checks))
 	seen := make(map[string]struct{}, len(checks))
 	for _, check := range checks {

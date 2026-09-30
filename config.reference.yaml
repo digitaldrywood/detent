@@ -1025,8 +1025,8 @@
 #   automated_review: "required"
 #   # gate.require_automated_review | type: boolean | default: true | required: No | validation: None
 #   require_automated_review: true
-#   # gate.required_status_checks | type: list<string> | default: [] | required: No | validation: None
-#   required_status_checks: []
+#   # gate.required_status_checks | type: list<string> | default: omitted (aggregate observed CI) | required: No | validation: None
+#   required_status_checks: null
 #   # gate.ci_trigger_label | type: string | default: none | required: No | validation: None
 #   ci_trigger_label: null
 #   # gate.ci_trigger_label_stagger_seconds | type: integer | default: none | required: No | validation: must be greater than 0

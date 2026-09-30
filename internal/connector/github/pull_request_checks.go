@@ -324,6 +324,31 @@ func checkRunsState(checkRuns []restCheckRun) string {
 	return "success"
 }
 
+// requiredInventoryCheckFailures evaluates the retained latest-per-name inventory
+// with the REST classifier, so cached observations and REST hydration agree.
+func requiredInventoryCheckFailures(checks []connector.PullRequestCheck, required []string) []connector.PullRequestCheck {
+	var runs []restCheckRun
+	var statuses []restCommitStatus
+	byName := make(map[string]connector.PullRequestCheck, len(checks))
+	for _, check := range checks {
+		byName[check.Name] = check
+		switch check.Status {
+		case "success", "failure", "error", "pending":
+			statuses = append(statuses, restCommitStatus{Context: check.Name, State: check.Status})
+		default:
+			runs = append(runs, restCheckRun{ID: check.ID, Name: check.Name, Status: check.Status, Conclusion: check.Conclusion, DetailsURL: check.DetailsURL, FailureDetail: check.FailureDetail})
+		}
+	}
+	failures := requiredStatusCheckFailures(runs, statuses, required)
+	for i, failure := range failures {
+		if original, ok := byName[failure.Name]; ok {
+			original.Status, original.Conclusion = failure.Status, failure.Conclusion
+			failures[i] = original
+		}
+	}
+	return failures
+}
+
 func requiredStatusCheckFailures(checkRuns []restCheckRun, statuses []restCommitStatus, required []string) []connector.PullRequestCheck {
 	required = normalizeRequiredStatusChecks(required)
 	if len(required) == 0 {
@@ -737,6 +762,9 @@ func restCommitStatusAfter(left restCommitStatus, right restCommitStatus) bool {
 }
 
 func normalizeRequiredStatusChecks(checks []string) []string {
+	if checks == nil {
+		return nil
+	}
 	normalized := make([]string, 0, len(checks))
 	seen := make(map[string]struct{}, len(checks))
 	for _, check := range checks {
@@ -760,7 +788,7 @@ func combinedCIState(checkRuns string, statuses string) string {
 	hasFailure := false
 	for _, state := range states {
 		switch strings.ToLower(strings.TrimSpace(state)) {
-		case "failure", "failed", "error":
+		case "failure", "fail", "failed", "error":
 			hasFailure = true
 		case "pending", "expected", "queued", "waiting", "in_progress", "in progress":
 			hasPending = true
@@ -784,7 +812,7 @@ func normalizePullRequestCIStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "success", "green", "pass", "passed":
 		return "pass"
-	case "failure", "failed", "error", "red":
+	case "failure", "fail", "failed", "error", "red":
 		return "fail"
 	case "pending", "expected", "queued", "waiting", "in_progress", "in progress":
 		return "pending"
