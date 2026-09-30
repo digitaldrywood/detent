@@ -13,6 +13,37 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
+func TestTenantEnvironmentPassesOpenAIKeyOnlyWhenPresent(t *testing.T) {
+	config := cloudFileConfig{Allocation: &cloudAllocationFileConfig{}}
+	config.WorkOS.APIKeyEnv = "WORKOS_API_KEY"
+	for _, test := range []struct {
+		name string
+		key  string
+		want int
+	}{
+		{name: "missing", want: 1},
+		{name: "present", key: "test-key", want: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			env := tenantEnvironment(config, func(name string) string {
+				if name == "OPENAI_API_KEY" {
+					return test.key
+				}
+				if name == "WORKOS_API_KEY" {
+					return "workos-test-key"
+				}
+				return ""
+			})
+			if len(env) != test.want {
+				t.Fatalf("tenant environment has %d entries, want %d", len(env), test.want)
+			}
+			if test.key != "" && env[1] != "OPENAI_API_KEY="+test.key {
+				t.Fatal("OpenAI key was not passed to the tenant")
+			}
+		})
+	}
+}
+
 func TestReadCloudConfig(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
