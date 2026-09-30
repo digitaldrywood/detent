@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -135,28 +136,45 @@ func TestOperatorMergeWedgedCandidate(t *testing.T) {
 
 func TestOperatorMergeWedgedPullRequestsMergesAndRecords(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 9, 11, 18, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 1, 4, 59, 0, 0, time.UTC)
+	deliveredAt := now.Add(5 * time.Minute)
 	for _, tt := range []struct {
 		name       string
 		actions    []string
 		wantMerges int
+		mergeError error
 	}{
-		{"enabled", []string{workflowconfig.OperatorActionMergeWhenWedged}, 1},
-		{"default off", nil, 0},
+		{"enabled", []string{workflowconfig.OperatorActionMergeWhenWedged}, 1, nil},
+		{"default off", nil, 0, nil},
+		{"failed merge", []string{workflowconfig.OperatorActionMergeWhenWedged}, 1, errors.New("merge failed")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			clock := now
 			issue := operatorWedgedIssue(now)
 			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}
 			cfg := nativeMergeQueueTestConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeMethod: "squash", Operator: OperatorConfig{Actions: tt.actions}})
-			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			tracker.err = tt.mergeError
+			tracker.afterMerge = func() { clock = deliveredAt }
+			orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return clock }}
 			state := newState(cfg)
 			transitioned := orch.operatorMergeWedgedPullRequests(t.Context(), &state, []connector.Issue{issue}, now)
-			if len(tracker.merges) != tt.wantMerges || len(transitioned) != tt.wantMerges {
+			wantTransitions := tt.wantMerges
+			if tt.mergeError != nil {
+				wantTransitions = 0
+			}
+			if len(tracker.merges) != tt.wantMerges || len(transitioned) != wantTransitions {
 				t.Fatalf("merges=%#v transitioned=%v", tracker.merges, transitioned)
 			}
-			if tt.wantMerges == 0 {
+			if wantTransitions == 0 {
+				if len(tracker.updates) != 0 || len(orch.laneWrites) != 0 || len(state.MergeTimings) != 0 {
+					t.Fatal("failed or disabled merge recorded delivery")
+				}
 				return
+			}
+			write := orch.laneWrites[issue.ID]
+			if !write.WrittenAt.Equal(deliveredAt) || !state.MergeTimings[issue.ID].MergedAt.Equal(deliveredAt) {
+				t.Fatalf("delivery write=%s merge=%s, want %s", write.WrittenAt, state.MergeTimings[issue.ID].MergedAt, deliveredAt)
 			}
 			if tracker.merges[0].method != "squash" || tracker.merges[0].headSHA != issue.PullRequest.HeadSHA {
 				t.Fatalf("merge = %#v", tracker.merges[0])

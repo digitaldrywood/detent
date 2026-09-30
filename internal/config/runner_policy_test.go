@@ -69,6 +69,9 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if (current.ConfigDigest == approved.ConfigDigest) != test.match {
+				t.Fatalf("config digest = %s, want match %t with %s", current.ConfigDigest, test.match, approved.ConfigDigest)
+			}
 			if err := current.Match(approved); (err == nil) != test.match {
 				t.Fatalf("upgraded policy match = %v, want match %t (config digest %s)", err, test.match, current.ConfigDigest)
 			}
