@@ -58,7 +58,9 @@ in the PR template.
 No GitHub Actions workflow starts on a pull request, and no branch ruleset
 requires a status check. Before merging, run `make check-fast` in the worktree
 for the exact pushed head. The command has no shared validation lock and must
-be safe alongside other worktrees. The scheduled full suite validates pinned
+be safe alongside other worktrees; every `make` test, lint, vet, and build
+target is capped by `TEST_PROCS` (default 4) so concurrent worktrees share
+the host (see [docs/development.md](docs/development.md)). The scheduled full suite validates pinned
 `develop` commits and tags only green commits; every `develop` push still
 deploys to staging.
 

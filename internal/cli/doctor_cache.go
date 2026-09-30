@@ -13,7 +13,7 @@ func checkDoctorNativeCaches(ctx context.Context, deps doctorDeps, policy toolca
 	check := doctorCheck{Name: "Host native toolchain caches", Status: doctorOK}
 	inspect := deps.inspectCaches
 	if inspect == nil {
-		inspect = toolcache.Inspect
+		inspect = defaultInspectCaches
 	}
 	report := inspect(ctx)
 	check.Detail = report.String()

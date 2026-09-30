@@ -27,6 +27,13 @@ excluded in the Makefile; new findings must be fixed or narrowly annotated.
 `make modernize-check` runs the Go modernizer diff check with the repo's
 selected safe analyzer set.
 
+Several worktrees usually run gates on the same host at once. Every `make`
+test, lint, vet, and build target is capped by `TEST_PROCS` (default 4): it
+sets `go test -p`, `GOMAXPROCS` for the test binaries, `golangci-lint
+--concurrency`, and vitest workers, so one worktree's gate leaves the machine
+usable for the others. Raise it for a solo run with `TEST_PROCS=8 make test`.
+Plain `go test ./...` outside `make` has no cap.
+
 Packages that own transport, hub, watcher, orchestrator, and runner goroutines
 also run `go.uber.org/goleak` from package-level tests, so `go test ./...`,
 race tests, and `make check` fail on unexpected goroutines. Add goleak ignores
