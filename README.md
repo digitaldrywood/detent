@@ -149,6 +149,16 @@ work: validation gates are now pluggable, while non-git or non-PR deliverables
 remain follow-up work described in
 [Execution Seams](docs/execution-seams.md).
 
+**Choosing a GitHub status source:** Prefer `github_status_source: label` for
+boards beyond a few hundred items or instances running several projects on one
+GitHub token. ProjectV2 polling cost scales with total unarchived board item
+count multiplied by refresh rate. Done items still cost on every cycle;
+hiding them in a board view does not reduce polling cost. One large board can
+exhaust the shared GraphQL budget, affecting other projects and the operator's
+`gh` CLI. Label mode avoids board inventory reads; archiving Done board items
+also reduces ProjectV2 cost. `detent doctor` reports total and Done item counts
+and warns above 300 items; this is advisory, not a safe-budget guarantee.
+
 It is a **system, not an agent.** You specify the work — the issues, acceptance
 criteria, review gates, and merge rules — and Detent runs that process with
 rigor, isolation, and parallelism across many issues at once. The intelligence

@@ -32,6 +32,116 @@ func TestReadinessProjectItemsReadReportsMissingAccess(t *testing.T) {
 	}
 }
 
+// The reported board had 759 items, 641 Done. The diagnostic must count the
+// entire unarchived board, not just the states eligible for dispatch.
+func TestReadinessProjectSize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		response   graphqlTestResponse
+		stateMap   map[string]string
+		wantStatus ReadinessStatus
+		wantDetail string
+		wantQuery  string
+	}{
+		{
+			name:       "reported Done-heavy board",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{"totalCount":759},"doneItems":{"totalCount":641}}}}`},
+			wantStatus: ReadinessWarn,
+			wantDetail: "board has 759 items (641 Done); ProjectV2 polling re-reads all 759 every cycle, including Done items; this may exhaust the shared GraphQL budget",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "empty board",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{"totalCount":0},"doneItems":{"totalCount":0}}}}`},
+			wantStatus: ReadinessOK,
+			wantDetail: "board has 0 items (0 Done)",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "at advisory threshold",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{"totalCount":300},"doneItems":{"totalCount":250}}}}`},
+			wantStatus: ReadinessOK,
+			wantDetail: "board has 300 items (250 Done)",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "above threshold with mapped Done status",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{"totalCount":301},"doneItems":{"totalCount":1}}}}`},
+			stateMap:   map[string]string{"Done": "Shipped to production"},
+			wantStatus: ReadinessWarn,
+			wantDetail: "board has 301 items (1 Done)",
+			wantQuery:  `status:"Shipped to production"`,
+		},
+		{
+			name:       "board unavailable",
+			response:   graphqlTestResponse{body: `{"data":{"node":null}}`},
+			wantStatus: ReadinessWarn,
+			wantDetail: "counts unavailable",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "counts omitted",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{},"doneItems":{}}}}`},
+			wantStatus: ReadinessWarn,
+			wantDetail: "counts unavailable",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "count read denied",
+			response:   graphqlTestResponse{status: http.StatusForbidden, body: `{"message":"Resource not accessible by integration"}`},
+			wantStatus: ReadinessWarn,
+			wantDetail: "cannot read ProjectV2 board item counts",
+			wantQuery:  `status:"Done"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{body: `{"data":{"viewer":{"login":"operator"},"node":{"__typename":"ProjectV2","id":"PVT_1"}}}`},
+				tt.response,
+				{method: http.MethodGet, path: "/rate_limit", body: `{"resources":{}}`},
+			})
+			c := newGitHubTestConnector(t, server, Config{
+				ProjectSlug: "PVT_1",
+				StateMap:    tt.stateMap,
+			})
+			checker := githubReadinessChecker{connector: c}
+			checks := checker.Check(context.Background(), ReadinessConfig{})
+			var found bool
+			for _, check := range checks {
+				if check.Name != "GitHub ProjectV2 polling cost" {
+					continue
+				}
+				found = true
+				if check.Status != tt.wantStatus || !strings.Contains(check.Detail, tt.wantDetail) {
+					t.Fatalf("check = %#v, want %s with %q", check, tt.wantStatus, tt.wantDetail)
+				}
+				if !strings.Contains(check.Hint, "github_status_source: label") || !strings.Contains(check.Hint, "archive Done") {
+					t.Fatalf("Hint = %q, want label-mode and archiving advice", check.Hint)
+				}
+			}
+			if !found {
+				t.Fatalf("missing polling-cost check: %#v", checks)
+			}
+			requests := server.requests()
+			if len(requests) != 3 {
+				t.Fatalf("requests = %d, want authentication, one count read, and rate limit", len(requests))
+			}
+			query := requests[1]["query"].(string)
+			if strings.Contains(query, "nodes") || strings.Contains(query, "pageInfo") {
+				t.Fatalf("count query fetches item data: %s", query)
+			}
+			variables := requests[1]["variables"].(map[string]any)
+			if variables["projectId"] != "PVT_1" || variables["doneQuery"] != tt.wantQuery {
+				t.Fatalf("variables = %#v, want project PVT_1 and Done filter %q", variables, tt.wantQuery)
+			}
+		})
+	}
+}
+
 func TestReadinessConnectorConfigDefaultsLookupEnvForAppCredentials(t *testing.T) {
 	t.Setenv("DETENT_TEST_GITHUB_APP_ID", "123")
 	t.Setenv("DETENT_TEST_GITHUB_APP_INSTALLATION_ID", "987")

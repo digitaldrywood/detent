@@ -5,11 +5,19 @@ when writing `WORKFLOW.md`, `AGENTS.md`, and skills.
 
 [Back to README](../README.md#documentation)
 
-The quickest compatibility setup is one GitHub ProjectV2 board and one local
-repository checkout. New projects can also run boardless: Detent reads and
-writes either a repository's organization-level GitHub issue `Status` field or
-repository status labels, then shows workflow visibility in Detent's own
-Kanban/dashboard surface.
+Choose a GitHub status source and a local repository checkout. Prefer
+repository label mode for boards beyond a few hundred items or instances
+running several projects on one GitHub token. Detent can also read and write
+GitHub ProjectV2 board status or a repository's organization-level GitHub issue
+`Status` field, then show workflow visibility in its own Kanban/dashboard.
+
+ProjectV2 polling cost scales with total unarchived board items multiplied by
+refresh rate. Done items are re-read and keep costing on every cycle, even if
+hidden in a board view. A large board can exhaust the shared GraphQL budget
+for other projects and the operator's `gh` CLI. Use label mode to avoid board
+inventory reads, or archive Done board items to reduce ProjectV2 cost.
+`detent doctor` reports total and Done item counts and warns above 300 items;
+smaller boards can still exhaust a token at high refresh rates.
 
 1. Authenticate GitHub access for the mode you want:
 
@@ -49,9 +57,13 @@ Detent returns the error without creating an uncoordinated issue.
 
 2. Choose the GitHub status source.
 
-For the current/default compatibility path, use a GitHub ProjectV2 board. Find
-the node id and use the `id` field, which starts with `PVT_`, as
-`tracker.project_slug`:
+For a shared-token multi-project instance, recommend
+`tracker.github_status_source: label` and `tracker.status_label_prefix: "detent:"`.
+Record the operator's explicit mode choice during
+[onboarding](ONBOARDING.md#phase-06--status-source-decision).
+
+If you choose ProjectV2 board mode, find the node id and use the `id` field,
+which starts with `PVT_`, as `tracker.project_slug`:
 
 ```sh
 gh project list --owner <org-or-user> --format json --limit 20

@@ -533,6 +533,17 @@ passes, append the pending `GITHUB_MODE` answer and run
 without re-asking. For an early "use label for this repo" answer, record
 `GITHUB_MODE=label` immediately after the identity gate passes.
 
+Recommend repository label mode (`github_status_source: label`) when several
+projects on the instance share one GitHub token, including `github_token: gh`,
+or when the operator expects a board beyond a few hundred items. Use confirmed
+instance facts and operator expectations for this recommendation; do not query
+target boards before the status-source decision. Explain that ProjectV2 cost
+scales with total unarchived board items multiplied by refresh rate, and Done
+items still cost every cycle. A large board can consume the GraphQL budget
+shared by all projects and the operator's `gh` CLI. Label mode avoids board
+inventory reads; archiving Done items also reduces ProjectV2 cost. The
+recommendation is not authorization to select or mutate a mode.
+
 Ask: "Use ProjectV2 board mode, boardless issue-field mode, or repository label
 mode?" Explain that this answer maps to `tracker.github_status_source:
 project_v2`, `tracker.github_status_source: issue_field`, or
@@ -569,6 +580,13 @@ writes. Label mode uses REST for repository label discovery, issue reads by
 label, and status-label writes. GitHub still reports REST and GraphQL budgets
 separately, and `detent doctor` surfaces both so operators can see whether
 boardless work is healthy without spending ProjectV2 GraphQL inventory budget.
+
+ProjectV2 polling re-reads the full unarchived board, including Done items,
+on every refresh. Hiding Done items in a view does not reduce this cost.
+`detent doctor` reads total and Done board item counts once and warns above
+300 items. This advisory threshold is not a budget guarantee: refresh rate
+and all other consumers of the token affect headroom. Prefer label mode for
+large boards and shared-token multi-project instances, or archive Done items.
 
 GitHub's documented primary GraphQL limit for user-backed tokens is 5,000
 points per hour. GitHub App installation tokens receive their own
