@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -110,7 +111,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted builder", Tags: []string{"Build"}, State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project.ID}, IsolationTier: "native-trusted", Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}, Spillover: runnerauth.Spillover{Mode: "after", AfterMinutes: 0}}}
+	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted builder", Tags: []string{"Build"}, State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project.ID}, IsolationTier: "native-trusted", Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, Spillover: runnerauth.Spillover{Mode: "after", AfterMinutes: 0}}}
 	if err := fleetAdmin.UpdateRunner(t.Context(), file.Identity.RunnerID, change); err != nil {
 		t.Fatal(err)
 	}
@@ -186,8 +187,11 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := native.HeartbeatMachine(t.Context(), machine); err == nil {
-		t.Fatal("heartbeat accepted an unavailable isolation policy cache")
+	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+		t.Fatalf("heartbeat with validated in-memory routing: %v", err)
+	}
+	if _, err := runnerauth.LoadRoutingCache(path); err == nil {
+		t.Fatal("accepted an insecure routing cache")
 	}
 	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o600); err != nil {
 		t.Fatal(err)
@@ -381,6 +385,7 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 			body = string(encoded)
 		} else if strings.HasSuffix(request.URL.Path, "/claims") {
 			claims++
+			body = `{"isolation_policy":{"tier":"sandbox"}}`
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 	})

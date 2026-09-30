@@ -12,7 +12,6 @@ import (
 
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -223,14 +222,7 @@ func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) err
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
 	}{machine.BackendIsolation, machine.ProviderReports, machine.ID, machine.Hostname, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation}
-	if c.client.runner == nil {
-		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
-	}
-	var snapshot runnerauth.RoutingSnapshot
-	if err := c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, &snapshot); err != nil {
-		return err
-	}
-	return runnerauth.SaveRoutingCache(c.client.runner.path, snapshot)
+	return c.client.request(ctx, http.MethodPost, c.base()+"/machines/register", request, nil)
 }
 
 func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (tracker.NativeLease, error) {

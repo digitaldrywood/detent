@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"runtime"
