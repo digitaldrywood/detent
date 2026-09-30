@@ -1105,6 +1105,7 @@ func TestWorkerGitHubCLIAuthStatus(t *testing.T) {
 }
 
 func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("gh"); err != nil {
 		t.Skip("gh is not installed")
 	}
@@ -1205,7 +1206,7 @@ func TestWorkerGitHubClassificationWaitsForSharedCooldown(t *testing.T) {
 					}
 					return workerGitHubPrincipalResponse(), nil
 				})
-				policy := workerGitHubPolicy{Enabled: true, CredentialMode: workerGitHubCredentialUnclassified, Token: t.TempDir(), GraphQLURL: "https://github.test/graphql", HTTPClient: client}
+				policy := workerGitHubPolicy{Enabled: true, CredentialMode: workerGitHubCredentialUnclassified, Token: t.Name(), GraphQLURL: "https://github.test/graphql", HTTPClient: client}
 				if tt.existing {
 					shared, err := githubconnector.NewClient(githubconnector.ClientConfig{Endpoint: policy.GraphQLURL, TokenSource: githubconnector.StaticTokenSource(policy.Token), HTTPClient: client})
 					if err != nil {

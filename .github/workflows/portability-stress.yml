@@ -10,7 +10,7 @@ jobs:
   portability-stress:
     name: Portability Stress (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -30,6 +30,9 @@ jobs:
         if: runner.os == 'Windows'
         run: go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20
 
+      - name: Stress timing-sensitive packages
+        run: go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m
+
       - name: Race test
         shell: bash
         run: |
@@ -41,10 +44,7 @@ jobs:
               packages+=("$package")
             fi
           done < tmp/stress-packages.txt
-          go test -race -timeout=30m "${packages[@]}"
-
-      - name: Stress timing-sensitive packages
-        run: go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=90m
+          go test -race "${packages[@]}"
 
       - name: Upload workspace race evidence
         if: always()
