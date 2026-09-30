@@ -582,6 +582,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 		name, ci, mergeable, want, passState            string
 		newHead, disabled, preserve                     bool
 		threads                                         []connector.PullRequestReviewThread
+		requiredChecks                                  []connector.PullRequestCheck
 		unavailable                                     string
 		wantErr                                         bool
 		merged, validator, audit, auditRunning, pending bool
@@ -595,6 +596,10 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 		{name: "disabled promotion parks", disabled: true, ci: "green", mergeable: "clean", want: "Blocked"},
 		{name: "observed lane is preserved", preserve: true, ci: "green", mergeable: "clean", want: ""},
 		{name: "green head promotes", ci: "green", mergeable: "clean", want: "Merging"},
+		{name: "pending CI waits", ci: "pending", mergeable: "blocked", pending: true},
+		{name: "pending CI and missing audit wait", ci: "pending", mergeable: "blocked", audit: true, pending: true},
+		{name: "missing required check parks despite running CI", ci: "pending", mergeable: "blocked", requiredChecks: []connector.PullRequestCheck{{Name: "Required", Status: "missing", Conclusion: "missing"}}, want: "Blocked"},
+		{name: "queued required check waits", ci: "pending", mergeable: "blocked", requiredChecks: []connector.PullRequestCheck{{Name: "Required", Status: "queued"}}, pending: true},
 		{name: "failing head parks", ci: "failure", mergeable: "blocked", want: "Blocked"},
 		{name: "conflicting head parks", ci: "green", mergeable: "dirty", want: "Blocked"},
 		{name: "unresolved thread parks", ci: "green", mergeable: "clean", threads: []connector.PullRequestReviewThread{{Body: "thread"}}, want: "Blocked"},
@@ -605,6 +610,11 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			issue := connector.Issue{ID: "issue", Identifier: "owner/repo#1", URL: "https://github.com/owner/repo/issues/1", State: "Rework", PullRequest: &connector.PullRequest{Number: 2, State: "open", CIStatus: "failure", HeadSHA: "live"}}
 			live := cloneIssue(issue)
 			live.PullRequest = &connector.PullRequest{Number: 2, URL: "https://github.com/owner/repo/pull/2", State: "open", HeadSHA: "live", CIStatus: tt.ci, MergeableState: tt.mergeable, CodexReviewState: "COMMENTED", UnresolvedReviewThreads: tt.threads, HydrationUnavailableReason: tt.unavailable, Checks: []connector.PullRequestCheck{{ID: 42, Name: "Smoke", Status: "completed", Conclusion: tt.ci}}}
+			if tt.ci == "pending" {
+				live.PullRequest.Checks[0].Status = "in_progress"
+				live.PullRequest.RunningChecks = []string{"Smoke"}
+			}
+			live.PullRequest.RequiredCheckFailures = tt.requiredChecks
 			if tt.merged {
 				live.PullRequest.State = "merged"
 			}
@@ -642,7 +652,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 				return
 			}
 			if tt.pending {
-				if tt.audit && !tt.auditRunning {
+				if tt.audit && !tt.auditRunning && tt.ci != "pending" {
 					orch.securityAuditWG.Wait()
 					if _, err := db.LatestSecurityAuditRun(t.Context(), orch.securityAuditIdentity(live).key); err != nil {
 						t.Fatalf("missing audit was not started: %v", err)
@@ -1003,6 +1013,32 @@ func TestAttemptAllowanceExternalWaitRestart(t *testing.T) {
 			}
 			if len(tracker.updates) != 0 {
 				t.Fatalf("allowance accounting wrote lane: %+v", tracker.updates)
+			}
+		})
+	}
+}
+
+func TestAttemptAllowanceSuccessfulPRDelivery(t *testing.T) {
+	t.Parallel()
+	pr := int64(3304)
+	for _, tt := range []struct {
+		name              string
+		terminal          store.WorkAttemptTerminalState
+		phase, errorClass string
+		pr                *int64
+		want              int
+	}{
+		{name: "completed PR awaiting gate", terminal: store.WorkAttemptTerminalSuccess, phase: "completed", pr: &pr},
+		{name: "no progress PR", terminal: store.WorkAttemptTerminalSuccess, phase: "completed", errorClass: "no_progress", pr: &pr, want: 1},
+		{name: "incomplete PR", terminal: store.WorkAttemptTerminalSuccess, phase: "rework", pr: &pr, want: 1},
+		{name: "failed PR", terminal: store.WorkAttemptTerminalFailure, phase: "completed", pr: &pr, want: 1},
+		{name: "no PR", terminal: store.WorkAttemptTerminalSuccess, phase: "completed", want: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			attempt := store.WorkAttempt{WorkerType: "agent", Lane: "In Progress", TerminalState: tt.terminal, Phase: tt.phase, ErrorClass: tt.errorClass, PRNumber: tt.pr}
+			got := countSessionsWithoutMerge([]store.WorkAttempt{attempt}, time.Time{}, time.Time{})
+			if got.Sessions != tt.want || len(got.Attempts) != tt.want {
+				t.Fatalf("allowance = %#v, want %d", got, tt.want)
 			}
 		})
 	}

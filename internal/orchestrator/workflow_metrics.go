@@ -835,6 +835,7 @@ func workflowLaneEntryMatchesCurrent(issue connector.Issue, event store.Workflow
 func BlockedIssueHasCurrentRecoveryPredicate(
 	issue connector.Issue,
 	phaseName string,
+	reason string,
 	enteredAt time.Time,
 	metadataJSON string,
 ) bool {
@@ -845,6 +846,10 @@ func BlockedIssueHasCurrentRecoveryPredicate(
 	metadata, ok := workflowLaneMetadataFromJSON(metadataJSON)
 	if !workflowLaneEntryMatchesCurrent(issue, store.WorkflowPhaseEvent{StartedAt: enteredAt, MetadataJSON: metadataJSON}) {
 		return false
+	}
+	if reason == attemptAllowanceExhaustedReason && ok && metadata.PullRequest != nil &&
+		metadata.PullRequest.Number > 0 && strings.TrimSpace(metadata.PullRequest.HeadSHA) != "" {
+		return true
 	}
 	return ok &&
 		metadata.BlockedRecovery != nil &&

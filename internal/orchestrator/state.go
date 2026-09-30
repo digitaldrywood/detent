@@ -122,7 +122,6 @@ type State struct {
 	trackerEvidence          map[string]trackerAvailabilityEvidence
 	deferredCompletions      map[string]deferredCompletion
 	ForgeUnavailable         map[string]ForgeCondition
-	GitHubMonitors           map[string]GitHubMonitor
 	CIUnavailable            *CICondition
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
@@ -198,7 +197,6 @@ type Running struct {
 	CapacityProbe               bool
 	ForgeProbeHost              string
 	ForgeWriteCompleted         bool
-	GitHubCredential            string
 	ModelPermitExempt           bool
 	CIStopRequested             bool
 	CompletionOwnershipReleased bool
@@ -279,9 +277,15 @@ type MergeTiming struct {
 	MergeStartedAt             time.Time
 	BaseRefreshStartedAt       time.Time
 	BaseRefreshFinishedAt      time.Time
+	BaseSyncActiveAt           time.Time
+	BaseSyncObserved           bool
+	BaseSyncSeconds            int64
 	CIWaitHeadSHA              string
 	CIWaitStartedAt            time.Time
 	CIWaitFinishedAt           time.Time
+	CIWaitActiveAt             time.Time
+	CIWaitSeconds              int64
+	CIWaitBeforeSlotSeconds    int64
 	MergedAt                   time.Time
 	MergeFailedAt              time.Time
 	MergeFailureReason         string
@@ -307,8 +311,6 @@ type Retry struct {
 	ForgeUnavailable   bool
 	ForgeHost          string
 	ForgeRetry         *runpkg.ForgeRetry
-	GitHubMonitor      bool
-	GitHubCredential   string
 	Wait               RetryWait
 }
 
@@ -450,7 +452,6 @@ func newState(cfg Config) State {
 		trackerEvidence:          map[string]trackerAvailabilityEvidence{},
 		deferredCompletions:      map[string]deferredCompletion{},
 		ForgeUnavailable:         map[string]ForgeCondition{},
-		GitHubMonitors:           map[string]GitHubMonitor{},
 		BackendOutages:           map[string]BackendOutage{},
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
@@ -561,7 +562,6 @@ func (s State) clone() State {
 		trackerEvidence:          maps.Clone(s.trackerEvidence),
 		deferredCompletions:      cloneDeferredCompletions(s.deferredCompletions),
 		ForgeUnavailable:         maps.Clone(s.ForgeUnavailable),
-		GitHubMonitors:           maps.Clone(s.GitHubMonitors),
 		CIUnavailable:            cloneCICondition(s.CIUnavailable),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        cloneBackendRecoveries(s.BackendRecoveries),

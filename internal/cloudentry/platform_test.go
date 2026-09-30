@@ -418,7 +418,7 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 			t.Cleanup(func() { _ = service.Close() })
 			for index := range tenants {
 				id := fmt.Sprintf("org_t%02d", index)
-				if _, err := service.Registry().Register(t.Context(), Organization{ID: id, ProviderID: "p" + id, Name: id, Endpoint: "unix:/tenants/" + id + ".sock", Generation: 1}); err != nil {
+				if _, err := service.Registry().Register(t.Context(), Organization{ID: id, ProviderID: "p" + id, Name: id, Endpoint: testSocketEndpoint(id + ".sock"), Generation: 1}); err != nil {
 					t.Fatal(err)
 				}
 			}

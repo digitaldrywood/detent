@@ -23,6 +23,7 @@ import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
 import { cn } from "../../lib/utils.ts";
 import { useAccountBootstrap } from "../account/context.ts";
 import { useClient } from "../client.ts";
+import { usePageTitle } from "../pageTitle.ts";
 import {
   useUsage,
   type DailyTotals,
@@ -89,6 +90,7 @@ export function rangeForDays(days: number): UsageRange {
  */
 export function UsageRoute(): React.ReactElement {
   const client = useClient();
+  usePageTitle("Usage");
   const bootstrap = useAccountBootstrap();
   const [preferences, setPreferences] = useState(readUsagePagePreferences);
   const range = rangeForDays(preferences.windowDays);

@@ -129,6 +129,8 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		Authorization:                 cfg.Tracker.Authorization,
 		SelectorContext:               selector.Context{InstanceLogin: identity.GitHubLogin, Persona: identity.Name},
 		WorkerHosts:                   append([]string(nil), cfg.Worker.SSHHosts...),
+		WorkerHostSelection:           cfg.Worker.HostSelection,
+		WorkerHostCaps:                cfg.Worker.HostCaps,
 		BudgetRefusalCooldown:         durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
 		WorkspaceCleanupIdleTTL:       durationFromMillis(cfg.Workspace.CleanupIdleTTLMS),
 		WorkspaceCleanupSweepInterval: durationFromMillis(cfg.Workspace.CleanupSweepIntervalMS),
@@ -281,6 +283,7 @@ func normalizeConfig(cfg Config) Config {
 		cfg.AutoPromote.TerminalStates = append([]string(nil), cfg.TerminalStates...)
 	}
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
+	cfg.WorkerHostCaps = cloneStateLimits(cfg.WorkerHostCaps)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
 	cfg.DispatchPriorityByLabel = normalizeLabels(cfg.DispatchPriorityByLabel)
 	cfg.MergeMethod = workflowconfig.Deliverable{MergeMethod: cfg.MergeMethod}.EffectiveMergeMethod()

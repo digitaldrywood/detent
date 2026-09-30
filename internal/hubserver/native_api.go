@@ -76,6 +76,9 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	var failure *nativeError
 	if errors.As(err, &failure) {
 		if s.config.Hosted != nil {
+			if failure.Code == "checkout_unavailable" {
+				return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: failure.Message})
+			}
 			if len(failure.Details) > 0 {
 				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", Details: failure.Details, status: failure.status})
 			}
@@ -123,6 +126,8 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items", s.createNativeIssue, write)
 	e.GET(nativeBase+"/work-items/:item", s.getNativeIssue, read)
 	e.PATCH(nativeBase+"/work-items/:item", s.updateNativeIssue, write)
+	e.POST(nativeBase+"/work-items/:item/archive", s.archiveNativeIssue, write)
+	e.POST(nativeBase+"/work-items/:item/restore", s.restoreNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/workflow", s.transitionNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/dependencies", s.changeNativeDependency, write)
 	e.GET(nativeBase+"/work-items/:item/comments", s.listNativeComments, read)

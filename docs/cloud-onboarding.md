@@ -1,6 +1,6 @@
 # Project onboarding
 
-The shared product journey starts at `https://hub.detent.build`: sign in, create
+The shared product journey starts at `https://cloud.detent.build`: sign in, create
 or join an organization, then open a project explicitly shared with you. The
 organization chooser, creation/provisioning state, scoped Work/project navigation
 and billing reuse the existing Templ/HTMX shell. There is no forced tenant-domain
@@ -40,6 +40,9 @@ Accepted changes need a dispatchable `Merging` lane reachable from `In Progress`
 Hub migration 40 gives every project with an approved repository policy a
 default review policy; approving the policy again now seeds `require_review`
 from `review.human`.
+
+The hosted hostname migration is tracked in the [Cloud domain runbook](cloud-domain-migration.md).
+Its provisioning results and pending browser cutover are recorded there.
 
 ## Organization provisioning and recovery
 
@@ -101,7 +104,7 @@ host. Inspect existing files before using `detent onboarding draft-answers`,
 output options. Review generated files before applying them. Cloud neither stores
 workflow source nor writes repository files.
 
-For the shared-site target, use `client.hub_url: https://hub.detent.build`
+For the shared-site target, use `client.hub_url: https://cloud.detent.build`
 and the selected immutable organization ID. Configure `client.organization_id` and
 `client.native_projects` mapping in the instance configuration. The project's
 page shows its native ID. Run `detent doctor` against that configuration; resolve
@@ -139,7 +142,7 @@ a name, pick its projects, and copy the one command the dialog shows. Run it on
 the host:
 
 ```sh
-detent hub runner register --url https://hub.detent.build/organizations/ORGANIZATION_ID \
+detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID \
   --token TOKEN --name "Build host" --service
 ```
 
@@ -223,12 +226,12 @@ configured portable artifact service rather than overloading local/customer.
 
 This is a test specification for #2341/#2342/#2343 and the expanded #2199 evidence,
 not a claim that current reserved-tenant fixtures pass it. Use synthetic providers,
-ephemeral services and one test hostname representing `hub.detent.build`.
+ephemeral services and one test hostname representing `cloud.detent.build`.
 
 Alice and Bob are unrelated verified identities. Alice creates A, Bob creates B,
 and Casey receives separate invitations to both. A has project PA and B has PB.
 Each tenant owns a separate database and process. Every application URL below is
-on **https://hub.detent.build**; WorkOS/Stripe hosted screens may temporarily leave
+on **https://cloud.detent.build**; WorkOS/Stripe hosted screens may temporarily leave
 the site only for their authenticated provider flow and return to that same host.
 
 | Step | Action and expected evidence |

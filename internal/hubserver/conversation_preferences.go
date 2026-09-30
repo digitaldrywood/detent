@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentoverride"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -71,11 +72,19 @@ func (s *Service) conversationModelChoices(ctx context.Context, query nativeQuer
 	if err != nil {
 		return nil, err
 	}
+	if s.hasLunaCoordinator() && (projects == nil || len(projects) > 0) {
+		models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID == genkitbackend.Model })
+		models = append(models, conversationModel{ID: genkitbackend.Model, Label: "Luna", Provider: "openai", Efforts: []string{"low", "medium"}, DefaultEffort: "low", BackendDefault: true})
+	}
 	if configured := s.conversationDefaultModel(); configured != "" &&
 		!slices.ContainsFunc(models, func(model conversationModel) bool { return model.ID == configured }) {
 		models = append(models, conversationModel{ID: configured, Label: configured})
 	}
 	return models, nil
+}
+
+func (s *Service) hasLunaCoordinator() bool {
+	return s.conversations != nil && s.conversations.config.Backend != nil && s.conversations.config.Model == genkitbackend.Model
 }
 
 // conversationModelValidationChoices is what ValidatePreferences checks

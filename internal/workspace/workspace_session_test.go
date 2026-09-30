@@ -450,7 +450,7 @@ func TestHoldSessionCountsEveryHolder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		key := filepath.Join(path, tt.name)
-		var releases []func()
+		releases := make([]func(), 0, tt.holders)
 		for range tt.holders {
 			releases = append(releases, HoldSession(key))
 		}

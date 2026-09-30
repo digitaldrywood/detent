@@ -317,6 +317,8 @@ func terminalIsolationAllowed(requires []string, configured, reported string) bo
 		return true
 	}
 	switch reported {
+	case workspacesession.IsolationSandbox:
+		return configured == workspacesession.IsolationSandbox || configured == workspacesession.IsolationUser
 	case workspacesession.IsolationContainer:
 		return true
 	case workspacesession.IsolationUser:

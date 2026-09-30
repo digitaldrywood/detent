@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -128,6 +130,7 @@ type Dependencies struct {
 	AfterRunTimeout        time.Duration
 	MaxAgentRSSBytes       uint64
 	RSSPollInterval        time.Duration
+	GoBudget               gobudget.Budget
 	ProcessRSS             func(context.Context, procgroup.Identity) (uint64, error)
 	WorkerReapGrace        time.Duration
 	ReapWorkerProcess      workerProcessReapFunc
@@ -139,6 +142,8 @@ type Dependencies struct {
 }
 
 type Runner struct {
+	sleepInhibitor            func(context.Context, func()) (func(), error)
+	sleepFailures             int
 	mu                        sync.RWMutex
 	promptHistory             map[string]sessionPrompt
 	projectID                 string
@@ -172,6 +177,7 @@ type Runner struct {
 	progressTicker            sessionProgressTickerFactory
 	admissionLeaks            admissionWorkspaceLeakTracker
 	lookupEnv                 func(string) string
+	goBudget                  gobudget.Budget
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -267,12 +273,14 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		workerReapGrace:           deps.WorkerReapGrace,
 		reapWorkerProcess:         deps.ReapWorkerProcess,
 		reapWorkspaceProcesses:    deps.ReapWorkspaceProcesses,
+		sleepInhibitor:            inhibitSleep,
 		cleanupWorkerArtifacts:    workspace.CleanupOwnedPath,
 		waitWorkerArtifactCleanup: waitForPathRemovalRetry,
 		sessionLimit:              deps.sessionLimit,
 		turnLimit:                 deps.turnLimit,
 		progressTicker:            deps.progressTicker,
 		lookupEnv:                 deps.lookupEnv,
+		goBudget:                  deps.GoBudget,
 	}, nil
 }
 
@@ -1033,6 +1041,9 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 		return AgentTurnResult{}, nil, fmt.Errorf("prepare worker scratch: %w", err)
 	}
 	request.TempDir = tempDir
+	if !request.ReadOnly {
+		request.ExtraWritableRoots = append(slices.Clone(request.ExtraWritableRoots), tempDir)
+	}
 	cleanupScratch := func() error {
 		if cleanupErr := workspace.CleanupWorkerScratch(workspacePath, tempDir); cleanupErr != nil {
 			return fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
@@ -1636,7 +1647,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	runStartedAt := r.now()
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
 	baseModel := effectiveModel("", selection.Model, agentRuntime.defaultModelForRole(role))
-	baseEnvironment := workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue)
+	baseEnvironment := r.withGoBudget(info.Path, workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
 		Environment: baseEnvironment,
@@ -2087,7 +2098,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	afterRunPending = false
 	req.retainCheckpoint = result.Checkpoint != nil && turnErr != nil
-	if req.Admission != nil && errors.Is(turnErr, ErrWorkerProcessReap) {
+	if errors.Is(turnErr, ErrWorkerProcessReap) {
+		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+		_, preserveErr := r.PreserveWorkspace(preserveCtx, req.Issue)
+		cancel()
+		turnErr = errors.Join(turnErr, preserveErr)
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_admission_workspace_retained",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			telemetry.DetentSessionIDKey, sessionID,
@@ -2096,7 +2111,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		)
 	} else {
 		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
-			return result, errors.Join(turnErr, err)
+			turnErr = errors.Join(turnErr, err)
 		}
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
@@ -2112,13 +2127,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if turnErr != nil {
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-		finishContext := ctx
-		if cooperativeStopError(turnErr) {
-			finishContext = context.WithoutCancel(ctx)
-		}
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(finishContext, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
+			r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
@@ -2995,6 +3006,8 @@ func budgetRefusalFromDecision(issue connector.Issue, refusal budget.Refusal) *B
 }
 
 func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+	release := r.keepAwake(ctx)
+	defer release()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -3074,7 +3087,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		selectedModel = override
 	}
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
-	baseEnvironment := workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue)
+	baseEnvironment := r.withGoBudget(info.Path, workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
 		Environment: baseEnvironment,
@@ -4314,9 +4327,15 @@ func effectiveModel(values ...string) string {
 }
 
 func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
+	landedHeadSHA := strings.TrimSpace(issue.Metadata["hub_landed_head_sha"])
 	if issue.PullRequest != nil {
 		switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.State)) {
-		case "CLOSED", "MERGED":
+		case "MERGED":
+			if landedHeadSHA == "" {
+				landedHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+			}
+			issue.PullRequest = nil
+		case "CLOSED":
 			issue.PullRequest = nil
 		}
 	}
@@ -4331,8 +4350,7 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		ID:                    issue.ID,
 		Identifier:            issue.Identifier,
 		Terminal:              issue.Closed,
-		LandedHeadSHA:         issue.Metadata["hub_landed_head_sha"],
-		LandedMergeSHA:        issue.Metadata["hub_landed_merge_sha"],
+		LandedHeadSHA:         landedHeadSHA,
 		BranchName:            issue.BranchName,
 		BaseRef:               baseRef,
 		ProgressBaseRef:       progressBaseRef,
@@ -4386,6 +4404,10 @@ func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 	case AgentUpdateRateLimits:
 		result.RateLimits = mergeAgentRateLimits(result.RateLimits, update.RateLimits)
 	}
+}
+
+func NewTokenUsageNormalizer(resumed bool) func(AgentTokenUsage) AgentTokenUsage {
+	return newSessionTokenUsage(resumed).normalize
 }
 
 type sessionTokenUsage struct {

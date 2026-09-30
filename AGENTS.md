@@ -55,39 +55,31 @@ in the PR template.
 
 ## Validation
 
-No GitHub Actions workflow starts on a pull request, and no branch ruleset
-requires a status check. Before merging, run `make check-fast` in the worktree
-for the exact pushed head. The command has no shared validation lock and must
-be safe alongside other worktrees. The scheduled full suite validates pinned
-`develop` commits and tags only green commits; every `develop` push still
-deploys to staging.
+The operator has disabled blocking CI and local validation gates for this
+repository. Do not require `make check`, `make check-fast`, a coverage gate,
+or a local commit status before pushing or merging. The self-hosted project's
+configured `gate.run` is `true`; it runs no validation and publishes no status.
+Every `make` test, lint, vet, and build target is still capped by `TEST_PROCS`
+(default 4) so worktrees that do run gates share the host (see
+[docs/development.md](docs/development.md)).
 
-Do not re-read AGENTS.md, CLAUDE.md, or an injected skill when its contents are already in the prompt.
+Add a test only when it asserts a behavior no existing test asserts. Before
+writing one, name the failure it would catch; if you cannot, do not write it.
+Extend an existing table or fixture with a case instead of adding a sibling
+function that rebuilds the same setup. Do not add tests for generated code,
+for the text of documentation or configuration, or to move a coverage number.
+A test that only re-executes a path another test already asserts is removed in
+review (see [docs/test-suite-audit.md](docs/test-suite-audit.md)).
 
-During the edit loop, run `go test ./<touched-package>/...` and `go vet` on
-those same packages; use focused regressions while iterating. After all edits
-and review fixes, run the configured `gate.run` exactly once immediately before
-pushing, following the command and scope in WORKFLOW.md’s Detent Protocol
-section, including the existing invariant checks. Never repeat a green gate unless
-files changed; after a failure, fix the cause before retrying.
+Focused `go test ./<touched-package>/...`, `go vet`, and targeted regressions
+are available for diagnostics during edits; they do not become completion
+gates. The scheduled full suite validates pinned `develop` commits and tags
+only green commits. Every `develop` push still deploys to staging.
 
-Keep gate output out of the conversation except for a short summary. Use Bash
-with `pipefail` so truncation cannot hide a failing exit status. Set and export
-`gate_command` to the configured `gate.run` command before using this wrapper:
-
-```bash
-bash -o pipefail -c '
-  : "${gate_command:?Set gate_command to the configured gate.run}"
-  log=$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/detent-check.XXXXXX") || exit
-  echo "Gate log: $log"
-  bash -o pipefail -c "$gate_command" 2>&1 | tee "$log" | tail -40
-'
-```
+Other projects using Detent choose their own validation commands, required
+checks, workflow triggers, and release policies. Do not introduce a product-wide
+bypass to implement this repository's policy.
 
 Detent workers must use their provided `TMPDIR`, `TMP`, or `TEMP`; never
-fall back to host scratch space in a worker. For standalone contributors without
-these variables, the example uses `/tmp`. The command retains the full log.
-On failure, inspect only the failing package or tool diagnostics from that log;
-do not rerun the gate just to recover output. A green result needs only the
-success status in the handoff, not the log. See CLAUDE.md for safety-critical
-coverage and fuzz requirements.
+fall back to host scratch space in a worker. See CLAUDE.md for safety-critical
+coverage and fuzz diagnostics.

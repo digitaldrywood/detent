@@ -175,7 +175,7 @@ func (r *Runner) workerCheckpoint(ctx context.Context, c *workerCheckpoint, reas
 		finish("Checkpoint credentials were unavailable. Publication was not attempted; inspect retained local work.")
 		return execution
 	}
-	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP", "GOTMPDIR"} {
 		turn.Environment.Variables[key] = tempDir
 	}
 	head, err := c.backend.Checkpoint(checkpointCtx, c.plan, selection, c.validate, turn.Environment)

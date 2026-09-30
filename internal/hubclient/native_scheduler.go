@@ -7,16 +7,19 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type nativeClaim struct {
-	source   *NativeConnector
-	lease    tracker.NativeLease
-	recovery tracker.NativeRecovery
-	deadline time.Time
+	availabilityDeadline time.Time
+	source               *NativeConnector
+	lease                tracker.NativeLease
+	recovery             tracker.NativeRecovery
+	deadline             time.Time
 }
 
 func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bool) {
@@ -27,10 +30,37 @@ func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bo
 	return source, true
 }
 
+func (s *Scheduler) Heartbeat(ctx context.Context) error {
+	if s.client.runner == nil {
+		return nil
+	}
+	var result error
+	for _, source := range s.nativeProjects {
+		result = errors.Join(result, s.ensureNativeMachine(ctx, source))
+	}
+	return result
+}
+
 func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConnector) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	last := s.nativeHeartbeats[source.client.project]
+	if !last.IsZero() && s.now().Before(last.Add(s.heartbeatInterval)) {
+		return nil
+	}
+	s.mu.Unlock()
+	var report isolation.Report
+	var problems []runnerauth.Problem
+	if s.problems != nil {
+		problems = s.problems()
+	}
+	if s.isolationReport != nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		report = s.isolationReport(probeCtx)
+		cancel()
+	}
+	s.mu.Lock()
+	last = s.nativeHeartbeats[source.client.project]
 	if !last.IsZero() && s.now().Before(last.Add(s.heartbeatInterval)) {
 		return nil
 	}
@@ -53,12 +83,32 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 		}
 		s.machine.ProviderReports = reports
 	}
+	if s.isolationReport != nil {
+		s.machine.BackendIsolation = report
+	}
+	s.machine.Problems = problems
+	machine := s.machine
+	if s.checkoutRepository != nil {
+		supported, err := source.client.HubFeature(ctx, tracker.NativeCheckoutRepositoryCapability)
+		if err != nil {
+			return err
+		}
+		if supported {
+			for name, candidate := range s.nativeProjects {
+				if candidate == source {
+					repository := s.checkoutRepository(name)
+					machine.CheckoutRepository = &repository
+					break
+				}
+			}
+		}
+	}
 	if s.client.runner != nil && !last.IsZero() {
-		if err := source.client.HeartbeatMachine(ctx, s.machine); err != nil {
+		if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
 			return err
 		}
 	} else {
-		if err := source.client.RegisterMachine(ctx, s.machine); err != nil {
+		if err := source.client.RegisterMachine(ctx, machine); err != nil {
 			return err
 		}
 	}
@@ -75,6 +125,17 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		return nil, err
 	}
 	claimStarted := s.now()
+	var availabilityDeadline time.Time
+	if s.client.runner != nil {
+		availability, err := s.client.runner.availability()
+		if err != nil {
+			return nil, err
+		}
+		availabilityDeadline, err = availability.Deadline(claimStarted)
+		if err != nil {
+			return nil, err
+		}
+	}
 	claimRequest := tracker.NativeClaim{
 		PolicyID:  request.Policy.ID,
 		MachineID: s.machine.ID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2,
@@ -99,9 +160,10 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	}
 	issue := issueFromNative(recovery.Issue)
 	issue.AssignedToWorker = true
+	issue.IsolationPolicy = lease.IsolationPolicy
 	s.mu.Lock()
 	s.claims[issue.ID] = nativeTrackerLease(lease)
-	s.nativeClaims[issue.ID] = nativeClaim{source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)}
+	s.nativeClaims[issue.ID] = nativeClaim{availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)}
 	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	s.mu.Unlock()
 	return []connector.Issue{issue}, nil

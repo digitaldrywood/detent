@@ -28,10 +28,6 @@ type attemptAllowance struct {
 
 func (a attemptAllowance) exhausted() bool { return a.Sessions >= sessionsWithoutMergeAllowance }
 
-// Started code/rework attempts consume the issue allowance unless they were
-// merge routing, infrastructure failures, or external waits.
-// The window starts at the last merge or operator lane move;
-// ordinary head, Detent lane, and diff changes do not replenish it.
 func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt time.Time) attemptAllowance {
 	var result attemptAllowance
 	for _, attempt := range attempts {
@@ -69,8 +65,10 @@ func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt t
 		if allowanceExternalWaitAttempt(attempt) {
 			continue
 		}
-		result.Sessions++
-		result.Attempts = append(result.Attempts, attempt)
+		if attempt.TerminalState != store.WorkAttemptTerminalSuccess || attempt.PRNumber == nil || *attempt.PRNumber <= 0 || attempt.ErrorClass != "" || attempt.Phase != "completed" {
+			result.Sessions++
+			result.Attempts = append(result.Attempts, attempt)
+		}
 	}
 	return result
 }
@@ -111,13 +109,14 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		return true
 	}
 	var metadata struct {
+		Cancellation    *runpkg.CancellationCause   `json:"cancellation"`
 		BlockerEvidence []telemetry.BlockerEvidence `json:"blocker_evidence"`
 		Fence           struct {
 			Excluded bool `json:"excluded_from_worker_outcomes"`
 		} `json:"historical_completion_fence"`
 	}
 	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
-		if metadata.Fence.Excluded {
+		if metadata.Fence.Excluded || attempt.TerminalState == store.WorkAttemptTerminalCancelled && metadata.Cancellation.IsAvailabilityInterruption() {
 			return true
 		}
 		for _, evidence := range metadata.BlockerEvidence {
@@ -376,6 +375,11 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issue.ID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issue.ID, cfg, now)
 		issue, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		// CI that is still running belongs to the gate, not the exhausted
+		// source-worker allowance. Re-evaluate this durable triage on the next tick.
+		if decision.Reason == AutoPromoteReasonCINotGreen && attemptTriageCIPending(issue.PullRequest) {
+			return nil
+		}
 		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, now)
 			return nil
@@ -412,6 +416,38 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		return nil
 	}
 	return o.updateIssueState(ctx, state, issue, targetState, now, attemptAllowanceExhaustedReason)
+}
+
+func attemptTriageCIPending(pr *connector.PullRequest) bool {
+	if pr == nil || !currentHeadCIStatusPending(pr.CIStatus) {
+		return false
+	}
+	for _, check := range pr.RequiredCheckFailures {
+		if !attemptTriageCheckRunning(check) {
+			return false
+		}
+	}
+	if len(pr.RunningChecks) > 0 {
+		return true
+	}
+	for _, check := range pr.Checks {
+		if attemptTriageCheckRunning(check) {
+			return true
+		}
+	}
+	return false
+}
+
+func attemptTriageCheckRunning(check connector.PullRequestCheck) bool {
+	if strings.EqualFold(strings.TrimSpace(check.Conclusion), "missing") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(check.Status)) {
+	case "pending", "queued", "waiting", "in_progress", "in progress", "requested":
+		return true
+	default:
+		return false
+	}
 }
 
 // Observation timestamps qualify the historical worker explanation without

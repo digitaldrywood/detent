@@ -108,6 +108,10 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if issueID == "" {
 			continue
 		}
+		if stickyReason := o.issueStickyBlockReason(ctx, state, issue); stickyReason != "" {
+			o.logDependencyAutoUnblockDecision(issue, "hold", stickyReason, nil, "")
+			continue
+		}
 		hydrated, ok, err := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
 		if err != nil {
 			o.recordDependencyAutoUnblockError(state, issue, err, now)

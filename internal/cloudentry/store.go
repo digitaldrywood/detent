@@ -49,14 +49,7 @@ func openStore(ctx context.Context, path string, applicationID int64, directory 
 	if err := file.Close(); err != nil {
 		return nil, errors.Join(err, lock.Close())
 	}
-	dsn := &url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
-	query := dsn.Query()
-	query.Add("_pragma", "busy_timeout(5000)")
-	query.Add("_pragma", "foreign_keys(1)")
-	query.Add("_pragma", "locking_mode(EXCLUSIVE)")
-	query.Add("_pragma", "synchronous(FULL)")
-	dsn.RawQuery = query.Encode()
-	db, err := sql.Open("sqlite", dsn.String())
+	db, err := sql.Open("sqlite", storeDSN(path))
 	if err != nil {
 		return nil, errors.Join(err, lock.Close())
 	}
@@ -120,4 +113,19 @@ func formatTime(value time.Time) string {
 
 func parseTime(value string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, value)
+}
+
+func storeDSN(path string) string {
+	databasePath := filepath.ToSlash(path)
+	if len(databasePath) >= 3 && databasePath[1] == ':' && databasePath[2] == '/' && (databasePath[0] >= 'A' && databasePath[0] <= 'Z' || databasePath[0] >= 'a' && databasePath[0] <= 'z') {
+		databasePath = "/" + databasePath
+	}
+	dsn := &url.URL{Scheme: "file", Path: databasePath}
+	query := dsn.Query()
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "foreign_keys(1)")
+	query.Add("_pragma", "locking_mode(EXCLUSIVE)")
+	query.Add("_pragma", "synchronous(FULL)")
+	dsn.RawQuery = query.Encode()
+	return dsn.String()
 }

@@ -317,7 +317,12 @@ func TestCheckpointPublicationCredentialIsolation(t *testing.T) {
 			run := func(ctx context.Context, _ AgentTurnRequest, req RunRequest) agentTurnExecution {
 				submitCheckpoint(t, ctx, req)
 				if unavailable {
-					if err := os.WriteFile(filepath.Join(checkpoint.plan.Info.Path, ".detent"), []byte("unavailable scratch"), 0o600); err != nil {
+					scratchRoot := workspace.WorkerScratchRoot(checkpoint.plan.Info.Path)
+					t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(scratchRoot)) })
+					if err := os.MkdirAll(filepath.Dir(scratchRoot), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(scratchRoot, []byte("unavailable scratch"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}

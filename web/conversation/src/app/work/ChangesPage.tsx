@@ -22,6 +22,8 @@ import {
   TableRow,
 } from "../../components/ui/table.tsx";
 import { useShell } from "../App.tsx";
+import { useClient } from "../client.ts";
+import { usePageTitle } from "../pageTitle.ts";
 import { ageLabel, issueNumber } from "./lib/format.ts";
 import { useBoard, useNow } from "./lib/useWork.ts";
 import { DEFAULT_VIEW_STATE } from "./lib/viewState.ts";
@@ -49,9 +51,12 @@ function reviewTone(review: string): PillTone {
 
 export function ChangesPage(): React.ReactElement {
   const shell = useShell();
+  const client = useClient();
   const navigate = useNavigate();
   const now = useNow();
   const projectId = shell.projectId === "" ? null : shell.projectId;
+  const project = client.bootstrap.projects.find((candidate) => candidate.id === projectId);
+  usePageTitle("Changes", project?.name);
   const board = useBoard(projectId, DEFAULT_VIEW_STATE);
   const withChanges = board.items.filter((item) => item.change !== null);
 

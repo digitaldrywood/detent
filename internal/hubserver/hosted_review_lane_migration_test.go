@@ -92,7 +92,7 @@ func TestHostedDirectLandingMigration(t *testing.T) {
 func TestHostedBlockedLaneMigration(t *testing.T) {
 	t.Parallel()
 	hostedLaneMigrationTest(t, hostedLaneMigration{
-		from: 41, to: 42, file: "migrations/00042_hosted_blocked_lane.sql", lane: "Blocked", dispatchable: false,
+		from: 47, to: 48, file: "migrations/00048_hosted_blocked_lane.sql", lane: "Blocked", dispatchable: false,
 		before: hostedDirectLandingStates(),
 		after:  HostedProjectStates(),
 	})

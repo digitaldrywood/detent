@@ -1,7 +1,7 @@
 # Hosted identity and organization authorization
 
 The operator-hosted product is one shared authenticated site at
-`https://hub.detent.build`. Organization creation, invitations, selection, Work,
+`https://cloud.detent.build`. Organization creation, invitations, selection, Work,
 runner setup and organization billing stay on that public origin. Separate tenant
 processes/databases remain the storage baseline; a separate public origin per
 organization is superseded by [#2340](https://github.com/digitaldrywood/detent/issues/2340).
@@ -34,7 +34,7 @@ bootstrap subject when creating the WorkOS organization. That subject cannot
 reclaim ownership after members exist. Binding rejects a populated/local database,
 a different organization/origin, or reopening a hosted database in local mode.
 The following YAML is supported today for an isolated reserved-tenant deployment;
-it does **not** implement shared signup by replacing its URL with hub.detent.build.
+it does **not** implement shared signup by replacing its URL with cloud.detent.build.
 
 ```yaml
 organization_id: org_example_opaque_id
@@ -84,6 +84,10 @@ and scoped navigation, not cross-origin redirects. See [the RFC routing trust
 boundary](cloud-hub-rfc.md#shared-site-control-and-tenant-storage).
 
 ### Conversation coordinator
+
+An enabled hosted conversation uses `OPENAI_API_KEY` from the Hub process environment when it is present. General chat then runs through Genkit and the OpenAI Responses API with `gpt-6-luna` at low reasoning effort by default; the composer offers low and medium. No customer key or model configuration is needed. The key is never stored in hosted YAML. Without the key, an existing `codex` coordinator continues to run as before.
+
+For local development, load the key through the private `.envrc` before starting `detent hub serve`. For staging and production, install the key in each Hub service's private environment through the operator's secret manager. The shared cloud entry passes its `OPENAI_API_KEY` to tenant Hub processes and enables conversations in generated tenant configuration. Rotate the secret in the service environment and restart the entry and tenant processes; keep it out of deployment artifacts, logs and repository files.
 
 The optional `conversation` section enables chat. With a `codex` subsection the
 Hub answers conversations that have no linked issue on its own Codex backend:
@@ -145,7 +149,7 @@ including on loopback or its private Unix socket.
 ```yaml
 organization_id: org_example_opaque_id
 workos_organization_id: org_workos_example
-public_url: https://hub.detent.build
+public_url: https://cloud.detent.build
 workos:
   client_id: client_example
   api_key_env: WORKOS_API_KEY
@@ -180,7 +184,7 @@ bindings. List up to four public keys to rotate the entry signing key with overl
 Tenant pages and redirects are scoped under `/organizations/ORG`, and the tenant
 strips that prefix only after verifying the assertion over the original path.
 Native APIs keep their explicit `/api/v2/organizations/ORG/...` routes. Runners
-enroll against `https://hub.detent.build/organizations/ORG` as their Hub URL.
+enroll against `https://cloud.detent.build/organizations/ORG` as their Hub URL.
 Non-canonical paths (encoded characters, empty or dot segments) and duplicate
 query parameters are rejected before routing.
 
@@ -325,13 +329,15 @@ local-only mode never silently uploads. Storage credentials remain at that servi
 
 ## WorkOS application setup
 
-For the operator-hosted production application, the exact registered values are:
+For the canonical operator-hosted production application, configure these exact
+values. The [domain migration runbook](cloud-domain-migration.md) records which
+settings are provisioned and which still require dashboard verification:
 
 | WorkOS setting | Value |
 | --- | --- |
-| Sign-in initiation in Detent | `https://hub.detent.build/auth/oidc/start` |
-| Redirect/callback URL | `https://hub.detent.build/auth/oidc/callback` |
-| User invitation URL | `https://hub.detent.build/invite` |
+| Sign-in initiation in Detent | `https://cloud.detent.build/auth/oidc/start` |
+| Redirect/callback URL | `https://cloud.detent.build/auth/oidc/callback` |
+| User invitation URL | `https://cloud.detent.build/invite` |
 
 These are the common URLs for every organization, with no wildcard callback,
 tenant-specific subdomain or public tenant port. The callback matches the

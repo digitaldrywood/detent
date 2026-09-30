@@ -19,7 +19,7 @@ const recoveryTestToken = "fresh-recovery-administrator-token-example"
 
 func TestRecoveryPreservesCollaborationAndFencesAuthority(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "portable")
+	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "retained content")
 	issuePath := f.base + "/work-items/" + string(issue.WorkItemID)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, issuePath+"/comments", f.token,
@@ -202,7 +202,7 @@ func TestSelfHostedRunnerVersionCompatibility(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newNativeFixture(t, nil, "", "compatibility")
+			f := newDefaultNativeFixture(t, Config{})
 			issue := f.create(t, "work")
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
