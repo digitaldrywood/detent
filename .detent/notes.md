@@ -2,13 +2,17 @@
 
 Rework #3409 / PR #3463, attempt 7314 / generation 6.
 
-Plan: retain recovered merge 5149961d73e586f0836cf806c25911f182b9df30, finish the Reports merge at 19bcfddfd, and incorporate fetched develop 9f171a33cf5bec6bca4f98351a9916c1370257e3. Review the full feature diff, run focused diagnostics and configured true, then commit/push and verify exact-head feedback/checks.
+Plan/result: retained recovered merge 5149961d73e586f0836cf806c25911f182b9df30, resolved the combined Reports template merge, and incorporated develop through 9a0691c07777b962c56cdd792af690f7aa116e6b. Latest fetched target 69874645ab6254f5480990b298e0ce4deeb5e987 is next; then commit/push with configured true and verify exact-head reviews/checks. No lane writes or live-instance mutation.
 
-Recovery: inspected every one of the 18 pending paths and the recovered merge's six paths. Incoming source matches develop except the combined compute/report integrations. No stray artifacts. Both notes histories are retained as historical records; one current Workpad/status fence remains. The recovered merge and resolved changes will be published. No lane writes or live-instance mutations.
+Recovery: inspected all 18 pending paths and six recovered-commit paths. Incoming source belongs to develop, and compute/report integrations are retained. Notes preserve both histories with one active Workpad/status fence. No stray artifacts or intentionally dirty files remain after publication.
 
-Key files: internal/compute/compute.go, internal/runner/agent.go, internal/config/config.go, internal/store/migrations/00064_attempt_compute_usage.sql, internal/orchestrator/work_attempts.go, internal/web/attempt_costs.go and compute/report templates.
+Rework fix: existing TestCheckpointResumePreservesTokenCeiling reproduced a nil meter-factory panic in partial Runner fixtures. Other direct-turn fixtures use the same construction. Consolidated agent/validator meter startup into meterCompute, using the optional injected factory or compute.Start by default. Existing regressions assert the behavior; no duplicate test, new mechanism, config key, or dispatch change.
 
-Validation: make generate passed (15.6s), regenerated reportsv2_templ.go matches the combined source, whitespace inspection passes. Feature diagnostics and full-diff review pending. Prior browser evidence remains historical pending source-equivalence verification. Existing follow-up #3460 is addressed by inherited develop policy changes, not an added issue fix.
+Validation: make generate passed (15.6s); feature diagnostics across seven packages passed (13.5s command). Additional checkpoint probe initially failed at agent.go:1181 with a nil-function panic; all checkpoint/direct-turn/recovery/resume/validator/SSH checks passed after the fix (3.8s command, 1.337s package). Affected-package/CLI/efficiency vet passed (6.3s), then runner/CLI vet passed after the fix (7.8s). Full issue and merge-source diffs reviewed; whitespace passes. Existing #3460 policy probe now passes due to inherited develop repair.
+
+Browser: actual ReportsPageV2 and BoardAttemptCosts components on ephemeral isolated ports, via Chrome DevTools at 1440px and 500px. Verified token/compute values, sub-cent precision, Unavailable history, measured counts, compute per merged PR beside tokens, combined shipped-cohort text, and no page overflow. Screenshots inspected; all preview artifacts remain in provided TMPDIR. First scratch harness failed only on client-cancelled render writes; restricting its root route and accepting cancelled responses produced a clean 28.6s preview exit. Both previews and browser tabs closed. No Linux/Sprites execution or invoice reconciliation claimed; attribution still assumes a dedicated worker cgroup.
+
+Skill draft: no — existing Go diagnostics and isolated preview procedures cover this rework.
 
 ```detent-status
 schema: 1

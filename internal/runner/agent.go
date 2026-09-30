@@ -254,7 +254,6 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		agentBackendFactory:       deps.AgentBackendFactory,
 		store:                     deps.Store,
 		pricing:                   deps.Pricing,
-		startCompute:              compute.Start,
 		budgetChecker:             budgetChecker,
 		dispatchEstimator:         dispatchEstimator,
 		budgetGuardBuilder:        deps.BudgetGuardBuilder,
@@ -1178,7 +1177,7 @@ func (r *Runner) runAgentTurn(
 	}
 	activityProfile := r.startActivityProfile(ctx, runRequest, detentSessionID, info.Path, profileWorkflow, profileStage)
 	defer activityProfile.close()
-	stopCompute := r.startCompute(r.computeRates(runRequest.WorkerHost))
+	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsCheckedAt)
@@ -3187,7 +3186,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	activityProfile := r.startActivityProfile(sessionCtx, runReq, sessionID, info.Path, workflow, "validation")
 	defer activityProfile.close()
-	stopCompute := r.startCompute(r.computeRates(runReq.WorkerHost))
+	stopCompute := r.meterCompute(runReq.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
@@ -5894,10 +5893,14 @@ func runtimeSeconds(startedAt, completedAt time.Time) float64 {
 	return completedAt.Sub(startedAt).Seconds()
 }
 
-func (r *Runner) computeRates(host string) compute.Rates {
+func (r *Runner) meterCompute(host string) func() *compute.Usage {
 	if host == "" {
 		host = "local"
 	}
 	workflow, _, _, _ := r.runtimeSnapshot()
-	return workflow.Config.Worker.ComputeRates[host]
+	rates := workflow.Config.Worker.ComputeRates[host]
+	if r.startCompute != nil {
+		return r.startCompute(rates)
+	}
+	return compute.Start(rates)
 }
