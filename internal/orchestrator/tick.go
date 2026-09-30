@@ -10,7 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -302,12 +301,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		state,
 		fetched,
 		artifactWaitTransitions.transitioned,
-	)
-	timing.step("recover_stranded_active_issues")
-	fetched = filterReconciledTickIssues(
-		state,
-		fetched,
-		o.recoverStrandedActiveIssues(ctx, state, fetched.candidates, now),
 	)
 	timing.next("rate_limits")
 	restCycle := o.captureConnectorRESTRateLimits(state, now)
@@ -774,6 +767,12 @@ func (o *Orchestrator) reconcileOpenTerminalIssueDrift(
 
 func (o *Orchestrator) candidateFetchStatesForTick(state *State) []string {
 	states := append([]string(nil), o.cfg.ActiveStates...)
+	// A hub-native project's landing lane dispatches whether or not the
+	// configuration lists it: the hub names the lane, and a reviewed Change
+	// Request waits there for the runner that lands it.
+	if o.nativeWorkflow() && !stateIn(autoPromoteMergingState, states) {
+		states = append(states, normalizeState(autoPromoteMergingState))
+	}
 	if o.mergeWorkerLocalSlotsAvailable(state) {
 		return states
 	}
@@ -903,40 +902,6 @@ func (o *Orchestrator) refreshTransitionSets(
 		state.Pipeline = issuesInStates(fetched.status, autoPromoteFetchStates(o.cfg.AutoPromote))
 		if !pipelineRefreshOK || !o.mergeWorkerLocalSlotsAvailable(state) {
 			state.Pipeline = mergeIssueSlices(state.Pipeline, previous.pipeline)
-		}
-	}
-
-	// Durable questions can outlive the board snapshot (including across restart).
-	// Include their missing issues in the existing transition refresh.
-	if questions, ok := o.workAttempts.(store.HumanQuestionStore); ok {
-		ids, err := questions.OpenHumanQuestionIssueIDs(ctx, o.cfg.Project.ID)
-		if err != nil {
-			if o.logger != nil {
-				o.logger.Warn("read open question issues failed", "error", err)
-			}
-		} else {
-			seen := make(map[string]bool, len(transitionIssues))
-			for _, issue := range transitionIssues {
-				seen[issue.ID] = true
-			}
-			var missing []connector.Issue
-			pending := make(map[string]bool, len(ids))
-			for _, id := range ids {
-				pending[id] = true
-				if !seen[id] {
-					missing = append(missing, connector.Issue{ID: id})
-				}
-			}
-			refreshed, _ := o.fetchEpicTransitionIssueStates(ctx, missing)
-			transitionIssues = append(transitionIssues, refreshed...)
-			for _, issue := range transitionIssues {
-				if !pending[issue.ID] || (!issue.Closed && !stateIn(issue.State, o.cfg.TerminalStates)) {
-					continue
-				}
-				if err := questions.ResolveHumanQuestionsByClosure(ctx, o.cfg.Project.ID, issue.ID); err != nil && o.logger != nil {
-					o.logger.Warn("resolve terminal issue questions failed", "issue_id", issue.ID, "error", err)
-				}
-			}
 		}
 	}
 

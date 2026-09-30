@@ -200,7 +200,7 @@ join keys, rollout inspection, and runnable audit queries.
 
 - [Native Hub and Cloud architecture RFC](docs/cloud-hub-rfc.md) — proposed native authority, portable execution, and launch contracts; [current Hub API](docs/hub-api.md).
 - [CLI reference](docs/cli.md) — exit codes, JSON errors, logging, and structured output.
-- [Release process](docs/release.md).
+- [Release process](docs/release.md) and [branching](docs/branching.md).
 - [Development](docs/development.md) and [contribution guide](CONTRIBUTING.md).
 - [Comparison](docs/comparison.md), [execution seams](docs/execution-seams.md), and [local models](docs/local-models-ollama.md).
 
@@ -215,8 +215,10 @@ boardless issue field, or repository status labels drive everything.
    instruction contract. The prompt declares the project's required CI stage
    categories and the project-specific commands and check names that satisfy
    each category. Agents use that declaration when they change CI configuration
-   or review a change: every required stage must exist and pass on the current
-   pull request head. Optional gitignored `detent.local.yaml` and
+   or review a change: every required stage and mapped tool must exist. Checks
+   must pass on the PR head when jobs run there; for merge-group-only CI, report
+   expected PR skips and require passing merge-group checks before merge.
+   Optional gitignored `detent.local.yaml` and
    `WORKFLOW.local.md` files apply machine-specific configuration and agent
    direction, respectively, without changing the shared contracts.
 2. **You mark an issue `Todo`.** Detent claims it, creates an isolated Git
@@ -456,7 +458,7 @@ updates to release-binary management. Source builds still print the recommended
 command instead of overwriting the binary.
 
 CI runs the `Installer Smoke` confidence job on Ubuntu and Windows against the
-current GitHub Release assets on pushes to `main` and manual workflow dispatch.
+current GitHub Release assets on pushes to `main` and `develop` and manual workflow dispatch.
 It does not run on pull requests, tag pushes, or the nightly CI schedule. The job runs `install.sh`
 and `install.ps1` in release mode, checks checksum output, confirms the
 requested install directory and installer lock metadata, then runs

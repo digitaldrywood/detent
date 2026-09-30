@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -24,13 +26,109 @@ type Execution interface {
 	Recovery() tracker.NativeRecovery
 }
 
+type AvailabilityExecution interface {
+	AvailabilityDeadline() time.Time
+}
+
+func availabilityStopped(execution Execution, err error, now time.Time) bool {
+	availability, ok := execution.(AvailabilityExecution)
+	if !ok || !errors.Is(err, context.Canceled) {
+		return false
+	}
+	deadline := availability.AvailabilityDeadline()
+	return !deadline.IsZero() && !now.Before(deadline)
+}
+
 type ArtifactExecution interface {
 	PrepareArtifacts(context.Context, string) error
 	ArtifactLog(context.Context, string) error
 	FinalizeArtifacts(context.Context, string) error
 }
 
+// AttemptDiffSource computes the worktree's diff for the stored attempt diff
+// (decisions section 18.5). It fills the base, the head and the files; the
+// execution owns the producer tuple and the generation, because only the
+// execution knows the lease it is fenced by and the event sequence the diff
+// belongs to. It reports false when there is nothing to post.
+type AttemptDiffSource func(context.Context) (tracker.AttemptDiffRequest, bool)
+
+// DiffExecution is an Execution that also stores the attempt's diff before
+// every run event that references it. The runner installs the source once it
+// has a worktree; the execution decides when to call it, so the diff is always
+// posted before the event and always under the lease that fences it.
+type DiffExecution interface {
+	SetDiffSource(AttemptDiffSource)
+}
+
+// ChangeExecution is an Execution that opens a successful work run's Change
+// Request while it still holds the run's lease, when it finishes. It reports
+// what it found, or nil when it had nothing to decide on.
+type ChangeExecution interface {
+	NativeChange() *NativeChange
+}
+
+// ErrLandingNotReviewed says the Change Request a landing run was dispatched
+// for is not a reviewed current version: nothing may be landed, and the
+// item goes back to review with that reason.
+var ErrLandingNotReviewed = errors.New("the Change Request is not reviewed")
+
+// LandingExecution is an Execution for a hub-native landing run: it names
+// the reviewed version the run lands, and records the landing with the hub
+// under the run's lease once the base branch carries it.
+type LandingExecution interface {
+	LandingTarget(context.Context) (NativeLandingTarget, error)
+	RecordLanding(context.Context, NativeLanding) error
+}
+
+// RepositoryExecution is an Execution that publishes the finished run's
+// commits as an immutable Change Request version, which names the repository
+// the commits live in. The runner installs the checkout's https remote once
+// it has a worktree; an execution with no repository to name opens the
+// Change Request but publishes no version, and reports why.
+type RepositoryExecution interface {
+	SetRepository(string)
+}
+
+// attemptDiffSource returns the source for one run's worktree. A diff is
+// best-effort: a failure is logged and reported as "nothing to post", so a
+// worktree the runner cannot read never fails the run it is describing.
+// A run with no pull request base is diffed against the base resolved when
+// the source is made, so every generation of one run shares a base.
+func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, issue workspace.Issue) AttemptDiffSource {
+	base := strings.TrimSpace(issue.BaseRef)
+	if base == "" {
+		base = workspace.AttemptBase(ctx, info.Path)
+	}
+	return func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+		diffs, err := workspace.GitFileDiffs(ctx, info.Path, base, tracker.MaxDiffBytes)
+		if err != nil {
+			r.logger.Warn("attempt diff unavailable", "issue_id", issue.ID, "workspace_path", info.Path, "error", err)
+			return tracker.AttemptDiffRequest{}, false
+		}
+		request := tracker.AttemptDiffRequest{BaseSHA: diffs.BaseSHA, HeadSHA: diffs.HeadSHA, Files: make([]tracker.AttemptDiffFile, 0, len(diffs.Files))}
+		for _, file := range diffs.Files {
+			request.Files = append(request.Files, tracker.AttemptDiffFile{
+				Path: file.Path, OldPath: file.OldPath, Status: file.Status,
+				Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch,
+			})
+		}
+		if diffs.Truncated {
+			// The whole patch output exceeded the bound, so the counts are
+			// posted without patches rather than with a patch set that stops
+			// partway through the change.
+			request.Files = tracker.StripDiffPatches(request.Files)
+		}
+		return request, true
+	}
+}
+
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	if req.Issue.IsolationPolicy != nil {
+		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
+	}
+
+	release := r.keepAwake(ctx)
+	defer release()
 	if req.Execution == nil {
 		return r.run(ctx, req)
 	}
@@ -56,6 +154,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err := req.Execution.Finish(finishCtx, outcome); err != nil {
 		runErr = errors.Join(runErr, err)
 	}
+	if changes, ok := req.Execution.(ChangeExecution); ok && runErr == nil {
+		result.NativeChange = changes.NativeChange()
+	}
 	return result, runErr
 }
 
@@ -77,11 +178,6 @@ func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoin
 }
 
 func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue) error {
-	if artifacts, ok := req.Execution.(ArtifactExecution); ok {
-		if err := artifacts.FinalizeArtifacts(ctx, info.Path); err != nil {
-			return err
-		}
-	}
 	if req.Execution == nil {
 		if req.retainCheckpoint {
 			return nil
@@ -93,6 +189,31 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	}
 	localCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	defer cancel()
+	var publicationErr error
+	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
+	if deadlineExpired {
+		if publisher, ok := backend.(workspace.WorkInProgressPublisher); ok {
+			publicationErr = publisher.PublishWorkInProgress(localCtx, issue, req.Execution.Validate)
+			if publicationErr != nil {
+				r.logger.Warn("unfinished runner work not published", "issue_id", req.Issue.ID, "error", publicationErr)
+			}
+		}
+	}
+	artifactCtx := ctx
+	if deadlineExpired {
+		artifactCtx = localCtx
+	}
+	var artifactErr error
+	if artifacts, ok := req.Execution.(ArtifactExecution); ok {
+		if err := artifacts.FinalizeArtifacts(artifactCtx, info.Path); err != nil {
+			if !deadlineExpired {
+				return err
+			}
+			artifactErr = err
+		}
+	}
+	completionErr := errors.Join(publicationErr, artifactErr)
+
 	state := r.workspaceRecoveryState(backend, localCtx, info, issue, "native_checkpoint")
 	checkpoint := executionCheckpoint(state)
 	if state != nil {
@@ -101,22 +222,26 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	if checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
 		if _, err := r.PreserveWorkspace(localCtx, req.Issue); err != nil {
 			r.logger.Warn("preserve native workspace failed", "issue_id", req.Issue.ID, "error", err)
-			return errors.Join(ErrNativeRecoveryRequired, err)
+			return errors.Join(completionErr, ErrNativeRecoveryRequired, err)
 		}
 	}
-	if err := req.Execution.Validate(ctx); err != nil {
-		return err
+	checkpointCtx := ctx
+	if deadlineExpired {
+		checkpointCtx = localCtx
 	}
-	if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
-		return err
+	if err := req.Execution.Validate(checkpointCtx); err != nil {
+		return errors.Join(completionErr, err)
 	}
-	if checkpoint.WorktreeState != "clean" || req.retainCheckpoint {
-		return nil
+	if err := req.Execution.Checkpoint(checkpointCtx, checkpoint); err != nil {
+		return errors.Join(completionErr, err)
+	}
+	if checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
+		return completionErr
 	}
 	afterCtx, stop := context.WithTimeout(ctx, r.afterRunTimeout)
 	defer stop()
 	backend.AfterRun(afterCtx, info, issue)
-	return nil
+	return completionErr
 }
 
 func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.RecoveryState, sessionAvailable bool, identity tracker.NativeExecutionIdentity) (string, string) {

@@ -288,6 +288,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | tmux window status | | `$TMUX` detection | `ops.tmux_window_status` | enabled inside tmux |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
+| Service name | | | `service_name` | `detent` |
 | Health webhook | | | `notifications.health.webhook.url` | disabled |
 | Health notification debounce | | | `notifications.health.debounce_seconds` | `300` |
 | Health webhook timeout | | | `notifications.health.webhook.timeout_ms` | `5000` |
@@ -301,6 +302,11 @@ elapses, then pauses new dispatches and lets in-flight attempts finish within
 their configured session ceilings before applying and restarting. Add
 `[detent-critical]` to a GitHub release body to bypass the idle wait and start
 that drain immediately.
+
+`detent cloud serve` and `detent hub serve` read no `global.yaml`; they resolve
+the log level from `--log-level`, then `LOG_LEVEL`, then `DETENT_LOG_LEVEL`,
+default to `info`, reject any value other than `debug`, `info`, `warn` or
+`error`, and write JSON logs to stderr for journald.
 
 The web host resolves from `--host`, then the first registered workflow's
 `server.host`, then the built-in `127.0.0.1` default. It is not a top-level
@@ -327,7 +333,10 @@ global:
     pressure_some_avg10_threshold: 80
     degraded_max_concurrent_agents: 0
     poll_interval_ms: 1000
+    go_build_budget: 0
 ```
+
+`go_build_budget` is the host-wide number of Go compile, link, asm, cgo, and vet processes that all worker attempts may run at once. The default of `0` uses the host's CPU count. For workers whose workspace root has a `go.mod`, Detent sets `GOFLAGS=-toolexec=<detent go budget wrapper>`, so every `go build`, `go test`, `go vet`, and `go install` a worker runs, including commands the agent types itself, waits for a free slot before each tool process starts. The same environment sets `-p` and `GOMAXPROCS` to a quarter of the budget (at least `1`) so each go command's package parallelism and test binaries stay within the host's share. Flags the host environment already sets in `GOFLAGS` are kept, and an explicit `-p` or `-toolexec` wins. The budget only queues tool processes; it never fails, parks, or cancels work, and it runs unqueued if its slot directory cannot be prepared. Workspaces without a `go.mod` keep their environment unchanged. The shared `GOCACHE` is unchanged and build and test cache hits are preserved. Changing this value requires a restart.
 
 `degraded_max_concurrent_agents` is an opt-in host-wide progress floor for IO
 and CPU pressure. Its default of `0` preserves the conservative hard stop. Set
@@ -406,6 +415,19 @@ single-project fallback mode without `global.yaml`, workflow top-level
 `identity.name` is used before the short hostname. Names are trimmed, must be a
 single line, and are capped at 40 characters in the web UI.
 
+`service_name` names the background service `detent start` installs: the
+launchd job `com.digitaldrywood.NAME` and the systemd user unit `NAME.service`.
+It defaults to `detent`. Give each configuration on one host its own name, for
+example a local board and a Detent Cloud runner; `detent hub runner register`
+writes `service_name: detent.runner`. Names use lowercase letters, digits, dots
+and hyphens.
+
+A project listed under `client.native_projects` whose committed `detent.yaml`
+uses the GitHub tracker (`github` or `github_local`) uses the Hub instead
+(`tracker.kind: hub_native`), so a runner host can use a repository checkout
+as it is. Any other tracker kind is treated as a deliberate local choice and
+kept.
+
 Configure `client.hub_url` to move candidate discovery and claiming to a Detent
 Hub. The machine registers its identity, project and pool capabilities,
 capacity, operating system, architecture, and binary version. It then
@@ -466,6 +488,22 @@ networking. Native startup requires the mapping and negotiated capabilities;
 there is no fallback scheduler. The [Hub API](hub-api.md#native-collaboration-protocol)
 documents project provisioning, workflow states and the typed operations.
 Repository workflow files and machine-local overrides keep their existing paths.
+
+A native project reuses the repository `WORKFLOW.md` as its prompt. Detent
+appends a native completion contract to every native run prompt that overrides
+tracker-specific steps in that file: the agent commits on the attempt branch,
+never pushes or opens pull requests on the forge, never runs `gh` or calls the
+GitHub API, and does not post Workpad or issue comments or change issue state.
+The runner records the Change Request from those commits. Native projects make
+no GitHub REST or GraphQL calls by default: workers do not receive the instance
+GitHub credential, and checkpoints do not look up or open pull requests. No
+separate key turns this on; an explicit `worker.github_token` is the only opt-in
+for worker GitHub access. The
+contract is added at render time, so it does not change the approved policy
+digest. `detent doctor` (check `Project <id> native workflow instructions`) and
+`detent hub policy inspect` warn when a native project's `WORKFLOW.md` still
+mentions GitHub-only steps such as `Codex Workpad`, a `gh` command,
+`pull request`, `detent-status` or the GitHub API.
 
 Health notifications deliver fleet and project needs-attention transitions to
 one generic webhook. They are disabled when
@@ -591,8 +629,10 @@ hosts; per-state and global concurrency limits remain under `agent`.
 GitHub-capable workers never inherit `GITHUB_TOKEN`, `GH_TOKEN`, their
 enterprise variants, or the host's GitHub CLI configuration. When omitted or
 empty, `worker.github_token` defaults to the resolved top-level `github_token`
-(including `github_token: gh`). An explicit project worker credential overrides
-that default; with neither credential configured, the worker policy is disabled.
+(including `github_token: gh`), except for `tracker.kind: hub_native`
+projects, which never inherit the instance credential. An explicit project worker
+credential overrides that default; with neither credential configured, the worker
+policy is disabled.
 Set the worker override to `gh` to resolve `gh auth token` in the Detent process
 and copy only the resolved token into the worker's isolated `GH_CONFIG_DIR`. An environment
 reference remains available when permission or revocation isolation is useful:
@@ -1177,6 +1217,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `gate.ci_trigger_label` | `string` | `none` | No | None |
 | `gate.ci_trigger_label_stagger_seconds` | `integer` | `none` | No | must be greater than 0 |
 | `gate.kind` | `string` | `"command"` | No | must be one of command, human_review, artifact |
+| `gate.local_status` | `string` | `none` | No | None |
 | `gate.require_automated_review` | `boolean` | `true` | No | None |
 | `gate.required_status_checks` | `list<string>` | `[]` | No | None |
 | `gate.run` | `string` | `"make check"` | No | None |

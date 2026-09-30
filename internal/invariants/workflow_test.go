@@ -5,30 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
 
-const nonPRCondition = "github.event_name != 'pull_request'"
-const integrationCondition = "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
-
 func checkWorkflow(data []byte) error {
 	var workflow struct {
-		On struct {
-			Push struct {
-				Branches []string `yaml:"branches"`
-				Tags     []string `yaml:"tags"`
-			} `yaml:"push"`
-			PullRequest struct {
-				Types []string `yaml:"types"`
-			} `yaml:"pull_request"`
-			MergeGroup struct {
-				Types []string `yaml:"types"`
-			} `yaml:"merge_group"`
-		} `yaml:"on"`
+		On   map[string]yaml.Node `yaml:"on"`
 		Jobs map[string]struct {
 			If string `yaml:"if"`
 		} `yaml:"jobs"`
@@ -36,48 +21,48 @@ func checkWorkflow(data []byte) error {
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return err
 	}
-	if !slices.Contains(workflow.On.MergeGroup.Types, "checks_requested") {
-		return errors.New("INV-4 merge_group checks_requested missing")
+	if len(workflow.On) != 2 {
+		return errors.New("INV-5 CI must trigger only on a schedule and manual dispatch")
 	}
-	if !slices.Equal(workflow.On.Push.Branches, []string{"main"}) || len(workflow.On.Push.Tags) != 0 {
-		return errors.New("INV-5 CI push must run only on main; tag checks invalidate release provenance")
-	}
-	events := workflow.On.PullRequest.Types
-	for _, event := range []string{"opened", "synchronize", "reopened", "ready_for_review"} {
-		if !slices.Contains(events, event) {
-			return fmt.Errorf("INV-5 missing PR activity %s", event)
+	for _, event := range []string{"schedule", "workflow_dispatch"} {
+		if _, ok := workflow.On[event]; !ok {
+			return fmt.Errorf("INV-5 %s trigger missing", event)
 		}
 	}
-	for _, event := range events {
-		if !slices.Contains([]string{"opened", "synchronize", "reopened", "ready_for_review"}, event) {
-			return fmt.Errorf("INV-5 extra PR activity %s", event)
-		}
+	var schedule []struct {
+		Cron string `yaml:"cron"`
 	}
-	for _, required := range []string{"invariants", "lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
+	scheduleNode := workflow.On["schedule"]
+	if err := scheduleNode.Decode(&schedule); err != nil || len(schedule) != 1 || schedule[0].Cron != "17 * * * *" {
+		return errors.New("INV-5 CI must run hourly at minute 17")
+	}
+	for _, required := range []string{"preflight", "invariants", "lint", "verify-fast", "verify-race", "test-cover", "security", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot", "finalize"} {
 		if _, ok := workflow.Jobs[required]; !ok {
-			return fmt.Errorf("required CI job %s missing", required)
+			return fmt.Errorf("INV-5 required CI job %s missing", required)
 		}
 	}
 	for name, job := range workflow.Jobs {
 		condition := strings.TrimSpace(job.If)
 		switch name {
-		case "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot":
-			if condition != integrationCondition {
-				return fmt.Errorf("INV-5 %s must run only on main push or explicit manual dispatch", name)
+		case "preflight":
+			if condition != "" {
+				return errors.New("INV-5 preflight must always run")
 			}
-		case "report-integration-failures":
-			if condition != "failure() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')" {
-				return errors.New("INV-5 integration failure reporting must exclude PRs")
-			}
-		case "verify":
-			if condition != "always() && "+nonPRCondition {
-				return errors.New("INV-5 Verify must aggregate results and never run on pull_request events")
+		case "finalize":
+			if condition != "always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')" {
+				return errors.New("INV-5 finalizer must inspect every attempted full run")
 			}
 		default:
-			if condition != nonPRCondition {
-				return fmt.Errorf("INV-5 %s must not run on pull_request events; real CI runs in the merge queue and on main", name)
+			if condition != "needs.preflight.outputs.should_run == 'true'" {
+				return fmt.Errorf("INV-5 %s must run when preflight finds new work", name)
 			}
 		}
+	}
+	if !strings.Contains(string(data), "git ls-remote origin refs/heads/develop") || strings.Count(string(data), "ref: ${{ needs.preflight.outputs.develop_sha }}") < 12 {
+		return errors.New("INV-5 CI must validate the pinned development SHA")
+	}
+	if !strings.Contains(string(data), "scripts/scheduled-ci-finish.sh") {
+		return errors.New("INV-5 CI must publish the validated tag or report failures")
 	}
 	return nil
 }
@@ -92,26 +77,72 @@ func TestRepositoryWorkflow(t *testing.T) {
 	}
 }
 
+func TestRepositoryHasNoPullRequestActions(t *testing.T) {
+	workflows := filepath.Join(repositoryRoot(t), ".github", "workflows")
+	entries, err := os.ReadDir(workflows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || (filepath.Ext(entry.Name()) != ".yml" && filepath.Ext(entry.Name()) != ".yaml") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(workflows, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var workflow struct {
+			On map[string]yaml.Node `yaml:"on"`
+		}
+		if err := yaml.Unmarshal(data, &workflow); err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range []string{"pull_request", "pull_request_target", "merge_group"} {
+			if _, ok := workflow.On[event]; ok {
+				t.Errorf("INV-5 %s must not trigger on %s", entry.Name(), event)
+			}
+		}
+	}
+}
+
+func TestPortabilityStressIsManualOnly(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), ".github", "workflows", "portability-stress.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		On map[string]yaml.Node `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if len(workflow.On) != 1 {
+		t.Fatalf("INV-5 portability stress triggers = %v, want only workflow_dispatch", workflow.On)
+	}
+	if _, ok := workflow.On["workflow_dispatch"]; !ok {
+		t.Fatal("INV-5 portability stress must allow manual dispatch")
+	}
+}
+
 func TestWorkflowViolations(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), ".github/workflows/ci.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct{ name, old, replacement string }{
-		{"duplicate tag checks", "branches: [main]", "branches: [main]\n    tags: ['v*']"},
-		{"unfiltered push", "branches: [main]", "branches: []"},
-		{"real job on PR", "if: " + nonPRCondition, "if: true"},
-		{"pr bypass", "if: " + nonPRCondition, "if: " + nonPRCondition + " || true"},
-		{"successful placeholder", "jobs:", "jobs:\n  placeholder:\n    if: github.event_name == 'pull_request'\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo skipped"},
-		{"missing merge group", "merge_group:", "unused_event:"},
-		{"label reruns", "types: [opened,", "types: [labeled, opened,"},
-		{"integration on PR", "if: " + integrationCondition, "if: " + nonPRCondition},
-		{"missing invariant job", "  invariants:", "  renamed:"},
+		{"pull request trigger", "  workflow_dispatch:\n", "  pull_request:\n  workflow_dispatch:\n"},
+		{"schedule dropped", "  schedule:\n    - cron: '17 * * * *'\n", ""},
+		{"slow schedule", "cron: '17 * * * *'", "cron: '17 0 * * *'"},
+		{"manual dispatch dropped", "  workflow_dispatch:\n", "  unused_event:\n"},
+		{"missing invariant job", "  invariants:\n", "  renamed:\n"},
+		{"filtered real job", "  lint:\n    needs: preflight\n    if: needs.preflight.outputs.should_run == 'true'", "  lint:\n    needs: preflight\n    if: false"},
+		{"unbound development branch", "git ls-remote origin refs/heads/develop", "git ls-remote origin refs/heads/main"},
 		{"malformed", "name: CI", "name: ["},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			changed := strings.Replace(string(data), tt.old, tt.replacement, 1)
-			if changed == string(data) {
+			original := strings.ReplaceAll(string(data), "\r\n", "\n")
+			changed := strings.Replace(original, tt.old, tt.replacement, 1)
+			if changed == original {
 				t.Fatal("fixture replacement did not match")
 			}
 			if err := checkWorkflow([]byte(changed)); err == nil {

@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/routine"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -260,6 +261,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	workflow := normalizeWorkflow(cfg.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget)
+	workflow.Config = withMappedNativeTracker(workflow.Config, deps.Scheduling, id)
 	if err := configureProjectPolicy(context.Background(), cfg.Project, &workflow, deps.Scheduling); err != nil {
 		return nil, projectDefinitionError{err: err}
 	}
@@ -543,6 +545,16 @@ func (p *Project) ID() ID {
 		return ""
 	}
 	return p.id
+}
+
+func (p *Project) RunnerProblems() []runnerauth.Problem {
+	p.mu.Lock()
+	value := p.runner
+	p.mu.Unlock()
+	if reporter, ok := value.(interface{ Problems() []runnerauth.Problem }); ok {
+		return reporter.Problems()
+	}
+	return nil
 }
 
 func (p *Project) Config() globalconfig.Project {
@@ -1739,6 +1751,24 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 		FlakyCheckNames:    append([]string(nil), cfg.Release.FlakyCheckNames...),
 		RequiredCheckNames: append([]string(nil), cfg.Release.RequiredCheckNames...),
 	}, releaseBackend)}, nil
+}
+
+// withMappedNativeTracker makes a project that client.native_projects maps to
+// a Hub project use the Hub instead of the repository's GitHub tracker, so a
+// runner host can reuse a committed detent.yaml without a local override. Any
+// other tracker kind is an explicit local choice and is kept.
+func withMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
+	source, ok := scheduling.(interface {
+		ConnectorForProject(string) (connector.Connector, bool)
+	})
+	if !ok {
+		return workflow
+	}
+	repositoryTracker := workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal
+	if _, mapped := source.ConnectorForProject(string(id)); mapped && repositoryTracker {
+		workflow.Tracker.Kind = workflowconfig.TrackerHubNative
+	}
+	return workflow
 }
 
 func projectSchedulingSource(source orchestrator.SchedulingSource, workflow workflowconfig.Config) orchestrator.SchedulingSource {

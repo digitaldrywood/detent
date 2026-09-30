@@ -57,9 +57,16 @@ Set `workos_organization_id` at the root when binding an existing organization.
 The WorkOS API key is resolved from the named server environment variable; do
 not put its value in YAML. Optional `workos.api_url` and `workos.issuer_url`
 support configured provider endpoints; HTTP is accepted only on loopback for
-fixtures. The issuer defaults to `https://api.workos.com`; set `workos.issuer_url`
-to the exact issuer configured for the environment when using a custom domain
-or application-specific issuer. Hosted resource enforcement uses the versioned
+fixtures. `workos.api_url` defaults to `https://api.workos.com`. AuthKit access
+tokens carry the issuer `<api_url>/user_management/<client_id>` (for example
+`https://api.workos.com/user_management/client_example`, the `issuer` in
+`https://api.workos.com/user_management/client_example/.well-known/openid-configuration`),
+and that is the default. Set `workos.issuer_url` only for a custom auth domain,
+to the exact issuer that domain's discovery document reports; a trailing slash is
+tolerated. Set it as well when `client_id` is a secondary WorkOS application:
+applications in one WorkOS environment share an issuer that names the
+environment's default application's client ID, so copy the `issuer` from the
+discovery document instead of relying on the default. Hosted resource enforcement uses the versioned
 [pilot allowance configuration](hosted-allowances.md). Legacy `plan_id`,
 `storage_quota_bytes` and `event_quota` initialize the pilot plan when the new
 `entitlements` section is absent. These values do not establish public prices.
@@ -76,9 +83,119 @@ legacy deployment/migration input; the shared product uses registry allocations
 and scoped navigation, not cross-origin redirects. See [the RFC routing trust
 boundary](cloud-hub-rfc.md#shared-site-control-and-tenant-storage).
 
+### Conversation coordinator
+
+An enabled hosted conversation uses `OPENAI_API_KEY` from the Hub process environment when it is present. General chat then runs through Genkit and the OpenAI Responses API with `gpt-6-luna` at low reasoning effort by default; the composer offers low and medium. No customer key or model configuration is needed. The key is never stored in hosted YAML. Without the key, an existing `codex` coordinator continues to run as before.
+
+For local development, load the key through the private `.envrc` before starting `detent hub serve`. For staging and production, install the key in each Hub service's private environment through the operator's secret manager. The shared cloud entry passes its `OPENAI_API_KEY` to tenant Hub processes and enables conversations in generated tenant configuration. Rotate the secret in the service environment and restart the entry and tenant processes; keep it out of deployment artifacts, logs and repository files.
+
+The optional `conversation` section enables chat. With a `codex` subsection the
+Hub answers conversations that have no linked issue on its own Codex backend:
+
+```yaml
+conversation:
+  enabled: true
+  model: gpt-6-astra
+  reasoning_effort: low
+  workspace: /srv/detent-coordinator
+  codex:
+    command: codex app-server
+```
+
+`reasoning_effort` must be `low`, `medium` or `high`. `workspace` must be an
+existing directory dedicated to the coordinator. It must not contain Hub state:
+no Hub database, hosted configuration, secrets or backups, and the Hub refuses
+to start when the database or hosted configuration lies inside it. Codex's
+read-only sandbox blocks writes and network access but still permits reads of
+files the Hub user can read, so also run the Hub under an account that cannot
+read other tenants' data.
+
+The Hub starts the coordinator's Codex process in the workspace with an
+allowlisted environment: `PATH`, locale, TLS and proxy variables, and the
+provider's own `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORGANIZATION`,
+`OPENAI_PROJECT` and `CODEX_API_KEY`. WorkOS, Stripe, admin token and database
+variables are never passed. `HOME`, `CODEX_HOME` and the temporary directory
+point at `.detent-coordinator/` inside the workspace, and the dedicated Codex
+home links only `auth.json` from the operator's Codex home (`CODEX_HOME`, or
+`~/.codex`), so no configuration, MCP servers or skills are loaded. Every
+coordinator turn runs with the `read-only` sandbox and the `never` approval
+policy regardless of `codex.options`.
+
+The coordinator must not be able to read files, including its own provider
+credential, so the Hub turns Codex's built-in tools off by appending
+`-c features.<name>=false` for `shell_tool`, `unified_exec`, `shell_snapshot`,
+`view_image`, `code_mode`, `code_mode_host`, `apps`, `plugins`, `browser_use`,
+`computer_use`, `image_generation`, `multi_agent`, `multi_agent_v2`, `goals`,
+`tool_suggest`, `skill_search`, `hooks`, `memories` and `sleep_tool`, plus
+`-c web_search=disabled`, to the configured command. With Codex 0.157.0 a turn
+then has no shell, command, file, image, browser or web tool; it keeps
+`request_user_input`, a JavaScript isolate without file system or network,
+sub-agents with the same configuration, and `apply_patch`, which the read-only
+sandbox rejects. At startup the Hub runs `codex features list` and refuses to
+start the coordinator when the installed Codex does not know `shell_tool`,
+`unified_exec`, `view_image`, `apps`, `plugins`, `browser_use` or
+`computer_use`: a Codex that cannot turn those off could read files, so there is
+no coordinator rather than an unsafe one. Keep `codex.command` in the form
+`codex app-server [options]` so the appended flags reach the app server.
+
+### Shared-entry tenant configuration
+
+A dedicated tenant Hub behind the shared entry adds `shared_entry` to its hosted
+YAML. The tenant then accepts only requests carrying a signed entry assertion;
+it no longer serves its own login, callback, invitation, logout, support or
+directory routes, and it rejects every request without a valid assertion,
+including on loopback or its private Unix socket.
+
+```yaml
+organization_id: org_example_opaque_id
+workos_organization_id: org_workos_example
+public_url: https://hub.detent.build
+workos:
+  client_id: client_example
+  api_key_env: WORKOS_API_KEY
+shared_entry:
+  issuer: detent-cloud
+  public_keys:
+    - BASE64_ED25519_PUBLIC_KEY
+  allocation_generation: 1
+```
+
+Run the tenant on a private socket, for example
+`detent hub serve --hosted-config tenant.yaml --listen unix:/run/detent/tenants/org_example.sock`.
+The socket directory must be mode `0700` and owned by the service user; the Hub
+creates the socket with mode `0600` and refuses to replace a live socket.
+
+The assertion is an Ed25519 signature over the issuer, tenant audience
+(organization ID), allocation generation, principal kind, method, exact request
+path and query, request body digest, issue/expiry time (at most 30 seconds) and a
+one-use replay ID. Browser assertions also carry the provider subject, verified
+email, provider organization and session, and the per-organization authorization
+binding and CSRF value, the organization role from the WorkOS access token and
+that token's expiry. The tenant materializes that binding as its local session and
+trusts the entry's verified role instead of calling the provider: it refuses an
+assertion whose access token has expired, so a long-lived event stream ends at
+most one access-token lifetime after its last verified request. It then applies its
+local member row, project grants, viewer limits and in-transaction mutation
+rechecks, and honors binding revocations the entry pushes to it.
+Machine assertions carry no browser identity and require the request's own bearer
+credential; runner, reporter and artifact-service tokens keep their independent
+bindings. List up to four public keys to rotate the entry signing key with overlap.
+
+Tenant pages and redirects are scoped under `/organizations/ORG`, and the tenant
+strips that prefix only after verifying the assertion over the original path.
+Native APIs keep their explicit `/api/v2/organizations/ORG/...` routes. Runners
+enroll against `https://hub.detent.build/organizations/ORG` as their Hub URL.
+Non-canonical paths (encoded characters, empty or dot segments) and duplicate
+query parameters are rejected before routing.
+
+A database bound to an origin (`deployment = origin`) never opens in shared mode,
+and a shared database never reopens with another public URL, generation, origin
+configuration or local mode. The binding changes only through the offline
+[existing-origin migration](#existing-origin-migration).
+
 ## Shared-origin route and session contract
 
-These are target routes for #2341, not aliases already accepted by the binary.
+`detent cloud serve` implements sign-in, callback, chooser, invitations, sign-out and scoped routing for the organization shell, Work, projects, SSE and native APIs (see [shared entry](examples/hub/README.md#shared-entry)). Organization creation and provisioning (#2342), shared billing routes and webhooks (#2343), and deletion are not implemented yet. Temporary support access runs through the shared entry: see [support access](#support-access).
 `ORG` and `PROJECT` stand for immutable opaque IDs, never organization names.
 
 | Surface | Public route/behavior |
@@ -103,6 +220,42 @@ current organization. Use a `__Host-` cookie with `Secure`, `HttpOnly`,
 with other detent.build hosts. Loopback HTTP fixtures use an explicitly separate
 non-production cookie convention. Rotate authority on authentication changes;
 logout invalidates the shared session and all its tenant authorizations.
+The entry re-verifies the shared session with the provider on every mutation and
+at most once per 60 seconds for read-only `GET`/`HEAD` requests such as the
+provisioning status poll, so a provider-side revocation takes effect within that
+bound; logout and a failed verification take effect immediately. Staff and support
+sessions, which reach across organizations, are verified on every entry-owned
+request.
+
+Requests routed to a tenant follow the WorkOS AuthKit session model. Each
+organization authorization keeps the WorkOS access token and refresh token from its
+sign-in, sealed with AES-GCM under a key derived from the entry signing key and
+bound to the authorization. A routed request verifies the access token locally
+against the client's cached JWKS and compares its subject, `sid`, `org_id`, `role`
+and support actor with the stored authorization: no WorkOS API call while the token
+is valid, for reads and mutations alike. When the token has expired the entry
+redeems the refresh token once (`grant_type=refresh_token`), stores the rotated
+pair and re-verifies; refreshes of one authorization are serialized because a
+WorkOS refresh token is single use, so concurrent requests on an expired token cost
+one refresh. A rejected refresh (revoked or ended session) drops the authorization
+and answers 401; a refreshed token without the organization's `org_id` or a known
+role (membership removed) drops it and answers 403; an unreachable provider answers
+503 without dropping it. Session revocation and membership removal made in WorkOS
+therefore take effect at the next refresh, at most one access-token lifetime (about
+five minutes) later, and a dropped authorization is revoked at the tenant at once.
+With one idle open board, the entry makes at most one WorkOS call per access-token
+lifetime per organization authorization. Membership listing is used only by the
+organization chooser, invitation, ownership and member-management flows.
+Authorizations stored before tokens were kept have none and must sign in again,
+as must every authorization after the entry signing key is rotated, because the
+sealing key derives from it. The tenant applies the less privileged of the
+asserted role and its own member row, so a role downgrade recorded at the tenant
+takes effect before the older access token expires. Refresh serialization assumes
+one entry process per `auth.db`; a rejected refresh first re-reads the stored pair
+so a refresh another request already stored is used rather than dropped.
+Every routed request logs `shared entry proxied request` with `duration_ms`,
+`auth_ms` and `verification` (`token`, `refreshed` or `machine`), and never a
+token, cookie, query string or email address.
 
 Each request derives its organization from the canonical route and revalidates
 membership plus project grants. Body/header IDs must agree with the route. Reject
@@ -119,7 +272,8 @@ callback, but cannot replace A's authorization. State/PKCE transactions are one-
 short-lived and bound to the initiating browser, requested organization and a
 validated return route; concurrent tab logins cannot overwrite each other's
 transaction. Provider identity, active session and current membership are verified
-on every protected request, and tenant mutations recheck local grants/revocation
+through the organization's access token on every protected request (see above for
+the refresh bound), and tenant mutations recheck local grants/revocation
 inside the transaction before replay. Provider failure fails closed. Removed
 membership invalidates only that organization's authority; account logout/expiry
 invalidates every organization. Support sessions remain separately scoped and
@@ -217,6 +371,41 @@ Only opaque stable identity and ordinary account/organization fields go to
 WorkOS. Model, repository and storage credentials do not enter login fields,
 provider metadata or the audit trail.
 
+### Troubleshooting sign-in denials
+
+Every denied sign-in, callback, invitation, support or sign-out request logs one
+WARN line with the message `hosted sign-in denied`. `detent cloud serve` and
+`detent hub serve` write JSON logs to stderr; honor `--log-level` or `LOG_LEVEL`
+(`debug`, `info`, `warn`, `error`; default `info`); and journald captures them
+under the service unit. The line carries `reason`, `flow`, `request_id` (also
+returned in the `X-Request-Id` response header, or taken from the proxy's
+`X-Request-Id` when present), `path`, `http_status`, and where known
+`provider_reason`, `provider_status`, `provider_error`, `token_issuer`,
+`email_domain` and a 12-character `email_hash`. It never carries authorization
+codes, tokens, cookies, state values, keys or the full email address.
+
+**"Your identity could not be verified"** after a successful WorkOS sign-in means
+the callback exchange or token verification failed. Find the line and its reason:
+
+```sh
+journalctl -u <unit> --since "15 min ago" -o cat | grep '"hosted sign-in denied"'
+```
+
+| `reason` | Meaning and fix |
+| --- | --- |
+| `issuer_mismatch` | The access token `iss` differs from the configured issuer; `token_issuer` shows the value received. Remove a stale `workos.issuer_url`, or set it to the custom auth domain's issuer. |
+| `exchange_failed` | WorkOS rejected the code exchange; `provider_status` shows the HTTP status. Check the client ID, API key and redirect URL belong to the same WorkOS environment, and that the code was not replayed. |
+| `client_mismatch`, `audience_mismatch` | The token was issued for another client ID. |
+| `token_invalid` | Signature, expiry or required claims failed; check the JWKS for the client ID and host clock skew. |
+| `email_unverified`, `email_invalid` | The WorkOS user has no verified, well-formed email. |
+| `organization_mismatch` | The account signed in to a different WorkOS organization than the one selected. |
+| `session_not_found`, `session_invalid`, `session_expired` | The WorkOS session is missing, revoked, ended or expired. |
+| `state_mismatch`, `transaction_missing`, `transaction_cookie_missing` | The callback did not return to the browser and transaction that started sign-in, was replayed, or took longer than ten minutes. |
+
+Set `LOG_LEVEL=debug` to add one line per WorkOS API call with method, path
+(query values and invitation tokens removed) and response status; bodies are never
+logged.
+
 ## Permissions and revocation
 
 | Authority | Allowed without project grants |
@@ -238,7 +427,10 @@ multiple projects. This conservative rule prevents partial-management views from
 revealing ungranted projects. Runner execution still requires a runner credential.
 
 Each request validates the provider's active session and current membership,
-then local membership and project grants. Provider unavailability fails closed.
+then local membership and project grants. Behind the shared entry that validation
+is the entry's access-token check, so a provider-side change lands within one
+access-token lifetime; a dedicated tenant asks the provider directly. Provider
+unavailability fails closed.
 Native mutations recheck authorization within the database transaction before
 idempotent replay; cursors and replay keys also bind to the provider session.
 Member removal revokes local sessions and removes project/runner grants before
@@ -298,6 +490,21 @@ contain opaque IDs, actual/effective identities, reason code, start/end or expir
 and route-template action metadata. They exclude query strings, request bodies,
 raw errors, credentials and bearer capabilities. See [WorkOS impersonation](https://workos.com/docs/authkit/impersonation).
 
+On the shared origin the entry owns this flow. A staff session whose verified email
+is in the entry's `staff_emails` and `support_actors` opens `/support`, selects an
+organization and submits **Start support sign-in** (CSRF and exact Origin). The
+entry records a one-use, ten-minute transaction bound to that browser, staff
+session, actor and organization. The WorkOS impersonation callback must return in
+the same browser with the same actor, an allowed reason and the selected
+organization's provider ID; the resulting support authorization belongs only to
+that staff session and organization and never becomes an ordinary session. Every
+routed request rechecks the support actor lists and the support access token,
+whose `act` claim must name the same actor, and the refresh bound above applies to
+the impersonation session. The tenant, which must list the same actor in its
+own `staff_emails` and `support_actors`, shows the actual/effective identity banner,
+audits `session_started` when it first sees the support session, audits each
+content action as before, and audits `session_ended` when sign-out revokes it.
+
 This document describes required configuration; implementation and fixture
 validation do not enable impersonation or modify a live WorkOS account.
 
@@ -313,7 +520,9 @@ reporting stays private to authenticated staff/reporters and is never a public
 route for inspecting an arbitrary organization.
 
 Reports have no content cache. Hosted process logging drops arbitrary messages
-and attributes, retaining a fixed message, timestamp and severity. Customer
+and attributes, retaining a fixed message, timestamp and severity. The one
+exception is the content-free `hosted sign-in denied` line described in
+[troubleshooting sign-in denials](#troubleshooting-sign-in-denials). Customer
 responses, errors and reports use `Cache-Control: no-store`; operator endpoints
 cannot fetch bodies, titles, repository paths, prompts, source, diffs, logs,
 artifact references or artifact contents. Customer-authorized native API replay
@@ -327,9 +536,30 @@ No zero-knowledge guarantee is made.
 
 ## Existing-origin migration
 
-#2341 must deliver an explicit versioned offline migration, not manual SQL edits
-or a startup bypass. The current immutable origin check remains until that tool
-and its fixture tests ship; no migration command is available in this RFC.
+The migration is an explicit, versioned offline command, never manual SQL edits
+or a startup bypass. The tenant binding stays immutable except through this path:
+
+```sh
+detent hub migrate-shared-origin \
+  --database /var/lib/detent/tenants/org_example.db \
+  --hosted-config /etc/detent/tenants/org_example.yaml
+```
+
+The target YAML is the tenant's shared-entry configuration (see
+[shared-entry tenant configuration](#shared-entry-tenant-configuration)): the same
+organization, provider organization and bootstrap identity, the shared
+`public_url`, and an `allocation_generation` greater than the current one. The
+command requires exclusive database ownership, so a running tenant blocks it. In
+one transaction it records an immutable `hosted_binding_migrations` row, moves the
+binding to `deployment = shared` with the new generation, revokes all old browser
+sessions, closes unconsumed login/invitation transactions and expires outstanding
+artifact grants. It prints the preserved member, project, runner, issue and
+billing-customer counts. Mismatched organizations, unallocated provider bindings
+and non-increasing generations fail without changes; repeating the same migration
+reports `already_migrated`. Database triggers reject any other binding update and
+any change to migration history.
+
+The operator procedure:
 
 1. Inventory each old organization/provider mapping, bootstrap state, database,
    origin, runner/service bindings, plan and Stripe account/environment/customer

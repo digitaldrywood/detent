@@ -20,7 +20,7 @@ func checkDoctorSystemdNetwork(ctx context.Context, configPath string, opts opti
 	if run == nil {
 		run = defaultCommandRunner
 	}
-	runner, err := factory(servicepkg.Config{GOOS: runtime.GOOS, ConfigPath: configPath, LockPath: filepath.Join(filepath.Dir(configPath), "detent.db.lock"), RunCommand: servicepkg.CommandRunner(run)})
+	runner, err := factory(servicepkg.Config{Name: configuredServiceName(configPath, opts), GOOS: runtime.GOOS, ConfigPath: configPath, LockPath: filepath.Join(filepath.Dir(configPath), "detent.db.lock"), RunCommand: servicepkg.CommandRunner(run)})
 	if err != nil {
 		return nil
 	}

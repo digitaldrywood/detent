@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2359,10 +2360,10 @@ func TestWorkerScratchLifecycleRemediatesGeneratedCachePermissions(t *testing.T)
 	}
 	t.Cleanup(func() {
 		restoreWritableTree(t, scratchPath)
+		_ = os.RemoveAll(WorkerScratchRoot(workspacePath))
 	})
-	canonicalWorkspace := mustCanonicalExistingPath(t, workspacePath)
-	if !strings.HasPrefix(scratchPath, canonicalWorkspace+string(filepath.Separator)) {
-		t.Fatalf("scratch path = %q, want path under %q", scratchPath, canonicalWorkspace)
+	if scratchRoot := WorkerScratchRoot(workspacePath); !strings.HasPrefix(scratchPath, scratchRoot+string(filepath.Separator)) {
+		t.Fatalf("scratch path = %q, want path under %q", scratchPath, scratchRoot)
 	}
 
 	cacheDir := filepath.Join(scratchPath, "go-mod", "modernc.org", "libc@v1.73.4")
@@ -2445,6 +2446,7 @@ func TestCleanupOwnedPathConfinesRemovalToRegisteredRoot(t *testing.T) {
 func TestPrepareWorkerScratchPreservesPriorAttempt(t *testing.T) {
 	t.Parallel()
 	workspacePath := t.TempDir()
+	t.Cleanup(func() { _ = os.RemoveAll(WorkerScratchRoot(workspacePath)) })
 	prior, err := PrepareWorkerScratch(t.Context(), workspacePath)
 	if err != nil {
 		t.Fatal(err)
@@ -2475,6 +2477,7 @@ func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
 	t.Parallel()
 
 	workspacePath := initSourceRepo(t)
+	t.Cleanup(func() { _ = os.RemoveAll(WorkerScratchRoot(workspacePath)) })
 	scratchPath, err := PrepareWorkerScratch(context.Background(), workspacePath)
 	if err != nil {
 		t.Fatalf("PrepareWorkerScratch() error = %v", err)
@@ -2870,6 +2873,7 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 		{name: "resolved committed head", wantPushed: true},
 		{name: "already pushed head", before: "push"},
 		{name: "gate failure", gate: "git detent-invalid-gate", wantError: "gate failed"},
+		{name: "push failure", before: "reject push", wantError: "push validated merge resolution"},
 		{name: "dirty resolution", before: "dirty", wantError: "not source-clean"},
 		{name: "stale target", before: "base", wantError: "does not contain"},
 		{name: "replaced remote", before: "remote", wantError: "remote branch changed before"},
@@ -2914,6 +2918,10 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 				mutateRemote("main")
 			case "remote":
 				mutateRemote(info.Branch)
+			case "reject push":
+				if err := os.WriteFile(filepath.Join(remote, "hooks", "pre-receive"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
 			}
 			remoteBefore := strings.TrimSpace(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))
 			command := "git config detent.validation passed"
@@ -2956,6 +2964,115 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 			}
 			if got := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]; got != head {
 				t.Fatalf("remote head = %s, want %s", got, head)
+			}
+		})
+	}
+}
+
+func TestLocalGitMergeFallbackRetryRevalidatesAheadHead(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		failedGate  bool
+		advanceBase bool
+	}{
+		{name: "gate failure", failedGate: true},
+		{name: "push rejection"},
+		{name: "target advances after gate failure", failedGate: true, advanceBase: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "DD-FALLBACK-RETRY"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "add", "README.md")
+			runGit(t, info.Path, "commit", "-m", "feature")
+			runGit(t, info.Path, "push", "origin", "HEAD:"+info.Branch)
+			remoteHead := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, source, "add", "README.md")
+			runGit(t, source, "commit", "-m", "main conflict")
+			runGit(t, source, "push", "origin", "main")
+			preparer := backend.(MergePreparer)
+			opts := MergePrepareOptions{TargetBranch: "main", ExpectedRemoteHead: remoteHead, ValidationCommand: "git config detent.validation passed"}
+			precheck, err := preparer.PrepareMerge(t.Context(), info, issue, opts)
+			if err != nil || precheck.Status != MergePrepareStatusConflict {
+				t.Fatalf("conflict precheck = %#v, %v", precheck, err)
+			}
+			if _, err := runGitAt(t.Context(), info.Path, "merge", "--no-edit", "origin/main"); err == nil {
+				t.Fatal("expected worker merge conflict")
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("resolved\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "add", "README.md")
+			runGit(t, info.Path, "commit", "-m", "resolve main conflict")
+			resolvedHead := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			hook := filepath.Join(remote, "hooks", "pre-receive")
+			if tt.failedGate {
+				opts.ValidationCommand = "git detent-invalid-gate"
+			} else if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			verify := opts
+			verify.VerifyResolution = true
+			if _, err := preparer.PrepareMerge(t.Context(), info, issue, verify); err == nil {
+				t.Fatal("expected initial verification failure")
+			}
+			if tt.advanceBase {
+				runGit(t, source, "commit", "--allow-empty", "-m", "advance target during retry")
+				runGit(t, source, "push", "origin", "main")
+			}
+			retry, err := preparer.PrepareMerge(t.Context(), info, issue, opts)
+			if tt.advanceBase {
+				if err != nil || retry.Status != MergePrepareStatusConflict {
+					t.Fatalf("advanced target retry = %#v, %v; want worker fallback", retry, err)
+				}
+			} else if err == nil {
+				t.Fatal("retry published an unverified head")
+			}
+			if got := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]; got != remoteHead {
+				t.Fatalf("remote head after failed retry = %s, want %s", got, remoteHead)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != resolvedHead {
+				t.Fatalf("local head after failed retry = %s, want %s", got, resolvedHead)
+			}
+			if tt.advanceBase {
+				return
+			}
+			if !tt.failedGate {
+				if err := os.Remove(hook); err != nil {
+					t.Fatal(err)
+				}
+			}
+			opts.ValidationCommand = "git config detent.validation retried"
+			result, err := preparer.PrepareMerge(t.Context(), info, issue, opts)
+			if err != nil || result.Status != MergePrepareStatusClean || result.HeadSHA != resolvedHead || !result.HeadChanged {
+				t.Fatalf("validated retry = %#v, %v; want published resolved head", result, err)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "config", "--get", "detent.validation")); got != "retried" {
+				t.Fatalf("retry gate evidence = %q", got)
+			}
+			if got := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]; got != resolvedHead {
+				t.Fatalf("remote head after validated retry = %s, want %s", got, resolvedHead)
 			}
 		})
 	}
@@ -3067,6 +3184,103 @@ exit %d
 				t.Fatalf("captured output = %q, want stdout and stderr", output)
 			}
 		})
+	}
+}
+
+func TestGitCommonDirCompletesWhenDescendantRetainsOutput(t *testing.T) {
+	skipWindows(t)
+	for _, tt := range []struct {
+		name  string
+		probe func(context.Context, string) (string, error)
+	}{
+		{name: "source common dir", probe: gitCommonDir},
+		{name: "workspace common dir", probe: gitCommonDirWithinRoot},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fifoPath := filepath.Join(dir, "release")
+			runCommand(t, dir, "mkfifo", fifoPath)
+			release, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release.Close()
+			donePath := filepath.Join(dir, "done")
+			script := `#!/bin/sh
+( read -r release < "$DETENT_PIPE_RELEASE"; printf done > "$DETENT_PIPE_DONE" ) &
+printf '%s\n' "$DETENT_COMMON_DIR"
+`
+			if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("DETENT_PIPE_RELEASE", fifoPath)
+			t.Setenv("DETENT_PIPE_DONE", donePath)
+			t.Setenv("DETENT_COMMON_DIR", dir)
+
+			commonDir, commandErr := tt.probe(t.Context(), dir)
+			if _, err := release.WriteString("release\n"); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.After(10 * time.Second)
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				if _, err := os.Stat(donePath); err == nil {
+					break
+				}
+				select {
+				case <-deadline:
+					t.Fatal("descendant did not acknowledge release")
+				case <-ticker.C:
+				}
+			}
+			if commandErr != nil {
+				t.Fatalf("common dir probe error = %v, want successful identity after Git exits", commandErr)
+			}
+			canonicalDir, err := filepath.EvalSymlinks(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if commonDir != canonicalDir {
+				t.Fatalf("common dir probe = %q, want %q", commonDir, canonicalDir)
+			}
+		})
+	}
+}
+
+func TestGitCommonDirCleanupFailureDoesNotInvalidateIdentity(t *testing.T) {
+	skipWindows(t)
+
+	commonDir := t.TempDir()
+	scratchDir := t.TempDir()
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+printf '%s\n' "$DETENT_COMMON_DIR"
+chmod 500 "$TMPDIR"
+`
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMPDIR", scratchDir)
+	t.Setenv("DETENT_COMMON_DIR", commonDir)
+	t.Cleanup(func() {
+		if err := os.Chmod(scratchDir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+
+	got, err := gitCommonDir(t.Context(), commonDir)
+	if err != nil {
+		t.Fatalf("gitCommonDir() error = %v, want successful identity despite cleanup failure", err)
+	}
+	canonicalDir, err := filepath.EvalSymlinks(commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != canonicalDir {
+		t.Fatalf("gitCommonDir() = %q, want %q", got, canonicalDir)
 	}
 }
 
@@ -3231,6 +3445,320 @@ func TestHookCompletionBudget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := hookCompletionBudget(tt.parallel, tt.procs); got != tt.want {
 				t.Fatalf("budget = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		validate      bool
+		command       string
+		wantStatus    MergePrepareStatus
+		wantValidated bool
+		wantPublished bool
+	}{
+		{name: "gate passes on the rebased head", validate: true, command: "test -f main.txt", wantStatus: MergePrepareStatusClean, wantValidated: true, wantPublished: true},
+		{name: "gate fails on the rebased head", validate: true, command: "test ! -f main.txt", wantStatus: MergePrepareStatusConflict},
+		{name: "validation not requested", validate: false, command: "false", wantStatus: MergePrepareStatusClean, wantPublished: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatalf("NewBackend() error = %v", err)
+			}
+			preparer := backend.(MergePreparer)
+			issue := Issue{Identifier: "DD-GATE"}
+			info, err := backend.Create(context.Background(), issue)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
+				t.Fatalf("write feature: %v", err)
+			}
+			runGit(t, info.Path, "add", "feature.txt")
+			runGit(t, info.Path, "commit", "-m", "feature")
+			runGit(t, info.Path, "push", "origin", "HEAD:refs/heads/"+info.Branch)
+			published := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if err := os.WriteFile(filepath.Join(source, "main.txt"), []byte("main\n"), 0o600); err != nil {
+				t.Fatalf("write main: %v", err)
+			}
+			runGit(t, source, "add", "main.txt")
+			runGit(t, source, "commit", "-m", "main change")
+			runGit(t, source, "push", "origin", "main")
+
+			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{ValidateHead: tt.validate, ValidationCommand: tt.command, ExpectedRemoteHead: published})
+			if err != nil {
+				t.Fatalf("PrepareMerge() error = %v", err)
+			}
+			if result.Status != tt.wantStatus || result.Validated != tt.wantValidated {
+				t.Fatalf("PrepareMerge() = status %q validated %v, want %q %v (%s)", result.Status, result.Validated, tt.wantStatus, tt.wantValidated, result.Message)
+			}
+			local := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			remoteHead := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]
+			if tt.wantPublished {
+				if remoteHead != local || result.HeadSHA != local || local == published {
+					t.Fatalf("published head: remote %s, local %s, result %s, before %s", remoteHead, local, result.HeadSHA, published)
+				}
+				return
+			}
+			if local != published || remoteHead != published || result.HeadSHA != "" {
+				t.Fatalf("a failed gate must leave the published head: local %s, remote %s, result %q, want %s", local, remoteHead, result.HeadSHA, published)
+			}
+			if !strings.Contains(result.Message, "configured gate failed") {
+				t.Fatalf("conflict message = %q", result.Message)
+			}
+		})
+	}
+}
+
+func TestPrepareWorkerScratchIsOutsideWorkspace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		workspace func(t *testing.T) string
+	}{
+		{name: "plain directory", workspace: func(t *testing.T) string { return t.TempDir() }},
+		{name: "git repository", workspace: initSourceRepo},
+		{name: "legacy scratch present", workspace: func(t *testing.T) string {
+			path := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(path, filepath.FromSlash(workerScratchRelativePath), "attempt-legacy"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workspacePath := tt.workspace(t)
+			scratchPath, err := PrepareWorkerScratch(t.Context(), workspacePath)
+			if err != nil {
+				t.Fatalf("PrepareWorkerScratch() error = %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(WorkerScratchRoot(workspacePath)) })
+			canonicalWorkspace := mustCanonicalExistingPath(t, workspacePath)
+			if pathWithin(canonicalWorkspace, scratchPath) {
+				t.Fatalf("scratch path %q is inside workspace %q", scratchPath, canonicalWorkspace)
+			}
+			if !pathWithin(workerScratchBase(), scratchPath) {
+				t.Fatalf("scratch path %q is outside the OS temp scratch base %q", scratchPath, workerScratchBase())
+			}
+			if filepath.Dir(scratchPath) != WorkerScratchRoot(workspacePath) || !strings.HasPrefix(filepath.Base(scratchPath), "attempt-") {
+				t.Fatalf("scratch path %q is not an attempt of %q", scratchPath, WorkerScratchRoot(workspacePath))
+			}
+			info, err := os.Stat(scratchPath)
+			if err != nil || !info.IsDir() {
+				t.Fatalf("scratch stat = %v, %v", info, err)
+			}
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+				t.Fatalf("scratch mode = %v, want 0700", info.Mode().Perm())
+			}
+			if err := CleanupWorkerScratch(workspacePath, scratchPath); err != nil {
+				t.Fatalf("CleanupWorkerScratch() error = %v", err)
+			}
+			if _, err := os.Stat(scratchPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("scratch remains after cleanup: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerScratchRootSeparatesWorkspaces(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	tests := []struct {
+		name  string
+		left  string
+		right string
+		same  bool
+	}{
+		{name: "same workspace", left: filepath.Join(parent, "a"), right: filepath.Join(parent, "a") + string(filepath.Separator), same: true},
+		{name: "sibling workspaces", left: filepath.Join(parent, "a"), right: filepath.Join(parent, "b")},
+		{name: "same name different roots", left: filepath.Join(parent, "one", "a"), right: filepath.Join(parent, "two", "a")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			left, right := WorkerScratchRoot(tt.left), WorkerScratchRoot(tt.right)
+			if (left == right) != tt.same {
+				t.Fatalf("WorkerScratchRoot(%q) = %q, WorkerScratchRoot(%q) = %q, want same %v", tt.left, left, tt.right, right, tt.same)
+			}
+			for _, root := range []string{left, right} {
+				if pathWithin(parent, root) {
+					t.Fatalf("scratch root %q is inside the workspace tree %q", root, parent)
+				}
+			}
+		})
+	}
+}
+
+func TestCleanupOwnedPathRemovesExternalWorkerScratch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		removeWorkspace  bool
+		otherWorkspace   bool
+		wantErr          bool
+		wantScratchGone  bool
+		wantParentExists bool
+	}{
+		{name: "workspace present", wantScratchGone: true, wantParentExists: true},
+		{name: "workspace removed", removeWorkspace: true, wantScratchGone: true, wantParentExists: true},
+		{name: "other workspace scratch", otherWorkspace: true, wantErr: true, wantParentExists: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parent := t.TempDir()
+			t.Cleanup(func() { _ = os.RemoveAll(workerScratchGroup(parent)) })
+			workspacePath := filepath.Join(parent, "workspace")
+			otherPath := filepath.Join(parent, "other")
+			for _, path := range []string{workspacePath, otherPath} {
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(WorkerScratchRoot(path)) })
+			}
+			owner := workspacePath
+			if tt.otherWorkspace {
+				owner = otherPath
+			}
+			scratchPath, err := PrepareWorkerScratch(t.Context(), owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.removeWorkspace {
+				if err := os.RemoveAll(workspacePath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = CleanupOwnedPath(workspacePath, scratchPath)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("CleanupOwnedPath() error = %v, want error %v", err, tt.wantErr)
+			}
+			if _, err := os.Stat(scratchPath); errors.Is(err, os.ErrNotExist) != tt.wantScratchGone {
+				t.Fatalf("scratch removed = %v, want %v", err, tt.wantScratchGone)
+			}
+			if _, err := os.Stat(filepath.Dir(scratchPath)); (err == nil) != tt.wantParentExists {
+				t.Fatalf("scratch parent exists = %v, want %v", err, tt.wantParentExists)
+			}
+		})
+	}
+}
+
+func TestRemoveWorkerScratchRootKeepsSharedGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		sibling bool
+	}{
+		{name: "only workspace"},
+		{name: "sibling scratch remains", sibling: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parent := t.TempDir()
+			workspacePath := filepath.Join(parent, "workspace")
+			siblingPath := filepath.Join(parent, "sibling")
+			t.Cleanup(func() { _ = os.RemoveAll(workerScratchGroup(parent)) })
+			paths := []string{workspacePath}
+			if tt.sibling {
+				paths = append(paths, siblingPath)
+			}
+			for _, path := range paths {
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				scratch, err := PrepareWorkerScratch(t.Context(), path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(scratch, "retained"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := RemoveWorkerScratchRoot(workspacePath); err != nil {
+				t.Fatalf("RemoveWorkerScratchRoot() error = %v", err)
+			}
+			if _, err := os.Stat(WorkerScratchRoot(workspacePath)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("scratch root remains: %v", err)
+			}
+			if info, err := os.Stat(workerScratchGroup(parent)); err != nil || !info.IsDir() {
+				t.Fatalf("shared scratch group stat = %v, %v", info, err)
+			}
+			if tt.sibling {
+				if entries, err := os.ReadDir(WorkerScratchRoot(siblingPath)); err != nil || len(entries) != 1 {
+					t.Fatalf("sibling attempts = %v, %v", entries, err)
+				}
+			}
+		})
+	}
+}
+
+func TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		sameWorkspace bool
+		removeRoot    bool
+	}{
+		{name: "sibling attempts"},
+		{name: "same workspace attempts", sameWorkspace: true},
+		{name: "sibling workspace roots", removeRoot: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parent := t.TempDir()
+			t.Cleanup(func() { _ = os.RemoveAll(workerScratchGroup(parent)) })
+			var wg sync.WaitGroup
+			errs := make(chan error, 8)
+			for i := range 8 {
+				name := strconv.Itoa(i)
+				if tt.sameWorkspace {
+					name = "workspace"
+				}
+				workspacePath := filepath.Join(parent, name)
+				if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				wg.Go(func() {
+					for range 50 {
+						scratch, err := PrepareWorkerScratch(t.Context(), workspacePath)
+						if err == nil {
+							if tt.removeRoot {
+								err = RemoveWorkerScratchRoot(workspacePath)
+							} else {
+								err = CleanupWorkerScratch(workspacePath, scratch)
+							}
+						}
+						if err != nil {
+							errs <- err
+							return
+						}
+					}
+				})
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				t.Errorf("concurrent scratch lifecycle: %v", err)
 			}
 		})
 	}

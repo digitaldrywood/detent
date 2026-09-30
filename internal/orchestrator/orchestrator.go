@@ -482,6 +482,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if deps.Connector == nil {
 		return nil, ErrMissingConnector
 	}
+	cfg = withNativeLandingLane(cfg, deps.Connector)
 
 	runner := deps.Runner
 	if runner == nil {
@@ -1430,6 +1431,10 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 		o.cfg.Claiming.AssigneeRequired != cfg.Claiming.AssigneeRequired {
 		o.ownershipStartupLogged = false
 	}
+	if update.Connector != nil {
+		o.connector = update.Connector
+	}
+	cfg = withNativeLandingLane(cfg, o.connector)
 	o.cfg = cfg
 	now := time.Now
 	if o.now != nil {
@@ -1437,9 +1442,6 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	}
 	updatedAt := now()
 	o.reloadProjectFailureBreaker(state, cfg.FailureBreaker, updatedAt)
-	if update.Connector != nil {
-		o.connector = update.Connector
-	}
 	o.heartbeats.configure(cfg, o.connector, o.workAttempts)
 	if update.ReplaceRelease {
 		o.release = update.Release

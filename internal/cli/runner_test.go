@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -17,10 +18,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/observability"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
@@ -174,7 +177,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
 
-	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
+	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, gobudget.Budget{}, nil, nil, serviceapi.Connection{})
 	if err != nil {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
@@ -396,7 +399,7 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	cfg.Workspace.Root = t.TempDir()
 	cfg.Budget.PricingPath = filepath.Join(t.TempDir(), "missing-models.yaml")
 
-	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, nil, nil, serviceapi.Connection{})
+	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, gobudget.Budget{}, nil, nil, serviceapi.Connection{})
 	if err == nil {
 		t.Fatal("buildRunner() error = nil, want pricing load error")
 	}
@@ -563,6 +566,53 @@ func TestBuildCodexCommandUsesConfiguredShell(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		conversation bool
+		want         string
+	}{
+		{name: "ordinary turn keeps the configured command", want: "bash\x00-c\x00codex app-server"},
+		{name: "conversation turn enables questions", conversation: true, want: "bash\x00-c\x00codex app-server --enable default_mode_request_user_input"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			if test.conversation {
+				ctx = codex.WithConversationTurn(ctx)
+			}
+			cmd := buildCodexCommandFromConfig(ctx, " codex app-server ", "bash")
+			if got := strings.Join(cmd.Args, "\x00"); got != test.want {
+				t.Fatalf("Args = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestWithCodexQuestionFeature(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, command, want string
+	}{
+		{name: "app-server gains the feature", command: "codex app-server", want: "codex app-server --enable default_mode_request_user_input"},
+		{name: "explicit stdio keeps its args", command: "codex app-server --stdio", want: "codex app-server --stdio --enable default_mode_request_user_input"},
+		{name: "already enabled", command: "codex app-server --enable default_mode_request_user_input", want: "codex app-server --enable default_mode_request_user_input"},
+		{name: "already set through config", command: "codex app-server -c features.default_mode_request_user_input=false", want: "codex app-server -c features.default_mode_request_user_input=false"},
+		{name: "other commands untouched", command: "codex exec", want: "codex exec"},
+		{name: "empty", command: "", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := withCodexQuestionFeature(test.command); got != test.want {
+				t.Fatalf("withCodexQuestionFeature(%q) = %q, want %q", test.command, got, test.want)
+			}
+		})
+	}
+}
+
 func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
 	t.Parallel()
 
@@ -720,6 +770,7 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 				nil,
 				5*time.Millisecond,
 				func() time.Time { return now },
+				nil,
 			)
 		}()
 
@@ -2513,4 +2564,58 @@ func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHostGoBudgetUsesSharedHostLocation(t *testing.T) {
+	tests := []struct {
+		slots int
+		want  int
+	}{
+		{slots: 0, want: runtime.NumCPU()},
+		{slots: 6, want: 6},
+	}
+	for _, tt := range tests {
+		budget := hostGoBudget(tt.slots)
+		if budget.Slots != tt.want || budget.Dir != gobudget.HostDir() || budget.Executable == "" {
+			t.Fatalf("hostGoBudget(%d) = %+v, want %d slots in %s with an executable", tt.slots, budget, tt.want, gobudget.HostDir())
+		}
+	}
+}
+
+type runnerHeartbeatFunc func(context.Context) error
+
+func (f runnerHeartbeatFunc) Heartbeat(ctx context.Context) error {
+	return f(ctx)
+}
+
+func TestPublishSnapshotsReportsPendingRunner(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		registry := projectpkg.NewRegistry()
+		if err := registry.SetPending(globalconfig.Project{ID: "broken"}, projectpkg.RuntimeError{Message: "invalid workflow"}); err != nil {
+			t.Fatal(err)
+		}
+		snapshots := hub.New[telemetry.Snapshot]()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var calls atomic.Int32
+		reporter := runnerHeartbeatFunc(func(ctx context.Context) error {
+			calls.Add(1)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			publishSnapshots(ctx, registry, nil, snapshots, nil, nil, nil, "", nil, time.Second, time.Now, reporter)
+		}()
+		synctest.Wait()
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		snapshot, ok := snapshots.Latest()
+		if !ok || snapshot.Seq < 3 || calls.Load() != 1 {
+			t.Fatalf("pending runner telemetry: snapshot=%#v calls=%d", snapshot, calls.Load())
+		}
+		cancel()
+		<-done
+	})
 }

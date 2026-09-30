@@ -139,6 +139,38 @@ func recordedHumanActionEvidence(state *State, issue connector.Issue, now time.T
 	return &evidence
 }
 
+// clearedHumanActionEvidence reuses recorded-blocker recovery for a human-owned
+// Workpad park. The newest authorized Workpad must explicitly clear the action
+// after the Blocked entry; an ordinary reply cannot silently release it.
+func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) *telemetry.BlockerEvidence {
+	for index := len(issue.Comments) - 1; index >= 0; index-- {
+		comment := issue.Comments[index]
+		if !autoPromoteIsWorkpadComment(comment.Body) {
+			continue
+		}
+		if !comment.AuthorAuthorized {
+			return nil
+		}
+		signal, ok := workpad.SignalFromComment(comment.Body, comment.URL, dependencyIssueRepo(issue.Identifier))
+		if !ok || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
+			strings.TrimSpace(signal.Status) != workpad.StatusInProgress ||
+			strings.TrimSpace(signal.HumanAction) != "" || strings.TrimSpace(signal.ReasonCode) != "" || len(signal.Blockers) != 0 {
+			return nil
+		}
+		recordedAt := autoPromoteWorkpadRecordedAt(comment)
+		// GitHub comment times have second precision while lane entries can
+		// include fractions of a second.
+		if recordedAt == nil || recordedAt.Before(parkedAt.Truncate(time.Second)) {
+			return nil
+		}
+		evidence := newBlockerEvidence("free_text", workpad.BlockerOwnerHuman, blockerEvidenceStatusCleared,
+			"", "human_action", "authorized Workpad cleared human_action after Blocked entry",
+			recordedAt, nil, "", now)
+		return &evidence
+	}
+	return nil
+}
+
 func (o *Orchestrator) evaluateRecordedBlocker(
 	ctx context.Context,
 	predicateContext *blockerPredicateContext,
@@ -650,7 +682,7 @@ func recordedBlockerRecoveryComment(
 	evidence []telemetry.BlockerEvidence,
 ) string {
 	var b strings.Builder
-	b.WriteString("Recorded blocker predicates cleared. Moved ")
+	b.WriteString("Recorded blockers cleared. Moved ")
 	b.WriteString(issueLabel(issue))
 	b.WriteString(" from ")
 	b.WriteString(strings.TrimSpace(issue.State))

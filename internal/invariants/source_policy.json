@@ -37,7 +37,6 @@
     "spend_since_progress_circuit_breaker",
     "stale_todo_pr_recovered",
     "state_transition",
-    "stranded_active_recovery",
     "terminal_attempt_without_work_product",
     "token_ceiling_circuit_breaker"
   ],

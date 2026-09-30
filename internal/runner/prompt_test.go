@@ -43,6 +43,82 @@ func TestNativeIssuePromptOwnership(t *testing.T) {
 	}
 }
 
+func TestBuildPromptNativeCompletionContract(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		kind  string
+		state string
+		want  bool
+	}{
+		{name: "native code", kind: config.TrackerHubNative, state: "In Progress", want: true},
+		{name: "native rework", kind: config.TrackerHubNative, state: "Rework", want: true},
+		{name: "github", kind: config.TrackerGitHub, state: "In Progress"},
+		{name: "linear", kind: config.TrackerLinear, state: "Rework"},
+		{name: "memory", kind: config.TrackerMemory, state: "In Progress"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow := config.Workflow{
+				Prompt: "Keep the `## Codex Workpad` comment current and open a pull request.",
+				Config: config.Config{Tracker: config.Tracker{Kind: tt.kind}},
+			}
+			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#7", State: tt.state}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := strings.Index(prompt, "## Native completion contract")
+			if got := index >= 0; got != tt.want {
+				t.Fatalf("native completion contract present = %t, want %t", got, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			contract := prompt[index:]
+			for _, want := range []string{"override any tracker, Workpad, or pull request instructions", "Commit your work on the current attempt branch", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from your commits", "final message"} {
+				if !strings.Contains(contract, want) {
+					t.Errorf("contract missing %q", want)
+				}
+			}
+			if strings.Contains(contract[len("## Native completion contract"):], "\n## ") {
+				t.Error("native completion contract must be the final prompt section")
+			}
+		})
+	}
+}
+
+func TestMergePromptHandsOffPushedHeadBeforeCI(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		state string
+		want  bool
+	}{
+		{state: "Merging", want: true},
+		{state: "Todo"},
+		{state: "Rework"},
+	} {
+		t.Run(tt.state, func(t *testing.T) {
+			workflow := config.Workflow{
+				Prompt: "Watch CI after pushing the head.",
+				Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}},
+			}
+			issue := connector.Issue{Identifier: "digitaldrywood/detent#3045", State: tt.state}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Contains(prompt, "return immediately after pushing a new pull request head")
+			if got != tt.want {
+				t.Fatalf("merge CI handoff present = %t, want %t", got, tt.want)
+			}
+			if tt.want && strings.Index(prompt, "Watch CI after pushing the head.") >= strings.Index(prompt, "## Merge CI handoff") {
+				t.Fatal("CI handoff must follow the project workflow instruction")
+			}
+		})
+	}
+}
+
 func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	t.Parallel()
 
@@ -122,7 +198,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"Prose is not a blocker.",
 		"Already-merged work needs no authorization.",
 		"completion_merged_pr", "completion_merge_commit", "completion_branch_head",
-		"completion_ancestry: verified", "Ask if evidence is missing.",
+		"completion_ancestry: verified", "Missing evidence needs a blocked Workpad `human_action`.",
 		"## Validation gate",
 		"Run `make check` from the workspace root",
 		"## Available skills",
@@ -312,14 +388,16 @@ func TestPromptWrapperBytes(t *testing.T) {
 	if len(loaded.Skills) != skills.DefaultMaxSkillsInPrompt {
 		t.Fatalf("fixture needs capped skills: %d", len(loaded.Skills))
 	}
-	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: t.TempDir(), Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: loaded.Skills, WorkAttemptID: 5715, Generation: 68})
+	workspacePath := t.TempDir()
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: loaded.Skills, WorkAttemptID: 5715, Generation: 68})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, section := range strings.Split(prompt, "\n## ") {
 		t.Logf("section %s: %d", strings.SplitN(section, "\n", 2)[0], len(section))
 	}
-	size := len(prompt) - len("WORKFLOW")
+	// The wrapper budget measures authored text, not the worker's temp-root length.
+	size := len(strings.ReplaceAll(prompt, workspacePath, "/workspace")) - len("WORKFLOW")
 	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(loaded.Skills)))
 	if size >= 6000 {
 		t.Errorf("wrapper is %d bytes, want under 6000", size)
@@ -1456,6 +1534,40 @@ func TestGateBlockSeparatesHumanApproval(t *testing.T) {
 			}
 			if tt.heading == "Human approval" && strings.Contains(strings.ToLower(got), "validation gate") {
 				t.Fatalf("human approval conflates command validation: %s", got)
+			}
+		})
+	}
+}
+
+func TestBuildPromptGoTestScopeFollowsGoModule(t *testing.T) {
+	t.Parallel()
+
+	goModule := t.TempDir()
+	if err := os.WriteFile(filepath.Join(goModule, "go.mod"), []byte("module example.com/x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		workspace string
+		want      bool
+	}{
+		{name: "go module", workspace: goModule, want: true},
+		{name: "non-go workspace", workspace: t.TempDir()},
+		{name: "no workspace"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{Identifier: "digitaldrywood/detent#3310"}, PromptOptions{WorkspacePath: tt.workspace})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+			if got := strings.Contains(prompt, "## Go test scope"); got != tt.want {
+				t.Fatalf("Go test scope block present = %v, want %v:\n%s", got, tt.want, prompt)
+			}
+			if tt.want && !strings.Contains(prompt, "instead of `go test ./...` sweeps") {
+				t.Fatalf("Go test scope block missing targeted-package guidance:\n%s", prompt)
 			}
 		})
 	}

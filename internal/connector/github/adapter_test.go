@@ -5589,6 +5589,230 @@ func TestConnectorPullRequestDiffFingerprintIsContentStableAndCached(t *testing.
 	}
 }
 
+func TestPullRequestValidationDiffConcurrentPRs(t *testing.T) {
+	t.Parallel()
+	type fixture struct {
+		base, head string
+		files      []string
+		contents   []string
+		patch      string
+	}
+	fixtures := map[int]fixture{
+		155: {base: "d8970cb2b42f2463a6f10f9f2b88151dd4b5d6c1", head: "236813f76fa510ff22d778fd1fd341f390cf15da", files: []string{"AGENTS.md", "README.md"}, contents: []string{"bench origin", "bench origin"}},
+		156: {base: "d8970cb2b42f2463a6f10f9f2b88151dd4b5d6c1", head: "178c860585360bf7056e76ebfbc6a68fe08afc44", files: []string{"WORKFLOW.md", "detent.yaml", "docs/detent-rework-cost.md"}, contents: []string{"workflow", "agent config", "rework cost"}},
+		220: {base: "1cc80a5a29fcc4269f89204a167216ae7591d2bd", head: "e5be6db5371bb1ebffeb440d8d27a9d8119026b9", files: []string{"WORKFLOW.md", "ui/build.gradle.kts", "ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt"}, contents: []string{"stall procedure", "timeout", "cleanup"}},
+		190: {base: "9ae69513839167f50336794c361ba0db627d995a", head: "fa96813851dda0908bb27560919dc30c9a5ca96b", files: []string{"core/src/iosTest/kotlin/pro/pyroapex/pos/core/db/IosDatabaseTest.kt"}, contents: []string{"iOS database"}},
+	}
+	for number, f := range fixtures {
+		var patch strings.Builder
+		for index, path := range f.files {
+			fmt.Fprintf(&patch, "diff --git a/%s b/%s\n@@ -0,0 +1 @@\n+%s\n", path, path, f.contents[index])
+		}
+		f.patch = patch.String()
+		fixtures[number] = f
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var number int
+		var filesEndpoint bool
+		if strings.HasSuffix(r.URL.Path, "/files") {
+			_, _ = fmt.Sscanf(r.URL.Path, "/repos/example/repo/pulls/%d/files", &number)
+			filesEndpoint = true
+		} else if _, err := fmt.Sscanf(r.URL.Path, "/repos/example/repo/pulls/%d", &number); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		f, ok := fixtures[number]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if filesEndpoint {
+			var files []map[string]string
+			for index, path := range f.files {
+				files = append(files, map[string]string{"filename": path, "patch": "@@ -0,0 +1 @@\n+" + f.contents[index]})
+			}
+			_ = json.NewEncoder(w).Encode(files)
+			return
+		}
+		if r.Header.Get("Accept") == "application/vnd.github.diff" {
+			_, _ = io.WriteString(w, f.patch)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"number":%d,"base":{"sha":%q},"head":{"sha":%q}}`, number, f.base, f.head)
+	}))
+	t.Cleanup(server.Close)
+	c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		number int
+		diff   connector.ValidationDiff
+		err    error
+	}
+	results := make(chan outcome, len(fixtures))
+	for number, fixture := range fixtures {
+		go func() {
+			issue := connector.Issue{Identifier: fmt.Sprintf("example/repo#%d", number), PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number, BaseSHA: fixture.base, HeadSHA: fixture.head}}
+			diff, err := c.PullRequestValidationDiff(t.Context(), issue)
+			results <- outcome{number, diff, err}
+		}()
+	}
+	for range fixtures {
+		got := <-results
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		want := fixtures[got.number]
+		if !reflect.DeepEqual(got.diff.Files, want.files) || got.diff.Patch != want.patch || got.diff.HeadSHA != want.head || got.diff.PRNumber != got.number {
+			t.Fatalf("PR %d snapshot = %#v", got.number, got.diff)
+		}
+	}
+}
+
+func TestPullRequestValidationDiffFetchFailuresAreRetryable(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		failedCall int
+	}{
+		{name: "initial metadata", failedCall: 1},
+		{name: "files", failedCall: 2},
+		{name: "patch", failedCall: 3},
+		{name: "refreshed metadata", failedCall: 4},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if int(calls.Add(1)) == tt.failedCall {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/files"):
+					_, _ = io.WriteString(w, `[{"filename":"AGENTS.md","patch":"@@ -0,0 +1 @@\n+bench origin"}]`)
+				case r.Header.Get("Accept") == "application/vnd.github.diff":
+					_, _ = io.WriteString(w, "diff --git a/AGENTS.md b/AGENTS.md\n@@ -0,0 +1 @@\n+bench origin\n")
+				default:
+					_, _ = io.WriteString(w, `{"number":155,"base":{"sha":"base"},"head":{"sha":"head"}}`)
+				}
+			}))
+			t.Cleanup(server.Close)
+			c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{Identifier: "example/repo#155", PRRepository: "example/repo",
+				PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base", HeadSHA: "head"}}
+			if _, err := c.PullRequestValidationDiff(t.Context(), issue); err == nil || !connector.IsRetryable(err) {
+				t.Fatalf("fetch failure = %v, want retryable error", err)
+			}
+		})
+	}
+}
+
+func TestPullRequestValidationDiffPreservesFetchFailureClassification(t *testing.T) {
+	t.Parallel()
+	for _, failure := range []struct {
+		name      string
+		status    int
+		body      string
+		headers   http.Header
+		transport error
+		want      error
+		retryable bool
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, want: ErrAuthenticationFailed},
+		{name: "forbidden", status: http.StatusForbidden, want: ErrAuthenticationFailed},
+		{name: "not found", status: http.StatusNotFound, want: ErrNotFound},
+		{name: "server error", status: http.StatusInternalServerError, want: ErrTransient, retryable: true},
+		{name: "timeout", transport: context.DeadlineExceeded, want: ErrTransient, retryable: true},
+		{name: "rate limited", status: http.StatusTooManyRequests, want: ErrRateLimited, retryable: true},
+		{name: "forbidden rate limited", status: http.StatusForbidden, headers: http.Header{"Retry-After": []string{"60"}}, want: ErrRateLimited, retryable: true},
+		{name: "invalid response", status: http.StatusOK, body: "{invalid", want: ErrInvalidResponse},
+	} {
+		for _, stage := range []struct {
+			name string
+			call int
+		}{
+			{name: "initial metadata", call: 1},
+			{name: "files", call: 2},
+			{name: "patch", call: 3},
+			{name: "refreshed metadata", call: 4},
+		} {
+			if failure.name == "invalid response" && stage.name == "patch" {
+				// The patch response is plain text, not JSON.
+				continue
+			}
+			t.Run(failure.name+"/"+stage.name, func(t *testing.T) {
+				t.Parallel()
+				server := httptest.NewServer(http.NotFoundHandler())
+				t.Cleanup(server.Close)
+				var calls atomic.Int32
+				client := staticHTTPClient{do: func(req *http.Request) (*http.Response, error) {
+					if int(calls.Add(1)) == stage.call {
+						if failure.transport != nil {
+							return nil, failure.transport
+						}
+						return jsonResponse(req, failure.status, failure.body, failure.headers), nil
+					}
+					switch {
+					case strings.HasSuffix(req.URL.Path, "/files"):
+						return jsonResponse(req, http.StatusOK, `[{"filename":"AGENTS.md","patch":"@@ -0,0 +1 @@\n+safe"}]`, nil), nil
+					case req.Header.Get("Accept") == "application/vnd.github.diff":
+						return jsonResponse(req, http.StatusOK, "diff --git a/AGENTS.md b/AGENTS.md\n@@ -0,0 +1 @@\n+safe\n", nil), nil
+					default:
+						return jsonResponse(req, http.StatusOK, `{"number":155,"base":{"sha":"base"},"head":{"sha":"head"}}`, nil), nil
+					}
+				}}
+				c, err := NewConnector(Config{Endpoint: server.URL, APIKey: "token", HTTPClient: client})
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.client.restBackoffs = newRESTBackoffRegistry()
+				issue := connector.Issue{Identifier: "example/repo#155", PRRepository: "example/repo",
+					PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base", HeadSHA: "head"}}
+				_, err = c.PullRequestValidationDiff(t.Context(), issue)
+				if err == nil || connector.IsRetryable(err) != failure.retryable {
+					t.Fatalf("fetch failure = %v, retryable = %t, want %t", err, connector.IsRetryable(err), failure.retryable)
+				}
+				if !errors.Is(err, failure.want) {
+					t.Fatalf("fetch failure = %v, want wrapped %v", err, failure.want)
+				}
+			})
+		}
+	}
+}
+
+func TestValidationDiffRejectsOtherPRFiles(t *testing.T) {
+	t.Parallel()
+	patch := "diff --git a/WORKFLOW.md b/WORKFLOW.md\n@@ -0,0 +1 @@\n+workflow\n"
+	pr220Patch := "diff --git a/WORKFLOW.md b/WORKFLOW.md\n+stall procedure\ndiff --git a/ui/build.gradle.kts b/ui/build.gradle.kts\n+timeout\ndiff --git a/ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt b/ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt\n+cleanup\n"
+	for _, tt := range []struct {
+		name  string
+		files []string
+		patch string
+		want  bool
+	}{
+		{name: "matching workflow", files: []string{"WORKFLOW.md"}, patch: patch, want: true},
+		{name: "path contains destination marker", files: []string{"docs b/readme.md"}, patch: "diff --git a/docs b/readme.md b/docs b/readme.md\n+docs\n", want: true},
+		{name: "ambiguous suffix is not the destination", files: []string{"readme.md"}, patch: "diff --git a/docs b/readme.md b/docs b/readme.md\n+docs\n"},
+		{name: "renamed file", files: []string{"new.md"}, patch: "diff --git a/old.md b/new.md\nsimilarity index 100%\nrename from old.md\nrename to new.md\n", want: true},
+		{name: "docs PR list with workflow patch", files: []string{"AGENTS.md", "README.md"}, patch: patch},
+		{name: "missing file list", files: nil, patch: patch},
+		{name: "PR220 receipt files", files: []string{"WORKFLOW.md", "ui/build.gradle.kts", "ui/src/jvmTest/kotlin/pro/pyroapex/pos/ui/sales/ReceiptScanComposeTest.kt"}, patch: pr220Patch, want: true},
+		{name: "PR190 iOS files against PR220 patch", files: []string{"core/src/iosTest/kotlin/pro/pyroapex/pos/core/db/IosDatabaseTest.kt"}, patch: pr220Patch},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameValidationFiles(tt.files, tt.patch); got != tt.want {
+				t.Fatalf("sameValidationFiles(%v) = %t, want %t", tt.files, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConnectorSecurityAuditSnapshotUsesStableMetadataAndTextualDiff(t *testing.T) {
 	t.Parallel()
 
@@ -6389,6 +6613,38 @@ func TestConnectorCloseIssueCallsCloseIssue(t *testing.T) {
 	body := requests[0]["body"].(map[string]any)
 	if body["state"] != "closed" || body["state_reason"] != "completed" {
 		t.Fatalf("close body = %#v, want closed/completed", body)
+	}
+}
+
+func TestConnectorCloseIssueAfterMergeAutoClosure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		state       string
+		reason      string
+		wantSuccess bool
+	}{
+		{name: "auto closed completed", state: "closed", reason: "completed", wantSuccess: true},
+		{name: "still open", state: "open"},
+		{name: "closed not planned", state: "closed", reason: "not_planned"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{status: http.StatusUnprocessableEntity, method: http.MethodPatch, path: "/repos/example/repo/issues/1", body: `{"message":"Validation Failed"}`},
+				{method: http.MethodGet, path: "/repos/example/repo/issues/1", body: fmt.Sprintf(`{"node_id":"I_kw1","state":%q,"state_reason":%q}`, tt.state, tt.reason)},
+			})
+			c := newGitHubTestConnector(t, server, Config{})
+			c.projectCache.SetIssueRef("I_kw1", issueRef{Owner: "example", Name: "repo", Number: 1})
+			err := c.CloseIssue(t.Context(), "I_kw1")
+			if (err == nil) != tt.wantSuccess {
+				t.Fatalf("CloseIssue() error = %v, want success %v", err, tt.wantSuccess)
+			}
+			if got := len(server.requests()); got != 2 {
+				t.Fatalf("request count = %d, want PATCH then GET", got)
+			}
+		})
 	}
 }
 
@@ -7435,5 +7691,44 @@ func TestConnectorLookupBranchHead(t *testing.T) {
 				t.Fatalf("variables = %#v", variables)
 			}
 		})
+	}
+}
+
+func TestConnectorPostCommitStatusPostsSuccessForTheExactHead(t *testing.T) {
+	t.Parallel()
+
+	sha := strings.Repeat("a1", 20)
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodPost,
+			path:   "/repos/example/repo/statuses/" + sha,
+			body:   `{"context":"local-gate","state":"success","created_at":"2026-09-29T00:00:00Z"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	if err := c.PostCommitStatus(context.Background(), "example/repo", sha, "local-gate", "Detent ran the configured gate on this head"); err != nil {
+		t.Fatalf("PostCommitStatus() error = %v", err)
+	}
+	requests := server.requests()
+	if len(requests) != 1 || requests[0]["method"] != http.MethodPost {
+		t.Fatalf("requests = %#v, want one POST", requests)
+	}
+	body := requests[0]["body"].(map[string]any)
+	if body["state"] != "success" || body["context"] != "local-gate" {
+		t.Fatalf("status body = %#v, want success for local-gate", body)
+	}
+
+	for _, test := range []struct{ name, repository, sha, context string }{
+		{name: "short sha", repository: "example/repo", sha: "abc123", context: "local-gate"},
+		{name: "branch name", repository: "example/repo", sha: "main", context: "local-gate"},
+		{name: "no context", repository: "example/repo", sha: sha, context: " "},
+		{name: "no repository", repository: "repo", sha: sha, context: "local-gate"},
+	} {
+		if err := c.PostCommitStatus(context.Background(), test.repository, test.sha, test.context, ""); err == nil {
+			t.Errorf("%s: PostCommitStatus() accepted an invalid target", test.name)
+		}
+	}
+	if got := len(server.requests()); got != 1 {
+		t.Fatalf("invalid targets reached GitHub: %d requests", got)
 	}
 }

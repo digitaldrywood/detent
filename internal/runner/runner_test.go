@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -1685,6 +1687,7 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
 					t.Errorf("fixture scratch cleanup: %v", err)
 				}
+				_ = os.RemoveAll(workspace.WorkerScratchRoot(workspacePath))
 			})
 			reaped := false
 			r := &Runner{
@@ -1735,12 +1738,8 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 			if execution.cleanupErr != nil {
 				t.Fatalf("scratch removal error: %v (turn error: %v)", execution.cleanupErr, execution.err)
 			}
-			canonicalWorkspace, err := filepath.EvalSymlinks(workspacePath)
-			if err != nil {
-				t.Fatalf("EvalSymlinks() error = %v", err)
-			}
-			if backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, canonicalWorkspace+string(filepath.Separator)) {
-				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, canonicalWorkspace)
+			if scratchRoot := workspace.WorkerScratchRoot(workspacePath); backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, scratchRoot+string(filepath.Separator)) {
+				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, scratchRoot)
 			}
 			_, statErr := os.Stat(backend.tempDir)
 			if tt.wantScratch {
@@ -1860,6 +1859,7 @@ func TestRunAgentTurnRecreatesWorkerScratchForEveryAttempt(t *testing.T) {
 	t.Parallel()
 
 	workspacePath := t.TempDir()
+	t.Cleanup(func() { _ = os.RemoveAll(workspace.WorkerScratchRoot(workspacePath)) })
 	backend := &scratchWritingAgentBackend{}
 	r := &Runner{
 		now:    time.Now,
@@ -1898,6 +1898,12 @@ func TestRunAgentTurnRecreatesWorkerScratchForEveryAttempt(t *testing.T) {
 			}
 			if !backend.scratchReady[len(backend.scratchReady)-1] {
 				t.Fatal("worker scratch did not exist when backend turn started")
+			}
+			if filepath.Dir(backend.tempDir) != workspace.WorkerScratchRoot(workspacePath) {
+				t.Fatalf("worker scratch = %q, want attempt under %q", backend.tempDir, workspace.WorkerScratchRoot(workspacePath))
+			}
+			if !slices.Contains(backend.writableRoots, backend.tempDir) {
+				t.Fatalf("sandbox writable roots = %q, want worker scratch %q", backend.writableRoots, backend.tempDir)
 			}
 			if _, err := os.Stat(backend.tempDir); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("worker scratch stat error after turn = %v, want not exist", err)
@@ -2541,6 +2547,7 @@ func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				if backend.request.Workspace != "" {
+					_ = os.RemoveAll(workspace.WorkerScratchRoot(backend.request.Workspace))
 					if _, err := os.Stat(backend.request.Workspace); errors.Is(err, os.ErrNotExist) {
 						return
 					}
@@ -2864,10 +2871,10 @@ func TestSessionTokenUsageNormalizesFreshAndResumedThreads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			usage := newSessionTokenUsage(tt.resumed)
+			normalize := NewTokenUsageNormalizer(tt.resumed)
 			var got AgentTokenUsage
 			for _, update := range tt.updates {
-				got = usage.normalize(update)
+				got = normalize(update)
 			}
 			gotCounts := AgentTokenCounts{
 				InputTokens:           got.InputTokens,
@@ -3005,6 +3012,8 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 		{name: "resumed again", workAttemptID: 4925, generation: 19, orphaned: true},
 		{name: "native initial", workAttemptID: 4898, generation: 17, native: true},
 		{name: "native resumed", workAttemptID: 4917, generation: 18, orphaned: true, native: true},
+		{name: "orphan without attempt ID is rejected", generation: 20, orphaned: true},
+		{name: "orphan without generation is rejected", workAttemptID: 4931, orphaned: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -3035,7 +3044,18 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 					AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode, Orphaned: true,
 				}
 			}
-			if _, err := runner.Run(context.Background(), req); err != nil {
+			completeIdentity := tt.workAttemptID > 0 && tt.generation > 0
+			_, err = runner.Run(context.Background(), req)
+			if tt.orphaned && !completeIdentity {
+				if err == nil || !strings.Contains(err.Error(), "completion attempt and generation") {
+					t.Fatalf("Run() error = %v, want missing completion identity", err)
+				}
+				if backend.request.Prompt != "" {
+					t.Fatal("orphaned session started a turn without completion identity")
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
 			prompt := backend.request.Prompt
@@ -3050,16 +3070,32 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 					}
 				}
 			}
-			for _, want := range []string{
-				fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
-				fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
-				"The orchestrator is the only writer of tracker lane state",
-			} {
-				if !strings.Contains(prompt, want) {
-					t.Errorf("prompt missing %q", want)
+			if !strings.Contains(prompt, "The orchestrator is the only writer of tracker lane state") {
+				t.Error("prompt missing lane ownership instruction")
+			}
+			fence := strings.LastIndex(prompt, "```detent-status\n")
+			if fence < 0 {
+				t.Fatal("prompt missing completion handoff")
+			}
+			block := strings.SplitN(prompt[fence+len("```detent-status\n"):], "```", 2)[0]
+			signal, err := workpad.ParseStatusBlock(block, "digitaldrywood/detent")
+			if err != nil {
+				t.Fatalf("ParseStatusBlock() error = %v", err)
+			}
+			if got := workpad.CurrentAttemptCompletion(signal, tt.workAttemptID, tt.generation); got != completeIdentity {
+				t.Errorf("CurrentAttemptCompletion() = %t, want %t", got, completeIdentity)
+			}
+			if completeIdentity {
+				for _, want := range []string{
+					fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
+					fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
+				} {
+					if !strings.Contains(block, want) {
+						t.Errorf("handoff missing %q", want)
+					}
 				}
 			}
-			if tt.orphaned {
+			if tt.orphaned && completeIdentity {
 				if backend.request.Resume.ThreadID != "original-thread" {
 					t.Errorf("resume thread = %q, want original-thread", backend.request.Resume.ThreadID)
 				}
@@ -3119,9 +3155,11 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 			Title:         "Resume orphaned session",
 			ModelOverride: "gpt-5.6-codex",
 		},
-		StartedAt:   startedAt,
-		RetryMode:   RetryModeResume,
-		ResumeState: resumeState,
+		StartedAt:     startedAt,
+		WorkAttemptID: 1156,
+		Generation:    1,
+		RetryMode:     RetryModeResume,
+		ResumeState:   resumeState,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -3129,8 +3167,10 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 	if agentBackend.verifiedResume.ThreadID != "thread-1155" {
 		t.Fatalf("verified resume = %#v, want original thread", agentBackend.verifiedResume)
 	}
-	if agentBackend.request.Prompt != orphanResumePrompt {
-		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge", agentBackend.request.Prompt)
+	if !strings.HasPrefix(agentBackend.request.Prompt, orphanResumePrompt) ||
+		!strings.Contains(agentBackend.request.Prompt, `completion_work_attempt_id: "1156"`) ||
+		!strings.Contains(agentBackend.request.Prompt, `completion_generation: "1"`) {
+		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge and completion identity", agentBackend.request.Prompt)
 	}
 	if sessionStore.started.ResumedFromSessionID != 1155 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryResumed {
 		t.Fatalf("SessionStart resume metadata = %#v", sessionStore.started)
@@ -3180,8 +3220,10 @@ func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
 			Title:         "Resume orphaned session",
 			ModelOverride: "gpt-5.6-codex",
 		},
-		StartedAt: startedAt,
-		RetryMode: RetryModeResume,
+		StartedAt:     startedAt,
+		WorkAttemptID: 1157,
+		Generation:    2,
+		RetryMode:     RetryModeResume,
 		ResumeState: store.AgentResumeState{
 			DetentSessionID:  1155,
 			ProviderThreadID: "thread-missing",
@@ -3239,9 +3281,11 @@ func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
 	}
 
 	_, err = runner.Run(context.Background(), RunRequest{
-		Issue:     connector.Issue{ID: "issue-1155", Identifier: "digitaldrywood/detent#1155", Title: "Resume orphaned session", ModelOverride: "gpt-5.6-codex"},
-		StartedAt: startedAt,
-		RetryMode: RetryModeResume,
+		Issue:         connector.Issue{ID: "issue-1155", Identifier: "digitaldrywood/detent#1155", Title: "Resume orphaned session", ModelOverride: "gpt-5.6-codex"},
+		StartedAt:     startedAt,
+		WorkAttemptID: 1158,
+		Generation:    3,
+		RetryMode:     RetryModeResume,
 		ResumeState: store.AgentResumeState{
 			DetentSessionID: 1155, ProviderThreadID: "thread-old", RequestedModel: "gpt-5.6-codex",
 			AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode, Orphaned: true,
@@ -3253,7 +3297,7 @@ func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
 	if len(agentBackend.requests) != 2 {
 		t.Fatalf("backend requests = %d, want resume and fresh", len(agentBackend.requests))
 	}
-	if agentBackend.requests[0].Prompt != orphanResumePrompt {
+	if !strings.HasPrefix(agentBackend.requests[0].Prompt, orphanResumePrompt) {
 		t.Fatalf("resume prompt = %q", agentBackend.requests[0].Prompt)
 	}
 	if agentBackend.requests[1].Prompt == orphanResumePrompt || !strings.Contains(agentBackend.requests[1].Prompt, "Implement the issue") {
@@ -3957,7 +4001,7 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 			Identifier: "digitaldrywood/detent#860",
 			BranchName: "detent/digitaldrywood_detent_860",
 			PullRequest: &connector.PullRequest{
-				BaseRef: " dev ",
+				BaseRef: " dev ", HeadSHA: "pr-head",
 			},
 		},
 		Mode: RunModeMerge,
@@ -3976,6 +4020,9 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 	}
 	if workspaceBackend.prepareOptions.TargetBranch != "dev" {
 		t.Fatalf("PrepareMerge() TargetBranch = %q, want dev", workspaceBackend.prepareOptions.TargetBranch)
+	}
+	if workspaceBackend.prepareOptions.ExpectedRemoteHead != "pr-head" || workspaceBackend.prepareOptions.ValidationCommand != "make check" {
+		t.Fatalf("PrepareMerge() verification options = %#v, want PR head and configured gate", workspaceBackend.prepareOptions)
 	}
 	if !workspaceBackend.afterRun {
 		t.Fatal("AfterRun() was not called")
@@ -4010,6 +4057,7 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 		}},
 		{name: "degraded hydration", mutate: func(pr *connector.PullRequest) { pr.HydrationDegradedReason = "unavailable" }},
 		{name: "conflict", mutate: func(pr *connector.PullRequest) { pr.MergeableState = "dirty" }},
+		{name: "strict base policy", mutate: func(pr *connector.PullRequest) { pr.BaseBranchStrict = true }},
 		{name: "pending checks", mutate: func(pr *connector.PullRequest) { pr.CIStatus = "pending" }},
 		{name: "draft", mutate: func(pr *connector.PullRequest) { pr.Draft = true }},
 		{name: "closed", mutate: func(pr *connector.PullRequest) { pr.State = "closed" }},
@@ -4025,6 +4073,51 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 			}
 			if got := mergeFastPathCheckedHead(connector.Issue{PullRequest: &pullRequest}); got != tt.want {
 				t.Fatalf("mergeFastPathCheckedHead() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunnerMergeBaseSyncSelection(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		mergeable     string
+		ciStatus      string
+		strict        bool
+		requiredError bool
+		refreshHead   string
+		wantSync      bool
+	}{
+		{name: "clean green non-strict head", mergeable: "clean", ciStatus: "success"},
+		{name: "strict base", mergeable: "clean", ciStatus: "success", strict: true, wantSync: true},
+		{name: "behind base", mergeable: "behind", ciStatus: "success", wantSync: true},
+		{name: "conflicting base", mergeable: "dirty", ciStatus: "success", wantSync: true},
+		{name: "checks pending", mergeable: "clean", ciStatus: "pending", wantSync: true},
+		{name: "required check failed", mergeable: "clean", ciStatus: "success", requiredError: true, wantSync: true},
+		{name: "merge API rejected base", mergeable: "clean", ciStatus: "success", refreshHead: "checked-head", wantSync: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &fakeMergeWorkspaceBackend{prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean}}
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pr := &connector.PullRequest{State: "open", MergeableState: tt.mergeable, CIStatus: tt.ciStatus, HeadSHA: "checked-head", BaseRef: "main", BaseBranchStrict: tt.strict}
+			if tt.requiredError {
+				pr.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Verify", Conclusion: "failure"}}
+			}
+			result, err := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "example/repo#1", PullRequest: pr}, Mode: RunModeMerge, MergeRefreshHeadSHA: tt.refreshHead})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if backend.prepareCalled != tt.wantSync {
+				t.Fatalf("PrepareMerge called = %t, want %t", backend.prepareCalled, tt.wantSync)
+			}
+			if tt.wantSync && result.Output != RunOutputMergeFastPathClean || !tt.wantSync && result.Output != RunOutputMergeFastPathCheckedHead {
+				t.Fatalf("result output = %q, want sync=%t", result.Output, tt.wantSync)
 			}
 		})
 	}
@@ -4109,6 +4202,47 @@ func TestRunnerPublishesWorkspaceCreateStartedBeforeCreate(t *testing.T) {
 		update.RecentEvents[0].Event != "workspace_create_started" ||
 		update.RecentEvents[0].Message != "workspace creation started" {
 		t.Fatalf("workspace progress events = %#v, want one creation event", update.RecentEvents)
+	}
+}
+
+func TestRunnerWorkspaceTimeoutIsNotForgeUnavailable(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		failure string
+	}{
+		{"after_create database", "after_create: workspace db: postgresql://127.0.0.1:5432: timeout: context deadline exceeded"},
+		{"workspace fetch", "git fetch https://github.com/acme/repo: context deadline exceeded"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			failure := errors.New(tt.failure)
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{}, Workspace: &fakeWorkspaceBackend{createErr: failure}, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-workspace", Identifier: "acme/repo#1"}})
+			if !errors.Is(err, ErrWorkspacePreparation) || !errors.Is(err, failure) {
+				t.Fatalf("workspace error = %v", err)
+			}
+			if _, ok := forgeavailability.As(err); ok {
+				t.Fatalf("workspace error entered forge availability: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemoteWriteTimeoutStillClassifiesForgeUnavailable(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"git push", "gh pr create"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			err := classifyForgeOperationError(errors.New("https://github.com/acme/repo: context deadline exceeded"), operation, "github.com")
+			availability, ok := forgeavailability.As(err)
+			if !ok || availability.Class != forgeavailability.ClassTimeout || availability.Scope.Host != "github.com" {
+				t.Fatalf("%s error = %v, want github.com forge timeout", operation, err)
+			}
+		})
 	}
 }
 
@@ -4232,7 +4366,9 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 		name             string
 		agentOutput      string
 		verification     workspace.MergePrepareResult
+		verificationErr  error
 		wantOutput       string
+		wantError        string
 		wantPrepareCalls int
 		wantHeadPushed   bool
 	}{
@@ -4249,6 +4385,22 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 			agentOutput:      "DETENT_MERGE_FALLBACK: resolved",
 			verification:     workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean},
 			wantOutput:       RunOutputMergeFallbackRework,
+			wantPrepareCalls: 2,
+		},
+		{
+			name:             "gate failure fails resolved attempt",
+			agentOutput:      "DETENT_MERGE_FALLBACK: resolved",
+			verificationErr:  errors.New("merge resolution gate failed: exit status 1"),
+			wantOutput:       RunOutputMergeFallbackResolved,
+			wantError:        "merge resolution gate failed",
+			wantPrepareCalls: 2,
+		},
+		{
+			name:             "push failure fails resolved attempt",
+			agentOutput:      "DETENT_MERGE_FALLBACK: resolved",
+			verificationErr:  errors.New("push validated merge resolution: rejected"),
+			wantOutput:       RunOutputMergeFallbackResolved,
+			wantError:        "push validated merge resolution",
 			wantPrepareCalls: 2,
 		},
 		{
@@ -4289,6 +4441,14 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 					tt.verification,
 				},
 			}
+			if tt.verificationErr != nil {
+				workspaceBackend.prepareFunc = func(_ context.Context, call int) (workspace.MergePrepareResult, error) {
+					if call == 0 {
+						return workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict}, nil
+					}
+					return workspace.MergePrepareResult{}, tt.verificationErr
+				}
+			}
 			agentBackend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: tt.agentOutput}}}
 			runner, err := NewRunner(Dependencies{
 				Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 20 * 60 * 1000}}},
@@ -4311,7 +4471,11 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 				},
 				Mode: RunModeMerge,
 			})
-			if err != nil {
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) || result.FinalState != FinalStateFailed {
+					t.Fatalf("Run() = %#v, %v; want failed attempt containing %q", result, err, tt.wantError)
+				}
+			} else if err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
 			if result.Output != tt.wantOutput {
@@ -4615,8 +4779,10 @@ func TestRunnerRunReportsGitMetadataFailuresByWorkspaceKind(t *testing.T) {
 				t.Fatalf("Run() error = %v", err)
 			}
 
-			if len(agentBackend.request.ExtraWritableRoots) != 0 {
-				t.Fatalf("ExtraWritableRoots = %#v, want none", agentBackend.request.ExtraWritableRoots)
+			roots := agentBackend.request.ExtraWritableRoots
+			scratch := agentBackend.request.TempDir
+			if len(roots) != 1 || roots[0] != scratch || filepath.Dir(scratch) != workspace.WorkerScratchRoot(workspacePath) {
+				t.Fatalf("ExtraWritableRoots = %#v, want only owned scratch %q", roots, scratch)
 			}
 			gotWarning := strings.Contains(logs.String(), "workspace git metadata writable roots unavailable")
 			if gotWarning != tt.wantWarning {
@@ -5787,11 +5953,14 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 			Title:       "Add validator gate",
 			Description: "## Acceptance Criteria\n- Validator checks the PR diff.",
 			PullRequest: &connector.PullRequest{
+				Number:     522,
 				URL:        "https://github.test/digitaldrywood/detent/pull/522",
 				BranchName: "detent/digitaldrywood_detent_522",
 				BaseSHA:    "base-sha",
+				HeadSHA:    "head-sha",
 			},
 		},
+		Diff: &connector.ValidationDiff{Repository: "digitaldrywood/detent", PRNumber: 522, BaseSHA: "base-sha", HeadSHA: "head-sha", Files: []string{"README.md"}, Patch: "diff --git a/README.md b/README.md\n+seeded\n", Digest: "digest"},
 	})
 	if err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -5821,7 +5990,7 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	if workspaceBackend.createIssue.BaseRef != "base-sha" {
 		t.Fatalf("workspace issue BaseRef = %q, want base-sha", workspaceBackend.createIssue.BaseRef)
 	}
-	for _, want := range []string{"validator-agent", "Acceptance Criteria", "git diff", "JSON"} {
+	for _, want := range []string{"validator-agent", "Acceptance Criteria", "sha256=digest", "+seeded", "JSON"} {
 		if !strings.Contains(validatorBackend.request.Prompt, want) {
 			t.Fatalf("validator prompt missing %q:\n%s", want, validatorBackend.request.Prompt)
 		}
@@ -5833,6 +6002,38 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 		if value := validatorBackend.request.Environment.Variables[name]; value != "" {
 			t.Fatalf("validator environment %s = %q, want cleared", name, value)
 		}
+	}
+}
+
+func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		heads       []string
+		verifyErrAt int
+		turnErr     error
+	}{
+		{name: "changed head before cleanup", heads: []string{"head", "other", "head"}},
+		{name: "dirty tree with turn error", heads: []string{"head", "head", "head"}, verifyErrAt: 2, turnErr: errors.New("turn failed")},
+		{name: "changed head after cleanup with turn error", heads: []string{"head", "head", "other"}, turnErr: errors.New("turn failed")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ws := &reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: tt.heads, verifyErrAt: tt.verifyErrAt}
+			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","score":1,"summary":"pass"}`}}, result: AgentTurnResult{ThreadID: "thread", TurnID: "turn"}, err: tt.turnErr}
+			runner, err := NewRunner(Dependencies{
+				Workflow:  config.Workflow{Config: config.Config{Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "test"}}}}, Prompt: "Review"},
+				Workspace: ws, AgentBackend: backend,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runner.Validate(t.Context(), testValidatorRequest(connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{Number: 1, BaseSHA: "base", HeadSHA: "head", BranchName: "branch", State: "OPEN"}}))
+			if !errors.Is(err, ErrValidatorInfrastructure) {
+				t.Fatalf("Validate() error = %v, want infrastructure failure", err)
+			}
+			if !ws.afterRun {
+				t.Fatal("after_run was not called")
+			}
+		})
 	}
 }
 
@@ -7313,6 +7514,31 @@ type fakeWorkspaceBackend struct {
 	recoveryCalls  int
 }
 
+type reviewMutationWorkspace struct {
+	*fakeWorkspaceBackend
+	heads       []string
+	headCalls   int
+	verifyCalls int
+	verifyErrAt int
+}
+
+func (w *reviewMutationWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
+	index := w.headCalls
+	w.headCalls++
+	if index >= len(w.heads) {
+		index = len(w.heads) - 1
+	}
+	return w.heads[index], nil
+}
+
+func (w *reviewMutationWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
+	w.verifyCalls++
+	if w.verifyCalls == w.verifyErrAt {
+		return errors.New("review workspace has local changes")
+	}
+	return nil
+}
+
 type fakeResidualWorkspaceBackend struct {
 	*fakeWorkspaceBackend
 	active []workspace.Issue
@@ -7453,12 +7679,14 @@ type deliverableRecoveryAgentBackend struct {
 type scratchWritingAgentBackend struct {
 	runErr        error
 	tempDir       string
+	writableRoots []string
 	workerProcess procgroup.Identity
 	scratchReady  []bool
 }
 
 func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.tempDir = req.TempDir
+	b.writableRoots = req.ExtraWritableRoots
 	_, scratchErr := os.Stat(req.TempDir)
 	b.scratchReady = append(b.scratchReady, scratchErr == nil)
 	if b.workerProcess.PID > 0 {
@@ -7867,6 +8095,131 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 				}
 			} else if got.PullRequestHeadSHA != "" || got.BaseRef != "" || got.ProgressBaseRef != "" {
 				t.Fatalf("terminal PR must use default base only: %+v", got)
+			}
+			wantLanded := ""
+			if state == "MERGED" {
+				wantLanded = "old-head"
+			}
+			if got.LandedHeadSHA != wantLanded {
+				t.Fatalf("landed head = %q, want %q", got.LandedHeadSHA, wantLanded)
+			}
+		})
+	}
+}
+
+func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		evidence      string
+		pullState     string
+		laterCommit   bool
+		wantPreserved bool
+	}{
+		{name: "hub landed metadata", evidence: "hub"},
+		{name: "merged pull request with deleted branch", evidence: "pull", pullState: "MERGED"},
+		{name: "closed unmerged pull request", evidence: "pull", pullState: "CLOSED", wantPreserved: true},
+		{name: "work after merged pull request", evidence: "pull", pullState: "MERGED", laterCommit: true, wantPreserved: true},
+		{name: "no landing evidence", wantPreserved: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "remote.git")
+			runRunnerGit(t, source, "init", "--bare", remote)
+			runRunnerGit(t, source, "remote", "add", "origin", remote)
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			runRunnerGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "wi_1", Identifier: "repo#1", State: "Done", Closed: true}
+			info, err := backend.Create(t.Context(), workspaceIssue("project", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "delivered.txt"), []byte("delivered work\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runRunnerGit(t, info.Path, "add", "delivered.txt")
+			runRunnerGit(t, info.Path, "commit", "-m", "delivered work")
+			landedHead := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			runRunnerGit(t, info.Path, "push", "origin", "HEAD:refs/heads/"+info.Branch)
+			runRunnerGit(t, source, "fetch", "origin")
+			runRunnerGit(t, source, "merge", "--squash", info.Branch)
+			runRunnerGit(t, source, "commit", "-m", "squash delivered work")
+			runRunnerGit(t, source, "push", "origin", "main")
+			runRunnerGit(t, source, "push", "origin", "--delete", info.Branch)
+			switch tt.evidence {
+			case "hub":
+				issue.Metadata = map[string]string{"hub_landed_head_sha": landedHead}
+			case "pull":
+				issue.PullRequest = &connector.PullRequest{Number: 7, State: tt.pullState, HeadSHA: landedHead}
+			}
+			if tt.laterCommit {
+				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "later work")
+			}
+			runner := &Runner{projectID: "project", workspace: backend}
+			result, err := runner.ReapWorkspace(t.Context(), issue)
+			if got := errors.Is(err, workspace.ErrWorkspacePreserved); got != tt.wantPreserved {
+				t.Fatalf("ReapWorkspace() = %+v, %v; want preserved %t", result, err, tt.wantPreserved)
+			}
+			if tt.wantPreserved {
+				if _, statErr := os.Stat(info.Path); statErr != nil {
+					t.Fatalf("preserved workspace missing: %v", statErr)
+				}
+				return
+			}
+			if err != nil || result.Worktrees != 1 || result.Branches != 1 {
+				t.Fatalf("ReapWorkspace() = %+v, %v", result, err)
+			}
+			reconciled, err := runner.ReconcileWorkspaces(t.Context(), nil)
+			if err != nil || reconciled.Removed != 0 || len(reconciled.Failures) != 0 {
+				t.Fatalf("ReconcileWorkspaces() = %+v, %v; want no cleanup failures", reconciled, err)
+			}
+		})
+	}
+}
+
+func TestRunnerMergeFastPathValidatesTheHeadForALocalStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		localStatus  string
+		result       workspace.MergePrepareResult
+		wantValidate bool
+		wantHead     string
+	}{
+		{name: "local status configured", localStatus: "local-gate", result: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadSHA: "validated-head", Validated: true}, wantValidate: true, wantHead: "validated-head"},
+		{name: "no local status", result: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadSHA: "rebased-head"}, wantValidate: false, wantHead: ""},
+		{name: "clean but not validated", localStatus: "local-gate", result: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadSHA: "rebased-head"}, wantValidate: true, wantHead: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &fakeMergeWorkspaceBackend{prepareResult: tt.result}
+			cfg := config.Config{}
+			cfg.Gate = gate.Config{Kind: gate.KindCommand, Run: "make check-fast", LocalStatus: tt.localStatus}
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pr := &connector.PullRequest{State: "open", MergeableState: "behind", CIStatus: "success", HeadSHA: "published-head", BaseRef: "develop"}
+			result, err := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "example/repo#1", PullRequest: pr}, Mode: RunModeMerge})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if backend.prepareOptions.ValidateHead != tt.wantValidate || backend.prepareOptions.ValidationCommand != "make check-fast" {
+				t.Fatalf("PrepareMerge options = %+v, want ValidateHead %v", backend.prepareOptions, tt.wantValidate)
+			}
+			if result.Output != RunOutputMergeFastPathClean || result.GateValidatedHead != tt.wantHead {
+				t.Fatalf("result = output %q validated head %q, want %q", result.Output, result.GateValidatedHead, tt.wantHead)
+			}
+			if wantRun := map[bool]string{true: "make check-fast"}[tt.wantHead != ""]; result.GateValidatedRun != wantRun {
+				t.Fatalf("GateValidatedRun = %q, want %q", result.GateValidatedRun, wantRun)
 			}
 		})
 	}

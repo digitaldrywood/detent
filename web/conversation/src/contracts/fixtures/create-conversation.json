@@ -1,0 +1,54 @@
+{
+  "conversation": {
+    "id": "conv_1b884c37a90d42f0932e5d6c7ae10f45",
+    "organization_id": "org_4d1f",
+    "project_id": "proj_port_app",
+    "title": "New chat",
+    "visibility": "private",
+    "status": "active",
+    "work_item_id": null,
+    "linked_at": null,
+    "work_item": null,
+    "preferences": {
+      "model": "auto",
+      "reasoning_effort": "auto",
+      "access": "auto"
+    },
+    "owner": {
+      "principal_id": "tok_7b21",
+      "subject": "usr_michael"
+    },
+    "execution": {
+      "status": "idle",
+      "attempt_id": null,
+      "run_id": null,
+      "runner_id": null,
+      "thread_id": null,
+      "turn_id": null,
+      "capabilities": {
+        "steer": false,
+        "interrupt": true,
+        "answer": false,
+        "continue": false
+      },
+      "resume": "",
+      "error": null,
+      "updated_at": "2026-09-09T11:14:02Z"
+    },
+    "revision": 1,
+    "event_seq": 2,
+    "message_count": 1,
+    "created_at": "2026-09-09T11:14:02Z",
+    "updated_at": "2026-09-09T11:14:02Z",
+    "last_message_at": null
+  },
+  "receipt": {
+    "key": "cmd_01J8Z0V6C3N4",
+    "kind": "message",
+    "status": "delivered",
+    "message_id": "msg_6a20f1c4",
+    "question_id": null,
+    "error": null,
+    "updated_at": "2026-09-09T10:02:43Z"
+  }
+}

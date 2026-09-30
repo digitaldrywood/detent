@@ -145,6 +145,9 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 		return result, fmt.Errorf("%w: workspace in use", ErrWorkspacePreserved)
 	}
 	defer release()
+	if sessionHeld(info.Path) {
+		return result, fmt.Errorf("%w: an open workspace session holds %s", ErrWorkspacePreserved, info.Path)
+	}
 	exists, _, err := pathExists(info.Path)
 	if err != nil {
 		return CleanupResult{}, err

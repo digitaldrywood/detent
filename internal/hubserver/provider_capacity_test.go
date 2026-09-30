@@ -20,8 +20,8 @@ func capacityReport(now time.Time) providercapacity.Report {
 func publishCapacity(t *testing.T, f nativeFixture, r runnerFixture, reports ...providercapacity.Report) {
 	t.Helper()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
-		map[string]any{"display_name": "runner", "capacity": 8, "version": "test", "provider_reports": reports})
-	requireNativeStatus(t, response, http.StatusNoContent)
+		map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "provider_reports": reports})
+	requireNativeStatus(t, response, http.StatusOK)
 }
 
 func providerClaim(r runnerFixture, issue tracker.NativeIssue, session string) tracker.NativeClaim {

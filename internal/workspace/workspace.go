@@ -35,6 +35,7 @@ const failedWorkspacePreservationTimeout = time.Minute
 const workspaceCommandWaitDelay = time.Second
 const hookOutputTailBytes = 16 * 1024
 const workerScratchRelativePath = ".detent/worker-tmp"
+const workerScratchBaseName = "detent-worker-scratch"
 const quarantineTimestampFormat = "20060102T150405.000000000Z"
 const quarantineAccumulationWarningThreshold = 5
 
@@ -47,6 +48,34 @@ var (
 )
 
 var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+
+// autoBranchPrefix is the namespace every branch this backend creates lives
+// in, and the only namespace cleanup ever deletes a branch from.
+const autoBranchPrefix = "detent/"
+
+// workspaceSessionBranchPrefix names the auto-branch of a workspace session
+// worktree (decisions 18.1, `worktree: "fresh"`). Such a worktree serves a
+// read-only checkout of a `head_sha` somebody asked to look at; it produces no
+// commits of its own, so cleanup removes its branch rather than retaining it
+// the way it retains an attempt's branch. Keys never contain "/"
+// (unsafeKeyPattern), so this namespace cannot collide with an attempt branch.
+const workspaceSessionBranchPrefix = autoBranchPrefix + "workspace/"
+
+func workspaceSessionBranchName(key string) string {
+	return workspaceSessionBranchPrefix + strings.ToLower(key)
+}
+
+// sessionOwned reports whether a worktree belongs to a workspace session. The
+// caller's own issue says so for a session it is closing; otherwise the only
+// evidence is the branch this backend derives from the worktree's key, which
+// an ordinary issue on an explicit detent/workspace/ branch never matches.
+func sessionOwned(info Info, issue Issue) bool {
+	if issue.WorkspaceSession {
+		return true
+	}
+	key := strings.TrimSpace(info.Key)
+	return key != "" && strings.TrimSpace(info.Branch) == workspaceSessionBranchName(key)
+}
 
 var sourceOperationLocks = struct {
 	sync.Mutex
@@ -142,7 +171,10 @@ type MergePreparer interface {
 }
 
 type MergePrepareOptions struct {
-	VerifyResolution   bool
+	VerifyResolution bool
+	// ValidateHead runs ValidationCommand on a cleanly rebased head before it
+	// is pushed. A resolved merge always runs it.
+	ValidateHead       bool
 	ValidationCommand  string
 	ExpectedRemoteHead string
 	Remote             string
@@ -156,6 +188,8 @@ type MergePrepareResult struct {
 	DiffStat      DiffStat
 	Message       string
 	HeadChanged   bool
+	// Validated reports that ValidationCommand passed on exactly HeadSHA.
+	Validated bool
 }
 
 type MergePrepareStatus string
@@ -197,13 +231,23 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
-	ProjectID          string
-	ID                 string
-	Identifier         string
-	BranchName         string
-	BaseRef            string
-	ProgressBaseRef    string
-	PullRequestHeadSHA string
+	ProjectID             string
+	ID                    string
+	Identifier            string
+	Terminal              bool
+	LandedHeadSHA         string
+	BranchName            string
+	BaseRef               string
+	ProgressBaseRef       string
+	PullRequestHeadSHA    string
+	PullRequestRepository string
+	PullRequestNumber     int
+	PullRequestBranch     string
+	// WorkspaceSession marks a workspace session checkout (decisions 18.1
+	// `worktree: "fresh"`): a worktree opened so a person can look at a
+	// commit, not one an attempt commits into. It takes its own branch
+	// namespace so cleanup can tell the two apart.
+	WorkspaceSession bool
 }
 
 type Info struct {
@@ -564,9 +608,13 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		return result, fmt.Errorf("%w: workspace in use", ErrWorkspacePreserved)
 	}
 	defer release()
-	if err := l.checkWorkspaceCleanup(ctx, info); err != nil {
+	if sessionHeld(info.Path) {
+		return result, fmt.Errorf("%w: an open workspace session holds %s", ErrWorkspacePreserved, info.Path)
+	}
+	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return result, err
 	}
+	session := l.sessionRecorded(info, issue)
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
@@ -579,7 +627,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if pruneErr != nil {
 			return result, pruneErr
 		}
-		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch)
+		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session, issue)
 		if branchErr != nil {
 			return result, branchErr
 		}
@@ -608,7 +656,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return result, err
 	}
-	branchRemoved, err := l.deleteBranch(ctx, info.Branch)
+	branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue)
 	if err != nil {
 		return result, err
 	}
@@ -652,6 +700,23 @@ func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 		Key:    key,
 		Branch: l.branchName(issue, key),
 	}, nil
+}
+
+// Existing reports the worktree this backend keeps for issue without creating
+// one. It answers ErrMissingWorkspace when that worktree is not on disk.
+func (l *LocalGit) Existing(issue Issue) (Info, error) {
+	info, err := l.infoForIssue(issue)
+	if err != nil {
+		return Info{}, err
+	}
+	exists, isDir, err := pathExists(info.Path)
+	if err != nil {
+		return Info{}, err
+	}
+	if !exists || !isDir {
+		return Info{}, ErrMissingWorkspace
+	}
+	return info, nil
 }
 
 func (l *LocalGit) IssueRecoveryState(ctx context.Context, issue Issue) (RecoveryState, error) {
@@ -720,10 +785,13 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	if !l.autoBranch {
 		return ""
 	}
+	if issue.WorkspaceSession {
+		return workspaceSessionBranchName(key)
+	}
 	if strings.TrimSpace(issue.BranchName) != "" {
 		return strings.TrimSpace(issue.BranchName)
 	}
-	return "detent/" + strings.ToLower(key)
+	return autoBranchPrefix + strings.ToLower(key)
 }
 
 func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string) (bool, error) {
@@ -1490,9 +1558,9 @@ func (l *LocalGit) branchExists(ctx context.Context, branch string) (bool, error
 	return false, err
 }
 
-func (l *LocalGit) deleteBranch(ctx context.Context, branch string) (bool, error) {
+func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool, issue Issue) (bool, error) {
 	branch = strings.TrimSpace(branch)
-	if !l.autoBranch || branch == "" || !strings.HasPrefix(branch, "detent/") {
+	if !l.autoBranch || branch == "" || !strings.HasPrefix(branch, autoBranchPrefix) {
 		return false, nil
 	}
 	exists, err := l.branchExists(ctx, branch)
@@ -1502,7 +1570,7 @@ func (l *LocalGit) deleteBranch(ctx context.Context, branch string) (bool, error
 	if !exists {
 		return false, nil
 	}
-	if err := l.checkCleanupBranch(ctx, branch); err != nil {
+	if err := l.checkCleanupBranch(ctx, branch, session, issue); err != nil {
 		return false, err
 	}
 	_, err = l.runGit(ctx, "branch", "-D", branch)
@@ -1647,19 +1715,103 @@ func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPat
 	if err := ensureWorkerScratchExcluded(ctx, workspacePath); err != nil {
 		return "", err
 	}
-	root, err := os.OpenRoot(workspacePath)
-	if err != nil {
-		return "", fmt.Errorf("open worker workspace: %w", err)
-	}
-	defer func() {
-		err = errors.Join(err, root.Close())
-	}()
-
-	relativePath := filepath.Join(filepath.FromSlash(workerScratchRelativePath), "attempt-"+uuid.NewString())
-	if err := root.MkdirAll(relativePath, 0o700); err != nil {
+	scratchRoot := WorkerScratchRoot(workspacePath)
+	scratchPath = filepath.Join(scratchRoot, "attempt-"+uuid.NewString())
+	if err := ensurePrivateDirectories(workerScratchBase(), scratchRoot); err != nil {
 		return "", fmt.Errorf("create worker scratch: %w", err)
 	}
-	return filepath.Join(workspacePath, relativePath), nil
+	if err := os.Mkdir(scratchPath, 0o700); err != nil {
+		return "", fmt.Errorf("create worker scratch: %w", err)
+	}
+	return scratchPath, nil
+}
+
+// RemoveWorkerScratchRoot removes every attempt scratch of a workspace, for
+// callers that delete the workspace itself. The group directory is shared
+// with sibling workspaces that may be creating scratch in it, so it stays.
+func RemoveWorkerScratchRoot(workspacePath string) error {
+	if err := os.RemoveAll(WorkerScratchRoot(workspacePath)); err != nil {
+		return fmt.Errorf("remove worker scratch root: %w", err)
+	}
+	return nil
+}
+
+// WorkerScratchRoot is the per-workspace parent of attempt scratch. It lives
+// under the OS temp root rather than the workspace so that compiler and test
+// churn never lands in a file-watched home tree. Workspaces are grouped by
+// their parent directory so retention can sweep scratch of removed workspaces.
+func WorkerScratchRoot(workspacePath string) string {
+	workspacePath = bestEffortCanonicalPath(workspacePath)
+	return filepath.Join(workerScratchGroup(filepath.Dir(workspacePath)), filepath.Base(workspacePath))
+}
+
+// ensurePrivateDirectories creates base and every directory down to path, and
+// refuses any component that is a symlink or writable by others, because the
+// OS temp root may be shared between users.
+func ensurePrivateDirectories(base string, path string) error {
+	if !pathWithin(base, path) {
+		return &PathError{Path: path, Root: base, Reason: "directory escapes root"}
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return err
+	}
+	current := base
+	components := []string{current}
+	if rel != "." {
+		for _, part := range strings.Split(rel, string(filepath.Separator)) {
+			current = filepath.Join(current, part)
+			components = append(components, current)
+		}
+	}
+	for _, component := range components {
+		if err := os.Mkdir(component, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		info, err := os.Lstat(component)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return &PathError{Path: component, Root: base, Reason: "scratch directory is not a directory"}
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
+			return &PathError{Path: component, Root: base, Reason: "scratch directory is writable by others"}
+		}
+	}
+	return nil
+}
+
+func workerScratchGroup(workspaceParent string) string {
+	sum := sha256.Sum256([]byte(bestEffortCanonicalPath(workspaceParent)))
+	return filepath.Join(workerScratchBase(), hex.EncodeToString(sum[:8]))
+}
+
+func workerScratchBase() string {
+	return filepath.Join(bestEffortCanonicalPath(os.TempDir()), workerScratchBaseName)
+}
+
+func bestEffortCanonicalPath(path string) string {
+	if canonical, err := canonicalExistingPath(path); err == nil {
+		return canonical
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(path)
+}
+
+// workerScratchParent returns the directory that owns scratchPath: the
+// external scratch root, or the legacy in-workspace scratch directory for
+// attempts started before scratch moved out of the workspace.
+func workerScratchParent(workspacePath string, scratchPath string) (string, bool) {
+	scratchPath = filepath.Clean(scratchPath)
+	for _, parent := range []string{WorkerScratchRoot(workspacePath), filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))} {
+		if scratchPath == parent || pathWithin(parent, scratchPath) {
+			return parent, true
+		}
+	}
+	return "", false
 }
 
 func ensureWorkerScratchExcluded(ctx context.Context, workspacePath string) error {
@@ -1677,14 +1829,17 @@ func ensureWorkerScratchExcluded(ctx context.Context, workspacePath string) erro
 }
 
 func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
-	workspacePath, err := canonicalExistingPath(workspacePath)
-	if errors.Is(err, fs.ErrNotExist) {
+	if strings.TrimSpace(scratchPath) == "" {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("resolve worker workspace: %w", err)
+	workspacePath = bestEffortCanonicalPath(workspacePath)
+	scratchRoot, ok := workerScratchParent(workspacePath, scratchPath)
+	if !ok {
+		return fmt.Errorf("remove worker scratch: %w", &PathError{Path: scratchPath, Root: WorkerScratchRoot(workspacePath), Reason: "worker scratch escapes root"})
 	}
-	scratchRoot := filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))
+	if _, err := os.Lstat(scratchRoot); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err := removeWorkspacePath(scratchRoot, scratchPath); err != nil {
 		return fmt.Errorf("remove worker scratch: %w", err)
 	}
@@ -1693,6 +1848,15 @@ func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
 
 func CleanupOwnedPath(root string, path string) error {
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if scratchRoot := WorkerScratchRoot(root); pathWithin(scratchRoot, filepath.Clean(path)) {
+		if _, err := os.Lstat(scratchRoot); errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err := removeWorkspacePath(scratchRoot, path); err != nil {
+			return fmt.Errorf("remove owned path: %w", err)
+		}
 		return nil
 	}
 	root, err := canonicalExistingPath(root)
@@ -1712,6 +1876,11 @@ func ReapWorkerArtifactProcesses(ctx context.Context, root string, path string, 
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
 		return 0, nil
 	}
+	if scratchRoot := WorkerScratchRoot(root); pathWithin(scratchRoot, filepath.Clean(path)) {
+		if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
+			return ReapProcesses(ctx, filepath.Clean(path), grace)
+		}
+	}
 	root, err := canonicalExistingPath(root)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
@@ -1719,13 +1888,14 @@ func ReapWorkerArtifactProcesses(ctx context.Context, root string, path string, 
 	if err != nil {
 		return 0, err
 	}
+	if _, ok := workerScratchParent(root, path); ok {
+		return ReapProcesses(ctx, root, grace)
+	}
 	path, err = validateWorkspacePath(root, path)
 	if err != nil {
 		return 0, err
 	}
-	scratchRoot := filepath.Join(root, filepath.FromSlash(workerScratchRelativePath))
-	legacyScratchRoot := filepath.Join(root, ".detent", "tmp")
-	if path == legacyScratchRoot || path == scratchRoot || pathWithin(scratchRoot, path) {
+	if path == filepath.Join(root, ".detent", "tmp") {
 		path = root
 	}
 	return ReapProcesses(ctx, path, grace)
@@ -1914,6 +2084,10 @@ func runGitAt(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	return runGitAtWithEnvCapture(ctx, dir, env, false, args...)
+}
+
+func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileOutput bool, args ...string) (string, error) {
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
@@ -1921,7 +2095,42 @@ func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...stri
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
 	}
-	output, err := cmd.CombinedOutput()
+	var output []byte
+	var err error
+	if fileOutput {
+		// A completed identity query must not depend on an inherited output pipe
+		// closing within WaitDelay under heavy subprocess load.
+		file, createErr := os.CreateTemp("", "detent-git-common-dir-*")
+		if createErr != nil {
+			return "", fmt.Errorf("create git output file: %w", createErr)
+		}
+		cmd.Stdout = file
+		cmd.Stderr = file
+		err = cmd.Run()
+		_, seekErr := file.Seek(0, io.SeekStart)
+		var readErr error
+		if seekErr == nil {
+			output, readErr = io.ReadAll(file)
+		}
+		closeErr := file.Close()
+		removeErr := os.Remove(file.Name())
+		if seekErr != nil {
+			return "", fmt.Errorf("rewind git output file: %w", seekErr)
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("read git output file: %w", readErr)
+		}
+		if closeErr != nil {
+			return "", fmt.Errorf("close git output file: %w", closeErr)
+		}
+		if removeErr != nil {
+			// On Windows a descendant can retain this handle without delete sharing.
+			// Report the leftover file without invalidating a successful query.
+			slog.Warn("remove git output file", slog.String("path", file.Name()), slog.Any("error", removeErr))
+		}
+	} else {
+		output, err = cmd.CombinedOutput()
+	}
 	if err == nil {
 		return string(output), nil
 	}
@@ -1957,7 +2166,7 @@ func gitCommonDirWithinRoot(ctx context.Context, dir string) (string, error) {
 }
 
 func gitCommonDirWithEnv(ctx context.Context, dir string, env []string) (string, error) {
-	output, err := runGitAtWithEnv(ctx, dir, env, "rev-parse", "--git-common-dir")
+	output, err := runGitAtWithEnvCapture(ctx, dir, env, true, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}

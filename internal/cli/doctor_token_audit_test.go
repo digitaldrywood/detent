@@ -21,18 +21,23 @@ func TestDoctorTokenAuditWorkflowSourceDrift(t *testing.T) {
 	for _, tt := range []struct {
 		name, ref, branch string
 		modify            bool
+		crlf              bool
 		want              doctorStatus
 	}{
-		{"default branch", "", "main", false, doctorOK},
-		{"side branch", "", "side", false, doctorWarn},
-		{"pinned side branch", "origin/main", "side", false, doctorOK},
-		{"pinned content drift", "origin/main", "main", true, doctorWarn},
-		{"missing ref", "missing", "main", false, doctorWarn},
+		{"default branch", "", "main", false, false, doctorOK},
+		{"side branch", "", "side", false, false, doctorWarn},
+		{"pinned side branch", "origin/main", "side", false, false, doctorOK},
+		{"pinned content drift", "origin/main", "main", true, false, doctorWarn},
+		{"pinned CRLF checkout", "origin/main", "main", false, true, doctorOK},
+		{"missing ref", "missing", "main", false, false, doctorWarn},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root, _ := initDoctorWorkflowSourceRepository(t)
 			if tt.branch != "main" {
 				runDoctorWorkflowSourceGit(t, root, "checkout", "-b", tt.branch)
+			}
+			if tt.crlf {
+				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "Agent direction.\r\n")
 			}
 			if tt.modify {
 				writeDoctorWorkflowSourceFile(t, filepath.Join(root, "WORKFLOW.md"), "Changed instructions")
@@ -418,8 +423,12 @@ func TestDoctorReferencedWorkflowGateConflict(t *testing.T) {
 				t.Fatalf("got %+v; want %s", got, tt.want)
 			}
 			count := 0
+			workflowPath, err := filepath.EvalSymlinks(filepath.Join(root, "WORKFLOW.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, file := range files {
-				if file.path == filepath.Join(root, "WORKFLOW.md") {
+				if file.path == workflowPath {
 					count++
 				}
 			}

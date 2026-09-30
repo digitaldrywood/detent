@@ -112,7 +112,7 @@ test("heavy alerts stay one line and never reflow lanes", async ({ page }) => {
     const lanes = page.locator("#board-lanes");
     const overlay = page.locator("body > #board-alerts-overlay");
     await expect(bar).toHaveAttribute("data-board-alert-count", "3");
-    await expect(bar).toContainText("Project failure breaker (2 projects)");
+    await expect(bar).toContainText("Project failure breaker active — 2 projects");
     await expect(bar).toContainText("+2");
     const heavyHeight = await bar.evaluate((element) => element.getBoundingClientRect().height);
     expect(heavyHeight).toBe(22);

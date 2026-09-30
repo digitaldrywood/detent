@@ -40,8 +40,13 @@ var (
 )
 
 type Config struct {
-	CredentialMaintenance      bool
-	Hosted                     *HostedConfig
+	CredentialMaintenance bool
+	Hosted                *HostedConfig
+	Conversation          *ConversationConfig
+	Usage                 *UsageConfig
+	// Workspace enables workspace sessions and the relay (decisions section
+	// 18.1). Nil means the surfaces stay disabled with their reason.
+	Workspace                  *WorkspaceConfig
 	GitHubRequestCounts        func() []GitHubRequestCount
 	GitHubDisabled             bool
 	ImportBackend              ImportBackend
@@ -68,6 +73,7 @@ type Config struct {
 	ReconcileInterval          time.Duration
 	FullRepairInterval         time.Duration
 
+	hostedBindingMigration     bool
 	validateDatabaseFilesystem func(string) error
 	listen                     func(context.Context, string, string) (net.Listener, error)
 	now                        func() time.Time
@@ -78,6 +84,14 @@ type Config struct {
 }
 
 func (c Config) normalized() Config {
+	if c.Usage != nil {
+		normalized := c.Usage.normalized()
+		c.Usage = &normalized
+	}
+	if c.Workspace != nil {
+		normalized := c.Workspace.normalized()
+		c.Workspace = &normalized
+	}
 	if c.CredentialMaintenance {
 		c.GitHubDisabled = true
 	}

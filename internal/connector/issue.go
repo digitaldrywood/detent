@@ -6,6 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -48,6 +49,7 @@ type LaneSignalStatus struct {
 }
 
 type Issue struct {
+	IsolationPolicy    *isolation.Policy  `json:"-" yaml:"-"`
 	LaneSignalStatuses []LaneSignalStatus `json:"-" yaml:"-"`
 
 	PublicationReused bool                 `json:"-" yaml:"-"`
@@ -134,6 +136,7 @@ type PullRequest struct {
 	URL                          string                      `json:"url,omitempty" yaml:"url,omitempty"`
 	BranchName                   string                      `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	BaseRef                      string                      `json:"base_ref,omitempty" yaml:"base_ref,omitempty"`
+	BaseBranchStrict             bool                        `json:"base_branch_strict,omitempty" yaml:"-"`
 	State                        string                      `json:"state,omitempty" yaml:"state,omitempty"`
 	MergeableState               string                      `json:"mergeable_state,omitempty" yaml:"mergeable_state,omitempty"`
 	Draft                        bool                        `json:"draft,omitempty" yaml:"draft,omitempty"`

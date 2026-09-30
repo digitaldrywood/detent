@@ -1,0 +1,72 @@
+[
+  {
+    "file": "internal/hubclient/native_change_test.go",
+    "line": 463,
+    "column": 24,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "9afadf1f77f3e4ea0f32b2eaf0146c3e109a234058da08859a8381242a06e1a6"
+  },
+  {
+    "file": "internal/hubserver/hosted_tenant_api_test.go",
+    "line": 51,
+    "column": 55,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "87d3391d93b44b405c4b0ecacfab396558bfd48653806d081346127a6245a006"
+  },
+  {
+    "file": "internal/hubserver/hosted_tenant_api_test.go",
+    "line": 594,
+    "column": 58,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "61724430bfa87a3cbd1b3bc1934bdd28250462a046a5812d5fa648579fb50d42"
+  },
+  {
+    "file": "internal/hubserver/hosted_tenant_api_test.go",
+    "line": 73,
+    "column": 170,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "3ec01ab70a39b9bbf21fdec9457390566da7f325f0f5d9c33f051b3060faec0e"
+  },
+  {
+    "file": "internal/hubserver/onboarding_test.go",
+    "line": 171,
+    "column": 18,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "a54216f84acf4a18b69905dc75f0151a103542ab5ff513d9d731c439dcf822e0"
+  },
+  {
+    "file": "internal/orchestrator/pre_turn_failure.go",
+    "line": 32,
+    "column": 70,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "50d2c510d0242e4fa3007ac689aa08e03882af2d95e62c97db3b0ef4eacbe346"
+  },
+  {
+    "file": "internal/orchestrator/workspace_cleanup.go",
+    "line": 104,
+    "column": 16,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "e495a7a514460abf45d55257c12271a791fd74a8cfb64827bc5c1e11889dbfd0"
+  },
+  {
+    "file": "internal/workspace/workspace_session_test.go",
+    "line": 458,
+    "column": 4,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "ae0bbf763e2702344a7b587531c12483648fef5e753f3444165bab267172b293"
+  },
+  {
+    "file": "internal/workspacerunner/actions.go",
+    "line": 143,
+    "column": 7,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "d2c713ec31742946d859a121bc3d291adb5daf309cfd27a090670fb0bd317127"
+  },
+  {
+    "file": "internal/workspacerunner/worktree.go",
+    "line": 200,
+    "column": 43,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "226a0904fcda5c43eb0a2b61fe6aaf3fdbca4adb2049208c11c78786fd81839f"
+  }
+]

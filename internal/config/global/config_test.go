@@ -273,6 +273,7 @@ global:
     pressure_some_avg10_threshold: 85
     degraded_max_concurrent_agents: 3
     poll_interval_ms: 750
+    go_build_budget: 6
 projects:
   - id: detent
     workflow: `+paths.workflow+`
@@ -294,7 +295,7 @@ projects:
 	if want := (IO{PressureFullAvg10Threshold: 7.5, DegradedMaxConcurrentAgents: 2, PollIntervalMS: 500}); cfg.Global.IO != want {
 		t.Fatalf("Global.IO = %#v, want %#v", cfg.Global.IO, want)
 	}
-	if want := (CPU{PressureSomeAvg10Threshold: 85, DegradedMaxConcurrentAgents: 3, PollIntervalMS: 750}); cfg.Global.CPU != want {
+	if want := (CPU{PressureSomeAvg10Threshold: 85, DegradedMaxConcurrentAgents: 3, PollIntervalMS: 750, GoBuildBudget: 6}); cfg.Global.CPU != want {
 		t.Fatalf("Global.CPU = %#v, want %#v", cfg.Global.CPU, want)
 	}
 	project := cfg.Projects[0]
@@ -1499,6 +1500,7 @@ global:
     pressure_some_avg10_threshold: false
     degraded_max_concurrent_agents: many
     poll_interval_ms: 0
+    go_build_budget: -2
 projects:
   - id: detent
     workflow: ` + paths.workflow + `
@@ -1518,6 +1520,7 @@ projects:
 				"global.cpu.pressure_some_avg10_threshold: must be a positive number",
 				"global.cpu.degraded_max_concurrent_agents: must be an integer greater than or equal to 0",
 				"global.cpu.poll_interval_ms: must be a positive integer",
+				"global.cpu.go_build_budget: must be an integer greater than or equal to 0",
 				"projects[0].memory.max_agent_rss_bytes: must be a positive integer",
 			},
 		},
@@ -1900,5 +1903,54 @@ func validDecodedConfig(paths projectPaths) map[string]any {
 				"credential_ref": " github-default ",
 			},
 		},
+	}
+}
+
+func TestServiceName(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		valid bool
+	}{
+		{name: "detent", valid: true},
+		{name: "detent.runner", valid: true},
+		{name: "detent-runner-2", valid: true},
+		{name: "", valid: false},
+		{name: "Detent", valid: false},
+		{name: "detent runner", valid: false},
+		{name: "detent/runner", valid: false},
+		{name: ".detent", valid: false},
+		{name: "-detent", valid: false},
+		{name: "detent.", valid: false},
+		{name: "detent..runner", valid: false},
+		{name: strings.Repeat("a", 65), valid: false},
+	} {
+		if got := ValidServiceName(test.name); got != test.valid {
+			t.Errorf("ValidServiceName(%q) = %v, want %v", test.name, got, test.valid)
+		}
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "global.yaml")
+	for _, test := range []struct {
+		value   string
+		want    string
+		wantErr bool
+	}{
+		{value: "", want: ""},
+		{value: "service_name: detent.runner\n", want: "detent.runner"},
+		{value: "service_name: Bad Name\n", wantErr: true},
+		{value: "service_name: [a]\n", wantErr: true},
+	} {
+		raw := "apiVersion: detent/v1\nkind: GlobalConfig\n" + test.value + "global:\n  scheduling: weighted\n  max_concurrent_agents: 1\nprojects: []\n"
+		cfg, err := Parse([]byte(raw), path)
+		if test.wantErr {
+			if err == nil {
+				t.Errorf("Parse(%q) accepted an invalid service name", test.value)
+			}
+			continue
+		}
+		if err != nil || cfg.ServiceName != test.want {
+			t.Errorf("Parse(%q) = %q, %v; want %q", test.value, cfg.ServiceName, err, test.want)
+		}
 	}
 }

@@ -1,20 +1,65 @@
 # Hub race test budget
 
 Run `make test-race` for the complete repository race gate, or
-`make test-race-hub` for the complete Hub package. Both CI and `make check`
-use this target. Hub runs separately with two parallel test slots, an
-uncached race detector run, and a 15-minute package timeout. Other packages
-retain Go's default package concurrency and 10-minute timeout. No test name,
-assertion, fixture workload, or individual lifecycle deadline is changed.
+`make test-race-hub` for the complete Hub package. Hub runs separately in three partitions with
+two parallel test slots, an uncached race detector run, and a 15-minute
+package timeout per partition. Other packages retain Go's default package
+concurrency and 10-minute timeout. No test name, assertion, fixture
+workload, or individual lifecycle deadline is changed.
 
-The required `Verify (ubuntu-latest)` job has an explicit 30-minute workflow
-timeout, matching its documented merge-check budget. This reserves the Hub's
-15-minute ceiling plus another 15 minutes for setup, build, vet, ordinary
-tests, and the remaining race packages. It is a whole-job failure bound,
-not a claim that every package can consume its own maximum serially. The
-former four-minute job budget was already exceeded by the recorded Hub
-package alone. Required check names and branch-protection selection remain
-the same.
+## Partitions
+
+The Hub package outgrew one 15-minute race run: merge-group runs of about
+380 top-level tests exhausted the package timeout through cumulative
+runtime, not a deadlock. Raising the ceiling would hide a stuck test for
+longer, so the package is split by top-level test name instead and each
+partition keeps the 15-minute ceiling.
+
+`HUB_RACE_PARTITION` in the Makefile holds `^Test[A-GI-O]` and
+`HUB_RACE_PARTITION_B` holds `^Test[HW]`. `make test-race-hub-a` passes the
+first to `go test -run`, `make test-race-hub-b` passes the second to
+`go test -run`, and `make test-race-hub-c` passes both, joined with `|`, to
+`go test -skip`. A pattern without `/` matches only top-level names, and the
+two `-run` patterns never match the same name, so every top-level test,
+example, and fuzz seed runs in exactly one partition by construction,
+including tests added later. Subtests always run with their parent.
+`make test-race-hub` runs all three partitions in sequence.
+`TestHubRacePartitionsCoverEveryTestOnce` pins both patterns, the CI shard
+mapping, that no test matches both `-run` patterns, and that no partition is
+empty.
+
+CI runs partition A as `Verify race (0)`, partition B as `Verify race (4)`
+and partition C as `Verify race (5)`; the other race shards are unchanged.
+The letter set was first chosen by running the two original partitions side
+by side under the same load with `GOMAXPROCS=2 -parallel 2` (Go 1.26.6,
+darwin/arm64) and comparing wall and CPU time; neither summed test elapsed
+time nor fixture-open counts predicted wall time well. `^Test[A-GI-O]`
+stayed near 545 s on CI through September 2026, while the complement
+(`H` and `P` onward) grew past the 900 s ceiling on `main` push runs once
+the Change Request landing, review and policy tests landed (`W` about 360 s,
+`P` about 250 s and `H` about 225 s of summed elapsed time). Splitting `H`
+into its own partition kept every partition under the ceiling; the first
+three-way run still put partition C at about 14 minutes of job time and B at
+about 5, so the `W` (workspace) tests moved to B. Rebalance by
+changing the letter sets when one partition approaches its ceiling; the
+complement guarantee does not depend on which letters are chosen.
+
+`make test-race-cover` (used by the hourly `make check`) uses the same three
+Hub partitions with a 30-minute package budget for each. The recorded hourly
+build on September 28, 2026 timed out the former whole-package race-cover run at
+30 minutes while tests were still running. The existing race-only C partition
+approached its 15-minute budget before coverage overhead, so the race-cover
+partitions retain `HUB_RACE_COVER_TIMEOUT` at 30 minutes each.
+`tools/covermerge -union` combines the three Hub profiles by marking a block
+covered if any partition covered it.
+It requires identical block layouts in every partition; the ordinary merge
+then combines that Hub result with disjoint package profiles. The local
+`make check-fast` gate does not run race or coverage tests.
+
+The `Verify race` jobs keep their 60-minute workflow timeout; the Hub
+partitions use at most 15 minutes of it plus setup and evidence upload.
+The `Verify (ubuntu-latest)` aggregate requires every matrix shard, so
+required check names and branch-protection selection remain the same.
 
 The Hub ceiling is a package budget, not an individual operation deadline.
 The recorded Linux/amd64 PR #2292 head passed in 474.738 seconds, then
@@ -27,13 +72,17 @@ contention on constrained runners. `HUB_RACE_TIMEOUT` and
 
 ## Evidence and interpretation
 
-CI uploads `hub-race-evidence` for 14 days even when the race step fails.
-Locally the same evidence lives in `tmp/hub-race-evidence`:
+CI uploads each partition's evidence in the `race-evidence-0` and
+`race-evidence-4` artifacts for 14 days even when the race step fails.
+Locally the same evidence lives in `tmp/hub-race-evidence-a`,
+`tmp/hub-race-evidence-b`, and `tmp/hub-race-evidence-c` for both
+`make test-race-hub` and `make test-race-cover`:
 
 - `combined.jsonl` and `internal__hubserver.jsonl` preserve Go's timestamped
   run, pause, cont, pass, fail, skip, output, and package events, including
   the goroutine dump emitted by Go's package timeout.
-- `summary.json` records the package result and budget, race mode, and each
+- `summary.json` records the package result and budget, race mode, the
+  partition's `run` or `skip` pattern, and each
   test's outcome, start/last lifecycle progress, Go-reported elapsed time,
   wall time, and pause-to-cont queue time. An unfinished test remains in
   its last lifecycle state; its observed wall/queue time ends at package exit.
@@ -83,13 +132,14 @@ To reproduce independent samples without Go's test cache:
 
 ```sh
 GOTOOLCHAIN=go1.26.6 GOMAXPROCS=2 go run ./tools/testgate \
-  -race -parallel 2 -timeout 15m -output tmp/hub-race-sample-1 ./internal/hubserver
+  -race -parallel 2 -timeout 15m -run '^Test[A-GI-O]' -output tmp/hub-race-sample-a ./internal/hubserver
 GOTOOLCHAIN=go1.26.6 GOMAXPROCS=2 go run ./tools/testgate \
-  -race -parallel 2 -timeout 15m -output tmp/hub-race-sample-2 ./internal/hubserver
+  -race -parallel 2 -timeout 15m -skip '^Test[A-GI-O]' -output tmp/hub-race-sample-b ./internal/hubserver
 make check
 ```
 
-Choose distinct output directories to retain previous samples. Keep the
-full package selection when measuring the budget. The 100-job pilot resides
+Choose distinct output directories to retain previous samples. Measure
+both partitions with the same pattern so their union stays the full
+package. The 100-job pilot resides
 on still-open PR #2292, so its recorded head is validated separately in an
 isolated checkout; this change neither imports nor reduces that workload.

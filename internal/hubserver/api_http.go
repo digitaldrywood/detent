@@ -13,9 +13,25 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 const maxAPIRequestBodyBytes = 1 << 20
+
+// maxAttemptDiffRequestBytes bounds the one endpoint whose body is legitimately
+// larger than every other: a stored attempt diff carries the patches
+// themselves, and decisions section 18.5 bounds those at tracker.MaxDiffBytes.
+// The allowance is that bound at the worst case of JSON string escaping plus
+// room for the framing, so a diff the contract accepts is never refused by the
+// transport instead. The factor is six because an encoder writes <, >, & and
+// every control byte as a six-byte \uXXXX sequence, and a patch of HTML or
+// generated code can be dense with them.
+const maxAttemptDiffRequestBytes = 6*tracker.MaxDiffBytes + (1 << 20)
+
+// maxActionRunReportBytes bounds a runner's action run report, which carries
+// the run's whole output up to workspacesession.MaxExecOutputBytes, with the
+// same six-fold escaping allowance: coloured build output is dense with ESC.
+const maxActionRunReportBytes = 6*workspacesession.MaxExecOutputBytes + (1 << 20)
 
 func (s *Service) registerRoutes(e *echo.Echo) {
 	if s.config.CredentialMaintenance {
@@ -23,11 +39,16 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 		return
 	}
 	if s.config.Hosted != nil {
+		if s.hostedShared() {
+			e.Pre(s.hostedSharedEntry)
+			s.registerHostedSharedRoutes(e)
+		}
 		e.Use(s.hostedBoundary)
 		s.registerHostedRoutes(e)
 	}
 	s.registerNativeRoutes(e)
 	s.registerRunnerRoutes(e)
+	s.registerConversationRoutes(e)
 	read := s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin)
 	worker := s.requireAPIScope(apiScopeWorker)
 	operator := s.requireAPIScope(apiScopeOperator)
@@ -62,7 +83,7 @@ func decodeAPIJSON(c echo.Context, target any) error {
 		return errors.New("request is required")
 	}
 	request := c.Request()
-	request.Body = http.MaxBytesReader(c.Response(), request.Body, maxAPIRequestBodyBytes)
+	request.Body = http.MaxBytesReader(c.Response(), request.Body, apiRequestBodyLimit(c))
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -76,6 +97,17 @@ func decodeAPIJSON(c echo.Context, target any) error {
 		return err
 	}
 	return nil
+}
+
+// apiRequestBodyLimit is how many bytes this route's body may carry.
+func apiRequestBodyLimit(c echo.Context) int64 {
+	if c.Path() == nativeBase+"/attempts/:attempt/diff" {
+		return maxAttemptDiffRequestBytes
+	}
+	if c.Path() == nativeBase+"/workspaces/:workspace/worker/action-runs" {
+		return maxActionRunReportBytes
+	}
+	return maxAPIRequestBodyBytes
 }
 
 func invalidAPIRequest(c echo.Context, err error) error {

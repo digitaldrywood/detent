@@ -18,17 +18,19 @@ func TestAutoPromoteReviewAtHead(t *testing.T) {
 	for _, tt := range []struct {
 		name, review string
 		threads      int
+		expired      bool
 		want         AutoPromoteReason
 	}{
-		{"stale review zero threads", "", 0, AutoPromoteReasonCodexReviewMissing},
-		{"current review zero threads", "COMMENTED", 0, AutoPromoteReasonReady},
-		{"current review unresolved thread", "COMMENTED", 1, AutoPromoteReasonUnresolvedReviewThreads},
+		{"stale review before deadline", "", 0, false, AutoPromoteReasonCodexReviewMissing},
+		{"stale review after deadline", "", 0, true, AutoPromoteReasonReady},
+		{"current review zero threads", "COMMENTED", 0, true, AutoPromoteReasonReady},
+		{"current review unresolved thread", "COMMENTED", 1, true, AutoPromoteReasonUnresolvedReviewThreads},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := autoPromoteTestIssue("review-head", nil)
 			issue.PullRequest = &connector.PullRequest{State: "OPEN", HeadSHA: "ced1be0", CIStatus: "success", CodexReviewState: tt.review, LatestCodexReviewState: "COMMENTED", LatestCodexReviewCommitSHA: "156b300", UnresolvedReviewThreads: make([]connector.PullRequestReviewThread, tt.threads)}
 			summary := AutoPromoteSummaryFromIssue(issue)
-			summary.AutomatedReviewWaitExpired = true
+			summary.AutomatedReviewWaitExpired = tt.expired
 			got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, time.Now())
 			if got.Reason != tt.want {
 				t.Fatalf("reason = %s, want %s", got.Reason, tt.want)

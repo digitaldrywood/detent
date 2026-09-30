@@ -24,14 +24,47 @@ func TestSortIssuesForDispatch(t *testing.T) {
 		want                  []string
 	}{
 		{
-			name:                  "sorts by state dispatch rank before priority and age",
+			name:                  "keeps merging first then ranks priority across source lanes",
 			dispatchStatePriority: []string{"Merging", "Rework"},
 			issues: []connector.Issue{
 				rankingIssue("todo-old-urgent", "Todo", 1, now.Add(-4*time.Hour)),
 				rankingIssue("rework-new-low", "Rework", 4, now.Add(-time.Hour)),
 				rankingIssue("merging-new-low", "Merging", 4, now.Add(-30*time.Minute)),
 			},
-			want: []string{"merging-new-low", "rework-new-low", "todo-old-urgent"},
+			want: []string{"merging-new-low", "todo-old-urgent", "rework-new-low"},
+		},
+		{
+			name:                  "todo hotfix outranks ordinary source work but yields to merging",
+			dispatchStatePriority: []string{"Merging", "Rework", "In Progress", "Todo"},
+			dispatchLabelPriority: []string{"hotfix", "priority", "bug"},
+			issues: []connector.Issue{
+				rankingIssue("rework", "Rework", 0, now.Add(-4*time.Hour)),
+				rankingIssueWithLabels("todo-hotfix", "Todo", 0, now, "hotfix"),
+				rankingIssueWithLabels("active-bug", "In Progress", 0, now.Add(-3*time.Hour), "bug"),
+				rankingIssue("merging", " MERGING ", 0, now),
+			},
+			want: []string{"merging", "todo-hotfix", "active-bug", "rework"},
+		},
+		{
+			name:                  "equal source priority and labels preserve lane order",
+			dispatchStatePriority: []string{"Rework", "In Progress", "Todo"},
+			dispatchLabelPriority: []string{"hotfix"},
+			issues: []connector.Issue{
+				rankingIssueWithLabels("todo", "Todo", 2, now.Add(-4*time.Hour), "hotfix"),
+				rankingIssueWithLabels("active", "In Progress", 2, now.Add(-3*time.Hour), "hotfix"),
+				rankingIssueWithLabels("rework", "Rework", 2, now, "hotfix"),
+			},
+			want: []string{"rework", "active", "todo"},
+		},
+		{
+			name:                  "tracker priority outranks labels across source lanes",
+			dispatchStatePriority: []string{"Rework", "Todo"},
+			dispatchLabelPriority: []string{"hotfix"},
+			issues: []connector.Issue{
+				rankingIssueWithLabels("rework-hotfix", "Rework", 2, now, "hotfix"),
+				rankingIssue("todo-urgent", "Todo", 1, now),
+			},
+			want: []string{"todo-urgent", "rework-hotfix"},
 		},
 		{
 			name:                  "sorts by priority within the same state rank",
@@ -43,6 +76,34 @@ func TestSortIssuesForDispatch(t *testing.T) {
 				rankingIssue("todo-high", "Todo", 2, now.Add(-2*time.Hour)),
 			},
 			want: []string{"todo-urgent", "todo-high", "todo-medium", "todo-none"},
+		},
+		{
+			name: "unconfigured merging does not receive special precedence",
+			issues: []connector.Issue{
+				rankingIssue("merging-low", "Merging", 4, now),
+				rankingIssue("custom-urgent", "Ready to build", 1, now),
+			},
+			want: []string{"custom-urgent", "merging-low"},
+		},
+		{
+			name:                  "custom workflow states and configured labels retain urgency",
+			dispatchStatePriority: []string{"Changes requested", "Building", "Ready"},
+			dispatchLabelPriority: []string{"urgent", "maintenance"},
+			issues: []connector.Issue{
+				rankingIssue("changes", "Changes requested", 0, now),
+				rankingIssueWithLabels("ready-urgent", "Ready", 0, now, "urgent"),
+				rankingIssueWithLabels("building", "Building", 0, now, "maintenance"),
+			},
+			want: []string{"ready-urgent", "building", "changes"},
+		},
+		{
+			name:                  "merging outside the first configured tier follows configured lane ties",
+			dispatchStatePriority: []string{"Rework", "Merging"},
+			issues: []connector.Issue{
+				rankingIssue("merging", "Merging", 2, now),
+				rankingIssue("rework", "Rework", 2, now),
+			},
+			want: []string{"rework", "merging"},
 		},
 		{
 			name:                  "sorts by configured label rank within the same priority",
@@ -96,7 +157,7 @@ func TestSortIssuesForDispatch(t *testing.T) {
 			want: []string{"todo-old-enhancement", "todo-new-bug"},
 		},
 		{
-			name:                  "normalizes state ranks and sorts unranked states last",
+			name:                  "normalizes state ranks after source priority",
 			dispatchStatePriority: []string{" Merging ", "Rework"},
 			issues: []connector.Issue{
 				rankingIssue("todo-old-urgent", "Todo", 1, now.Add(-4*time.Hour)),
@@ -104,7 +165,7 @@ func TestSortIssuesForDispatch(t *testing.T) {
 				rankingIssue("merging-low", "merging", 4, now.Add(-30*time.Minute)),
 				rankingIssue("in-progress-high", "In Progress", 2, now.Add(-3*time.Hour)),
 			},
-			want: []string{"merging-low", "rework-high", "todo-old-urgent", "in-progress-high"},
+			want: []string{"merging-low", "todo-old-urgent", "rework-high", "in-progress-high"},
 		},
 		{
 			name: "uses deterministic identifier order after state rank priority and age",

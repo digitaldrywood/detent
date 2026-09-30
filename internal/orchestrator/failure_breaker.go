@@ -354,7 +354,9 @@ func (o *Orchestrator) recordProjectFailureBreakerEvidence(state *State, failure
 	limit, cooldown := breaker.Config.SameClassLimit, breaker.Config.Cooldown
 	if breaker.PreTurn {
 		limit = consecutiveRetryCycleLimit
-		cooldown = normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
+		if class != workAttemptErrorWorkspace {
+			cooldown = normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
+		}
 	} else {
 		pruneProjectFailures(breaker, at)
 	}
@@ -404,6 +406,10 @@ func (o *Orchestrator) logProjectFailureBreaker(state *State, at time.Time, even
 	)
 	recordStateEvent(state, telemetry.ActivityEvent{At: at, Event: event, Message: message})
 	if o.logger != nil {
+		cooldownSource := "agent.failure_breaker.cooldown_seconds"
+		if breaker.PreTurn && breaker.Class != workAttemptErrorWorkspace {
+			cooldownSource = "tracker.blocked_recovery.breaker_cooldown_seconds"
+		}
 		o.logger.Warn(
 			"project failure circuit breaker tripped",
 			"event", event,
@@ -412,6 +418,8 @@ func (o *Orchestrator) logProjectFailureBreaker(state *State, at time.Time, even
 			"failure_count", breaker.Count,
 			"window_seconds", int64(breaker.Config.Window/time.Second),
 			"cooldown_seconds", int64(breaker.Config.Cooldown/time.Second),
+			"effective_cooldown_seconds", int64(breaker.ResumeAt.Sub(at)/time.Second),
+			"cooldown_source", cooldownSource,
 			"resume_at", breaker.ResumeAt,
 		)
 	}

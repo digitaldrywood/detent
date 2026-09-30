@@ -24,12 +24,26 @@ func (l *LocalGit) removeExpiredWorkspace(ctx context.Context, root *os.Root, re
 	if !takeCleanupSlot(ctx) {
 		return nil
 	}
-	if !l.isSourceWorktree(ctx, record.Path) {
-		return fmt.Errorf("cannot archive unmanaged workspace %s", record.Path)
-	}
 	size, err := retentionBytes(root, record.Key)
 	if err != nil {
 		return err
+	}
+	if !l.isSourceWorktree(ctx, record.Path) {
+		entries, err := fs.ReadDir(root.FS(), record.Key)
+		if err != nil {
+			return err
+		}
+		if l.isGitWorkspace(ctx, record.Path) || len(entries) != 1 || entries[0].Name() != ".detent" || !entries[0].IsDir() {
+			return fmt.Errorf("cannot archive unmanaged workspace %s", record.Path)
+		}
+		// A removed worktree can leave only Detent's own state behind. There
+		// is no checkout to archive, and the ownership record authorizes removal.
+		if err := l.removePath(ctx, record.Path); err != nil {
+			return err
+		}
+		total.Count++
+		total.Bytes += size
+		return removeRetentionPath(root, cleanupOwnershipRecordRelativePath(record.Path), ownership)
 	}
 	head, err := runGitAt(ctx, record.Path, "rev-parse", "HEAD")
 	if err != nil {

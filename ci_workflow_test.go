@@ -4,95 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
-
-type requiredStatusCheck struct {
-	name     string
-	budget   string
-	jobStart string
-	jobEnd   string
-	markers  []string
-}
-
-var requiredPRStatusChecks = []requiredStatusCheck{
-	{
-		name:     "Lint",
-		budget:   "2m",
-		jobStart: "  lint:",
-		jobEnd:   "  verify:",
-		markers:  []string{"name: Lint"},
-	},
-	{
-		name:     "Verify (ubuntu-latest)",
-		budget:   "8m",
-		jobStart: "  verify:",
-		jobEnd:   "  verify-fast:",
-		markers:  []string{"name: Verify (ubuntu-latest)", "needs: [verify-fast, verify-race]", "FAST_RESULT", "RACE_RESULT"},
-	},
-	{
-		name:     "Test Coverage",
-		budget:   "4m",
-		jobStart: "  test-cover:",
-		jobEnd:   "  security:",
-		markers:  []string{"name: Test Coverage", "make test-cover-packages"},
-	},
-	{
-		name:     "Browser Visual",
-		budget:   "15m",
-		jobStart: "  browser-visual:",
-		jobEnd:   "  portability-verify:",
-		markers:  []string{"name: Browser Visual", "timeout-minutes: 15", "Run full browser visual gate", "Run browser smoke gate"},
-	},
-}
-
-var integrationStatusChecks = []requiredStatusCheck{
-	{
-		name:     "Portability Verify (macos-latest)",
-		budget:   "8m",
-		jobStart: "  portability-verify:",
-		jobEnd:   "  windows-core:",
-		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "make test", "bash scripts/test-workspace.sh -parallel 4"},
-	},
-	{
-		name:     "Portability Verify (windows-latest)",
-		budget:   "45m",
-		jobStart: "  portability-verify:",
-		jobEnd:   "  windows-core:",
-		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]", "go build ./...", "go vet ./...", "make test", "bash scripts/test-workspace.sh -parallel 4"},
-	},
-	{
-		name:     "Windows Core",
-		budget:   "4m",
-		jobStart: "  windows-core:",
-		jobEnd:   "  installer-smoke:",
-		markers:  []string{"name: Windows Core"},
-	},
-	{
-		name:     "Installer Smoke (ubuntu-latest)",
-		budget:   "6m",
-		jobStart: "  installer-smoke:",
-		jobEnd:   "  goreleaser-snapshot:",
-		markers:  []string{"name: Installer Smoke (${{ matrix.os }})", "os: [ubuntu-latest, windows-latest]"},
-	},
-	{
-		name:     "Installer Smoke (windows-latest)",
-		budget:   "6m",
-		jobStart: "  installer-smoke:",
-		jobEnd:   "  goreleaser-snapshot:",
-		markers:  []string{"name: Installer Smoke (${{ matrix.os }})", "os: [ubuntu-latest, windows-latest]"},
-	},
-	{
-		name:     "GoReleaser Snapshot",
-		budget:   "35m",
-		jobStart: "  goreleaser-snapshot:",
-		jobEnd:   "  report-integration-failures:",
-		markers:  []string{"name: GoReleaser Snapshot", "timeout-minutes: 35", "args: release --snapshot --clean", "MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key"},
-	},
-}
 
 func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 	t.Parallel()
@@ -135,18 +52,14 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 	}
 }
 
-func TestCIConcurrencyKeepsMainPushRuns(t *testing.T) {
+func TestCIHasNoPullRequestConcurrency(t *testing.T) {
 	t.Parallel()
-
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	concurrency := workflowBetween(t, workflow, "concurrency:\n", "\njobs:")
-	for _, want := range []string{
-		"group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}",
-		"cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-	} {
-		if !strings.Contains(concurrency, want) {
-			t.Fatalf("CI concurrency missing %q", want)
-		}
+	if strings.Contains(workflow, "github.event.pull_request") || strings.Contains(workflow, "pull_request:") {
+		t.Fatal("scheduled CI must not start for pull requests")
+	}
+	if !strings.Contains(workflow, "group: scheduled-develop-validation") {
+		t.Fatal("scheduled validation must avoid overlapping tag publication")
 	}
 }
 
@@ -207,7 +120,8 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 		{name: "test", want: "$(GO_TEST) $$packages"},
 		{name: "test-web", want: "$(GO_TEST) ./internal/web"},
 		{name: "test-race", want: "$(GO_TEST) -race $$packages"},
-		{name: "test-race-hub", want: "env -u DETENT_API_TOKEN go run ./tools/testgate -race"},
+		{name: "test-race-hub-a", want: "env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -run"},
+		{name: "test-race-hub-b", want: "env -u DETENT_API_TOKEN go run ./tools/testgate -race -parallel $(HUB_RACE_PARALLEL) -timeout $(HUB_RACE_TIMEOUT) -skip"},
 		{name: "test-cover", want: "$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages"},
 		{name: "test-cover-web", want: "$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web"},
 	}
@@ -235,7 +149,7 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 		"GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)",
 		"GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)",
 		"lint: $(GOLANGCI_LINT)",
-		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=15m`,
+		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --timeout=15m`,
 		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)`,
 		"setup: $(GOLANGCI_LINT)",
 	} {
@@ -247,7 +161,7 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 		t.Fatal("Makefile must read the golangci-lint version from .golangci-version")
 	}
 
-	workflow := workflowBetween(t, readNormalizedFile(t, ".github/workflows/ci.yml"), "  lint:", "\n  verify:")
+	workflow := workflowBetween(t, readNormalizedFile(t, ".github/workflows/ci.yml"), "  lint:", "\n  verify-fast:")
 	for _, want := range []string{
 		"path: tmp/tools/golangci-lint",
 		"hashFiles('.golangci-version')",
@@ -312,7 +226,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("make lint: %v\n%s", err, output)
 			}
-			if !strings.Contains(string(output), "pinned:go1.26.6:run --timeout=15m") {
+			if !strings.Contains(string(output), "pinned:go1.26.6:run --allow-parallel-runners --timeout=15m") {
 				t.Fatalf("make lint did not invoke the pinned toolchain: %s", output)
 			}
 			if installed := strings.Contains(string(output), "go install"); installed == cached {
@@ -322,89 +236,99 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 	}
 }
 
-func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
+func TestScheduledCIDocumentationMatchesWorkflow(t *testing.T) {
 	t.Parallel()
-
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	docs := readNormalizedFile(t, "docs/execution-seams.md")
-	protection := workflowBetween(t, docs, "### Main Branch Protection\n", "\n## Still Git/PR Coupled")
+	section := workflowBetween(t, docs, "### Detent Repository Branch Protection\n", "\n## Still Git/PR Coupled")
+	for _, want := range []string{"`make check-fast`", "scheduled", "`develop`", "tag", "staging"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("CI documentation missing %q", want)
+		}
+	}
+}
 
-	for _, want := range []string{
-		"`required_status_checks.strict: true`",
-		"must not report success from a path- or event-dependent no-op",
-		"`gate.required_status_checks`",
-		"`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`",
-		"`Browser Visual`",
+func TestCIRunsOnScheduleAndManualDispatch(t *testing.T) {
+	t.Parallel()
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
+	for _, want := range []string{"schedule:", "cron: '17 * * * *'", "workflow_dispatch:", "fail_job:"} {
+		if !strings.Contains(triggers, want) {
+			t.Errorf("CI triggers missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"pull_request:", "merge_group:", "push:"} {
+		if strings.Contains(triggers, forbidden) {
+			t.Errorf("CI has forbidden trigger %q", forbidden)
+		}
+	}
+}
+
+func TestScheduledCIValidatesPinnedDevelopmentSHA(t *testing.T) {
+	t.Parallel()
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	if !strings.Contains(workflow, "git ls-remote origin refs/heads/develop") || !strings.Contains(workflow, "echo \"develop_sha=$develop_sha\" >> \"$GITHUB_OUTPUT\"") {
+		t.Fatal("scheduled CI must resolve and pin develop")
+	}
+	if count := strings.Count(workflow, "ref: ${{ needs.preflight.outputs.develop_sha }}"); count < 12 {
+		t.Fatalf("only %d jobs checkout the pinned SHA", count)
+	}
+	for _, want := range []string{"make test", "make security", "make test-cover-packages", "npm run test:visual", "make check-invariants"} {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("scheduled full suite missing %q", want)
+		}
+	}
+}
+
+func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/deploy-staging.yml")
+	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
+	if want := "on:\n  push:\n    branches: [develop]\n  workflow_dispatch:\n"; triggers != want {
+		t.Fatalf("deploy-staging triggers = %q, want exactly %q", triggers, want)
+	}
+	for _, test := range []struct {
+		name    string
+		want    string
+		present bool
+	}{
+		{name: "hosted runner", want: "    runs-on: ubuntu-latest\n", present: true},
+		{name: "dispatch limited to develop", want: "    if: github.ref == 'refs/heads/develop'\n", present: true},
+		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.hub.detent.build\n", present: true},
+		{name: "single deploy at a time", want: "concurrency:\n  group: deploy-staging\n  cancel-in-progress: true\n", present: true},
+		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},
+		{name: "strict host key", want: "-o StrictHostKeyChecking=yes", present: true},
+		{name: "stale run skips deploy", want: `if [ "$head" != "$GITHUB_SHA" ]; then`, present: true},
+		{name: "only pre-key-exchange failures retry", want: `grep -qE '^(kex_exchange_identification:|ssh: connect to host )'`, present: true},
+		{name: "self-hosted runner", want: "self-hosted"},
+		{name: "pull request trigger", want: "pull_request"},
+		{name: "secrets inherited from repository", want: "secrets: inherit"},
 	} {
-		if !strings.Contains(protection, want) {
-			t.Fatalf("main branch protection docs missing %q", want)
-		}
-	}
-
-	for _, check := range append(append([]requiredStatusCheck{}, requiredPRStatusChecks...), integrationStatusChecks...) {
-		if !strings.Contains(protection, "- `"+check.name+"` - budget: `"+check.budget+"`") {
-			t.Fatalf("main branch protection docs missing required check %q", check.name)
-		}
-
-		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
-		for _, marker := range check.markers {
-			if !strings.Contains(job, marker) {
-				t.Fatalf("workflow job for required check %q missing %q", check.name, marker)
-			}
-		}
-	}
-}
-
-func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
-	t.Parallel()
-
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, check := range requiredPRStatusChecks {
-		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
-		for _, forbidden := range []string{
-			"EVENT_NAME",
-			"steps.policy.outputs",
-			"Skip ",
-			" skipped:",
-		} {
-			if strings.Contains(job, forbidden) {
-				t.Fatalf("required check %q contains green no-op marker %q", check.name, forbidden)
-			}
-		}
-	}
-}
-
-func TestIntegrationChecksRunOnlyOnMainPushOrDispatch(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, check := range integrationStatusChecks {
-		t.Run(check.name, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
-			want := "    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
-			if !strings.Contains(job, want) {
-				t.Fatalf("integration job %q must run only on main pushes or dispatch", check.name)
-			}
-			for _, marker := range check.markers {
-				if !strings.Contains(job, marker) {
-					t.Fatalf("integration job %q missing %q", check.name, marker)
-				}
+			if got := strings.Contains(workflow, test.want); got != test.present {
+				t.Fatalf("deploy-staging contains %q = %t, want %t", test.want, got, test.present)
 			}
 		})
 	}
-	security := workflowBetween(t, workflow, "  security:", "  browser-visual:")
-	if !strings.Contains(security, "if: github.event_name != 'pull_request'") || !strings.Contains(security, "make security") {
-		t.Fatal("Security must run in the merge queue and on main, never on pull_request events")
+	if count := strings.Count(workflow, "runs-on:"); count != 1 {
+		t.Fatalf("deploy-staging has %d runs-on entries, want 1", count)
 	}
-	reporter := workflowBetween(t, workflow, "  report-integration-failures:", "")
-	for _, marker := range []string{
-		"needs: [portability-verify, windows-core, installer-smoke, goreleaser-snapshot]",
-		"if: failure() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')",
-		"/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100",
-		"go run ./tools/cifailure",
-	} {
-		if !strings.Contains(reporter, marker) {
-			t.Fatalf("failure reporting missing %q", marker)
+}
+
+func TestScheduledCIFinalizerReportsAndTags(t *testing.T) {
+	t.Parallel()
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	finalizer := workflowBetween(t, workflow, "  finalize:", "")
+	for _, want := range []string{"if: always()", "actions: write", "contents: write", "issues: write", "statuses: write", "scripts/scheduled-ci-finish.sh"} {
+		if !strings.Contains(finalizer, want) {
+			t.Errorf("scheduled finalizer missing %q", want)
+		}
+	}
+	finish := readNormalizedFile(t, "scripts/scheduled-ci-finish.sh")
+	for _, want := range []string{"ci-scheduled-failure", "detent:todo", "hotfix", "scheduled-full-ci", "git tag -a", "git push origin", "release.yml/dispatches"} {
+		if !strings.Contains(finish, want) {
+			t.Errorf("scheduled finalizer script missing %q", want)
 		}
 	}
 }
@@ -422,7 +346,6 @@ func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
 
 	stressWorkflow := readNormalizedFile(t, ".github/workflows/portability-stress.yml")
 	for _, want := range []string{
-		"schedule:",
 		"workflow_dispatch:",
 		"timeout-minutes: 45",
 		"os: [macos-latest, windows-latest]",
@@ -435,8 +358,8 @@ func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
 			t.Fatalf("portability stress workflow missing %q", want)
 		}
 	}
-	if strings.Contains(stressWorkflow, "pull_request:") {
-		t.Fatal("portability stress workflow must not run for every pull request")
+	if strings.Contains(stressWorkflow, "pull_request:") || strings.Contains(stressWorkflow, "schedule:") {
+		t.Fatal("portability stress workflow must run only on manual dispatch")
 	}
 }
 
@@ -485,41 +408,11 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 
 func TestBrowserVisualGateCoversBoardInteractions(t *testing.T) {
 	t.Parallel()
-
-	workflowRaw, err := os.ReadFile(".github/workflows/ci.yml")
-	if err != nil {
-		t.Fatalf("ReadFile(.github/workflows/ci.yml) error = %v", err)
-	}
-	workflow := strings.ReplaceAll(string(workflowRaw), "\r\n", "\n")
-	visualJob := workflowBetween(t, workflow, "  browser-visual:", "\n  portability-verify:")
-	for _, want := range []string{
-		"npm run test:visual",
-		"tmp/detent --help",
-		"go.mod|go.sum",
-		"name: Upload browser visual evidence",
-		"tmp/playwright-evidence",
-		"name: Upload browser visual failure artifacts",
-		"tmp/playwright-report",
-		"tmp/playwright-results",
-	} {
-		if !strings.Contains(visualJob, want) {
-			t.Fatalf("browser visual job missing %q", want)
-		}
-	}
-
-	visualSpecRaw, err := os.ReadFile("tests/visual/layout.spec.js")
-	if err != nil {
-		t.Fatalf("ReadFile(tests/visual/layout.spec.js) error = %v", err)
-	}
-	visualSpec := strings.ReplaceAll(string(visualSpecRaw), "\r\n", "\n")
-	for _, want := range []string{
-		`test("board card opens the detail sheet"`,
-		`[data-detail-sheet]`,
-		`test("board lane picker hides and restores lanes"`,
-		`test("board applies snapshot updates without reload"`,
-	} {
-		if !strings.Contains(visualSpec, want) {
-			t.Fatalf("browser visual spec missing %q", want)
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	visual := workflowBetween(t, workflow, "  browser-visual-shard:", "\n  portability-verify:")
+	for _, want := range []string{"npm run test:visual", "--shard=${{ matrix.shard }}/3", "name: Upload browser visual evidence", "name: Upload browser visual failure artifacts"} {
+		if !strings.Contains(visual, want) {
+			t.Errorf("browser visual job missing %q", want)
 		}
 	}
 }
@@ -552,34 +445,16 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 	return section[:len(startMarker)+end]
 }
 
-func TestCIDraftAndVerifyDependencies(t *testing.T) {
+func TestScheduledCIJobDependencies(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if !strings.Contains(workflow, "types: [opened, synchronize, reopened, ready_for_review]") {
-		t.Fatal("pull_request events must report skipped required checks")
-	}
-	if strings.Contains(workflow, "  pr-required-placeholders:\n") {
-		t.Fatal("successful placeholder checks must not stand in for unrun jobs")
-	}
-	for _, job := range []string{"lint", "verify", "verify-fast", "verify-race", "test-cover", "security", "browser-visual"} {
-		t.Run(job, func(t *testing.T) {
-			section := workflowBetween(t, workflow, "  "+job+":\n", "    steps:")
-			if !strings.Contains(section, "if: github.event_name != 'pull_request'") && !strings.Contains(section, "if: always() && github.event_name != 'pull_request'") {
-				t.Fatal("real CI jobs must not run on pull_request events")
-			}
-		})
-	}
-	aggregate := workflowBetween(t, workflow, "  verify:\n", "  verify-fast:\n")
-	for _, want := range []string{"needs: [verify-fast, verify-race]", "if: always()", `test "$FAST_RESULT" = success && test "$RACE_RESULT" = success`} {
-		if !strings.Contains(aggregate, want) {
-			t.Errorf("aggregate must reject failed, cancelled and skipped dependencies: missing %q", want)
+	for _, name := range []string{"invariants", "lint", "verify-fast", "verify-race", "test-cover", "security", "browser-visual-shard", "portability-verify", "windows-core", "installer-smoke", "goreleaser-snapshot"} {
+		if !strings.Contains(workflow, "  "+name+":\n    needs: preflight\n    if: needs.preflight.outputs.should_run == 'true'") {
+			t.Errorf("%s must depend on preflight", name)
 		}
 	}
-	race := workflowBetween(t, workflow, "  verify-race:\n", "  test-cover:\n")
-	for _, want := range []string{"shard: [0, 1, 2, 3]", "fail-fast: false", "~/go/pkg/mod", "~/.cache/go-build", "hashFiles('go.sum')", `bash scripts/ci-race-shard.sh "$SHARD"`} {
-		if !strings.Contains(race, want) {
-			t.Errorf("race shards missing %q", want)
-		}
+	if !strings.Contains(workflow, "shard: [0, 1, 2, 3, 4, 5]") || !strings.Contains(workflow, "shard: [1, 2, 3]") {
+		t.Fatal("full suite lost race or visual shards")
 	}
 }
 
@@ -659,13 +534,19 @@ func TestCIRaceShardFailures(t *testing.T) {
 		testExit    string
 		wantSuccess bool
 		wantTests   bool
+		wantMake    string
 	}{
-		{"success", "2", "0", "0", true, true},
-		{"workspace shard", "3", "0", "0", true, true},
-		{"workspace failure", "3", "0", "1", false, false},
-		{"discovery failure", "2", "1", "0", false, false},
-		{"race failure survives tee", "2", "0", "1", false, true},
-		{"invalid shard", "4", "0", "0", false, false},
+		{"success", "2", "0", "0", true, true, ""},
+		{"workspace shard", "3", "0", "0", true, true, ""},
+		{"workspace failure", "3", "0", "1", false, false, ""},
+		{"discovery failure", "2", "1", "0", false, false, ""},
+		{"race failure survives tee", "2", "0", "1", false, true, ""},
+		{"hub partition a", "0", "0", "0", true, false, "test-race-hub-a"},
+		{"hub partition a failure", "0", "0", "1", false, false, "test-race-hub-a"},
+		{"orchestrator", "1", "0", "0", true, false, "test-race-orchestrator"},
+		{"hub partition b", "4", "0", "0", true, false, "test-race-hub-b"},
+		{"hub partition c", "5", "0", "0", true, false, "test-race-hub-c"},
+		{"invalid shard", "6", "0", "0", false, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -704,6 +585,9 @@ exit 98
 			if err := os.WriteFile(filepath.Join(root, "bin", "go"), []byte(fakeGo), 0o755); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(root, "bin", "make"), []byte("#!/bin/sh\necho \"$*\" > make-invoked\nexit \"$TEST_EXIT\"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			cmd := exec.CommandContext(t.Context(), "bash", "scripts/ci-race-shard.sh", tc.shard)
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "LIST_EXIT="+tc.listExit, "TEST_EXIT="+tc.testExit, "DETENT_API_TOKEN=fixture-token")
@@ -715,6 +599,10 @@ exit 98
 			if (err == nil) != tc.wantTests {
 				t.Fatalf("tests invoked=%v, want %v: %s", err == nil, tc.wantTests, out)
 			}
+			made, err := os.ReadFile(filepath.Join(root, "make-invoked"))
+			if strings.TrimSpace(string(made)) != tc.wantMake || (err == nil) != (tc.wantMake != "") {
+				t.Fatalf("make target = %q (%v), want %q: %s", made, err, tc.wantMake, out)
+			}
 			if tc.wantTests {
 				data, err := os.ReadFile(filepath.Join(root, "tmp", "shard-"+tc.shard+"-race-evidence", "tests.jsonl"))
 				if err != nil || !strings.Contains(string(data), `"Action":"pass"`) {
@@ -722,5 +610,74 @@ exit 98
 				}
 			}
 		})
+	}
+}
+
+func TestHubRacePartitionsCoverEveryTestOnce(t *testing.T) {
+	t.Parallel()
+	makefile := readNormalizedFile(t, "Makefile")
+	values := map[string]string{}
+	for line := range strings.SplitSeq(makefile, "\n") {
+		for _, name := range []string{"HUB_RACE_PARTITION", "HUB_RACE_PARTITION_B"} {
+			if value, ok := strings.CutPrefix(line, name+" := "); ok {
+				values[name] = strings.TrimSpace(value)
+			}
+		}
+	}
+	for _, name := range []string{"HUB_RACE_PARTITION", "HUB_RACE_PARTITION_B"} {
+		if values[name] == "" || strings.Contains(values[name], "/") {
+			t.Fatalf("%s = %q, want a nonempty top-level test pattern", name, values[name])
+		}
+	}
+	for _, want := range []string{
+		"test-race-hub: test-race-hub-a test-race-hub-b test-race-hub-c\n",
+		"-run '$(HUB_RACE_PARTITION)' -output tmp/hub-race-evidence-a ./internal/hubserver\n",
+		"-run '$(HUB_RACE_PARTITION_B)' -output tmp/hub-race-evidence-b ./internal/hubserver\n",
+		"-skip '$(HUB_RACE_PARTITION)|$(HUB_RACE_PARTITION_B)' -output tmp/hub-race-evidence-c ./internal/hubserver\n",
+	} {
+		if !strings.Contains(makefile, want) {
+			t.Errorf("Hub race partitions must run A, run B and skip both for C: missing %q", want)
+		}
+	}
+	shard := readNormalizedFile(t, "scripts/ci-race-shard.sh")
+	for _, want := range []string{"0) exec make test-race-hub-a ;;", "4) exec make test-race-hub-b ;;", "5) exec make test-race-hub-c ;;"} {
+		if !strings.Contains(shard, want) {
+			t.Errorf("CI race shards missing %q", want)
+		}
+	}
+	if testing.Short() {
+		t.Skip("listing Hub tests builds the package")
+	}
+	a, err := regexp.Compile(values["HUB_RACE_PARTITION"])
+	if err != nil {
+		t.Fatalf("compile HUB_RACE_PARTITION: %v", err)
+	}
+	b, err := regexp.Compile(values["HUB_RACE_PARTITION_B"])
+	if err != nil {
+		t.Fatalf("compile HUB_RACE_PARTITION_B: %v", err)
+	}
+	out, err := exec.CommandContext(t.Context(), "go", "test", "-list", ".", "./internal/hubserver").Output()
+	if err != nil {
+		t.Fatalf("list Hub tests: %v", err)
+	}
+	counts := [3]int{}
+	for _, name := range strings.Fields(string(out)) {
+		if !strings.HasPrefix(name, "Test") && !strings.HasPrefix(name, "Example") && !strings.HasPrefix(name, "Fuzz") {
+			continue
+		}
+		inA, inB := a.MatchString(name), b.MatchString(name)
+		switch {
+		case inA && inB:
+			t.Fatalf("%s runs in both partition A and partition B", name)
+		case inA:
+			counts[0]++
+		case inB:
+			counts[1]++
+		default:
+			counts[2]++
+		}
+	}
+	if counts[0] == 0 || counts[1] == 0 || counts[2] == 0 {
+		t.Fatalf("partition sizes = %v, want all three Hub race partitions nonempty", counts)
 	}
 }

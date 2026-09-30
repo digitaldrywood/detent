@@ -26,10 +26,19 @@ type database struct {
 	hostedOrganization tracker.OrganizationID
 	hostedPlans        *HostedPlansConfig
 	hostedBilling      bool
-	now                func() time.Time
-	newLeaseID         func() string
-	closeOnce          sync.Once
-	closeErr           error
+	// workspaceRetainAfterRun is workspaces.retain_after_run, read by the
+	// claim gate: inside that window an attempt's worktree still exists on
+	// the runner that produced it, and only that runner may serve a
+	// workspace on the attempt (decisions section 18.1).
+	workspaceRetainAfterRun time.Duration
+	// workspaceTerminalIsolation is workspaces.terminal.isolation, read by the
+	// claim gate so a runner whose terminal is less confined than the
+	// organization allows is never handed a workspace that requires one.
+	workspaceTerminalIsolation string
+	now                        func() time.Time
+	newLeaseID                 func() string
+	closeOnce                  sync.Once
+	closeErr                   error
 }
 
 func openDatabase(ctx context.Context, cfg Config) (*database, error) {
@@ -57,6 +66,10 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	db.SetMaxIdleConns(1)
 
 	store := &database{db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID}
+	if cfg.Workspace != nil {
+		store.workspaceRetainAfterRun = cfg.Workspace.RetainAfterRun
+		store.workspaceTerminalIsolation = cfg.Workspace.Terminal.Isolation
+	}
 	if err := store.configure(ctx, cfg.BusyTimeout); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
@@ -76,6 +89,9 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_tenant").Scan(&bound); err != nil || bound != 1 {
 			return nil, errors.Join(ErrHostedDatabaseBinding, store.Close())
 		}
+	}
+	if cfg.hostedBindingMigration {
+		return store, nil
 	}
 	if err := store.bindHostedDatabase(ctx, cfg.Hosted); err != nil {
 		return nil, errors.Join(err, store.Close())

@@ -19,10 +19,13 @@ permits delegation, Detent delegates every eligible green candidate to the repos
 through the serialized worker. GitHub owns merge-group validation and batching;
 Detent keeps the issues in `Merging`, observes their queue entries, and
 reconciles them to `Done` after GitHub reports the PR merged. Without a native
-queue, a BEHIND PR whose existing head is mergeable and already has green
-required checks is submitted to the exact-head merge API without rewriting
-the checked head. If GitHub explicitly rejects an out-of-date base, Detent
-refreshes that head and waits for its required CI. Other refusals, including
+queue, a CLEAN PR with green required checks on its current head and non-strict
+base protection is submitted to the exact-head merge API without rewriting
+that head. A transient BEHIND observation does not force a refresh if a fresh
+observation is CLEAN before the retry. Behind or dirty heads, non-green checks,
+and strict base protection use the existing sync path. If GitHub explicitly
+rejects an out-of-date base, Detent refreshes that head and waits for its
+required CI even if the next observation is CLEAN. Other refusals, including
 failed checks, conflicts, permissions, changed heads, and native queue
 requirements, do not authorize this refresh fallback. If a refreshed head
 is missing required contexts, Detent routes the issue to `Rework` instead of
@@ -49,53 +52,20 @@ releases the reservation even after the tracker omits the completed issue from
 queue fetches. Diagnostics record
 reservation release reasons, head/base identities, and validation invalidation.
 
-Inside the serialized `Merging` lane, avoid duplicating the full local release
-gate when it does not buy new signal. If the PR already passed the pre-review
-gate, the branch rebases cleanly onto current `origin/main`, and no source files
-change during rebase, the merge agent should run a focused rebase/smoke gate
-locally and rely on required current-head CI for full enforcement. If the merge
-agent edits code, resolves conflicts, detects stale or unknown validation state,
-or cannot prove the final rebase was source-clean, it must run the full
-configured gate again.
+Each Detent pull request runs `make check-fast` in its own worktree before
+merge. The target has no repository or machine-wide validation lock, so
+independent worktrees can validate concurrently. No pull-request GitHub Actions
+workflow or required status check delays the merge. The scheduled full suite
+validates a pinned `develop` commit after integration; only a green commit gets
+an annotated version tag and release artifacts. Every `develop` push still
+deploys to staging.
 
-CI waiting should poll current-head REST check runs with backoff, not loop on
-GraphQL-heavy PR status commands. Required checks must run on the PR
-head before merge; post-merge integration failures are tracked separately.
-Merge handoff telemetry should record the
-quiet-window wait, GitHub queue/start wait, local merge-gate duration,
-current-head PR CI duration, active slow-check runtimes, and whether post-merge
-`main` CI is still running. The quiet window, current-head required CI, and
-conflict/full-gate fallback are quality gates; repeated full local validation
-after a source-clean rebase, noisy status polling, uncached tool install, and
-duplicated non-blocking post-merge work are optimization targets.
-
-The repository CI caches the project-pinned golangci-lint binary and only builds
-it with `go install` on cache miss. CI builds golangci-lint `v2.9.0` with the
-repository Go toolchain so analyzer behavior and toolchain provenance stay
-aligned.
-
-PR-required checks are `Lint`, `Verify (ubuntu-latest)`, `Test Coverage`, and
-`Browser Visual`. `Security` also runs on every PR. These jobs run for docs-only
-PRs too; Browser Visual uses its existing smoke path for nonvisual changes.
-The same set runs for merge groups.
-
-`Portability Verify (macos-latest)`, `Portability Verify (windows-latest)`,
-`Windows Core`, `Installer Smoke (ubuntu-latest)`,
-`Installer Smoke (windows-latest)`, and `GoReleaser Snapshot` run only on pushes
-to `main` and manual dispatch. They do not run for PRs, merge groups, tag pushes, or
-the nightly schedule. A push to main runs the full set.
-
-Failed integration jobs on main (including manual runs on main) use the existing
-machine intake to open a tracking issue or comment on the open match, with
-origin kind `doctor` and a stable fingerprint per job name. The issue links to
-the failed job and records the commit. These track CI instance health; logs
-must establish a product defect before proposing product changes. Infrastructure
-failures remain attributed to the instance. Reporting errors fail the reporting job.
-
-The operator must update GitHub's required-checks list to match the four fast
-checks above, removing the six integration checks from branch protection and
-rulesets. Preserve any separately required Security policy. Changing this
-workflow does not change GitHub protection settings.
+The local target verifies generated sources, migrations, frontend build and
+unit tests, Go build and vet, lint, invariants, and short tests that avoid
+shared database and port resources. The scheduled suite includes race,
+coverage, security, browser visual, portability, installer, and packaging
+checks. Scheduled failures file one fingerprinted Todo hotfix issue per job;
+a later green run closes them.
 
 When implementation workers fill project or global capacity, a clean PR with
 passing current-head checks and a known base can complete through the existing
@@ -145,10 +115,10 @@ Base advancement alone does not rewrite queued PRs: GitHub validates its new
 integration group. Cancelling a dispatch stops further admissions; it does not
 withdraw already admitted work from GitHub.
 
-This repository's CI accepts `merge_group: checks_requested`. Checkout uses the
-merge-group commit, all required jobs run, and visual detection defaults to the
-full visual gate when there is no PR base ref. PR workflow cancellation is
-scoped to that PR; it cannot cancel an integration-group run.
+This repository now runs no pull-request or merge-group GitHub Actions workflow.
+Its branch rulesets require no status checks. The following queue migration
+notes document the older model and apply only to repositories that still choose
+a native merge queue.
 
 Migration is an operator action, never a side effect of starting Detent:
 
@@ -254,17 +224,8 @@ are changed.
 
 In GitHub repository **Settings → Rules → Rulesets**, create or edit an active
 branch ruleset targeting the merge branch and enable **Require merge queue**.
-Choose squash merging for this project and ensure every required check runs on
-the merge-group SHA. See GitHub's [merge queue setup documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
-The PR-required and security-audit exclusions above still apply.
+For repositories that choose a queue, every required check must run on the
+merge-group SHA. See GitHub's [merge queue setup documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
 
-`detent doctor` recommends considering a queue when strict protection is enabled,
-no queue exists, and recorded merge cadence multiplied by median CI duration is
-at least 0.25 merges per CI run. It reads the last seven days of lane history,
-deduplicates PRs for the repository and target branch, and requires at least
-three merges and three measured CI durations. Cadence uses the interval between
-the first and last recorded merge. The recommendation reports the sample count,
-observed interval, merges/day, median CI minutes, and estimated overlap. CI
-durations and target branches are recorded with PR lane transitions; older
-history without these fields does not justify a recommendation. Doctor never
-mutates branch protection or rulesets.
+Detent does not currently recommend a merge queue from PR-head CI cadence;
+that recommendation relied on the retired per-PR CI model.

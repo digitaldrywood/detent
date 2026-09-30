@@ -2,249 +2,68 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+	"database/sql"
 	"path/filepath"
-	"strconv"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-type questionTracker struct {
-	*memory.Connector
-	mu          sync.Mutex
-	comments    []connector.IssueComment
-	posts       int
-	postError   bool
-	rejectPosts int
-	onReject    func()
-}
-
-type unavailableHumanQuestionStore struct {
-	store.Store
-	store.HumanQuestionStore
-}
-
-func (unavailableHumanQuestionStore) HumanQuestions(context.Context, string, string) ([]store.HumanQuestion, error) {
-	return nil, errors.New("question storage unavailable")
-}
-
-func TestHumanQuestionWaitPreservesAttemptOnStorageFailure(t *testing.T) {
+func TestINV14DispatchQuestionTool(t *testing.T) {
 	t.Parallel()
-	db := openWorkAttemptRecoveryStore(t, t.Context())
-	o := newWorkAttemptRecoveryOrchestrator(t, db, nil)
-	o.workAttempts = unavailableHumanQuestionStore{Store: db, HumanQuestionStore: db.(store.HumanQuestionStore)}
-	issue := recoveryTestIssue()
-	now := time.Now()
-	attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusActive, "", now)
-	state := newState(o.cfg)
-	state.Claimed[issue.ID] = Claimed{Issue: issue}
-	if !o.completeHumanQuestionWait(t.Context(), &state, runner.Completion{IssueID: issue.ID, CompletedAt: now.Add(time.Second)}, Running{Issue: issue, WorkAttemptID: attemptID}) {
-		t.Fatal("storage failure fell through to ordinary completion")
-	}
-	receipt, err := db.WorkAttempt(t.Context(), attemptID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if receipt.Status != store.WorkAttemptStatusActive || len(state.Claimed) != 1 || len(state.Completed) != 0 {
-		t.Fatal("storage failure released the claim or completed the attempt")
-	}
-}
-
-func (c *questionTracker) CreateComment(_ context.Context, _ string, body string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.rejectPosts > 0 {
-		c.rejectPosts--
-		if c.onReject != nil {
-			c.onReject()
-		}
-		return errors.Join(connector.ErrCommentNotCreated, errors.New("post rejected before creation"))
-	}
-	c.posts++
-	at := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
-	c.comments = append(c.comments, connector.IssueComment{ID: strconv.Itoa(c.posts), Body: body, AuthorLogin: "worker", CreatedAt: &at})
-	if c.postError {
-		return errors.New("response lost after posting")
-	}
-	return nil
-}
-
-func (c *questionTracker) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]connector.IssueComment(nil), c.comments...), nil
-}
-
-func (c *questionTracker) IsIssueCommentAuthorAuthorized(_ context.Context, _ connector.Issue, comment connector.IssueComment) (bool, error) {
-	return comment.AuthorAuthorized, nil
-}
-
-func TestHumanQuestionRejectedPostCanRetry(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name            string
-		restart, cancel bool
+	for _, tc := range []struct {
+		name, gateKind, passState string
+		enabled                   bool
 	}{
-		{name: "retry"},
-		{name: "restart", restart: true},
-		{name: "cancelled caller", cancel: true},
+		{name: "command auto merge", gateKind: gate.KindCommand, passState: "Merging", enabled: true},
+		{name: "artifact auto merge", gateKind: gate.KindArtifact, passState: "Merging", enabled: true},
+		{name: "human review gate", gateKind: gate.KindHumanReview, passState: "Merging", enabled: true},
+		{name: "auto promote disabled", gateKind: gate.KindCommand, passState: "Merging"},
+		{name: "different pass state", gateKind: gate.KindCommand, passState: "Human Review", enabled: true},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "questions.db")
-			db, err := store.Open(t.Context(), store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := db.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			tracker := &questionTracker{Connector: memory.New(memory.Config{}), rejectPosts: 1}
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			if tt.cancel {
-				tracker.onReject = cancel
-			}
-			o := &Orchestrator{connector: tracker, workAttempts: db}
-			request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#647"}}
-			o.attachHumanQuestionTool(&request)
-			call := runner.AgentToolCall{Name: "ask_human_question", Arguments: json.RawMessage(`{"key":"delivery","question":"Use manual delivery?"}`)}
-			result, err := request.AgentToolHandler(ctx, call)
-			if err != nil || result.Success {
-				t.Fatalf("rejected post = %+v, %v", result, err)
-			}
-			records, err := db.(store.HumanQuestionStore).HumanQuestions(t.Context(), "", "issue")
-			if err != nil || len(records) != 0 {
-				t.Fatalf("rejected reservation retained: %+v, %v", records, err)
-			}
-			if waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue); err != nil || waiting {
-				t.Fatalf("waiting without a question: %v, %v", waiting, err)
-			}
-			if tt.restart {
-				if err := db.Close(); err != nil {
-					t.Fatal(err)
-				}
-				db, err = store.Open(t.Context(), store.Config{Path: path})
-				if err != nil {
-					t.Fatal(err)
-				}
-				o.workAttempts = db
-				o.attachHumanQuestionTool(&request)
-			}
-			var wg sync.WaitGroup
-			for range 8 {
-				wg.Go(func() {
-					if _, err := request.AgentToolHandler(t.Context(), call); err != nil {
-						t.Error(err)
-					}
-				})
-			}
-			wg.Wait()
-			result, err = request.AgentToolHandler(t.Context(), call)
-			if err != nil || !result.Success || tracker.posts != 1 {
-				t.Fatalf("retry = %+v, %v, posts %d", result, err, tracker.posts)
-			}
-		})
-	}
-}
-
-func TestHumanQuestionRejectsWorkerGitHubCredentialPrerequisite(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		question string
-		rejected bool
-	}{
-		{name: "budget scheduler", question: "Should we replace project timers with a credential-scoped scheduler using GitHub's rate-budget reset window?"},
-		{name: "would enable", question: "Would you enable GitHub connector write access?", rejected: true},
-		{name: "manually open", question: "Could you manually open the PR?", rejected: true},
-		{name: "manual design", question: "Should workers manually open the PR?"},
-		{name: "enable design", question: "Should we enable GitHub connector write access?"},
-		{name: "credential design", question: "Should GitHub authentication use one credential per project?"},
-		{name: "github write enablement", question: "Could you enable GitHub write access?", rejected: true},
-		{name: "connector write grant", question: "Can you grant the GitHub connector write access?", rejected: true},
-		{name: "write enablement", question: "Could you enable GitHub connector write access?", rejected: true},
-		{name: "pull request design", question: "Should we open the PR as a draft?"},
-		{name: "write access design", question: "Should GitHub credentials have write access?"},
-		{name: "write support", question: "Could you enable GitHub connector write access or open the PR manually?", rejected: true},
-		{name: "missing credentials", question: "GitHub credentials are unavailable; can you restore worker access?", rejected: true},
-		{name: "authentication failure", question: "GitHub authentication failed; can you repair it?", rejected: true},
-		{name: "connector policy failure", question: "GitHub MCP tool call requires approval, but approval policy is never; can you fix this?", rejected: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			db := openWorkAttemptRecoveryStore(t, t.Context())
-			tracker := &questionTracker{Connector: memory.New(memory.Config{})}
-			o := &Orchestrator{connector: tracker, workAttempts: db}
-			request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#2616"}}
-			o.attachHumanQuestionTool(&request)
-			args, err := json.Marshal(map[string]string{"key": "delivery", "question": tt.question})
-			if err != nil {
-				t.Fatal(err)
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				Project:             scheduler.ProjectCandidate{ID: "detent"},
+				AutoPromote:         AutoPromoteConfig{Enabled: tc.enabled, PassState: tc.passState, Gate: gate.Config{Kind: tc.gateKind}},
+			})
+			worker := newWorkerHostRunner()
+			o := Orchestrator{cfg: cfg, connector: memory.New(memory.Config{}), workAttempts: openWorkAttemptRecoveryStore(t, t.Context()), supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runner.Completion, 1)}
+			state := newState(cfg)
+			if !o.dispatchIssue(t.Context(), &state, dispatchTestIssue("issue", "Todo"), 1, time.Now(), "") {
+				t.Fatal("dispatch did not start")
 			}
-			result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "ask_human_question", Arguments: args})
-			wantCount := 1
-			if tt.rejected {
-				wantCount = 0
-			}
-			if err != nil || result.Success == tt.rejected || tracker.posts != wantCount {
-				t.Fatalf("question = %+v, err %v, posts %d; want rejected %t, posts %d", result, err, tracker.posts, tt.rejected, wantCount)
-			}
-			records, err := db.(store.HumanQuestionStore).HumanQuestions(t.Context(), "", "issue")
-			if err != nil || len(records) != wantCount {
-				t.Fatalf("question records = %+v, err %v; want %d", records, err, wantCount)
-			}
-			if !tt.rejected && records[0].Body != tt.question {
-				t.Fatalf("recorded body = %q, want %q", records[0].Body, tt.question)
-			}
-			if tt.rejected && !strings.Contains(result.Content, "instance conditions") {
-				t.Fatalf("rejection = %q, want instance-owned failure", result.Content)
+			request := receiveWorkerHostRunRequest(t, worker.started)
+			for _, tool := range request.AgentTools {
+				if tool.Name == "ask_human_question" {
+					t.Fatal("worker received ask_human_question")
+				}
 			}
 		})
 	}
 }
 
-func TestHumanQuestionRestartAndConcurrentRequests(t *testing.T) {
+func TestINV14LegacyQuestionRowDispatch(t *testing.T) {
 	t.Parallel()
-	for _, lostResponse := range []bool{false, true} {
-		t.Run(strconv.FormatBool(lostResponse), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "questions.db")
+	for _, tc := range []struct {
+		name, gateKind, commentID string
+	}{
+		{name: "command published", gateKind: gate.KindCommand, commentID: "123"},
+		{name: "human review published", gateKind: gate.KindHumanReview, commentID: "123"},
+		{name: "human review unconfirmed", gateKind: gate.KindHumanReview},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "detent.db")
 			db, err := store.Open(t.Context(), store.Config{Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			tracker := &questionTracker{Connector: memory.New(memory.Config{}), postError: lostResponse}
-			o := &Orchestrator{connector: tracker, workAttempts: db}
-			request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#647", State: "Rework"}}
-			o.attachHumanQuestionTool(&request)
-			call := runner.AgentToolCall{Name: "ask_human_question", Arguments: json.RawMessage(`{"key":"delivery","question":"Should delivery remain manual? I recommend a reviewed manual handoff until approved payloads can be pinned."}`)}
-			var wg sync.WaitGroup
-			for range 8 {
-				wg.Go(func() {
-					if _, err := request.AgentToolHandler(t.Context(), call); err != nil {
-						t.Error(err)
-					}
-				})
-			}
-			wg.Wait()
-			if tracker.posts != 1 {
-				t.Fatalf("posted %d questions", tracker.posts)
-			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			db, err = store.Open(t.Context(), store.Config{Path: path})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -253,184 +72,35 @@ func TestHumanQuestionRestartAndConcurrentRequests(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			o.workAttempts = db
-			o.attachHumanQuestionTool(&request)
-			result, err := request.AgentToolHandler(t.Context(), call)
-			if err != nil || !result.Success || tracker.posts != 1 {
-				t.Fatalf("restart = %+v, %v, posts %d", result, err, tracker.posts)
-			}
-			for range 3 {
-				waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue)
-				if err != nil || !waiting || request.Issue.State != "Rework" {
-					t.Fatalf("wait = %v, %v", waiting, err)
-				}
-			}
-			at := time.Date(2026, 9, 9, 13, 0, 0, 0, time.UTC)
-			tracker.comments = append(tracker.comments, connector.IssueComment{ID: "answer", Body: "Yes, use a manual handoff. This does not authorize live sends.", AuthorLogin: "cory", AuthorAuthorized: true, CreatedAt: &at})
-			waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue)
-			if err != nil || waiting {
-				t.Fatalf("reply wait = %v, %v", waiting, err)
-			}
-			records, err := db.(store.HumanQuestionStore).HumanQuestions(t.Context(), "", "issue")
-			if err != nil || len(records) != 1 || records[0].AnswerCommentID != "answer" || records[0].QuestionCommentID != "1" {
-				t.Fatalf("records = %+v, %v", records, err)
-			}
-		})
-	}
-}
-
-func TestHumanQuestionReplyAuthorization(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name, login, kind, body    string
-		authorized, after, resumes bool
-	}{
-		{name: "authorized ordinary reply", login: "cory", body: "Use manual delivery", authorized: true, after: true, resumes: true},
-		{name: "ambiguous reply resumes interpretation", login: "cory", body: "Maybe, explain the alternative", authorized: true, after: true, resumes: true},
-		{name: "unauthorized", login: "outsider", body: "Approved", after: true},
-		{name: "bot", login: "bot", kind: "Bot", body: "Approved", authorized: true, after: true},
-		{name: "same account human reply", login: "worker", body: "Use manual delivery", authorized: true, after: true, resumes: true},
-		{name: "old reply", login: "cory", body: "Approved", authorized: true},
-		{name: "workpad", login: "cory", body: "## Codex Workpad", authorized: true, after: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "questions.db")})
+			legacy, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
-			tracker := &questionTracker{Connector: memory.New(memory.Config{})}
-			o := &Orchestrator{connector: tracker, workAttempts: db}
-			request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#1"}}
-			o.attachHumanQuestionTool(&request)
-			result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "ask_human_question", Arguments: json.RawMessage(`{"key":"decision","question":"Use manual delivery?"}`)})
-			if err != nil || !result.Success {
-				t.Fatalf("ask = %+v, %v", result, err)
-			}
-			at := *tracker.comments[0].CreatedAt
-			if tt.after {
-				at = at.Add(time.Second)
-			} else {
-				at = at.Add(-time.Second)
-			}
-			tracker.comments = append(tracker.comments, connector.IssueComment{ID: "reply", AuthorLogin: tt.login, AuthorKind: tt.kind, Body: tt.body, AuthorAuthorized: tt.authorized, CreatedAt: &at})
-			waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue)
-			if err != nil || waiting == tt.resumes {
-				t.Fatalf("waiting = %v, %v", waiting, err)
-			}
-		})
-	}
-}
-
-func TestHumanQuestionIndependentRework(t *testing.T) {
-	t.Parallel()
-	db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "questions.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	tracker := &questionTracker{Connector: memory.New(memory.Config{})}
-	o := &Orchestrator{connector: tracker, workAttempts: db}
-	request := RunRequest{Issue: connector.Issue{ID: "issue", Identifier: "owner/repo#1", State: "Rework"}}
-	o.attachHumanQuestionTool(&request)
-	result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "ask_human_question", Arguments: json.RawMessage(`{"key":"sender","question":"Use manual delivery?"}`)})
-	if err != nil || !result.Success {
-		t.Fatalf("question = %+v, %v", result, err)
-	}
-	request.Issue.PullRequest = &connector.PullRequest{HeadSHA: "head", BaseSHA: "base", MergeableState: "dirty"}
-	if waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue); err != nil || waiting {
-		t.Fatalf("independent rework blocked: %v, %v", waiting, err)
-	}
-	questions := db.(store.HumanQuestionStore)
-	records, err := questions.HumanQuestions(t.Context(), "", "issue")
-	if err != nil {
-		t.Fatal(err)
-	}
-	q := records[0]
-	q.WorkFingerprint = humanQuestionWorkFingerprint(request.Issue)
-	if err := questions.RecordHumanQuestionWork(t.Context(), q); err != nil {
-		t.Fatal(err)
-	}
-	for range 3 {
-		if waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue); err != nil || !waiting {
-			t.Fatalf("unchanged PR repeatedly dispatched: %v, %v", waiting, err)
-		}
-	}
-	if q.AnswerCommentID != "" {
-		t.Fatal("independent rework approved decision")
-	}
-	request.Issue.PullRequest.BaseSHA = "new-base"
-	if waiting, err := o.humanQuestionWaiting(t.Context(), &request.Issue); err != nil || waiting {
-		t.Fatalf("new rework blocked: %v, %v", waiting, err)
-	}
-}
-
-func TestHumanQuestionWaitCompletesAttemptWithoutCompletingIssue(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name     string
-		question bool
-		answered bool
-		waiting  bool
-	}{
-		{name: "pending question", question: true, waiting: true},
-		{name: "answered question", question: true, answered: true},
-		{name: "no question"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			db := openWorkAttemptRecoveryStore(t, t.Context())
-			o := newWorkAttemptRecoveryOrchestrator(t, db, nil)
-			issue := recoveryTestIssue()
-			issue.State = "Rework"
-			issue.PullRequest = &connector.PullRequest{HeadSHA: "head", MergeableState: "clean"}
-			now := time.Now()
-			attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusActive, "", now)
-			if tt.question {
-				questions := db.(store.HumanQuestionStore)
-				q := store.HumanQuestion{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, Key: "delivery", Body: "Use manual delivery?"}
-				if _, err := questions.ReserveHumanQuestion(t.Context(), q); err != nil {
-					t.Fatal(err)
+			t.Cleanup(func() {
+				if err := legacy.Close(); err != nil {
+					t.Error(err)
 				}
-				if tt.answered {
-					q.QuestionCommentID = "question"
-					if err := questions.RecordHumanQuestionComment(t.Context(), q); err != nil {
-						t.Fatal(err)
-					}
-					q.AnswerCommentID, q.AnswerBody = "answer", "Keep sends disabled"
-					if err := questions.RecordHumanQuestionAnswer(t.Context(), q); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			state := newState(o.cfg)
-			state.Claimed[issue.ID] = Claimed{Issue: issue}
-			state.Retry[issue.ID] = Retry{Issue: issue}
-			state.Blocked["unrelated"] = Blocked{}
-			running := Running{Issue: issue, WorkAttemptID: attemptID, StartedAt: now}
-			if handled := o.completeHumanQuestionWait(t.Context(), &state, runner.Completion{IssueID: issue.ID, CompletedAt: now.Add(time.Second)}, running); handled != tt.waiting {
-				t.Fatalf("handled = %v, want %v", handled, tt.waiting)
-			}
-			receipt, err := db.WorkAttempt(t.Context(), attemptID)
+			})
+			_, err = legacy.ExecContext(t.Context(), `INSERT INTO human_questions(project_id, issue_id, question_key, issue_identifier, body, question_comment_id, answer_comment_id) VALUES ('detent', 'issue', 'decision', 'owner/repo#3035', 'What next?', ?, '')`, tc.commentID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tt.waiting && (receipt.TerminalState != store.WorkAttemptTerminalSuccess || receipt.Phase != "waiting") {
-				t.Fatalf("waiting receipt = %+v", receipt)
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}, AutoPromote: AutoPromoteConfig{Enabled: true, PassState: "Merging", Gate: gate.Config{Kind: tc.gateKind}}})
+			worker := newWorkerHostRunner()
+			o := Orchestrator{cfg: cfg, connector: memory.New(memory.Config{}), workAttempts: db, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runner.Completion, 1)}
+			state := newState(cfg)
+			if !o.dispatchIssue(t.Context(), &state, dispatchTestIssue("issue", "Todo"), 1, time.Now(), "") {
+				t.Fatal("legacy unanswered question prevented dispatch")
 			}
-			if tt.waiting && !allowanceExternalWaitAttempt(receipt) {
-				t.Fatalf("question receipt consumes allowance: %+v", receipt)
+			request := receiveWorkerHostRunRequest(t, worker.started)
+			if request.Issue.ID != "issue" {
+				t.Fatalf("dispatched issue = %q", request.Issue.ID)
 			}
-			if !tt.waiting && receipt.Status != store.WorkAttemptStatusActive {
-				t.Fatalf("ordinary completion intercepted: %+v", receipt)
-			}
-			if _, claimed := state.Claimed[issue.ID]; claimed == tt.waiting {
-				t.Fatalf("claimed = %v, waiting = %v", claimed, tt.waiting)
-			}
-			if _, retry := state.Retry[issue.ID]; retry == tt.waiting {
-				t.Fatalf("retry = %v, waiting = %v", retry, tt.waiting)
-			}
-			if len(state.Completed) != 0 || len(state.Blocked) != 1 || issue.State != "Rework" || issue.PullRequest.HeadSHA != "head" {
-				t.Fatal("question wait changed issue completion, independent park, lane, or PR")
+			receipts, err := db.(interface {
+				HumanQuestions(context.Context, string, string) ([]store.HumanQuestion, error)
+			}).HumanQuestions(t.Context(), "detent", "issue")
+			if err != nil || len(receipts) != 1 || receipts[0].AnswerCommentID != "" {
+				t.Fatalf("historical receipt changed: %+v, %v", receipts, err)
 			}
 		})
 	}

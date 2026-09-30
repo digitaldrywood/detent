@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,68 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
+
+func TestAutoPromoteSkippedPRChecksOnlyWithNativeQueue(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 23, 18, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name          string
+		lane          string
+		available     bool
+		checkStatus   string
+		conclusion    string
+		inspectedHead string
+		wantPromoted  bool
+	}{
+		{name: "completed skipped checks with queue", available: true, checkStatus: "completed", conclusion: "skipped", wantPromoted: true},
+		{name: "completed In Progress handoff with queue", lane: "In Progress", available: true, checkStatus: "completed", conclusion: "skipped", wantPromoted: true},
+		{name: "completed skipped checks without queue", checkStatus: "completed", conclusion: "skipped"},
+		{name: "running check", available: true, checkStatus: "in_progress"},
+		{name: "failed check", available: true, checkStatus: "completed", conclusion: "failure"},
+		{name: "stale inspection head", available: true, checkStatus: "completed", conclusion: "skipped", inspectedHead: "old-head"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			lane := tt.lane
+			if lane == "" {
+				lane = "Human Review"
+			}
+			cfg := normalizeConfig(Config{
+				AutoPromote: AutoPromoteConfig{
+					Enabled: true, SourceState: "Human Review", PassState: "Merging", ReworkState: "Rework",
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+				},
+				ActiveStates: []string{"In Progress", "Human Review", "Merging"}, TerminalStates: []string{"Done"},
+			})
+			issue := nativeMergeQueueTestIssue(3013, "pending")
+			issue.State = lane
+			if lane == "In Progress" {
+				issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
+			}
+			issue.PullRequest.Checks = []connector.PullRequestCheck{{Name: "Verify", Status: tt.checkStatus, Conclusion: tt.conclusion}}
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Verify", Status: "pending"}}
+			tracker := &nativeMergeQueueConnector{
+				autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}},
+				available:                     &tt.available, inspectedHead: tt.inspectedHead,
+			}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			if lane == "In Progress" {
+				state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted, CompletedAt: now.Add(-time.Minute)}
+				if !autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
+					t.Fatal("completed In Progress issue was not selected for gate wait")
+				}
+			}
+			orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			promoted := len(tracker.updates) == 1 && tracker.updates[0].state == "Merging"
+			if promoted != tt.wantPromoted {
+				t.Fatalf("updates = %#v, want promoted %t", tracker.updates, tt.wantPromoted)
+			}
+		})
+	}
+}
 
 func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t *testing.T) {
 	t.Parallel()

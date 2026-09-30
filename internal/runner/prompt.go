@@ -68,6 +68,12 @@ type PromptOptions struct {
 type ValidatorPromptOptions struct {
 	WorkspacePath      string
 	Branch             string
+	Repository         string
+	PRNumber           int
+	BaseSHA            string
+	HeadSHA            string
+	DiffDigest         string
+	DiffFiles          []string
 	DiffStat           *workspace.DiffStat
 	DiffPatch          string
 	DiffTruncated      bool
@@ -118,8 +124,12 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
 	rendered = appendBlockedHandoffBlock(rendered, opts)
 	rendered = appendGateBlock(rendered, workflow.Config)
+	rendered = appendGoTestScopeBlock(rendered, opts.WorkspacePath)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
 	rendered = appendNativeIssueInstructions(rendered, issue)
+	if workflow.Config.Tracker.Kind == config.TrackerHubNative {
+		return appendNativeCompletionContract(rendered), nil
+	}
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
 		return rendered, nil
 	}
@@ -127,7 +137,11 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		rendered = appendFollowupsBlock(rendered, workflow.Config.Agent.Followups)
 		rendered = appendSkillCreationBlock(rendered, workflow.Config.Agent.Skills)
 	}
-	return appendClosingReferenceInstruction(rendered, issue), nil
+	rendered = appendClosingReferenceInstruction(rendered, issue)
+	if strings.EqualFold(strings.TrimSpace(issue.State), "merging") {
+		rendered = strings.TrimRight(rendered, " \t\r\n") + "\n\n## Merge CI handoff\n\nAfter completing the required local validation, return immediately after pushing a new pull request head. Do not watch or wait for CI in this agent session, even if the project workflow above asks you to. Detent uses its current-head CI wait and requeues the issue in normal Merging order when checks finish. Report the pushed head in your final response.\n"
+	}
+	return rendered, nil
 }
 
 func BuildRoutinePrompt(workflow config.Workflow, issue connector.Issue, routine RoutineRequest, opts PromptOptions) (string, error) {
@@ -319,6 +333,12 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
 		b.WriteString("\n")
 	}
+	if opts.Repository != "" {
+		fmt.Fprintf(&b, "Reviewed PR: %s#%d base=%s head=%s sha256=%s\n", opts.Repository, opts.PRNumber, opts.BaseSHA, opts.HeadSHA, opts.DiffDigest)
+		b.WriteString("Reviewed files: ")
+		b.WriteString(strings.Join(opts.DiffFiles, ", "))
+		b.WriteString("\n")
+	}
 	appendValidatorDiffContext(&b, opts)
 	b.WriteString("\nIssue: ")
 	b.WriteString(issue.Identifier)
@@ -335,7 +355,7 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	b.WriteString("Review instructions:\n")
-	b.WriteString("- Use the seeded diff context above first; when the full diff is omitted or you need more detail, inspect the PR diff with `git diff`.\n")
+	b.WriteString("- Review only the PR diff identified above. If the inline patch is omitted, use the named GitHub PR diff at the stated head; do not use workspace git diff.\n")
 	b.WriteString("- Do not modify files, commit, push, change labels, or transition issue state.\n")
 	b.WriteString("- Use severities p1, p2, p3, or p4 for findings; p1 means the work must not merge.\n")
 	b.WriteString("- Score is a confidence/trust score from 0 to 1 that the implementation satisfies the acceptance criteria.\n")
@@ -682,6 +702,18 @@ func appendGateBlock(prompt string, cfg config.Config) string {
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## " + heading + "\n\n" + instructions
 }
 
+const goTestScopeBlock = "## Go test scope\n\n" +
+	"Go builds and tests on this host share one CPU budget with every other concurrent worker. " +
+	"While iterating, run `go test` on the packages you changed and the packages that import them (for example `go test ./internal/foo/...`) instead of `go test ./...` sweeps. " +
+	"Run a repository-wide sweep only when the required validation command does, and only once before handing off.\n"
+
+func appendGoTestScopeBlock(prompt string, workspacePath string) string {
+	if !isGoModule(workspacePath) {
+		return prompt
+	}
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + goTestScopeBlock
+}
+
 func appendNativeIssueInstructions(prompt string, issue connector.Issue) string {
 	if issue.Metadata["hub_profile"] != "native" {
 		return prompt
@@ -692,6 +724,17 @@ func appendNativeIssueInstructions(prompt string, issue connector.Issue) string 
 		"Use --project " + issue.Metadata["hub_project_id"] + " and work-item " + issue.ID + ". Preserve the persistent Workpad as a native comment. " +
 		"Historical GitHub issue links are provenance; do not use gh issue, GitHub issue labels, or GitHub issue comments for this native work item. " +
 		"GitHub repository, pull request, CI and merge operations remain subject to the configured repository integration and required GitHub protections. Native approval does not satisfy a required GitHub review."
+}
+
+const nativeCompletionContract = "## Native completion contract\n\n" +
+	"This project uses Detent's native tracker. These rules override any tracker, Workpad, or pull request instructions above. " +
+	"Commit your work on the current attempt branch in this workspace. " +
+	"Never push to or open or update pull requests on the forge, never run `gh` or call the GitHub API, do not post or edit tracker, GitHub issue, or Workpad comments, and do not change issue state or labels. " +
+	"When the run finishes, Detent records the Change Request from your commits. " +
+	"Report any blocker in your final message."
+
+func appendNativeCompletionContract(prompt string) string {
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + nativeCompletionContract + "\n"
 }
 
 func githubTrackerHostname(tracker config.Tracker) string {
@@ -741,7 +784,7 @@ func appendClosingReferenceInstruction(prompt string, issue connector.Issue) str
 	}
 
 	return strings.TrimRight(prompt, " \t\r\n") +
-		"\n\n## Pull request\n\nWhen creating or updating the pull request body, include `" +
+		"\n\n## Pull request\n\nIn the pull request body, include `" +
 		reference + "`."
 }
 

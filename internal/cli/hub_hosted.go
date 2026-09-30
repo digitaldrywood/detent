@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
@@ -28,6 +29,10 @@ type hostedFileConfig struct {
 	StorageQuotaBytes        int64                         `yaml:"storage_quota_bytes"`
 	EventQuota               int64                         `yaml:"event_quota"`
 	Directory                []hubserver.HostedDestination `yaml:"directory"`
+	SharedEntry              *hostedSharedEntryFileConfig  `yaml:"shared_entry"`
+	Conversation             *hostedConversationFileConfig `yaml:"conversation"`
+	Usage                    *hostedUsageFileConfig        `yaml:"usage"`
+	Workspaces               *hostedWorkspaceFileConfig    `yaml:"workspaces"`
 	WorkOS                   struct {
 		ClientID  string `yaml:"client_id"`
 		APIKeyEnv string `yaml:"api_key_env"`
@@ -36,7 +41,27 @@ type hostedFileConfig struct {
 	} `yaml:"workos"`
 }
 
+type hostedSharedEntryFileConfig struct {
+	Issuer               string   `yaml:"issuer"`
+	PublicKeys           []string `yaml:"public_keys"`
+	AllocationGeneration int64    `yaml:"allocation_generation"`
+}
+
+func readHostedSharedEntry(config *hostedSharedEntryFileConfig) (*hubserver.HostedSharedEntry, error) {
+	entry := &hubserver.HostedSharedEntry{Issuer: config.Issuer, Generation: config.AllocationGeneration}
+	for _, value := range config.PublicKeys {
+		key, err := cloudassert.ParsePublicKey(value)
+		if err != nil {
+			return nil, err
+		}
+		entry.PublicKeys = append(entry.PublicKeys, key)
+	}
+	return entry, nil
+}
+
 type hostedBillingFileConfig struct {
+	Mode                  string                         `yaml:"mode,omitempty"`
+	CheckoutDisabled      bool                           `yaml:"checkout_disabled,omitempty"`
 	AccountID             string                         `yaml:"account_id"`
 	CustomerID            string                         `yaml:"customer_id"`
 	PortalConfigurationID string                         `yaml:"portal_configuration_id"`
@@ -54,7 +79,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 	if !validEnvName(config.APIKeyEnv) || !validEnvName(config.WebhookSecretEnv) {
 		return nil, errors.New("billing secret environment variable names are required and must be valid")
 	}
-	provider, err := billing.NewStripe(billing.StripeConfig{APIKey: lookupEnv(config.APIKeyEnv)})
+	provider, err := billing.NewStripe(billing.StripeConfig{APIKey: lookupEnv(config.APIKeyEnv), Mode: config.Mode})
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +88,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 		return nil, errors.New("billing webhook secret is unavailable or invalid")
 	}
 	return &hubserver.HostedBillingConfig{
-		AccountID: config.AccountID, CustomerID: config.CustomerID, PortalConfigurationID: config.PortalConfigurationID,
+		Mode: config.Mode, CheckoutDisabled: config.CheckoutDisabled, AccountID: config.AccountID, CustomerID: config.CustomerID, PortalConfigurationID: config.PortalConfigurationID,
 		WebhookSecret: []byte(secret), GraceSeconds: config.GraceSeconds, ReconcileSeconds: config.ReconcileSeconds,
 		Prices: config.Prices, Provider: provider,
 	}, nil
@@ -82,44 +107,58 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hubse
 			resultErr = errors.Join(resultErr, errors.New("hosted configuration could not be closed"))
 		}
 	}()
-	decoder := yaml.NewDecoder(io.LimitReader(file, 128*1024))
+	result, err = parseHostedConfig(file, lookupEnv)
+	if err != nil {
+		return nil, false, err
+	}
+	return result, true, nil
+}
+
+func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubserver.HostedConfig, error) {
+	decoder := yaml.NewDecoder(io.LimitReader(reader, 128*1024))
 	decoder.KnownFields(true)
 	var config hostedFileConfig
 	if err := decoder.Decode(&config); err != nil {
-		return nil, false, errors.New("hosted configuration is invalid")
+		return nil, errors.New("hosted configuration is invalid")
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, false, errors.New("hosted configuration must contain one document")
+		return nil, errors.New("hosted configuration must contain one document")
 	}
 	if config.WorkOS.APIKeyEnv == "" {
 		config.WorkOS.APIKeyEnv = "WORKOS_API_KEY"
 	}
 	if !validEnvName(config.WorkOS.APIKeyEnv) {
-		return nil, false, errors.New("hosted API key environment variable name is invalid")
+		return nil, errors.New("hosted API key environment variable name is invalid")
 	}
 	provider, err := auth.NewHostedProvider(auth.IdentityProviderWorkOS, auth.WorkOSConfig{
 		APIURL: config.WorkOS.APIURL, IssuerURL: config.WorkOS.IssuerURL, ClientID: config.WorkOS.ClientID,
 		APIKey: lookupEnv(config.WorkOS.APIKeyEnv), RedirectURL: config.PublicURL + "/auth/oidc/callback",
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	var entitlementToken []byte
 	if config.EntitlementAdminTokenEnv != "" {
 		if !validEnvName(config.EntitlementAdminTokenEnv) {
-			return nil, false, errors.New("entitlement token environment name is invalid")
+			return nil, errors.New("entitlement token environment name is invalid")
 		}
 		entitlementToken = []byte(lookupEnv(config.EntitlementAdminTokenEnv))
 		if len(entitlementToken) < 32 {
-			return nil, false, errors.New("entitlement administration token is unavailable or too short")
+			return nil, errors.New("entitlement administration token is unavailable or too short")
+		}
+	}
+	var sharedEntry *hubserver.HostedSharedEntry
+	if config.SharedEntry != nil {
+		if sharedEntry, err = readHostedSharedEntry(config.SharedEntry); err != nil {
+			return nil, err
 		}
 	}
 	var billingConfig *hubserver.HostedBillingConfig
 	if config.Billing != nil {
 		billingConfig, err = readHostedBillingConfig(config.Billing, lookupEnv)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 	}
 	return &hubserver.HostedConfig{
@@ -128,7 +167,7 @@ func readHostedConfig(path string, lookupEnv func(string) string) (result *hubse
 		Plans:          config.Plans,
 		OrganizationID: config.OrganizationID, WorkOSOrganizationID: config.WorkOSOrganizationID,
 		BootstrapSubject: config.BootstrapSubject, PublicURL: config.PublicURL,
-		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Directory: config.Directory, Provider: provider,
+		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Directory: config.Directory, SharedEntry: sharedEntry, Provider: provider,
 		PlanID: config.PlanID, StorageQuotaBytes: config.StorageQuotaBytes, EventQuota: config.EventQuota,
-	}, true, nil
+	}, nil
 }
