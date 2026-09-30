@@ -2,6 +2,35 @@
 
 ## Codex Workpad
 
+Plan and result: retain unpublished local merge `b5dec01cac8db79fb245b1410e6d7a6d4e1a9a3b` and merge freshly fetched develop `a80b710099516938a38c8cadb785f7fa61a56386` into it without rebasing published commits. Commit the merge and return immediately to Detent.
+
+Prior notes verified: the source-clean starting local merge has parents published PR head `a32d1454aaea58ccaf41894c1e05b2ecca2c57d1` and prior target `bb537faaff5f86411d65d165726ba1386fa60aad`, matching the preceding handoff. GitHub PR #3354 remains open against develop on the assigned branch at the fetched published head, which is an ancestor of the retained local history. Recorded parents of `a32d1454`, `ebb9b324`, `073d3ca2`, and recovered merge `6bcebe6a` match Git history. Prior diagnostics and generation remain historical only.
+
+Resolution: the current target merged automatically without conflicts. Incoming `internal/gate/gate.go` and `internal/gate/gate_test.go` changes are retained without manual edits. Only this handoff note is updated manually; no source changes, asset generation, or out-of-scope findings. Key issue files remain `internal/cli/boot.go`, `internal/cli/hub_client.go`, `internal/hubserver/migrations/00050_runner_local_checks.sql`, `internal/hubserver/migrate.go`, `internal/hubserver/runner_diagnostics_migration_test.go`, `web/conversation/src/app/account/Setup.tsx`, and `web/conversation/src/app/fleet/EnrollRunner.tsx`. Migration 50 and its supported-schema/test expectations remain present.
+
+Validation: no tests, lint, vet, builds, typecheck, local gate (including `true`), CI checks, or validation waits performed. No current-head validation success is claimed; validation timings are unmeasured.
+
+Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7213"
+  completion_generation: "81"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+These records concern earlier heads or other issues. Their validation and completion metadata do not apply to this head or authorize validation or publication in this session.
+
+# Issue #3244 merge fallback — PR #3354, 2026-09-30
+
+## Historical Workpad
+
 Plan and result: merge freshly fetched develop `bb537faaff5f86411d65d165726ba1386fa60aad` into published PR head `a32d1454aaea58ccaf41894c1e05b2ecca2c57d1`, preserving both as ancestors without rebasing, commit the resolution, and return immediately to Detent.
 
 Prior notes verified: the source-clean starting local head matches the fetched PR branch and GitHub PR #3354, open against develop with `Fixes #3244`. Its parents are prior published head `ebb9b32450ce51c235533adbc675cccc6f07e215` and prior target `3844f54e75edc8df931d7221c7f62dcb3d71b37e`, confirming the preceding fallback. The recorded parents of `ebb9b32450ce51c235533adbc675cccc6f07e215`, `073d3ca240d1a52ba4cc5ce62f8e608affc585c4`, and recovered merge `6bcebe6a69ae6bdac77d6abe396b20e825a29c15` also match Git history. Earlier diagnostics and bundle generation are historical only.
@@ -12,7 +41,7 @@ Validation: no tests, lint, vet, builds, typecheck, local gate (including `true`
 
 Open items: Detent owns independent branch ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
 
-```detent-status
+```yaml
 schema: 1
 status: complete
 fields:
