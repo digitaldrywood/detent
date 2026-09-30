@@ -20,19 +20,27 @@ type cleanupDeliveryConnector struct {
 	hydrationErr   error
 }
 
-func (c *cleanupDeliveryConnector) RevalidatePullRequestAssociation(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+func (c *cleanupDeliveryConnector) RevalidatePullRequestAssociation(_ context.Context, issue connector.Issue, includeStatus bool) (connector.Issue, error) {
 	if issue.PullRequest != nil {
 		panic("cleanup reused snapshot PR")
 	}
-	return c.associated, c.associationErr
+	if includeStatus {
+		panic("cleanup requested PR status")
+	}
+	if c.associationErr != nil {
+		return issue, c.associationErr
+	}
+	fresh := c.associated
+	fresh.PullRequest = c.hydrated.PullRequest
+	return fresh, c.hydrationErr
 }
 func (c *cleanupDeliveryConnector) HydratePullRequest(context.Context, connector.Issue) (connector.Issue, error) {
-	return c.hydrated, c.hydrationErr
+	panic("cleanup performed duplicate hydration")
 }
 
 func TestVerifyCleanupDelivery(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"merged", "closed unmerged", "open", "missing merge time", "unavailable", "degraded", "wrong number", "wrong repository", "wrong issue", "unverified association", "association failure", "hydration failure", "missing head"} {
+	for _, name := range []string{"merged", "closed unmerged", "open", "missing merge time", "unavailable", "degraded", "wrong number", "missing repository", "wrong issue", "unverified association", "association failure", "hydration failure", "missing head"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Now()
@@ -56,8 +64,8 @@ func TestVerifyCleanupDelivery(t *testing.T) {
 				hydrated.PullRequest.HydrationDegradedReason = "degraded"
 			case "wrong number":
 				hydrated.PullRequest.Number++
-			case "wrong repository":
-				c.hydrated.PRRepository = "other/repo"
+			case "missing repository":
+				c.associated.PRRepository = ""
 			case "wrong issue":
 				c.associated.ID = "other"
 			case "unverified association":

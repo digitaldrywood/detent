@@ -19,7 +19,10 @@ type associationTestConnector struct {
 	calls int
 }
 
-func (c *associationTestConnector) RevalidatePullRequestAssociation(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+func (c *associationTestConnector) RevalidatePullRequestAssociation(_ context.Context, issue connector.Issue, includeStatus bool) (connector.Issue, error) {
+	if !includeStatus {
+		panic("live association omitted PR status")
+	}
 	c.calls++
 	issue.PRNumber = c.fresh.PRNumber
 	issue.PRRepository = c.fresh.PRRepository

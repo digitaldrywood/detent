@@ -513,15 +513,11 @@ func (o *Orchestrator) verifyCleanupDelivery(ctx context.Context, issue connecto
 	if !ok {
 		return "", nil
 	}
-	hydrator, ok := o.connector.(connector.PullRequestHydrator)
-	if !ok {
-		return "", nil
-	}
 	candidate := cloneIssue(issue)
 	// Revalidation may reuse matching snapshot state. Do not let it reuse the
 	// snapshot head; keep the reference only to support branch associations.
 	candidate.PullRequest = nil
-	fresh, err := validator.RevalidatePullRequestAssociation(ctx, candidate)
+	fresh, err := validator.RevalidatePullRequestAssociation(ctx, candidate, false)
 	if err != nil {
 		return "", fmt.Errorf("verify cleanup PR association: %w", err)
 	}
@@ -529,14 +525,9 @@ func (o *Orchestrator) verifyCleanupDelivery(ctx context.Context, issue connecto
 		fresh.PRNumber == nil || *fresh.PRNumber <= 0 || strings.TrimSpace(fresh.PRRepository) == "" {
 		return "", nil
 	}
-	verifiedRepository, verifiedNumber := fresh.PRRepository, *fresh.PRNumber
-	fresh, err = hydrator.HydratePullRequest(ctx, fresh)
-	if err != nil {
-		return "", fmt.Errorf("verify cleanup merged PR: %w", err)
-	}
+	verifiedNumber := *fresh.PRNumber
 	pr := fresh.PullRequest
-	if fresh.PRRepository != verifiedRepository || fresh.PRNumber == nil || *fresh.PRNumber != verifiedNumber ||
-		pr == nil || pr.Number != verifiedNumber || normalizePullRequestState(pr.State) != "merged" ||
+	if pr == nil || pr.Number != verifiedNumber || normalizePullRequestState(pr.State) != "merged" ||
 		pr.MergedAt == nil || pr.MergedAt.IsZero() || pr.HydrationUnavailableReason != "" || pr.HydrationDegradedReason != "" {
 		return "", nil
 	}
