@@ -172,7 +172,7 @@ func (k *Keyring) Rewrap(e Envelope, aad []byte) (Envelope, error) {
 	if err != nil {
 		return Envelope{}, err
 	}
-	e.WrappedKey, e.Version = wrapped, k.version
+	e.WrappedKey, e.Version = wrapped, k.Version()
 	return e, nil
 }
 

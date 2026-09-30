@@ -1983,7 +1983,7 @@ func TestDependencyIssuesUsesPublishedCohortWithoutWaiting(t *testing.T) {
 	got[0].State = "Done"
 	got[0].BlockedBy[0].State = "Done"
 	retained := o.DependencyIssues()
-	if retained[0].State != "Rework" || retained[0].BlockedBy[0].State != "Backlog" {
+	if len(retained) != 1 || retained[0].State != "Rework" || len(retained[0].BlockedBy) != 1 || retained[0].BlockedBy[0].State != "Backlog" {
 		t.Fatalf("modified owner=%+v", retained)
 	}
 }

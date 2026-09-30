@@ -71,8 +71,8 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 			o.logger.Warn("work attempt history recovery failed", "project_id", projectID, "error", err)
 		}
 	} else {
-		for index := len(recent) - 1; index >= 0; index-- {
-			o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(recent[index], now))
+		for _, attempt := range slices.Backward(recent) {
+			o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(attempt, now))
 		}
 		o.recoverWorkspaceBranchHolds(ctx, state, recent, now)
 		o.recoverGitHubRESTCapacityWaits(ctx, state, recent, now)
