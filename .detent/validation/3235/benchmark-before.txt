@@ -1,0 +1,5 @@
+goos: linux
+goarch: arm64
+pkg: github.com/digitaldrywood/detent/internal/store
+BenchmarkSQLiteRefresh-16    	       6	7666510274 ns/op	17723565237 rchar/refresh	  14479360 wchar/refresh	  14479360 write_bytes/refresh	28428528 B/op	  376887 allocs/op
+PASS

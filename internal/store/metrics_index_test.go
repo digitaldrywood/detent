@@ -4,6 +4,7 @@ import (
 	"math/rand/v2"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -38,6 +39,18 @@ func TestWorkflowIndexedCorrelationEquivalence(t *testing.T) {
 				if got, want := workflowLaneRepresentativeRunsIndexed(selected, newWorkflowEventIndex(rows)), referenceWorkflowLaneRepresentativeRuns(selected, rows); !reflect.DeepEqual(got, want) {
 					t.Fatalf("representatives differ: got %#v want %#v", got, want)
 				}
+			}
+			// SQL no longer sorts the historical input. Representative ordering,
+			// trends, and aggregates must be independent of the database row order.
+			from, to := workflowMetricTestBase, workflowMetricTestBase.Add(time.Hour)
+			unordered := slices.Clone(rows)
+			for i := range unordered {
+				unordered[i].event.ID = int64(i + 1)
+			}
+			want := workflowMetricsReport(unordered, unordered, from, to)
+			slices.Reverse(unordered)
+			if got := workflowMetricsReport(unordered, unordered, from, to); !reflect.DeepEqual(got, want) {
+				t.Fatal("workflow report changed with historical row order")
 			}
 		})
 	}
