@@ -1,3 +1,30 @@
+# Issue #3454 browser visual repair
+
+## Codex Workpad
+
+Plan and result: repair the existing account browser assertions for the current contextual-help markup, publish a draft PR against develop, inspect feedback, then mark it ready. Assigned isolated branch started clean at develop 6b4283ddfd6e4db65463450fdd28f998b9967d61; no dependencies.
+
+Key file: tests/visual/account.spec.js. Selected-card assertions locate the data-checked element containing a radio, preserve native checked-state assertions, and require exactly one selected card both before and after switching choices. Runner enrollment matches the Runs at once label exactly so its help button cannot collide. Product behavior, generated assets and invariants are unchanged.
+
+Evidence: scheduled run 36758716559 / job 110035613139 failed both attempts at label[data-checked] after Local history passed toBeChecked. Reproduced the identical 10-second timeout on current develop in Linux Chromium before edits (12.5s command). After fixing that selector, the full serial account file exposed a previously unexecuted strict-mode failure: Runs at once matched both its input and Help for Runs at once. Preserved both failure traces under provided TMPDIR.
+
+Validation: matching mcr.microsoft.com/playwright:v1.61.0-noble image, Linux arm64, Go 1.26.6 cross-compiled real hosted-Hub preview test, ephemeral ports, one worker, no retries, strict Linux comparisons. Final complete account file: 11 passed, 1 intentionally skipped (15.5s Playwright; 15.9s command). Skip receives no test credit. Both 1440px desktop and 390px phone choices, enrollment, accessibility, authorization and usage assertions passed. All fixture, trace, video and runner output used provided TMPDIR. No full browser suite, coverage, race suite or Actions rerun. No generated inputs changed, so make generate is not applicable. Whitespace inspection passed.
+
+Publication: draft PR #3471 targets develop and includes Fixes #3454. Initial committed-head true gate passed immediately before pushing 8d5843246bb94582fd284844171e662d602bb549. Initial feedback inspection found no comments, reviews or threads; current-head check rollup was absent and receives no test credit. Rebased onto fetched develop 0721153854edcd0bd1fecd81edc90edbfc1853ba; only handoff notes conflicted, preserving incoming historical notes and one current Workpad/status fence. Browser test, product source and generated assets match the validated implementation; incoming changes are unrelated tests and the NilAway baseline. No implementation changed, so browser diagnostics were not repeated. Run true again immediately before lease-protected publication of this rebased commit, then mark ready and record final current-head feedback in the canonical issue Workpad. Next scheduled integrated-develop validation confirms the full-job repair. No tracker lane writes, live-instance mutation or out-of-scope findings. Quiet window not configured; initial no-op gate under 1s, initial push 1.4s, draft creation 2.0s; PR CI and merge-group checks are not configured. Slow checks and post-merge main CI are not applicable to this implementation handoff.
+
+Skill draft: no — the existing Linux Playwright skill covers this selector repair and isolated reproduction.
+
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
+
+# Historical develop handoffs
+
+These records concern other issues or earlier heads; they do not describe current #3454 work.
+
 # Issue #3446 implementation handoff
 
 - Reproduced all five scheduled NilAway findings from job 110035612674 / run 36758716559 on starting develop 640b8abc10f0adb4ad580d1835b349796062130e. Build and Vet passed in that run; NilAway was the failing step. Local pinned audit exited 1, with the same primary findings and grouped native-landing dereferences.
