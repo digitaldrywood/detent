@@ -503,6 +503,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Human Workpad recovery (#3504) derives the existing human-action park from its
+durable `workpad_blocker` lane entry when older entries have no recovery metadata.
+The current Blocked entry already supplies the reason, prior active lane, and
+entry time; requiring duplicate metadata made an authorized clearance unreachable.
+The same clearance evaluator and recorded-blocker recovery restore the prior
+In Progress or Rework lane. Unauthorized, stale, uncleared actions and unresolved
+dependencies keep their existing holds. No new reason, loop, or configuration is
+introduced. `TestWorkpadHumanActionClearanceRecoversBlockedIssue` includes real
+SQLite legacy entries and both active lanes.
+
 Session token ceilings record their existing typed outcome, usage, and agent
 session phase in the database without writing a repository lesson. Removing the
 automatic lesson append keeps runtime failure evidence out of committable files

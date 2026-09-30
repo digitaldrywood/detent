@@ -1404,11 +1404,23 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	if !ok ||
 		normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
-		!workflowLaneEntryMatchesCurrent(issue, entry.Event) ||
-		entry.Metadata.BlockedRecovery == nil {
+		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
 		return workflowLaneBlockedRecoveryMetadata{}, false
 	}
-	return *entry.Metadata.BlockedRecovery, true
+	if entry.Metadata.BlockedRecovery != nil {
+		return *entry.Metadata.BlockedRecovery, true
+	}
+	previousState := strings.TrimSpace(entry.Event.PreviousPhaseName)
+	parkedAt := workflowLaneTransitionAt(entry.Event)
+	if entry.Event.Reason != string(AutoPromoteReasonWorkpadBlocker) || !stateIn(previousState, normalizedStates([]string{"In Progress", autoPromoteReworkState})) ||
+		clearedHumanActionRecordedAt(issue, parkedAt) == nil {
+		return workflowLaneBlockedRecoveryMetadata{}, false
+	}
+	return workflowLaneBlockedRecoveryMetadata{
+		Owner:       blockedRecoveryOwnerHuman,
+		Cause:       workpadBlockedUnactionedReason,
+		TargetState: previousState,
+	}, true
 }
 
 func (o *Orchestrator) currentBlockedRecoveryParkedAt(
@@ -1427,11 +1439,9 @@ func (o *Orchestrator) currentBlockedRecoveryParkedAt(
 	}
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	parkedAt := workflowLaneTransitionAt(entry.Event)
-	_, schedulerPark := breakerParkCauseFromLaneReason(entry.Event.Reason)
 	if ok &&
 		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
 		workflowLaneEntryMatchesCurrent(issue, entry.Event) &&
-		(entry.Metadata.BlockedRecovery != nil || schedulerPark) &&
 		!parkedAt.IsZero() {
 		return parkedAt, true
 	}

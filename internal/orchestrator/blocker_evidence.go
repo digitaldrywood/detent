@@ -143,6 +143,17 @@ func recordedHumanActionEvidence(state *State, issue connector.Issue, now time.T
 // Workpad park. The newest authorized Workpad must explicitly clear the action
 // after the Blocked entry; an ordinary reply cannot silently release it.
 func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) *telemetry.BlockerEvidence {
+	recordedAt := clearedHumanActionRecordedAt(issue, parkedAt)
+	if recordedAt == nil {
+		return nil
+	}
+	evidence := newBlockerEvidence("free_text", workpad.BlockerOwnerHuman, blockerEvidenceStatusCleared,
+		"", "human_action", "authorized Workpad cleared human_action after Blocked entry",
+		recordedAt, nil, "", now)
+	return &evidence
+}
+
+func clearedHumanActionRecordedAt(issue connector.Issue, parkedAt time.Time) *time.Time {
 	for index := len(issue.Comments) - 1; index >= 0; index-- {
 		comment := issue.Comments[index]
 		if !autoPromoteIsWorkpadComment(comment.Body) {
@@ -163,10 +174,7 @@ func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) 
 		if recordedAt == nil || recordedAt.Before(parkedAt.Truncate(time.Second)) {
 			return nil
 		}
-		evidence := newBlockerEvidence("free_text", workpad.BlockerOwnerHuman, blockerEvidenceStatusCleared,
-			"", "human_action", "authorized Workpad cleared human_action after Blocked entry",
-			recordedAt, nil, "", now)
-		return &evidence
+		return recordedAt
 	}
 	return nil
 }
@@ -637,6 +645,11 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 	now time.Time,
 ) bool {
 	targetState := dependencyAutoUnblockTargetState(state, issue, normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock).TargetState)
+	if entry, ok := o.latestWorkflowLaneEntry(ctx, issue); ok && entry.Metadata.BlockedRecovery == nil {
+		if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
+			targetState = park.TargetState
+		}
+	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
 		if o.logger != nil {
