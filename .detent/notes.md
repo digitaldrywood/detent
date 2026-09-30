@@ -1,5 +1,88 @@
 # Issue #3257 current merge fallback
 
+- PR #3362 remains open against `develop` on the assigned isolated branch.
+- Starting source-clean local and fetched published PR head: `9f00a70849fbc40d427fad02fcc8bb4b9b6f8220`. Verified its parents `806d934c73b31ef2ee0c72967d0f0f6e00904875` and prior target `4e4334ef3e97a4bf593b81654b3be8d457c8b1e4` against the preceding handoff; the preceding starting-head parent record also matches Git history.
+- Merged freshly fetched target `73859c96fa25b6351c9e9ef77e372077c4b2fa44` into the published PR history without rebasing.
+- Only conflict: `.detent/notes.md`. Preserved historical handoffs from both sides, including incoming #3433 notes, and retained one current Workpad/status fence. Develop's `internal/workspaceterminal/pty_unix.go` cleanup annotations merged automatically; no manual source edits or asset generation required.
+- Prior resolution verified: `internal/hubserver/migrations/00049_linked_issue_sources.sql` and supported schema version 49 retain the earlier migration collision repair. `internal/hubclient/native_landing_test.go` retains both landing-policy cases and the linked-source journey.
+
+## Codex Workpad
+
+Plan: commit the resolved target merge and return immediately with a source-clean workspace.
+
+Validation: no tests, lint, vet, builds, asset generation, local gate (including `true`), CI checks or waits run. Historical results below do not validate this head. Gate/CI, quiet-window, slow-check and post-merge timings are unmeasured.
+
+Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No out-of-scope findings. No push, PR merge or issue/lane mutation performed.
+
+```detent-status
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7172"
+  completion_generation: "43"
+blockers: []
+human_action: null
+```
+
+# Historical handoffs
+
+Historical validation and completion metadata do not apply to this head and do not authorize validation or publication in this session.
+
+# Issue #3433 merge fallback handoff
+
+- Verified PR #3434 is open, targets `develop`, includes `Fixes #3433`, and has published head `1ffd4361802762ac780bcdfe725eac84b63ef98c`, matching the clean starting local branch. No rebase or merge was in progress. The prior #3433 handoff matches that commit's notes and scoped PTY annotation change; its validation is historical only.
+- Merged freshly fetched develop commit `4e4334ef3e97a4bf593b81654b3be8d457c8b1e4` into the published head without rebasing. The published PR head is retained as the first parent.
+- Only conflict: `.detent/notes.md`. Preserved both sides' historical handoffs and consolidated one current Workpad/status block. All source files merged automatically; no manual source edits or generated-input changes were required.
+- Key issue file: `internal/workspaceterminal/pty_unix.go`; the four best-effort cleanup annotations remain unchanged from the published PR head.
+
+## Historical Workpad
+
+Plan: finish and commit the resolved target merge, then return immediately to Detent with a source-clean workspace.
+
+Validation: no tests, lint, vet, builds, local gate, CI checks, or waits run in this merge-fallback session. Prior lint and package-test results below do not validate this resolved head. Gate/CI, quiet-window, slow-check, and post-merge timings are unmeasured.
+
+Open items: Detent owns independent ownership, cleanliness, and target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No out-of-scope findings. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+Historical status metadata:
+
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7161"
+  completion_generation: "32"
+  completion_cleanliness_resolution: committed
+blockers: []
+human_action: null
+
+# Issue #3433 handoff
+
+- Reproduced the recorded four `errcheck` findings on clean develop `9826088a821ba72ecfd033bc60b9ed3138762507`, using the repository-pinned golangci-lint v2.9.0 built with Go 1.26.6 against `internal/workspaceterminal/...` (exit 1, 2.2s).
+- `internal/workspaceterminal/pty_unix.go` adds four line-scoped `nolint:errcheck` annotations to documented best-effort descriptor cleanup. PTY startup, ownership, returned errors, and cleanup operations are unchanged; lint configuration and invariants are unchanged.
+- The identical focused lint command passes with zero issues (0.9s). Existing package tests pass: `env -u DETENT_API_TOKEN GOMAXPROCS=4 GOTOOLCHAIN=go1.26.6 go test -p 4 ./internal/workspaceterminal/... -count=1` (5.6s command, 5.289s package). `git diff --check` passes. No new test: annotations change no runtime behavior; the pinned lint invocation reproduces the recorded failure.
+- No generated inputs, UI surfaces, mechanisms, or out-of-scope findings. No full check-fast, coverage, race suite, or Actions wait. The configured gate is `true` and publishes no local-gate status. Publication, exact-head gate/check/review evidence, and completion for attempt 7134 / generation 5 belong to the canonical issue Workpad. Squash merge and lane transitions remain orchestrator-owned.
+- Skill draft: no — this is a routine scoped lint annotation fix.
+
+## Historical Workpad (#3019 merge fallback)
+
+- Plan: merge fetched `origin/develop` at `e687a22a5324187fb5a24de3aa5668e8e61f28f5` into PR #3026's published head `bb60dc4e827b413fffa8562ec135b402761e83ff`, preserving both as ancestors without rebasing.
+- Prior notes verified against the clean starting head and fetched PR ref. The historical #3019 notes name an earlier rebased head; the published head for this fallback is `bb60dc4e827b413fffa8562ec135b402761e83ff`. Prior diagnostics are historical only.
+- Resolution: only `.detent/notes.md` conflicted. Preserved historical handoffs from both sides, including #3019 and #3001, and consolidated this current Workpad/status block. All source files merged automatically; no manual source edits or out-of-scope findings.
+- Key issue files: `internal/cli/boot.go`, `internal/cli/dev_runtime_e2e_test.go`; both remain unchanged from the published PR head.
+- Validation: no tests, builds, local gate, CI checks, or waits run in this merge-fallback session. No current-head validation credit claimed; gate/CI and post-merge timings are unmeasured.
+- Open items: Detent owns resolved-head ownership, cleanliness, target-ancestry verification, bounded validation, lease-protected publishing, and current-head CI waiting. No push, PR merge, issue-state change, or tracker lane write performed here.
+
+Historical status metadata:
+
+schema: 1
+status: complete
+fields:
+  completion_work_attempt_id: "7141"
+  completion_generation: "12"
+blockers: []
+human_action: null
+
+# Issue #3257 previous merge fallback
+
 - PR: https://github.com/digitaldrywood/detent/pull/3362 remains open against `develop` on the expected isolated branch; its body includes `Fixes #3257`.
 - Starting source-clean local and fetched published PR head: `806d934c73b31ef2ee0c72967d0f0f6e00904875`, with parents `6fb4fdf88c238c9ad340e18c53a03aa72ba918fd` and prior target `8c7b5bfb3685eac99854cefa52d4af02763f7aec`. Verified the preceding handoff and its recorded merge parents; published history is retained without rebasing.
 - Merged freshly fetched target `origin/develop` at `4e4334ef3e97a4bf593b81654b3be8d457c8b1e4` into the published PR head.
@@ -8,13 +91,14 @@
 - Prior key file verified: `internal/hubclient/native_landing_test.go` retains plain-git and approved-GitHub-policy cases plus the linked-source journey. Earlier generated JavaScript resolution is retained; no asset generation required.
 - Open items: Detent owns independent ownership, cleanliness and target-ancestry verification, bounded validation, lease-protected publishing and current-head CI waiting. No out-of-scope finding identified; no push, PR merge or issue/lane mutation performed.
 
-## Codex Workpad
+## Historical Workpad
 
 Plan: merge fetched develop into the published PR history, resolve the handoff-notes conflict and migration-number collision, commit the resolution, and return immediately for Detent verification.
 
 Validation: no tests, builds, asset generation, typecheck, local gate (including `true`), CI checks or waits run in this session. Historical validation and generation claims below do not validate this head. Quiet-window, gate/CI, slow-check and post-merge timings are unmeasured. Detent owns validation and publishing after return.
 
-```detent-status
+Historical status metadata:
+
 schema: 1
 status: complete
 fields:
@@ -22,7 +106,6 @@ fields:
   completion_generation: "35"
 blockers: []
 human_action: null
-```
 
 # Historical handoffs retained from both sides
 
