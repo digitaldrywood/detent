@@ -264,7 +264,7 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := implementProgressIssue("before")
-			before.State = "Rework"
+			before.State = "In Progress"
 			before.PullRequest.MergeableState = "dirty"
 			before.PullRequest.DiffFingerprint = "same-diff"
 			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}})
@@ -309,7 +309,7 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			orch = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: db}
 			state = newState(cfg)
 			// No in-memory dispatch baseline survives. Even the issue snapshot is current.
-			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: mode, DispatchSourceState: "Rework", StartedAt: time.Now().Add(-time.Minute)}
+			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: mode, DispatchSourceState: before.State, StartedAt: time.Now().Add(-time.Minute)}
 			state.Claimed[after.ID] = Claimed{Issue: after}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: after.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: mode}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased"}}})
 			attempt, err := db.WorkAttempt(t.Context(), id)

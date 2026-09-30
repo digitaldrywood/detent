@@ -3935,7 +3935,10 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 	backend := &sqliteStore{db: db, queries: sqlc.New(db)}
 	startedAt := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
 	for i := range cases {
-		if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue", SessionID: int64(i + 1), CostUSD: 50, InputTokens: 5000, TotalTokens: 5000, StartedAt: startedAt, FinishedAt: startedAt.Add(time.Hour), Outcome: "completed"}); err != nil {
+		// Seed the version-54 schema without using current-schema store methods.
+		if _, err := db.ExecContext(ctx, `INSERT INTO usage_events
+		(project_id, issue_id, session_id, cost_usd, input_tokens, total_tokens, started_at, finished_at, event_day, outcome)
+		VALUES ('detent', 'issue', ?, 50, 5000, 5000, '2026-09-07T10:00:00Z', '2026-09-07T11:00:00Z', '2026-09-07', 'completed')`, i+1); err != nil {
 			t.Fatal(err)
 		}
 	}

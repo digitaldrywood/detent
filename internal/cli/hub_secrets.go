@@ -12,10 +12,14 @@ import (
 )
 
 func newHubSecretsCommand(lookupEnv func(string) string) *cobra.Command {
-	cmd := &cobra.Command{Use: "secrets", Short: "Maintain encrypted Hub provider secrets", Args: NoArgs}
+	cmd := &cobra.Command{
+		Use: "secrets", Short: "Maintain encrypted Hub provider secrets", Args: NoArgs,
+		Example: "detent hub secrets rotate --database /var/lib/detent/hub.db",
+	}
 	var databasePath string
 	rotate := &cobra.Command{
 		Use: "rotate", Short: "Rewrap data keys in a stopped Hub using the active environment key version", Args: NoArgs, SilenceUsage: true,
+		Example: "detent hub secrets rotate --database /var/lib/detent/hub.db",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if strings.TrimSpace(databasePath) == "" {
 				return errors.New("hub secrets rotate requires --database")

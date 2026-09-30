@@ -938,6 +938,10 @@ sessions-without-merge allowance. Draft PRs retain implementation routing so the
 author can finish. Repairs share the existing merge duration bound and treat
 unstarted CI like implementation runs (waiting only after push or in waiting_ci).
 The dispatch, CI parity, and duration regressions cover these boundaries (#2845).
+`TestRepairDurationBound` distinguishes bounded In Progress/Merging repair from
+Rework implementation, which does not receive the merge worker ceiling.
+`TestCompletionRebaseAfterRestart` restores merge-repair evidence from In Progress;
+Rework implementation routing remains covered by the dispatch regressions.
 
 Rework dispatch (#2800) reads the gate's live `AutomatedReviewPending()`
 predicate for clean, green PRs without actionable threads or findings. The existing
@@ -1853,6 +1857,8 @@ only diagnostics matching both location and source-line hash are accepted.
 required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
 checks every workflow for forbidden pull-request and merge-group events.
 `TestWorkflowViolations` rejects trigger and coverage regressions.
+`TestPortabilityStressRunsOutsidePullRequestGate` checks manual-only dispatch,
+the per-suite timeout matrix, and the delegated script's existing stress selections.
 
 **Change:** Update this invariant and its workflow assertions in the same pull
 request when changing validation or release evidence.
