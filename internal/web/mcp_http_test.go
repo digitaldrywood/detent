@@ -12,12 +12,13 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
 const mcpInitializeRequest = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`
 
-func TestRemoteMCPRequiresGlobalReadScopedAPIKey(t *testing.T) {
+func TestRemoteMCPRequiresCurrentReadAuthority(t *testing.T) {
 	t.Parallel()
 
 	server, backend := newRemoteMCPTestServer(t, nil)
@@ -39,12 +40,12 @@ func TestRemoteMCPRequiresGlobalReadScopedAPIKey(t *testing.T) {
 	}{
 		{name: "global read", token: readToken, wantStatus: http.StatusOK},
 		{name: "missing", wantStatus: http.StatusUnauthorized, wantCode: "unauthorized"},
-		{name: "static API token", token: "detent_admin_token", wantStatus: http.StatusUnauthorized, wantCode: "invalid_token"},
+		{name: "static API token", token: "detent_admin_token", wantStatus: http.StatusOK},
 		{name: "revoked", token: revokedToken, wantStatus: http.StatusUnauthorized, wantCode: "token_revoked"},
 		{name: "expired", token: expiredToken, wantStatus: http.StatusUnauthorized, wantCode: "token_expired"},
-		{name: "write scope", token: writeToken, wantStatus: http.StatusForbidden, wantCode: "read_scope_required"},
-		{name: "admin scope", token: adminToken, wantStatus: http.StatusForbidden, wantCode: "read_scope_required"},
-		{name: "project scoped", token: projectToken, wantStatus: http.StatusForbidden, wantCode: "global_scope_required"},
+		{name: "write scope", token: writeToken, wantStatus: http.StatusOK},
+		{name: "admin scope", token: adminToken, wantStatus: http.StatusOK},
+		{name: "project scoped", token: projectToken, wantStatus: http.StatusOK},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -267,5 +268,96 @@ func TestRemoteMCPAcceptsXAPIKeyHeader(t *testing.T) {
 	})
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Mcp-Session-Id") == "" {
 		t.Fatalf("response = %d %s, want initialized MCP session", recorder.Code, recorder.Body.String())
+	}
+}
+
+// A direct call must enforce current grants without discovery, and aggregates
+// must not include another project's usage, counts or unscoped event text.
+func TestRemoteMCPCurrentProjectAuthority(t *testing.T) {
+	t.Parallel()
+	backend := openWebTestStore(t)
+	deps := testDeps(t)
+	deps.Store = backend
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Now(),
+		BoardIssues: []telemetry.Issue{{ID: "visible", ProjectID: "allowed", Title: "visible", BlockedBy: []telemetry.BlockedRef{{ID: "confidential", Identifier: "confidential"}}, DependencyNotes: []string{"confidential"}}, {ID: "confidential", ProjectID: "other", Title: "confidential"}},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "allowed"}, Counts: telemetry.Counts{Queue: 1}, Tokens: telemetry.Tokens{Total: 7}},
+			{Project: telemetry.Project{ID: "other"}, Counts: telemetry.Counts{Queue: 99}, Tokens: telemetry.Tokens{Total: 999}},
+		},
+		Counts: telemetry.Counts{Queue: 100}, Tokens: telemetry.Tokens{Total: 1006},
+		Events: []telemetry.ActivityEvent{{Message: "confidential"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_admin_token"}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := server.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	token, keyID := createRemoteMCPKey(t, server, "Project read", []string{"read"}, []string{"allowed"})
+	headers := map[string]string{"Authorization": "Bearer " + token}
+	initialized := performJSON(t, server.Handler(), http.MethodPost, "/mcp", mcpInitializeRequest, headers)
+	if initialized.Code != http.StatusOK {
+		t.Fatal(initialized.Body.String())
+	}
+	headers["Mcp-Session-Id"] = initialized.Header().Get("Mcp-Session-Id")
+	performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, headers)
+	for _, test := range []struct {
+		name, tool, arguments string
+		denied                bool
+	}{
+		{"board", "board_state", `{}`, false},
+		{"fleet", "fleet_health", `{}`, false},
+		{"usage", "telemetry_usage", `{}`, false},
+		{"activity", "recent_activity", `{}`, false},
+		{"explanation", "explain_item", `{"project_id":"allowed","reference":"visible"}`, false},
+		{"foreign project", "board_state", `{"project_id":"other"}`, true},
+		{"foreign explanation", "explain_item", `{"project_id":"other","reference":"confidential"}`, true},
+		{"forged context", "board_state", `{"organization_id":"other"}`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": test.tool, "arguments": json.RawMessage(test.arguments)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := performJSON(t, server.Handler(), http.MethodPost, "/mcp", string(body), headers)
+			if response.Code != http.StatusOK {
+				t.Fatalf("%d: %s", response.Code, response.Body.String())
+			}
+			var result struct {
+				Result struct {
+					IsError    bool            `json:"isError"`
+					Structured json.RawMessage `json:"structuredContent"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Result.IsError != test.denied || strings.Contains(response.Body.String(), "confidential") {
+				t.Fatalf("%s", response.Body.String())
+			}
+			if test.tool == "telemetry_usage" && !test.denied && !bytes.Contains(result.Result.Structured, []byte(`"total_tokens":7`)) {
+				t.Fatalf("%s", response.Body.String())
+			}
+			// The stdio bridge has the same check even without an MCP session.
+			bridge := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/"+test.tool, test.arguments, map[string]string{"Authorization": "Bearer " + token})
+			if strings.Contains(bridge.Body.String(), "confidential") || test.denied && bridge.Code < 400 || !test.denied && bridge.Code != http.StatusOK {
+				t.Fatalf("bridge %d %s", bridge.Code, bridge.Body.String())
+			}
+		})
+	}
+	if err := backend.RevokeAPIKey(t.Context(), keyID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"board_state","arguments":{}}}`} {
+		response := performJSON(t, server.Handler(), http.MethodPost, "/mcp", body, headers)
+		if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), "confidential") {
+			t.Fatalf("revoked: %d %s", response.Code, response.Body.String())
+		}
 	}
 }

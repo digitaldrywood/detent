@@ -52,7 +52,7 @@ Complete login
 - Application: s.completeLogin; s.acceptInvitation, s.auth.authorize, s.auth.consumeTransaction, s.completeSupport, s.config.Provider.Exchange, s.config.now, s.landing, s.loginDenied, s.mutationMu.Lock, s.mutationMu.Unlock, s.organizationHome, s.readyOrganization, s.revokeAtTenants, s.staff
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
@@ -79,7 +79,7 @@ Create organization
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: create an organization with external identity or billing effects → operator
 
-Sources: [GET /organizations/new](../internal/cloudentry/service.go#L202), [POST /organizations](../internal/cloudentry/service.go#L203), [internal/web/templates/hosted.templ:393](../internal/web/templates/hosted.templ#L393), [internal/web/templates/hosted.templ:428](../internal/web/templates/hosted.templ#L428), [internal/web/templates/hosted.templ:415](../internal/web/templates/hosted.templ#L415), [internal/web/templates/hosted.templ:400](../internal/web/templates/hosted.templ#L400), [internal/web/templates/hosted.templ:420](../internal/web/templates/hosted.templ#L420), [internal/web/templates/hosted.templ:447](../internal/web/templates/hosted.templ#L447), [internal/web/templates/hosted.templ:382](../internal/web/templates/hosted.templ#L382), [internal/web/templates/hosted.templ:139](../internal/web/templates/hosted.templ#L139), [internal/web/templates/hosted.templ:362](../internal/web/templates/hosted.templ#L362), [internal/web/templates/hosted.templ:372](../internal/web/templates/hosted.templ#L372), [internal/web/templates/hosted.templ:393](../internal/web/templates/hosted.templ#L393), [internal/web/templates/hosted.templ:428](../internal/web/templates/hosted.templ#L428), [internal/web/templates/hosted.templ:415](../internal/web/templates/hosted.templ#L415), [web/conversation/src/app/entry/api.ts:249](../web/conversation/src/app/entry/api.ts#L249), [web/conversation/src/app/entry/api.ts:251](../web/conversation/src/app/entry/api.ts#L251), [web/conversation/src/app/entry/EntryScreens.tsx:249](../web/conversation/src/app/entry/EntryScreens.tsx#L249), [web/conversation/src/app/entry/EntryScreens.tsx:247](../web/conversation/src/app/entry/EntryScreens.tsx#L247)
+Sources: [GET /organizations/new](../internal/cloudentry/service.go#L202), [POST /organizations](../internal/cloudentry/service.go#L203), [internal/web/templates/hosted.templ:393](../internal/web/templates/hosted.templ#L393), [internal/web/templates/hosted.templ:428](../internal/web/templates/hosted.templ#L428), [internal/web/templates/hosted.templ:415](../internal/web/templates/hosted.templ#L415), [internal/web/templates/hosted.templ:400](../internal/web/templates/hosted.templ#L400), [internal/web/templates/hosted.templ:420](../internal/web/templates/hosted.templ#L420), [internal/web/templates/hosted.templ:382](../internal/web/templates/hosted.templ#L382), [internal/web/templates/hosted.templ:139](../internal/web/templates/hosted.templ#L139), [internal/web/templates/hosted.templ:362](../internal/web/templates/hosted.templ#L362), [internal/web/templates/hosted.templ:372](../internal/web/templates/hosted.templ#L372), [internal/web/templates/hosted.templ:393](../internal/web/templates/hosted.templ#L393), [internal/web/templates/hosted.templ:428](../internal/web/templates/hosted.templ#L428), [internal/web/templates/hosted.templ:415](../internal/web/templates/hosted.templ#L415), [web/conversation/src/app/entry/api.ts:249](../web/conversation/src/app/entry/api.ts#L249), [web/conversation/src/app/entry/api.ts:251](../web/conversation/src/app/entry/api.ts#L251), [web/conversation/src/app/entry/EntryScreens.tsx:249](../web/conversation/src/app/entry/EntryScreens.tsx#L249), [web/conversation/src/app/entry/EntryScreens.tsx:247](../web/conversation/src/app/entry/EntryScreens.tsx#L247)
 ## cloudentry.delete_organization
 
 Delete organization
@@ -140,26 +140,6 @@ Home
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /](../internal/cloudentry/service.go#L198)
-## cloudentry.join_invitation
-
-Join invitation
-
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.join_invitation` — Bounded joinInvitationRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → joinInvitationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.joinPage; s.clientShell, s.platformStaff, s.render
-- Extraction: Extract cloudentry.joinPage application inputs/results and validation from Echo; reuse s.clientShell, s.platformStaff, s.render. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / shared entry account/organization service
-- Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
-
-Sources: [GET /invitations/join](../internal/cloudentry/service.go#L223), [POST /invitations/join](../internal/cloudentry/service.go#L224), [internal/web/templates/hosted.templ:441](../internal/web/templates/hosted.templ#L441), [internal/web/templates/hosted.templ:384](../internal/web/templates/hosted.templ#L384), [internal/web/templates/hosted.templ:441](../internal/web/templates/hosted.templ#L441), [web/conversation/src/app/entry/api.ts:253](../web/conversation/src/app/entry/api.ts#L253), [web/conversation/src/app/entry/EntryScreens.tsx:397](../web/conversation/src/app/entry/EntryScreens.tsx#L397), [web/conversation/src/app/entry/EntryScreens.tsx:395](../web/conversation/src/app/entry/EntryScreens.tsx#L395)
 ## cloudentry.logout
 
 Logout
@@ -171,7 +151,7 @@ Logout
 - Application: s.logout; s.csrfValid, s.loginDenied, s.render, s.revokeAtTenants
 - Extraction: Extract cloudentry.logout application inputs/results and validation from Echo; reuse s.csrfValid, s.loginDenied, s.render, s.revokeAtTenants. The HTTP handler and MCP must delegate to this same application operation.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -345,7 +325,7 @@ Session j s o n
 - Application: s.sessionJSON; s.canCreate, s.platformStaff
 - Extraction: Extract cloudentry.sessionJSON application inputs/results and validation from Echo; reuse s.canCreate, s.platformStaff. The HTTP handler and MCP must delegate to this same application operation.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -365,7 +345,7 @@ Start invitation
 - Application: s.startInvitation; s.beginLogin, s.invitationOrganization, s.loginDenied
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
@@ -384,7 +364,7 @@ Start login
 - Application: s.startLogin; s.beginLogin, s.loginDenied, s.readyOrganization
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
@@ -473,13 +453,13 @@ Sources: [GET /support](../internal/cloudentry/service.go#L219)
 Existing board_state read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
-- Decision: Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows.
+- Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
 - Tool: `existing_reads.board_state` — definition(BoardState, "Read live board items, lanes, priorities, blockers, and active run identity. Use this before answering board questions or proposing item actions.", limitedSchema) → board_state existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / board_state
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -492,13 +472,13 @@ Sources: [internal/operatortool/catalog.go:30](../internal/operatortool/catalog.
 Existing explain_item read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
-- Decision: Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows.
+- Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
 - Tool: `existing_reads.explain_item` — definition(ExplainItem, "Explain an issue's current lane, latest transition reason, eligibility, active or latest attempt, sessions, pull request, required gate, freshness, and evidence from the versioned issue explanation read model.", `{"type":"object","required":["project_id","reference"],"properties":{"project_id":{"type":"string","minLength":1},"reference":{"type":"string","minLength":1}},"additionalProperties":false}`) → explain_item existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / explain_item
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -511,13 +491,13 @@ Sources: [internal/operatortool/catalog.go:34](../internal/operatortool/catalog.
 Existing fleet_health read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
-- Decision: Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows.
+- Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
 - Tool: `existing_reads.fleet_health` — definition(FleetHealth, "Read live fleet health, capacity outages, failure breakers, rate limits, refresh state, and running counts.", `{"type":"object","properties":{},"additionalProperties":false}`) → fleet_health existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / fleet_health
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -530,13 +510,13 @@ Sources: [internal/operatortool/catalog.go:31](../internal/operatortool/catalog.
 Existing recent_activity read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
-- Decision: Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows.
+- Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
 - Tool: `existing_reads.recent_activity` — definition(RecentActivity, "Read recent events and completed work retained in the current live telemetry snapshot, including merge timestamps. This is live-only activity, not the durable issue activity stream.", activitySchema) → recent_activity existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / recent_activity
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -549,13 +529,13 @@ Sources: [internal/operatortool/catalog.go:33](../internal/operatortool/catalog.
 Existing telemetry_usage read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
-- Decision: Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows.
+- Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
 - Tool: `existing_reads.telemetry_usage` — definition(TelemetryUsage, "Read live token, spend, throughput, and per-project usage telemetry.", `{"type":"object","properties":{"project_id":{"type":"string"}},"additionalProperties":false}`) → telemetry_usage existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / telemetry_usage
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -616,7 +596,7 @@ auth.templ assets
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [internal/web/templates/auth.templ:13](../internal/web/templates/auth.templ#L13), [internal/web/templates/auth.templ:14](../internal/web/templates/auth.templ#L14), [internal/web/templates/auth.templ:12](../internal/web/templates/auth.templ#L12), [internal/web/templates/auth.templ:15](../internal/web/templates/auth.templ#L15)
+Sources: [internal/web/templates/auth.templ:13](../internal/web/templates/auth.templ#L13), [internal/web/templates/auth.templ:14](../internal/web/templates/auth.templ#L14), [internal/web/templates/auth.templ:12](../internal/web/templates/auth.templ#L12), [internal/web/templates/auth.templ:15](../internal/web/templates/auth.templ#L15), [internal/web/templates/invitation.templ:13](../internal/web/templates/invitation.templ#L13), [internal/web/templates/invitation.templ:12](../internal/web/templates/invitation.templ#L12), [internal/web/templates/invitation.templ:18](../internal/web/templates/invitation.templ#L18), [internal/web/templates/invitation.templ:22](../internal/web/templates/invitation.templ#L22)
 ## frontend.internal_web_templates_change_files_templ.assets
 
 change_files.templ assets
@@ -880,7 +860,7 @@ Login.tsx login
 - Application: web/conversation/src/app/account/Login.tsx; existing provider sign-in connection exchange
 - Extraction: None; exact client/protocol sites do not own an operator application command.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_dedicated / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
@@ -1393,7 +1373,7 @@ Accept hosted invitation
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/invitations/accept](../internal/hubserver/hosted_org_api.go#L44), [POST /organization/join](../internal/hubserver/hosted_ui.go#L42), [internal/web/templates/hosted.templ:170](../internal/web/templates/hosted.templ#L170), [internal/web/templates/hosted.templ:170](../internal/web/templates/hosted.templ#L170), [internal/web/templates/hosted.templ:31](../internal/web/templates/hosted.templ#L31), [web/conversation/src/app/account/api.ts:204](../web/conversation/src/app/account/api.ts#L204)
+Sources: [POST /api/v2/organizations/:organization/invitations/accept](../internal/hubserver/hosted_org_api.go#L44), [web/conversation/src/app/account/api.ts:204](../web/conversation/src/app/account/api.ts#L204)
 ## hubserver.accept_hosted_shared_invitation
 
 Accept hosted shared invitation
@@ -1444,7 +1424,7 @@ App bootstrap payload
 - Application: s.appBootstrapPayload; s.appBootstrapFeature, s.appBootstrapPlan, s.appBootstrapPreferences, s.conversations.coordinator.Available, s.database.db.QueryRowContext, s.hostedAllRunnerGrants, s.hostedBase, s.hostedCredential, s.hostedOrganizationChoices, s.hostedPageCSRF, s.hostedReadableProjects
 - Extraction: Extract hubserver.appBootstrapPayload application inputs/results and validation from Echo; reuse s.appBootstrapFeature, s.appBootstrapPlan, s.appBootstrapPreferences, s.conversations.coordinator.Available, s.database.db.QueryRowContext, s.hostedAllRunnerGrants, s.hostedBase, s.hostedCredential, s.hostedOrganizationChoices, s.hostedPageCSRF, s.hostedReadableProjects. The HTTP handler and MCP must delegate to this same application operation.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedCredential(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
@@ -1483,7 +1463,7 @@ App updates
 - Application: s.appUpdates; s.config.now, s.database.db.QueryContext, s.hostedAllRunnerGrants, s.hostedCredential
 - Extraction: Extract hubserver.appUpdates application inputs/results and validation from Echo; reuse s.config.now, s.database.db.QueryContext, s.hostedAllRunnerGrants, s.hostedCredential. The HTTP handler and MCP must delegate to this same application operation.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedCredential(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
@@ -2020,7 +2000,7 @@ Complete hosted login
 - Application: s.completeHostedLogin; s.acceptHostedInvitationFor, s.bootstrapHostedMember, s.config.Hosted.Provider.Exchange, s.config.now, s.consumeHostedTransaction, s.database.db.ExecContext, s.hostedDenied, s.hostedMutationMu.Lock, s.hostedMutationMu.Unlock
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Current handler authority checks: s.hostedSession(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
@@ -3862,7 +3842,7 @@ Logout hosted
 - Application: s.logoutHosted; s.config.now, s.database.db.ExecContext, s.database.db.QueryRowContext, s.hostedDenied
 - Extraction: Extract hubserver.logoutHosted application inputs/results and validation from Echo; reuse s.config.now, s.database.db.ExecContext, s.database.db.QueryRowContext, s.hostedDenied. The HTTP handler and MCP must delegate to this same application operation.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedSession(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
@@ -3871,6 +3851,25 @@ Logout hosted
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [POST /logout](../internal/hubserver/hosted_ui.go#L28), [internal/web/templates/hosted.templ:13](../internal/web/templates/hosted.templ#L13), [internal/web/templates/hosted.templ:99](../internal/web/templates/hosted.templ#L99), [internal/web/templates/hosted.templ:13](../internal/web/templates/hosted.templ#L13), [internal/web/templates/hosted.templ:99](../internal/web/templates/hosted.templ#L99), [web/conversation/src/app/account/api.ts:216](../web/conversation/src/app/account/api.ts#L216), [web/conversation/src/app/entry/EntryScreens.tsx:98](../web/conversation/src/app/entry/EntryScreens.tsx#L98), [web/conversation/src/app/entry/EntryScreens.tsx:98](../web/conversation/src/app/entry/EntryScreens.tsx#L98)
+## hubserver.mcp_transport
+
+Authenticated MCP transport
+
+- Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3336.
+- Decision: Exact protocol/discovery bridge only; no separate operator capability. Current application authorization is resolved at discovery and execution; no authority derives from annotations.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role current organization member/provider and local role, or unhosted operator/admin token; no runner/worker or staff-only authority; credential existing hosted session/native token authority; hosted machine-token restrictions retained; project existing requireHostedProject and authorizeNativeProject checks per execution; ownership organization path, credential hash and session binding; shared entry verifies signed audience/path/body/generation and access/session validity.
+- Application: operatortool.AuthorizeCurrent; Service.operatorCurrentAuthority, hostedCredential, authorizeConversationOrganization, requireHostedProject, database.authorizeNativeProject
+- Extraction: Shared application authority adapter; no raw/fake HTTP handler invocation.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
+- Coverage: internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/cli/mcp_test.go; internal/web/mcp_http_test.go
+- Availability: self_hosted / github,native / organization hub authority adapter; daemon telemetry/explainer absent until shared read services are supplied
+- Availability: hosted_dedicated / github,native / organization hub authority adapter; daemon telemetry/explainer absent until shared read services are supplied
+- Availability: hosted_shared / github,native / organization hub authority adapter; daemon telemetry/explainer absent until shared read services are supplied
+- Availability: credential_maintenance / github,native / organization hub authority adapter; daemon telemetry/explainer absent until shared read services are supplied — unavailable: Not registered on the credential-maintenance listener.
+- Confirmation: transport authority establishment → connection
+
+Sources: [Any /api/v2/organizations/:organization/mcp](../internal/hubserver/operator_authority.go#L28), [Any /mcp](../internal/hubserver/operator_authority.go#L30)
 ## hubserver.mint_workspace_relay_ticket
 
 Mint workspace relay ticket
@@ -4801,7 +4800,7 @@ Start hosted invitation
 - Application: s.startHostedInvitation; s.config.Hosted.Provider.Invitation, s.database.db.ExecContext, s.database.db.QueryRowContext, s.hostedDenied, s.hostedProviderOrganization, s.newHostedTransaction
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
@@ -4820,7 +4819,7 @@ Start hosted login
 - Application: s.startHostedLogin; s.hostedDenied, s.hostedProviderOrganization, s.newHostedTransaction
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
@@ -4918,7 +4917,7 @@ Switch hosted organization
 - Application: s.switchHostedOrganizationJSON; s.hostedEntryOwned, s.hostedSwitchDestination
 - Extraction: Extract hubserver.switchHostedOrganizationJSON application inputs/results and validation from Echo; reuse s.hostedEntryOwned, s.hostedSwitchDestination. The HTTP handler and MCP must delegate to this same application operation.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedSession(c); err != nil
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
@@ -5948,6 +5947,25 @@ Api operator tool
 - Confirmation: transport authority establishment → connection
 
 Sources: [POST /api/v1/operator-tools/:tool_name](../internal/web/server.go#L512)
+## web.api_operator_tools
+
+Authenticated daemon tool discovery
+
+- Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3336.
+- Decision: Exact protocol/discovery bridge only; no separate operator capability. Current application authorization is resolved at discovery and execution; no authority derives from annotations.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: operatortool.AuthorizeCurrent; Server.operatorAuthority; apikey.Service.Authenticate; operatortool.AuthorizedExecutor.ListTools
+- Extraction: Shared application authority adapter; no raw/fake HTTP handler invocation.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
+- Coverage: internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/cli/mcp_test.go; internal/web/mcp_http_test.go
+- Availability: self_hosted / github,native / dashboard daemon
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: transport authority establishment → connection
+
+Sources: [GET /api/v1/operator-tools](../internal/web/server.go#L511)
 ## web.api_project
 
 Api project
@@ -6339,7 +6357,7 @@ Complete o i d c
 - Application: s.completeOIDC; s.identityAllowlist.Allows, s.identityProvider.Exchange, s.oidcTransaction, s.renderAuthPage
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6358,7 +6376,7 @@ Consume magic link
 - Application: s.consumeMagicLink; s.magicLinks.ConsumeLink, s.renderAuthPage
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6410,15 +6428,14 @@ Sources: [GET /diagnostics](../internal/web/server.go#L468), [internal/web/templ
 
 Echo. wrap handler(s.mcp h t t p)
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.echo__wrap_handler(s_mcp_h_t_t_p)` — Bounded echo.WrapHandler(s.mcpHTTP)Request: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → echo.WrapHandler(s.mcpHTTP)Result: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential write; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3336.
+- Decision: Exact MCP HTTP protocol route. Authenticated connection identity, session binding and per-request application authority are implemented by #3336. Tools/list and tools/call delegate to the shared application executor; this route is not a separate operator tool.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role self-hosted operator credential; credential existing read hierarchy; workers denied; project current API key project restrictions at each call; ownership self-hosted organization and authenticated credential/session identity; forged organization context denied.
 - Application: echo.WrapHandler(s.mcpHTTP); handler-owned application validation/read/command
-- Extraction: Extract web.echo.WrapHandler(s.mcpHTTP) application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: None: MCP JSON-RPC protocol; application reads are catalog rows.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/mcp_http_test.go; internal/mcp/http_test.go
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6575,7 +6592,7 @@ Login page
 - Application: s.loginPage; s.renderAuthPage
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6933,7 +6950,7 @@ Request magic link
 - Application: s.requestMagicLink; s.magicLinks.RequestLink, s.renderAuthPage
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6992,7 +7009,7 @@ Start o i d c
 - Application: s.startOIDC; s.renderAuthPage, s.sealOIDCTransaction
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.

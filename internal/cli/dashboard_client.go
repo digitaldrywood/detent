@@ -372,6 +372,20 @@ func jsonPointerToken(value string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(value, "~", "~0"), "/", "~1")
 }
 
+// ListTools delegates discovery to the same daemon authority as execution.
+func (c *DashboardReadClient) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
+	if c == nil || c.baseURL == nil {
+		return nil, errors.New("dashboard API client is not configured")
+	}
+	requestURL := *c.baseURL
+	requestURL.Path = "/api/v1/operator-tools"
+	var result struct {
+		Tools []operatortool.Definition `json:"tools"`
+	}
+	_, err := c.requestJSON(ctx, http.MethodGet, requestURL, &result)
+	return result.Tools, err
+}
+
 func (c *DashboardReadClient) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	if ctx == nil {
 		ctx = context.Background()

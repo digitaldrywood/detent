@@ -31,7 +31,7 @@ const (
 )
 
 type HTTPConfig struct {
-	Principal          func(*http.Request) string
+	Principal          func(*http.Request) operatortool.Identity
 	MaxSessions        int
 	SessionIdleTimeout time.Duration
 	Now                func() time.Time
@@ -41,7 +41,7 @@ type HTTPConfig struct {
 type HTTPHandler struct {
 	executor           Executor
 	version            string
-	principal          func(*http.Request) string
+	principal          func(*http.Request) operatortool.Identity
 	maxSessions        int
 	sessionIdleTimeout time.Duration
 	now                func() time.Time
@@ -145,7 +145,7 @@ func (h *HTTPHandler) servePost(writer http.ResponseWriter, req *http.Request) {
 	h.dispatch(writer, req, session, message, body)
 }
 
-func (h *HTTPHandler) initializeSession(writer http.ResponseWriter, req *http.Request, principal string, message request, body []byte) {
+func (h *HTTPHandler) initializeSession(writer http.ResponseWriter, req *http.Request, principal operatortool.Identity, message request, body []byte) {
 	sessionID, err := h.generateSessionID()
 	if err != nil {
 		writeHTTPTransportError(writer, http.StatusServiceUnavailable, "MCP session could not be created")
@@ -278,7 +278,7 @@ func (h *HTTPHandler) addSession(session *httpProtocolSession) bool {
 	return true
 }
 
-func (h *HTTPHandler) session(id string, principal string) *httpProtocolSession {
+func (h *HTTPHandler) session(id string, principal operatortool.Identity) *httpProtocolSession {
 	now := h.now()
 	h.mu.Lock()
 	if h.stopped {
@@ -302,7 +302,7 @@ func (h *HTTPHandler) session(id string, principal string) *httpProtocolSession 
 	return session
 }
 
-func (h *HTTPHandler) takeSession(id string, principal string) *httpProtocolSession {
+func (h *HTTPHandler) takeSession(id string, principal operatortool.Identity) *httpProtocolSession {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	session := h.sessions[id]
@@ -321,11 +321,11 @@ func (h *HTTPHandler) removeSession(id string, session *httpProtocolSession) {
 	}
 }
 
-func (h *HTTPHandler) requestPrincipal(req *http.Request) string {
+func (h *HTTPHandler) requestPrincipal(req *http.Request) operatortool.Identity {
 	if h.principal == nil {
-		return ""
+		return operatortool.Identity{}
 	}
-	return strings.TrimSpace(h.principal(req))
+	return h.principal(req)
 }
 
 func stopHTTPSessions(sessions []*httpProtocolSession) {
@@ -339,7 +339,7 @@ var errHTTPSessionClosed = errors.New("MCP HTTP session is closed")
 
 type httpProtocolSession struct {
 	id        string
-	principal string
+	principal operatortool.Identity
 	done      <-chan struct{}
 	cancel    context.CancelFunc
 	protocol  *session
@@ -351,7 +351,7 @@ type httpProtocolSession struct {
 	seenAt   atomic.Int64
 }
 
-func newHTTPProtocolSession(id string, principal string, executor Executor, version string, now time.Time) *httpProtocolSession {
+func newHTTPProtocolSession(id string, principal operatortool.Identity, executor Executor, version string, now time.Time) *httpProtocolSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	router := newHTTPResponseRouter()
 	protocol := &session{
@@ -377,7 +377,7 @@ func (s *httpProtocolSession) dispatch(ctx context.Context, message request, fra
 	}
 	defer s.inflight.Done()
 	if len(message.ID) == 0 {
-		if err := s.protocol.handle(s.sessionContext(), frame); err != nil {
+		if err := s.protocol.handle(s.sessionContext(ctx), frame); err != nil {
 			return nil, true, err
 		}
 		return nil, true, nil
@@ -391,14 +391,14 @@ func (s *httpProtocolSession) dispatch(ctx context.Context, message request, fra
 		return marshalHTTPResponse(response{JSONRPC: "2.0", ID: responseID(message.ID), Error: &rpcError{Code: codeInvalidRequest, Message: "Duplicate request ID"}}), false, nil
 	}
 	defer s.router.unregister(key, responses)
-	if err := s.protocol.handle(s.sessionContext(), frame); err != nil {
+	if err := s.protocol.handle(s.sessionContext(ctx), frame); err != nil {
 		return nil, false, err
 	}
 	select {
 	case result := <-responses:
 		return result, false, nil
 	case <-ctx.Done():
-		if err := s.cancelRequest(s.sessionContext(), message.ID); err != nil {
+		if err := s.cancelRequest(s.sessionContext(ctx), message.ID); err != nil {
 			return nil, false, errors.Join(ctx.Err(), err)
 		}
 		return nil, false, ctx.Err()
@@ -421,8 +421,8 @@ func (s *httpProtocolSession) cancelRequest(ctx context.Context, id json.RawMess
 	return s.protocol.handle(ctx, frame)
 }
 
-func (s *httpProtocolSession) sessionContext() context.Context {
-	return httpSessionContext{done: s.done}
+func (s *httpProtocolSession) sessionContext(request context.Context) context.Context {
+	return httpSessionContext{Context: context.WithoutCancel(request), done: s.done}
 }
 
 func (s *httpProtocolSession) begin() bool {
@@ -617,6 +617,7 @@ func newHTTPSessionID() (string, error) {
 }
 
 type httpSessionContext struct {
+	context.Context
 	done <-chan struct{}
 }
 
@@ -635,8 +636,4 @@ func (c httpSessionContext) Err() error {
 	default:
 		return nil
 	}
-}
-
-func (c httpSessionContext) Value(any) any {
-	return nil
 }

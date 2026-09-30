@@ -197,7 +197,7 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 		if !s.ready() {
 			return s.writeError(message.ID, codeNotInitialized, "Server not initialized", nil)
 		}
-		return s.listTools(message)
+		return s.listTools(ctx, message)
 	case "tools/call":
 		if !s.ready() {
 			return s.writeError(message.ID, codeNotInitialized, "Server not initialized", nil)
@@ -285,13 +285,7 @@ func (s *session) ready() bool {
 	return s.state == stateReady
 }
 
-type listedTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"inputSchema"`
-}
-
-func (s *session) listTools(message request) error {
+func (s *session) listTools(ctx context.Context, message request) error {
 	var params struct {
 		Cursor string          `json:"cursor,omitempty"`
 		Meta   json.RawMessage `json:"_meta,omitempty"`
@@ -300,15 +294,16 @@ func (s *session) listTools(message request) error {
 		return s.writeError(message.ID, codeInvalidParams, "Invalid tools/list parameters", nil)
 	}
 	definitions := operatortool.Catalog()
-	tools := make([]listedTool, 0, len(definitions))
-	for _, definition := range definitions {
-		tools = append(tools, listedTool{
-			Name:        definition.Name,
-			Description: definition.Description,
-			InputSchema: definition.InputSchema,
-		})
+	if lister, ok := s.executor.(interface {
+		ListTools(context.Context) ([]operatortool.Definition, error)
+	}); ok {
+		var err error
+		definitions, err = lister.ListTools(ctx)
+		if err != nil {
+			return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
+		}
 	}
-	return s.writeResult(message.ID, map[string]any{"tools": tools})
+	return s.writeResult(message.ID, map[string]any{"tools": definitions})
 }
 
 func (s *session) startToolCall(parent context.Context, key string, message request) error {

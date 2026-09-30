@@ -95,7 +95,7 @@ func (s *Server) authorizeMCPRequest(c echo.Context) (apikey.Credential, error) 
 	}
 	var lastAuthErr *apikey.AuthError
 	for _, candidate := range candidates {
-		credential, err := s.authenticateCandidate(c.Request().Context(), candidate, "")
+		credential, err := s.authenticateCandidate(c.Request().Context(), candidate, s.apiToken())
 		if err != nil {
 			var authErr *apikey.AuthError
 			if errors.As(err, &authErr) {
@@ -108,11 +108,8 @@ func (s *Server) authorizeMCPRequest(c echo.Context) (apikey.Credential, error) 
 			s.logger.Warn("MCP API key lookup failed", "error", err)
 			return apikey.Credential{}, writeAPIAuthError(c, http.StatusServiceUnavailable, "service_unavailable", "API key authentication temporarily unavailable")
 		}
-		if !mcpReadScopeOnly(credential.Scopes) {
-			return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "read_scope_required", "MCP requires an API key with read scope only")
-		}
-		if len(credential.ProjectIDs) > 0 {
-			return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "global_scope_required", "MCP requires an API key authorized for all projects")
+		if !apikey.HasScope(credential.Scopes, apikey.ScopeRead) {
+			return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "read_scope_required", "MCP requires read authority")
 		}
 		s.setAPICredential(c, credential)
 		return credential, nil
@@ -121,10 +118,6 @@ func (s *Server) authorizeMCPRequest(c echo.Context) (apikey.Credential, error) 
 		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, lastAuthErr.Code, lastAuthErr.Message)
 	}
 	return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid read-scoped API key is required")
-}
-
-func mcpReadScopeOnly(scopes []string) bool {
-	return len(scopes) == 1 && strings.EqualFold(strings.TrimSpace(scopes[0]), string(apikey.ScopeRead))
 }
 
 func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apikey.Credential, error) {

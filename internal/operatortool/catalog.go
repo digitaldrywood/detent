@@ -18,9 +18,17 @@ const (
 )
 
 type Definition struct {
-	Name        string
-	Description string
-	InputSchema json.RawMessage
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema"`
+	Annotations Annotations     `json:"annotations"`
+}
+
+type Annotations struct {
+	ReadOnly    bool `json:"readOnlyHint"`
+	Destructive bool `json:"destructiveHint"`
+	Idempotent  bool `json:"idempotentHint"`
+	OpenWorld   bool `json:"openWorldHint"`
 }
 
 func Catalog() []Definition {
@@ -45,5 +53,5 @@ func Lookup(name string) (Definition, bool) {
 }
 
 func definition(name string, description string, schema string) Definition {
-	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema)}
+	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{ReadOnly: true, Idempotent: true}}
 }

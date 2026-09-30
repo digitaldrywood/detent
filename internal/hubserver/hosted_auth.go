@@ -154,10 +154,15 @@ func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Sessi
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, SessionHash: hash, HostedRole: membership.Role.Slug, HostedMembership: membership.ID}
-	err = s.database.db.QueryRowContext(ctx, "SELECT m.principal_id,t.token_hash FROM hosted_members m JOIN api_tokens t ON t.id = m.principal_id WHERE m.user_id = ? AND m.membership_id = ? AND m.active = 1 AND t.revoked_at IS NULL", session.Identity.Subject, membership.ID).Scan(&credential.ID, &credential.Hash)
+	var localRole string
+	err = s.database.db.QueryRowContext(ctx, "SELECT m.principal_id,t.token_hash,m.role FROM hosted_members m JOIN api_tokens t ON t.id = m.principal_id WHERE m.user_id = ? AND m.membership_id = ? AND m.active = 1 AND t.revoked_at IS NULL", session.Identity.Subject, membership.ID).Scan(&credential.ID, &credential.Hash, &localRole)
 	if err != nil {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
+	if !auth.ValidOrganizationRole(localRole) {
+		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+	}
+	credential.HostedRole = lesserHostedRole(credential.HostedRole, localRole)
 	return credential, http.StatusOK, nil
 }
 
@@ -201,7 +206,7 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 		if c.Path() == "/webhooks/stripe" && c.Request().Method == http.MethodPost {
 			return next(c)
 		}
-		bearerAPI := strings.HasPrefix(c.Request().URL.Path, "/api/v2/") && c.Request().Header.Get(echo.HeaderAuthorization) != ""
+		bearerAPI := (strings.HasPrefix(c.Request().URL.Path, "/api/v2/") || c.Path() == "/mcp") && c.Request().Header.Get(echo.HeaderAuthorization) != ""
 		if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindService {
 			return next(c)
 		}
