@@ -332,3 +332,33 @@ func (l *LocalGit) sessionRecorded(info Info, issue Issue) bool {
 	record, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(info.Path))
 	return err == nil && record.WorkspaceSession
 }
+
+type WorkInProgressPublisher interface {
+	PublishWorkInProgress(context.Context, Issue) error
+}
+
+func (l *LocalGit) PublishWorkInProgress(ctx context.Context, issue Issue) error {
+	preserved, err := l.PreserveIssue(ctx, issue)
+	if err != nil {
+		return err
+	}
+	if _, err := runGitAt(ctx, preserved.Path, "add", "--all", "--", ".", ":!.detent", ":!tmp"); err != nil {
+		return err
+	}
+	changed, err := runGitAt(ctx, preserved.Path, "diff", "--cached", "--name-only")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(changed) != "" {
+		if _, err := runGitAt(ctx, preserved.Path, "commit", "-m", "chore: preserve unfinished runner work"); err != nil {
+			return err
+		}
+	}
+	head, err := runGitAt(ctx, preserved.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	branch := "wip/" + preserved.Branch + "-" + strings.TrimSpace(head)
+	_, err = runGitAt(ctx, preserved.Path, "push", "origin", "HEAD:refs/heads/"+branch)
+	return err
+}

@@ -463,3 +463,51 @@ func TestFilesystemPreservationSurvivesRestartAndResumption(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalGitPublishWorkInProgress(t *testing.T) {
+	for _, remoteAvailable := range []bool{true, false} {
+		t.Run(strconv.FormatBool(remoteAvailable), func(t *testing.T) {
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "deadline-work"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "config", "user.name", "Test")
+			runGit(t, info.Path, "config", "user.email", "test@example.com")
+			if err := os.WriteFile(filepath.Join(info.Path, "unfinished.go"), []byte("package unfinished\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !remoteAvailable {
+				runGit(t, info.Path, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unavailable"))
+			}
+			err = backend.PublishWorkInProgress(t.Context(), issue)
+			if (err == nil) != remoteAvailable {
+				t.Fatalf("publish error = %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(info.Path, "unfinished.go")); err != nil {
+				t.Fatal(err)
+			}
+			if branch := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); branch != info.Branch {
+				t.Fatalf("branch changed to %s", branch)
+			}
+			if remoteAvailable {
+				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+				refs := runGit(t, remote, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/wip/")
+				if !strings.Contains(refs, head+" refs/heads/wip/") {
+					t.Fatalf("WIP refs = %s", refs)
+				}
+				if err := backend.PublishWorkInProgress(t.Context(), issue); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}

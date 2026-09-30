@@ -142,6 +142,7 @@ type Dependencies struct {
 }
 
 type Runner struct {
+	sleepInhibitor            func(context.Context) (func(), error)
 	mu                        sync.RWMutex
 	promptHistory             map[string]sessionPrompt
 	projectID                 string
@@ -271,6 +272,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		workerReapGrace:           deps.WorkerReapGrace,
 		reapWorkerProcess:         deps.ReapWorkerProcess,
 		reapWorkspaceProcesses:    deps.ReapWorkspaceProcesses,
+		sleepInhibitor:            inhibitSleep,
 		cleanupWorkerArtifacts:    workspace.CleanupOwnedPath,
 		waitWorkerArtifactCleanup: waitForPathRemovalRetry,
 		sessionLimit:              deps.sessionLimit,
@@ -3003,6 +3005,8 @@ func budgetRefusalFromDecision(issue connector.Issue, refusal budget.Refusal) *B
 }
 
 func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+	release := r.keepAwake(ctx)
+	defer release()
 	if ctx == nil {
 		ctx = context.Background()
 	}

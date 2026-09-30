@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -350,6 +351,72 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			if scheduler.nativeClaims[id].lease.FencingToken != next.FencingToken || scheduler.claims[id].FencingToken != next.FencingToken {
 				t.Fatal("delayed response changed the successor")
 			}
+		})
+	}
+}
+
+func TestNativeAvailabilityDeadline(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(strconv.FormatBool(deadline), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				descriptor := clientTestPolicy()
+				transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					body, err := json.Marshal(policy.Approval{Policy: descriptor})
+					if err != nil {
+						return nil, err
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, nil
+				})
+				client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: transport}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler, err := NewScheduler(client, SchedulerConfig{Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}, HeartbeatInterval: time.Second, LeaseTTL: 2 * time.Minute})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				id := "wi_test"
+				claim := nativeClaim{source: &NativeConnector{client: native}, lease: tracker.NativeLease{WorkItemID: tracker.NativeWorkItemID(id), ID: "lease", FencingToken: 1, PolicyID: descriptor.ID}, deadline: time.Now().Add(2 * time.Minute)}
+				if deadline {
+					claim.availabilityDeadline = time.Now().Add(30 * time.Second)
+				}
+				scheduler.nativeClaims[id] = claim
+				scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
+				scheduler.nativeProjects["project"] = claim.source
+				execution := scheduler.RunExecution(id)
+				guarded, stop, err := execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stop()
+				if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(29 * time.Second)
+				synctest.Wait()
+				if guarded.Err() != nil {
+					t.Fatal("job stopped before hard deadline")
+				}
+				time.Sleep(time.Second)
+				synctest.Wait()
+				if deadline {
+					if !errors.Is(context.Cause(guarded), context.DeadlineExceeded) {
+						t.Fatalf("cause = %v", context.Cause(guarded))
+					}
+					if errors.Is(execution.Validate(guarded), runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatal("availability deadline revoked execution authority")
+					}
+				} else if guarded.Err() != nil {
+					t.Fatal("job without hard deadline stopped")
+				}
+				if err := execution.Finish(context.WithoutCancel(guarded), "interrupted"); err != nil {
+					t.Fatal(err)
+				}
+			})
 		})
 	}
 }

@@ -282,3 +282,35 @@ func (r Runner) HomeWorkStatus(now time.Time) string {
 	minutes := max(0, int(now.Sub(*r.HomeDrySince).Minutes()))
 	return fmt.Sprintf("Waiting for home work (%dm)", minutes)
 }
+
+func (a Availability) Evaluate(now time.Time) (activehours.Status, error) {
+	return activehours.Evaluate(activehours.Config{Timezone: a.Timezone, Windows: a.Windows}, now, time.Time{})
+}
+
+func (a Availability) Deadline(started time.Time) (time.Time, error) {
+	if a.HardDeadline == "" {
+		return time.Time{}, nil
+	}
+	delay, err := time.ParseDuration(a.HardDeadline)
+	if err != nil || delay <= 0 {
+		return time.Time{}, errors.New("availability hard deadline must be a positive duration")
+	}
+	status, err := a.Evaluate(started)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !status.Open || status.NextClose.IsZero() {
+		return time.Time{}, nil
+	}
+	return status.NextClose.Add(delay), nil
+}
+
+func (r Runner) Status(now time.Time) string {
+	if r.Health == "online" {
+		status, err := r.Availability.Evaluate(now)
+		if err == nil && !status.Open {
+			return "outside_hours"
+		}
+	}
+	return r.Health
+}

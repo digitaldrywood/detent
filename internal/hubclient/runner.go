@@ -20,8 +20,10 @@ import (
 )
 
 type runnerCredentialSource struct {
-	mu   sync.Mutex
-	path string
+	routingMu sync.Mutex
+	routing   *runnerauth.RoutingSnapshot
+	mu        sync.Mutex
+	path      string
 }
 
 func runnerOrganizationPath(organization tracker.OrganizationID) (string, error) {
@@ -209,6 +211,25 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 }
 
 func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) error {
+	capacity := machine.Capacity
+	if c.client.runner != nil {
+		availability, err := c.client.runner.availability()
+		if err != nil {
+			machine.Capacity = 0
+		} else {
+			status, err := availability.Evaluate(time.Now())
+			if err != nil {
+				return err
+			}
+			if !status.Open {
+				machine.Capacity = 0
+			}
+		}
+	}
+	return c.heartbeatMachine(ctx, machine, capacity, true)
+}
+
+func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, capacity int, refresh bool) error {
 	capabilities, isolation := machine.workspaceReport()
 	request := struct {
 		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
@@ -229,8 +250,48 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 	if err := c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, &snapshot); err != nil {
 		return err
 	}
+	snapshot.Routing = snapshot.Routing.Normalized()
+	identity, err := runnerauth.Load(c.client.runner.path)
+	if err != nil {
+		return err
+	}
+	if snapshot.RunnerID != identity.Identity.RunnerID || snapshot.Revision < 1 {
+		return errors.Join(ErrUnavailable, errors.New("hub returned an unexpected runner routing identity"))
+	}
+	if err := snapshot.Routing.Validate(); err != nil {
+		return errors.Join(ErrUnavailable, err)
+	}
+	c.client.runner.routingMu.Lock()
+	c.client.runner.routing = &snapshot
+	c.client.runner.routingMu.Unlock()
 	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
 		slog.Default().Warn("runner routing cache not updated", "error", err)
 	}
+	status, err := snapshot.Routing.Availability.Evaluate(time.Now())
+	if err != nil {
+		return err
+	}
+	reported := capacity
+	if !status.Open {
+		reported = 0
+	}
+	if refresh && reported != machine.Capacity {
+		machine.Capacity = reported
+		return c.heartbeatMachine(ctx, machine, capacity, false)
+	}
+
 	return nil
+}
+
+func (r *runnerCredentialSource) availability() (runnerauth.Availability, error) {
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	if r.routing == nil {
+		snapshot, err := runnerauth.LoadRoutingCache(r.path)
+		if err != nil {
+			return runnerauth.Availability{}, errors.Join(ErrUnavailable, err)
+		}
+		r.routing = &snapshot
+	}
+	return r.routing.Routing.Availability, nil
 }

@@ -25,6 +25,10 @@ type Execution interface {
 	Recovery() tracker.NativeRecovery
 }
 
+type AvailabilityExecution interface {
+	AvailabilityDeadline() time.Time
+}
+
 type ArtifactExecution interface {
 	PrepareArtifacts(context.Context, string) error
 	ArtifactLog(context.Context, string) error
@@ -109,6 +113,8 @@ func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, iss
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	release := r.keepAwake(ctx)
+	defer release()
 	if req.Execution == nil {
 		return r.run(ctx, req)
 	}
@@ -158,11 +164,6 @@ func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoin
 }
 
 func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue) error {
-	if artifacts, ok := req.Execution.(ArtifactExecution); ok {
-		if err := artifacts.FinalizeArtifacts(ctx, info.Path); err != nil {
-			return err
-		}
-	}
 	if req.Execution == nil {
 		if req.retainCheckpoint {
 			return nil
@@ -174,6 +175,27 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	}
 	localCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	defer cancel()
+	var publicationErr error
+	availability, availabilityConfigured := req.Execution.(AvailabilityExecution)
+	deadlineExpired := availabilityConfigured && !availability.AvailabilityDeadline().IsZero() && !time.Now().Before(availability.AvailabilityDeadline()) && errors.Is(context.Cause(ctx), context.DeadlineExceeded)
+	if deadlineExpired {
+		if publisher, ok := backend.(workspace.WorkInProgressPublisher); ok {
+			publicationErr = publisher.PublishWorkInProgress(localCtx, issue)
+			if publicationErr != nil {
+				r.logger.Warn("unfinished runner work not published", "issue_id", req.Issue.ID, "error", publicationErr)
+			}
+		}
+	}
+	artifactCtx := ctx
+	if deadlineExpired {
+		artifactCtx = localCtx
+	}
+	if artifacts, ok := req.Execution.(ArtifactExecution); ok {
+		if err := artifacts.FinalizeArtifacts(artifactCtx, info.Path); err != nil {
+			return errors.Join(publicationErr, err)
+		}
+	}
+
 	state := r.workspaceRecoveryState(backend, localCtx, info, issue, "native_checkpoint")
 	checkpoint := executionCheckpoint(state)
 	if state != nil {
@@ -186,13 +208,13 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		}
 	}
 	if err := req.Execution.Validate(ctx); err != nil {
-		return err
+		return errors.Join(publicationErr, err)
 	}
 	if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
 		return err
 	}
 	if checkpoint.WorktreeState != "clean" || req.retainCheckpoint {
-		return nil
+		return publicationErr
 	}
 	afterCtx, stop := context.WithTimeout(ctx, r.afterRunTimeout)
 	defer stop()

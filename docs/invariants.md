@@ -419,6 +419,18 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Runner availability (#3169) reuses weekly-window evaluation and the existing
+runner-capacity exclusion: runners report zero capacity outside the cached
+window and do not claim new work locally. Active jobs retain lease authority
+and finish normally. An optional deadline after the window closes cancels the
+agent through its existing execution context, preserves and publishes unfinished
+work to a WIP branch, and reports interruption through `Finish`. A failed WIP
+push retains local work and is logged as an instance failure. Sleep inhibition
+is held during jobs and released when they finish. “Outside hours” is a plain
+fleet status derived from the stored window; stale heartbeat, revoked, and
+expired states take precedence. This adds no lane writer, recovery loop, or
+exclusion reason.
+
 Home-project spillover (#3170, human-approved) is claim-time eligibility using
 one nullable `home_dry_since` timestamp per runner. Home projects are a subset
 of administrator-authorized projects; spillover never widens grants or selectors.

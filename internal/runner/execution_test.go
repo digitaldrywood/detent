@@ -254,3 +254,106 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 		})
 	}
 }
+
+type wipExecutionWorkspace struct {
+	retainedExecutionWorkspace
+	published  bool
+	publishErr error
+}
+
+func (w *wipExecutionWorkspace) PublishWorkInProgress(ctx context.Context, _ workspace.Issue) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	w.published = true
+	return w.publishErr
+}
+
+func TestAvailabilityDeadlinePublishesBeforeFinish(t *testing.T) {
+	t.Parallel()
+	for _, failed := range []bool{false, true} {
+		t.Run(strconv.FormatBool(failed), func(t *testing.T) {
+			backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+			if failed {
+				backend.publishErr = errors.New("push unavailable")
+			}
+			execution := &availabilityTestExecution{deadline: time.Now().Add(-time.Second)}
+			ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+			defer cancel()
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+			err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{})
+			if !backend.published || backend.afterRun {
+				t.Fatalf("published=%t cleaned=%t", backend.published, backend.afterRun)
+			}
+			if failed && !errors.Is(err, backend.publishErr) {
+				t.Fatalf("publish error lost: %v", err)
+			}
+		})
+	}
+}
+
+type availabilityTestExecution struct {
+	testExecution
+	deadline time.Time
+}
+
+func (e *availabilityTestExecution) AvailabilityDeadline() time.Time { return e.deadline }
+
+type deadlineRunExecution struct {
+	availabilityTestExecution
+	cancel    context.CancelCauseFunc
+	published *bool
+}
+
+func (e *deadlineRunExecution) Guard(ctx context.Context) (context.Context, func(), error) {
+	guarded, cancel := context.WithCancelCause(ctx)
+	e.cancel = cancel
+	return guarded, func() { cancel(context.Canceled) }, nil
+}
+
+func (e *deadlineRunExecution) Validate(ctx context.Context) error { return ctx.Err() }
+
+func (e *deadlineRunExecution) Finish(ctx context.Context, outcome string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !*e.published {
+		return errors.New("finish preceded WIP publication")
+	}
+	e.finish = outcome
+	return nil
+}
+
+type availabilityStoppingBackend struct {
+	fakeCodexClient
+	stop func()
+}
+
+func (b *availabilityStoppingBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	b.stop()
+	<-ctx.Done()
+	return AgentTurnResult{}, ctx.Err()
+}
+
+func TestRunnerAvailabilityInterruptionFinishesAfterWIP(t *testing.T) {
+	t.Parallel()
+	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
+	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.DeadlineExceeded) }}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, released := false, false
+	r.sleepInhibitor = func(context.Context) (func(), error) { held = true; return func() { released = true }, nil }
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("run error = %v", err)
+	}
+	if execution.finish != "interrupted" || !backend.published || !backend.retained || backend.afterRun {
+		t.Fatalf("finish=%s published=%t retained=%t cleaned=%t", execution.finish, backend.published, backend.retained, backend.afterRun)
+	}
+	if !held || !released {
+		t.Fatalf("sleep held=%t released=%t", held, released)
+	}
+}
