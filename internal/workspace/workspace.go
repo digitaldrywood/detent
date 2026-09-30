@@ -563,12 +563,6 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 		return Info{}, err
 	}
 	info.Created = created
-	if err := ensureGitInfoExcludes(ctx, info.Path, detentHandoffDiffExcludes); err != nil {
-		if created {
-			err = l.preserveFailedWorkspace(ctx, info.Path, err)
-		}
-		return Info{}, err
-	}
 
 	if created {
 		if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
@@ -1713,9 +1707,6 @@ func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPat
 	if err != nil {
 		return "", fmt.Errorf("resolve worker workspace: %w", err)
 	}
-	if err := ensureWorkerScratchExcluded(ctx, workspacePath); err != nil {
-		return "", err
-	}
 	scratchRoot := WorkerScratchRoot(workspacePath)
 	scratchPath = filepath.Join(scratchRoot, "attempt-"+uuid.NewString())
 	if err := ensurePrivateDirectories(workerScratchBase(), scratchRoot); err != nil {
@@ -1813,20 +1804,6 @@ func workerScratchParent(workspacePath string, scratchPath string) (string, bool
 		}
 	}
 	return "", false
-}
-
-func ensureWorkerScratchExcluded(ctx context.Context, workspacePath string) error {
-	_, err := os.Lstat(filepath.Join(workspacePath, ".git"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("stat worker workspace git metadata: %w", err)
-	}
-	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
-		return fmt.Errorf("exclude worker scratch from git: %w", err)
-	}
-	return nil
 }
 
 func CleanupWorkerScratch(workspacePath string, scratchPath string) error {

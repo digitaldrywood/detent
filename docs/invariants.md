@@ -503,6 +503,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Human Workpad recovery (#3504) derives the existing human-action park from its
+durable `workpad_blocker` lane entry when older entries have no recovery metadata.
+The current Blocked entry already supplies the reason, prior active lane, and
+entry time; requiring duplicate metadata made an authorized clearance unreachable.
+The same clearance evaluator and recorded-blocker recovery restore the prior
+In Progress or Rework lane. Unauthorized, stale, uncleared actions and unresolved
+dependencies keep their existing holds. No new reason, loop, or configuration is
+introduced. `TestWorkpadHumanActionClearanceRecoversBlockedIssue` includes real
+SQLite legacy entries and both active lanes.
+
 Session token ceilings record their existing typed outcome, usage, and agent
 session phase in the database without writing a repository lesson. Removing the
 automatic lesson append keeps runtime failure evidence out of committable files
@@ -1549,6 +1559,27 @@ artifact or coordination mechanism is added. Existing notes files remain intact.
 `TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes` cover all prompt profiles,
 prior-attempt findings, retained output and durable failed-session outcomes without
 reading, creating or changing repository notes.
+
+Workspace diagnostics never rewrite shared Git metadata, including human-authored
+`info/exclude` (#3503). Diff statistics, fingerprints, patches, per-file diffs,
+and recovery path evidence apply the existing runtime exclusions through
+command-local pathspecs; tracked and untracked runtime artifacts stay excluded.
+Workspace creation and worker scratch preparation no longer install repository
+ignore rules. Diagnostic index copies live in worker-provided scratch and leave
+the real worktree indexes intact.
+`TestWorkspaceDiagnosticsPreserveSharedGitMetadata` runs diagnostics concurrently
+in two linked worktrees and checks unchanged shared exclusions (contents, inode,
+and modification time), unchanged real indexes, preserved human ignore behavior,
+and worktree-specific source changes. `TestPrepareWorkerScratchPreservesGitExclude`
+covers scratch preparation without installing exclusions.
+
+Workflow timeline reads consolidate identity matching through the existing
+issue ID, project/identifier, and project/URL indexes. The indexed identity
+union retains every matching durable event once, in timestamp/ID order, without
+adding a cache, table, index, or history limit. This prevents repeated project
+history scans during dispatch and lane observation.
+`TestIssueWorkflowTimelineIndexedIdentityUnion` covers aliases, overlap,
+complete history, ordering, and project isolation.
 
 ## INV-4 — Native merge queue
 
