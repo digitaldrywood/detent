@@ -43,8 +43,8 @@ func startPTY(cmd *exec.Cmd, cols, rows int) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = tty.Close() }()    // Best effort: only the subprocess retains the slave.
-	defer func() { _ = master.Close() }() // Best effort: the duplicate owns the returned master.
+	defer func() { _ = tty.Close() }()    //nolint:errcheck // Best effort: only the subprocess retains the slave.
+	defer func() { _ = master.Close() }() //nolint:errcheck // Best effort: the duplicate owns the returned master.
 
 	if err := pty.Setsize(master, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil { // #nosec G115 -- bounded by NormalizeTerminalSize.
 		return nil, err
@@ -57,13 +57,13 @@ func startPTY(cmd *exec.Cmd, cols, rows int) (*os.File, error) {
 		return nil, fmt.Errorf("duplicate terminal master: %w", err)
 	}
 	if err := unix.SetNonblock(fd, true); err != nil {
-		_ = unix.Close(fd) // Best effort cleanup before reporting the setup failure.
+		_ = unix.Close(fd) //nolint:errcheck // Best effort cleanup before reporting the setup failure.
 		return nil, fmt.Errorf("make terminal master nonblocking: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), master.Name())
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	if err := cmd.Start(); err != nil {
-		_ = file.Close() // Best effort cleanup before reporting the start failure.
+		_ = file.Close() //nolint:errcheck // Best effort cleanup before reporting the start failure.
 		return nil, err
 	}
 	return file, nil
