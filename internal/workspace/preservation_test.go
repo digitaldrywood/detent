@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -495,7 +496,7 @@ func TestLocalGitPublishWorkInProgress(t *testing.T) {
 			if !remoteAvailable {
 				runGit(t, info.Path, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unavailable"))
 			}
-			err = backend.PublishWorkInProgress(t.Context(), issue)
+			err = backend.PublishWorkInProgress(t.Context(), issue, func(ctx context.Context) error { return ctx.Err() })
 			if (err == nil) != remoteAvailable {
 				t.Fatalf("publish error = %v", err)
 			}
@@ -518,7 +519,7 @@ func TestLocalGitPublishWorkInProgress(t *testing.T) {
 				if err != nil || state.UnpushedCommits != 0 || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
 					t.Fatalf("published recovery state = %#v, %v", state, err)
 				}
-				if err := backend.PublishWorkInProgress(t.Context(), issue); err != nil {
+				if err := backend.PublishWorkInProgress(t.Context(), issue, func(ctx context.Context) error { return ctx.Err() }); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -561,7 +562,7 @@ func TestWorkInProgressRejectsSensitiveContent(t *testing.T) {
 				runGit(t, info.Path, "add", tt.path)
 				runGit(t, info.Path, "commit", "-m", "example unfinished work")
 			}
-			if err := backend.PublishWorkInProgress(t.Context(), issue); !errors.Is(err, ErrCheckpointUnsafe) {
+			if err := backend.PublishWorkInProgress(t.Context(), issue, func(ctx context.Context) error { return ctx.Err() }); !errors.Is(err, ErrCheckpointUnsafe) {
 				t.Fatalf("publication error = %v", err)
 			}
 			if refs := runGit(t, remote, "for-each-ref", "--format=%(refname)", "refs/heads/wip/"); strings.TrimSpace(refs) != "" {
@@ -569,6 +570,46 @@ func TestWorkInProgressRejectsSensitiveContent(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(info.Path, tt.path)); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestWorkInProgressRequiresOwnedBranchAndAuthority(t *testing.T) {
+	for _, changedBranch := range []bool{false, true} {
+		t.Run(strconv.FormatBool(changedBranch), func(t *testing.T) {
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "deadline-ownership"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "unfinished.go"), []byte("package unfinished\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			validate := func(context.Context) error { return context.Canceled }
+			want := context.Canceled
+			if changedBranch {
+				runGit(t, info.Path, "switch", "-c", "other-work")
+				validate = func(ctx context.Context) error { return ctx.Err() }
+				want = ErrCheckpointUnsafe
+			}
+			head := runGit(t, info.Path, "rev-parse", "HEAD")
+			if err := backend.PublishWorkInProgress(t.Context(), issue, validate); !errors.Is(err, want) {
+				t.Fatalf("ownership error = %v, want %v", err, want)
+			}
+			if current := runGit(t, info.Path, "rev-parse", "HEAD"); current != head {
+				t.Fatal("publication committed without ownership")
+			}
+			if refs := runGit(t, remote, "for-each-ref", "--format=%(refname)", "refs/heads/wip/"); strings.TrimSpace(refs) != "" {
+				t.Fatalf("publication without ownership: %s", refs)
 			}
 		})
 	}

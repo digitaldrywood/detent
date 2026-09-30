@@ -406,7 +406,7 @@ func TestNativeAvailabilityDeadline(t *testing.T) {
 				time.Sleep(time.Second)
 				synctest.Wait()
 				if deadline {
-					if !errors.Is(context.Cause(guarded), context.Canceled) {
+					if !runner.IsAvailabilityInterruption(context.Cause(guarded)) {
 						t.Fatalf("cause = %v", context.Cause(guarded))
 					}
 					if errors.Is(execution.Validate(guarded), runner.ErrExecutionAuthorityUnavailable) {
@@ -500,7 +500,7 @@ func TestNativeAvailabilityDeadlineRefresh(t *testing.T) {
 				if (guarded.Err() != nil) != wantStopped {
 					t.Fatalf("stopped = %v, want %t", guarded.Err(), wantStopped)
 				}
-				if wantStopped && !errors.Is(context.Cause(guarded), context.Canceled) {
+				if wantStopped && !runner.IsAvailabilityInterruption(context.Cause(guarded)) {
 					t.Fatalf("interruption cause = %v", context.Cause(guarded))
 				}
 			})

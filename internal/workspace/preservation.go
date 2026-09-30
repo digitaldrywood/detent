@@ -337,10 +337,13 @@ func (l *LocalGit) sessionRecorded(info Info, issue Issue) bool {
 }
 
 type WorkInProgressPublisher interface {
-	PublishWorkInProgress(context.Context, Issue) error
+	PublishWorkInProgress(context.Context, Issue, func(context.Context) error) error
 }
 
-func (l *LocalGit) PublishWorkInProgress(ctx context.Context, issue Issue) error {
+func (l *LocalGit) PublishWorkInProgress(ctx context.Context, issue Issue, validate func(context.Context) error) error {
+	if validate == nil {
+		return fmt.Errorf("%w: ownership validation is required", ErrCheckpointUnsafe)
+	}
 	preserved, err := l.PreserveIssue(ctx, issue)
 	if err != nil {
 		return err
@@ -364,6 +367,9 @@ func (l *LocalGit) PublishWorkInProgress(ctx context.Context, issue Issue) error
 		return err
 	}
 	head = strings.TrimSpace(head)
+	if err := checkpointGuard(ctx, git, plan, head, validate); err != nil {
+		return err
+	}
 	changed, err := git(ctx, "diff", "--name-only", "--no-renames", "-z", "HEAD", "--")
 	if err != nil {
 		return err
@@ -415,6 +421,9 @@ func (l *LocalGit) PublishWorkInProgress(ctx context.Context, issue Issue) error
 				return err
 			}
 		}
+		if err := checkpointGuard(ctx, git, plan, head, validate); err != nil {
+			return err
+		}
 		if _, err := git(ctx, append([]string{"commit", "--only", "-m", "chore: preserve unfinished runner work", "--"}, dirty...)...); err != nil {
 			return err
 		}
@@ -427,14 +436,18 @@ func (l *LocalGit) PublishWorkInProgress(ctx context.Context, issue Issue) error
 	if err := checkpointHistory(ctx, git, plan.BaseSHA, head, paths); err != nil {
 		return err
 	}
-	branch := "wip/" + preserved.Branch + "-" + head
-	if _, err := git(ctx, "-c", "push.followTags=false", "push", "--recurse-submodules=no", "origin", head+":refs/heads/"+branch); err != nil {
+	if err := checkpointGuard(ctx, git, plan, head, validate); err != nil {
 		return err
 	}
-	remote, err := git(ctx, "ls-remote", "--refs", "origin", "refs/heads/"+branch)
+	branch := "wip/" + preserved.Branch + "-" + head
+	if _, err := git(ctx, "-c", "push.followTags=false", "push", "--recurse-submodules=no", plan.RemoteURL, head+":refs/heads/"+branch); err != nil {
+		return err
+	}
+	remote, err := git(ctx, "ls-remote", "--refs", plan.RemoteURL, "refs/heads/"+branch)
 	fields := strings.Fields(remote)
 	if err != nil || len(fields) != 2 || fields[0] != head || fields[1] != "refs/heads/"+branch {
 		return errors.Join(fmt.Errorf("%w: unfinished work publication could not be verified", ErrCheckpointUnsafe), err)
 	}
-	return nil
+	_, err = git(ctx, "fetch", "--no-tags", "--no-write-fetch-head", plan.RemoteURL, "refs/heads/"+branch+":refs/remotes/"+defaultGitRemote+"/"+branch)
+	return err
 }

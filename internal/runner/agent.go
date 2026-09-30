@@ -2110,7 +2110,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		)
 	} else {
 		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
-			return result, errors.Join(turnErr, err)
+			turnErr = errors.Join(turnErr, err)
 		}
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
@@ -2126,13 +2126,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if turnErr != nil {
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-		finishContext := ctx
-		if cooperativeStopError(turnErr) {
-			finishContext = context.WithoutCancel(ctx)
-		}
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(finishContext, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
+			r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
 		)
 	}
 

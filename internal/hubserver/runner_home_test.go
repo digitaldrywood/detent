@@ -240,11 +240,11 @@ func TestRunnerHomeFleetVisibility(t *testing.T) {
 	t.Parallel()
 	since := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	runner := runnerauth.Runner{Routing: runnerauth.Routing{HomeProjectIDs: []tracker.ProjectID{"prj_visible", "prj_hidden"}}, HomeDrySince: &since, HomeStatus: "Spilled over"}
-	view := hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{"prj_visible": true})
+	view := hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{"prj_visible": true}, since)
 	if len(view.HomeProjectIDs) != 1 || view.HomeStatus != "" || view.HomeDrySince != nil {
 		t.Fatalf("hidden home activity leaked: %#v", view)
 	}
-	view = hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{"prj_visible": true, "prj_hidden": true})
+	view = hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{"prj_visible": true, "prj_hidden": true}, since)
 	if len(view.HomeProjectIDs) != 2 || view.HomeStatus != "Spilled over" || view.HomeDrySince == nil {
 		t.Fatalf("visible home state lost: %#v", view)
 	}

@@ -188,7 +188,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
 	if deadlineExpired {
 		if publisher, ok := backend.(workspace.WorkInProgressPublisher); ok {
-			publicationErr = publisher.PublishWorkInProgress(localCtx, issue)
+			publicationErr = publisher.PublishWorkInProgress(localCtx, issue, req.Execution.Validate)
 			if publicationErr != nil {
 				r.logger.Warn("unfinished runner work not published", "issue_id", req.Issue.ID, "error", publicationErr)
 			}

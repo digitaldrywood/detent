@@ -151,7 +151,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 			if deadline := e.AvailabilityDeadline(); !deadline.IsZero() {
 				untilDeadline := deadline.Sub(e.scheduler.now())
 				if untilDeadline <= 0 {
-					cancel(context.Canceled)
+					cancel(runner.NewCancellationCause(context.Canceled, "runner.availability"))
 					return
 				}
 				remaining = min(remaining, untilDeadline)

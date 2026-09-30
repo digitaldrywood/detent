@@ -262,9 +262,12 @@ type wipExecutionWorkspace struct {
 	publishedState *workspace.RecoveryState
 }
 
-func (w *wipExecutionWorkspace) PublishWorkInProgress(ctx context.Context, _ workspace.Issue) error {
+func (w *wipExecutionWorkspace) PublishWorkInProgress(ctx context.Context, _ workspace.Issue, validate func(context.Context) error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if err := validate(ctx); err != nil {
+		return err
 	}
 	w.published = true
 	if w.publishErr == nil && w.publishedState != nil {
@@ -418,5 +421,20 @@ func TestAvailabilityStopRetainsUnreapedWorkspace(t *testing.T) {
 	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
 	if !errors.Is(err, ErrWorkerProcessReap) || backend.published || !backend.retained || backend.afterRun {
 		t.Fatalf("error=%v published=%t retained=%t cleaned=%t", err, backend.published, backend.retained, backend.afterRun)
+	}
+}
+
+func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
+	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}, publishErr: errors.New("push unavailable")}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
+	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
+	sessionStore := &fakeSessionStore{sessionID: 3169}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, Store: sessionStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+	if !errors.Is(err, backend.publishErr) || sessionStore.finishCalls != 1 || sessionStore.usageCalls != 1 || execution.finish != "interrupted" {
+		t.Fatalf("error=%v session finishes=%d usage=%d outcome=%s", err, sessionStore.finishCalls, sessionStore.usageCalls, execution.finish)
 	}
 }
