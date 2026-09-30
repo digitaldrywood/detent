@@ -163,3 +163,44 @@ func TestDispatchPlannerBoundsGitHubIssueReads(t *testing.T) {
 		t.Fatalf("GitHub issue reads = %v; want top ten candidates", reads)
 	}
 }
+
+func TestDispatchPlannerFindsReadyTailBeyondNativeDependencyWaits(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"native waits", "unknown waits", "due retries"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 6, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			state := newState(cfg)
+			now := time.Date(2026, 9, 30, 21, 51, 0, 0, time.UTC)
+			var candidates []connector.Issue
+			for i := range 30 {
+				issue := dispatchTestIssue(fmt.Sprintf("%02d", i), "Todo")
+				issue.CreatedAt = new(now.Add(time.Duration(i) * time.Second))
+				if i < 24 {
+					issue.BlockedBy = []connector.BlockedRef{{Identifier: "fixture/dispatch#999", State: "Todo"}}
+					if mode != "unknown waits" {
+						issue.DependencySource = connector.BlockedRefSourceNative
+					}
+					if mode == "due retries" {
+						state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 1, DueAt: now}
+					}
+				}
+				candidates = append(candidates, issue)
+			}
+			var hydrated []string
+			plan := newDispatchPlanner(cfg).plan(&state, candidates, now, dispatchPlanHooks{
+				hydrate: func(issue connector.Issue) (connector.Issue, bool) {
+					hydrated = append(hydrated, issue.ID)
+					return issue, true
+				},
+			})
+			if mode == "native waits" {
+				if len(plan.Dispatches) != 6 || plan.Dispatches[0].IssueID != "24" || plan.Dispatches[5].IssueID != "29" || !slices.Equal(hydrated, []string{"24", "25", "26", "27", "28", "29"}) {
+					t.Fatalf("ready tail dispatches=%+v hydrated=%v", plan.Dispatches, hydrated)
+				}
+			} else if len(plan.Dispatches) != 0 || len(hydrated) != 14 || hydrated[0] != "00" || hydrated[13] != "13" {
+				t.Fatalf("unknown/retry evidence must retain bound: dispatches=%+v hydrated=%v", plan.Dispatches, hydrated)
+			}
+		})
+	}
+}

@@ -1767,7 +1767,11 @@ Project dispatch evaluates candidates in the existing priority order, with at
 most the initial free project slots plus eight candidates of lookahead per pass
 (#3190). Failed hydration, dependency waits, due retries, and rejected dispatches
 consume that same evaluation allowance; they cannot trigger a full-queue tracker
-scan. Local label rejections and project-capacity skips need no evaluation.
+scan. Existing native dependency waits are ordered behind candidates without
+known waits before bounded hydration, preserving priority within each group.
+Due retries retain their polling order, and every admitted candidate still uses
+fresh dispatch hydration. Local label rejections and project-capacity skips need
+no evaluation.
 The existing merge-control path remains available when project slots are full.
 This bounds readiness discovery; it does not reserve or hold global capacity,
 and discovered ready work still uses the existing global acquisition lifecycle.
