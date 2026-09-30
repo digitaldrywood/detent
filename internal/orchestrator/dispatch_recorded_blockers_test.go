@@ -353,3 +353,27 @@ func TestWorkpadHumanActionSnapshot(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatchParkReasonRemainsVisible(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, reason, recovery, want string
+	}{
+		{name: "park and recovery", reason: workpadBlockedUnactionedReason, recovery: "park_acknowledgement_required", want: workpadBlockedUnactionedReason + ": park_acknowledgement_required"},
+		{name: "park only", reason: noProgressLimitReason, want: noProgressLimitReason},
+		{name: "recovery only", recovery: "park_acknowledgement_required", want: "park_acknowledgement_required"},
+		{name: "legacy unknown hold"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Rework"}, TerminalStates: []string{"Done"}})
+			issue := dispatchTestIssue("held", "Rework")
+			state := newState(cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: tc.reason, RecoveryReason: tc.recovery}
+			p := dispatchPlanner{cfg: cfg}
+			got := p.dispatchableIssueDecision(issue, &state, false, time.Now(), "")
+			if got.dispatchable || got.reason != dispatchSkipBlocked || got.detail != tc.want {
+				t.Fatalf("decision=%+v, want existing blocked reason with detail %q", got, tc.want)
+			}
+		})
+	}
+}

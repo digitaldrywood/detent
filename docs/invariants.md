@@ -513,6 +513,11 @@ In Progress or Rework lane. Unauthorized, stale, uncleared actions and unresolve
 dependencies keep their existing holds. No new reason, loop, or configuration is
 introduced. `TestWorkpadHumanActionClearanceRecoversBlockedIssue` includes real
 SQLite legacy entries and both active lanes.
+The recorded recovery receipt carries the same human-action park it released.
+The existing park retainer recognizes that receipt across refresh and restart;
+it does not acknowledge unrelated or later human parks. Scheduler skips retain
+the stored cause and recovery reason instead of reporting an opaque Blocked
+hold. The Workpad clearance regression also checks retained-park replay.
 
 Session token ceilings record their existing typed outcome, usage, and agent
 session phase in the database without writing a repository lesson. Removing the

@@ -828,7 +828,14 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		if reason == lifetimeLimitReason || strings.HasPrefix(reason, lifetimeLimitBlockedReasonPrefix) {
 			return dispatchableDecision{reason: dispatchSkipLifetimeLimit}
 		}
-		return dispatchableDecision{reason: dispatchSkipBlocked}
+		detail := strings.TrimSpace(blocked.Reason)
+		if recovery := strings.TrimSpace(blocked.RecoveryReason); recovery != "" {
+			if detail != "" {
+				detail += ": "
+			}
+			detail += recovery
+		}
+		return dispatchableDecision{reason: dispatchSkipBlocked, detail: detail}
 	}
 	if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
 		return dispatchableDecision{reason: reason}
