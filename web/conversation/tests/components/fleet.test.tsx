@@ -104,3 +104,11 @@ describe("home project status", () => {
     expect(within(card).getByText(status)).toBeTruthy();
   });
 });
+
+it("shows outside hours as a plain runner status", () => {
+  const runner = { ...FLEET.runners[0]!, health: "outside_hours" };
+  renderSection({ ...FLEET, runners: [runner] });
+  const card = screen.getByTestId("host-card");
+  expect(within(card).getByText("Outside hours")).toBeTruthy();
+  expect(within(card).queryByRole("alert")).toBeNull();
+});
