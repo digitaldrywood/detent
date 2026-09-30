@@ -96,7 +96,7 @@ func (s *sqliteStore) populateDailyShippedCohort(ctx context.Context, day *Daily
 
 func (s *sqliteStore) dailyCohortDwell(ctx context.Context, receipt efficiency.Receipt, completed time.Time) (efficiency.Dwell, int64, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT phase_name, started_at, finished_at
- FROM workflow_phase_events
+ FROM workflow_phase_events INDEXED BY workflow_phase_events_issue_idx
  WHERE project_id = ? AND issue_id = ? AND phase_type = 'lane'
    AND status = 'exited' AND finished_at IS NOT NULL`, receipt.ProjectID, receipt.IssueID)
 	if err != nil {
