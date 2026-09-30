@@ -19,15 +19,16 @@ import (
 const HeartbeatTimeout = 2 * time.Minute
 
 type Routing struct {
-	DisplayName   string              `json:"display_name"`
-	Tags          []string            `json:"tags"`
-	State         string              `json:"state"`
-	CapacityLimit int                 `json:"capacity_limit"`
-	ProjectIDs    []tracker.ProjectID `json:"project_ids"`
-	IsolationTier string              `json:"isolation_tier"`
-	HostServices  []string            `json:"host_services"`
-	Availability  Availability        `json:"availability"`
-	Spillover     Spillover           `json:"spillover"`
+	DisplayName    string              `json:"display_name"`
+	Tags           []string            `json:"tags"`
+	State          string              `json:"state"`
+	CapacityLimit  int                 `json:"capacity_limit"`
+	ProjectIDs     []tracker.ProjectID `json:"project_ids"`
+	HomeProjectIDs []tracker.ProjectID `json:"home_project_ids"`
+	IsolationTier  string              `json:"isolation_tier"`
+	HostServices   []string            `json:"host_services"`
+	Availability   Availability        `json:"availability"`
+	Spillover      Spillover           `json:"spillover"`
 }
 
 type Availability struct {
@@ -59,6 +60,8 @@ type HostChange struct {
 }
 
 type Runner struct {
+	HomeDrySince     *time.Time              `json:"home_dry_since"`
+	HomeStatus       string                  `json:"home_status"`
 	ProviderCapacity []providercapacity.View `json:"provider_capacity,omitempty"`
 	Binding
 	Routing
@@ -121,6 +124,11 @@ func (r Routing) Normalized() Routing {
 	}
 	r.ProjectIDs = slices.Clone(r.ProjectIDs)
 	slices.Sort(r.ProjectIDs)
+	r.HomeProjectIDs = slices.Clone(r.HomeProjectIDs)
+	if r.HomeProjectIDs == nil {
+		r.HomeProjectIDs = []tracker.ProjectID{}
+	}
+	slices.Sort(r.HomeProjectIDs)
 	if r.IsolationTier == "" {
 		r.IsolationTier = "sandbox"
 	}
@@ -157,6 +165,11 @@ func (r Routing) Validate() error {
 	for i, id := range r.ProjectIDs {
 		if id == "" || slices.Contains(r.ProjectIDs[:i], id) {
 			return errors.New("runner project access must contain unique project IDs")
+		}
+	}
+	for i, id := range r.HomeProjectIDs {
+		if !slices.Contains(r.ProjectIDs, id) || slices.Contains(r.HomeProjectIDs[:i], id) {
+			return errors.New("home projects must be unique authorized project IDs")
 		}
 	}
 	if r.IsolationTier != "sandbox" && r.IsolationTier != "native-trusted" {
@@ -250,4 +263,22 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 		}
 	}
 	return result
+}
+
+func (r Runner) SpilloverEligible(now time.Time) bool {
+	return len(r.HomeProjectIDs) > 0 && r.HomeDrySince != nil && r.Spillover.Mode == "after" && now.Sub(*r.HomeDrySince).Minutes() >= float64(r.Spillover.AfterMinutes)
+}
+
+func (r Runner) HomeWorkStatus(now time.Time) string {
+	if len(r.HomeProjectIDs) == 0 {
+		return ""
+	}
+	if r.SpilloverEligible(now) {
+		return "Spilled over"
+	}
+	if r.HomeDrySince == nil {
+		return "Preferring home work"
+	}
+	minutes := max(0, int(now.Sub(*r.HomeDrySince).Minutes()))
+	return fmt.Sprintf("Waiting for home work (%dm)", minutes)
 }

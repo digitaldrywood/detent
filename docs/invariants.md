@@ -419,6 +419,17 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Home-project spillover (#3170, human-approved) is claim-time eligibility using
+one nullable `home_dry_since` timestamp per runner. Home projects are a subset
+of administrator-authorized projects; spillover never widens grants or selectors.
+Only dispatchable Todo/Rework home work counts, after dependency, policy,
+selector, lease, and provider checks. Claims retain normal ordering among home
+projects, clear the timestamp when home work is available, and start it only
+when home work runs dry. General work becomes eligible after the configured
+idle period. Active work finishes without preemption; workspace sessions do not
+participate. There is no background loop or capacity reservation for home work.
+`TestRunnerHomeClaims` and `TestRunnerHomeReturnAndOrdering` enforce this behavior.
+
 Dispatch ordering (#3298) consolidates urgency into the existing comparator.
 Merging remains first when the project config places it first; other lanes
 compare tracker priority and configured label rank before lane rank, then retain

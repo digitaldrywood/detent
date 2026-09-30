@@ -94,3 +94,13 @@ describe("an organization with no runners", () => {
     expect(screen.queryAllByTestId("host-card")).toHaveLength(0);
   });
 });
+
+describe("home project status", () => {
+  it.each(["Spilled over", "Waiting for home work (5m)"])("keeps %s on the runner card", (status) => {
+    const runner = FLEET.runners[0]!;
+    renderSection({ ...FLEET, runners: [{ ...runner, home_project_ids: ["prj_home"], home_status: status }] });
+    const card = screen.getByTestId("host-card");
+    expect(within(card).getByText("Home projects: prj_home")).toBeTruthy();
+    expect(within(card).getByText(status)).toBeTruthy();
+  });
+});
