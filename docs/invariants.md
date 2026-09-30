@@ -561,6 +561,16 @@ completed-run transition reason, merge-revocation destination, and the central
 lane writer. These changes consolidate Human Review routing under the project
 setting; they add no reason code or recovery mechanism.
 
+Completed work remains active when both automatic promotion and human review
+are disabled; that combination must not create a false Blocked handoff.
+The existing promotion owner re-evaluates its own completed-review Blocked
+receipts against a successful implementation receipt for the same fresh PR and
+head. Later lane entries, operator stops, changed heads, active workers, and
+current Workpad requests retain their existing authority. This consolidates
+completion handoff and promotion without an additional recovery loop, reason,
+configuration, or lane writer. `TestCompletedReviewTransitionUsesExistingPromotionOwner`
+and `TestCompletedActiveReviewTargetState` cover these boundaries.
+
 Scheduled validation repairs (#3447, #3448, #3451) refresh the completed-run
 transition fingerprint after reviewing #3429's operational-receipt freshness
 check and #3281's opted-out review routing. The receipt check rejects changed

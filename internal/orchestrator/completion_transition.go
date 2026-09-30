@@ -356,6 +356,9 @@ func completedActiveReviewTargetState(
 	cfg AutoPromoteConfig,
 ) string {
 	cfg = normalizeAutoPromoteConfig(cfg)
+	if !cfg.Enabled && !cfg.humanReviewEnabled() {
+		return ""
+	}
 	if !stateIn(issue.State, activeStates) || stateIn(issue.State, terminalStates) {
 		return ""
 	}

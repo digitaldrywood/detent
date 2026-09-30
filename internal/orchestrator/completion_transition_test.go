@@ -108,6 +108,12 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 		want           string
 	}{
 		{
+			name:       "disabled promotion and disabled human review keep successful work active",
+			issue:      completionTransitionIssue("In Progress", "OPEN"),
+			finalState: FinalStateCompleted,
+			cfg:        AutoPromoteConfig{HumanReview: new(false)},
+		},
+		{
 			name:       "todo completed with open pull request advances to human review when disabled",
 			issue:      completionTransitionIssue("Todo", "OPEN"),
 			finalState: FinalStateCompleted,
@@ -1587,6 +1593,98 @@ func TestTransitionAlreadyMergedCompletion(t *testing.T) {
 				if !strings.Contains(tracker.comments[0].body, evidence) {
 					t.Fatalf("audit missing %q: %s", evidence, tracker.comments[0].body)
 				}
+			}
+		})
+	}
+}
+
+func TestCompletedReviewTransitionUsesExistingPromotionOwner(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		lane         string
+		disabled     bool
+		customSource bool
+		reason       string
+		head         string
+		terminal     store.WorkAttemptTerminalState
+		running      bool
+		reblocked    bool
+		humanAction  bool
+		red          bool
+		pending      bool
+		dependency   bool
+		want         string
+	}{
+		{name: "completed active fast promotion", lane: "In Progress", head: "finished-head", terminal: store.WorkAttemptTerminalSuccess, want: "Merging"},
+		{name: "completed active automation disabled", lane: "In Progress", disabled: true, head: "finished-head", terminal: store.WorkAttemptTerminalSuccess},
+		{name: "durable pushed completion", reason: "completed_active_review_transition", head: "finished-head", terminal: store.WorkAttemptTerminalSuccess, want: "Merging"},
+		{name: "changed head", reason: "completed_active_review_transition", head: "old-head", terminal: store.WorkAttemptTerminalSuccess},
+		{name: "operator hold", reason: "operator_move", head: "finished-head", terminal: store.WorkAttemptTerminalSuccess},
+		{name: "configured Blocked review source retains its policy", reason: "operator_move", head: "old-head", terminal: store.WorkAttemptTerminalNoProgress, customSource: true, want: "Merging"},
+		{name: "later external hold", reason: "completed_active_review_transition", head: "finished-head", terminal: store.WorkAttemptTerminalSuccess, reblocked: true},
+		{name: "failed session", reason: "completed_active_review_transition", head: "finished-head", terminal: store.WorkAttemptTerminalNoProgress},
+		{name: "live worker", reason: "completed_active_review_transition", head: "finished-head", terminal: store.WorkAttemptTerminalSuccess, running: true},
+		{name: "human answer required", reason: "completed_active_review_transition", head: "finished-head", terminal: store.WorkAttemptTerminalSuccess, humanAction: true},
+		{name: "red remains red", reason: "completed_active_review_transition", head: "finished-head", terminal: store.WorkAttemptTerminalSuccess, red: true, want: "Rework"},
+		{name: "pending remains pending", reason: "completed_active_review_transition", head: "finished-head", terminal: store.WorkAttemptTerminalSuccess, pending: true},
+		{name: "fresh dependency remains blocked", reason: "completed_active_review_transition", head: "finished-head", terminal: store.WorkAttemptTerminalSuccess, dependency: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 30, 22, 0, 0, 0, time.UTC)
+			issue := completionTransitionIssue(firstNonBlank(tc.lane, "Blocked"), "OPEN")
+			issue.PullRequest.Number = 4138
+			issue.PullRequest.HeadSHA = "finished-head"
+			issue.PullRequest.MergeableState = "clean"
+			issue.PullRequest.CIStatus = "success"
+			issue.PullRequest.URL = "https://github.test/digitaldrywood/detent/pull/4138"
+			if tc.red {
+				issue.PullRequest.CIStatus = "failure"
+			}
+			if tc.pending {
+				issue.PullRequest.CIStatus = "pending"
+			}
+			if tc.dependency {
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#2", State: "Todo"}}
+			}
+
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
+			if tc.humanAction {
+				issue.Comments[0].Body = "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: approve production deployment\n```"
+			}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, HumanReview: new(false), Gate: gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff}}})
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}, issueComments: map[string][]connector.IssueComment{issue.ID: issue.Comments}}
+			metrics := &autoPromoteWorkflowMetricsRecorder{events: []store.WorkflowPhaseEvent{{IssueID: issue.ID, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "Blocked", Status: "entered", Reason: tc.reason, StartedAt: now.Add(-time.Minute)}}}
+			if tc.reblocked {
+				updated := now
+				issue.StageUpdatedAt = &updated
+			}
+			attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{{ID: 7351, TerminalState: tc.terminal, CompletedAt: now.Add(-2 * time.Minute), WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"run_mode": runpkg.RunModeImplement, "work_product_pushed": true, "pr_number": 4138, "pr_head_sha": tc.head, "completion_progress": implementProgressRecord{Outcome: string(tc.terminal), TrackerState: "In Progress"}})}}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, workAttempts: attempts}
+			orch.cfg.AutoPromote.Enabled = !tc.disabled
+			if tc.customSource {
+				orch.cfg.AutoPromote.SourceState = "Blocked"
+				orch.cfg.AutoPromote.HumanReview = new(true)
+			}
+			state := newState(cfg)
+			if tc.running {
+				state.Running[issue.ID] = Running{Issue: issue}
+			}
+			if tc.lane != "" {
+				state.Completed[issue.ID] = completedFromGateWaitAttempt(issue, attempts.history[0])
+				orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+			} else {
+				orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			}
+			if tc.want == "" {
+				for _, update := range tracker.updates {
+					if update.state != "Blocked" {
+						t.Fatalf("unsafe transition: %+v", update)
+					}
+				}
+			} else if len(tracker.updates) != 1 || tracker.updates[0].state != tc.want {
+				t.Fatalf("updates = %+v, want %s", tracker.updates, tc.want)
 			}
 		})
 	}
