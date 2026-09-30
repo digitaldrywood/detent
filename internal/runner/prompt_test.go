@@ -399,6 +399,9 @@ func TestPromptWrapperBytes(t *testing.T) {
 	if !strings.Contains(prompt, "ambient-auth-test-isolation (includes: ambient-cleanup-test-isolation") {
 		t.Fatal("merged ambient cleanup skill is missing from the prompt")
 	}
+	if !strings.Contains(prompt, "provider-impersonation-browser-binding (includes: provider-fixture-account-continuity)") {
+		t.Fatal("merged provider fixture skill is missing from the prompt")
+	}
 	for _, section := range strings.Split(prompt, "\n## ") {
 		t.Logf("section %s: %d", strings.SplitN(section, "\n", 2)[0], len(section))
 	}
