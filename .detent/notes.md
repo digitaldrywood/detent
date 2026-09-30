@@ -1346,3 +1346,33 @@ human_action: null
 ```
 
 The following notes concern earlier heads or other issues. Their validation and completion metadata do not apply to the current #3433 merge; historical instructions do not authorize validation or publication in this session.
+
+# Issue #3258 implementation handoff — 2026-09-30
+
+Dependency #3257 is merged in develop at 3844f54e75edc8df931d7221c7f62dcb3d71b37e
+(PR #3362); this branch fast-forwarded there before implementation.
+
+Implemented selective native onboarding intake:
+- internal/hubserver/onboarding_issue_intake.go and migration 50: durable
+  operator intent, preview selection and item checkpoints; assigned-runner
+  results; safe lane default and explicit dispatch approval; source dedup.
+- internal/hubserver/linked_issue_sources.go: shared atomic hydration and
+  runner-checkout association; preserve native fields/comments on retries.
+- internal/connector/github/issue_discovery.go: one GraphQL page (100 issues),
+  open default, labels, explicit history; up to 1000 previews per batch.
+- internal/hubclient/github_batch.go, runner heartbeat and CLI: explicit
+  source task delivered through existing heartbeat, one bounded result per
+  beat; no source reads after completion; source throttle needs explicit retry.
+- web/conversation/src/app/account/IssueIntake.tsx: selection, count, source
+  preview, lane approval, explicit progress refresh and incomplete retry.
+- docs/hub-api.md, docs/invariants.md: API and INV-2 intake boundary.
+
+Focused Go regressions cover duplicates and legacy identity, private access,
+partial and 429 retry, mixed history, Hub restart, native edits, existing
+first-run completion, runner reassignment, zero post-intake tasks, and linked
+native landing without GitHub writes. Typecheck and the five focused wizard
+component tests pass. make generate succeeded; generated assets are included.
+Chrome DevTools evidence is in .detent/validation/3258. No full checks or CI
+polling; configured final gate is true and carries no test credit.
+
+Skill draft: no — reused existing hydration and heartbeat patterns; no new reusable procedure.

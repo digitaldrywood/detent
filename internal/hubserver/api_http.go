@@ -101,7 +101,7 @@ func decodeAPIJSON(c echo.Context, target any) error {
 
 // apiRequestBodyLimit is how many bytes this route's body may carry.
 func apiRequestBodyLimit(c echo.Context) int64 {
-	if c.Path() == nativeBase+"/work-items/:item/source-intake" {
+	if c.Path() == nativeBase+"/work-items/:item/source-intake" || c.Path() == nativeBase+"/onboarding/issue-intake/result" {
 		return 64 << 20
 	}
 	if c.Path() == nativeBase+"/attempts/:attempt/diff" {

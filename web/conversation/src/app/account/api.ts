@@ -1,3 +1,4 @@
+import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts";
 // The hosted account API client.
 //
 // `runtime/rpc/http.ts` is the conversation client's own transport and stays
@@ -267,6 +268,8 @@ export function makeAccountApi(options: AccountApiOptions) {
       ),
 
     // --- Onboarding (the first-run wizard) ----------------------------------
+    issueIntake: (projectId: string) => send(IssueIntake, "GET", `${project(projectId)}/onboarding/issue-intake`),
+    commandIssueIntake: (projectId: string, command: IntakeCommand, key: string) => send(IssueIntake, "POST", `${project(projectId)}/onboarding/issue-intake`, { ...command, idempotency_key: key }),
     onboarding: (projectId: string) => send(Onboarding, "GET", `${project(projectId)}/onboarding`),
     /**
      * The progress save. The response is the stored `Progress` alone, with the

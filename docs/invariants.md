@@ -236,6 +236,17 @@ retry and zero source calls after successful intake. Atomic intake retains the
 source snapshot and imported comment provenance while native edit history
 preserves field ownership (`TestLinkedIssueIntakeAtomicAndNativeEdits`).
 
+Onboarding batch intake (#3258) reuses the same atomic source hydration and
+native field ownership. Explicit source requests ride the enrolled runner's
+existing heartbeat response; Hub never fetches GitHub issues or stores the
+source credential. Failed or throttled items remain incomplete until an
+operator retries, and completed intake delivers no further source tasks.
+`TestGitHubBatchIntakeRetryAndNativeOwnership` and
+`TestGitHubBatchDiscoveryFailureAndSourceValidation` cover these boundaries.
+Selection defaults to a configured non-dispatchable lane; dispatchable intake
+requires explicit operator approval and uses existing native scheduling,
+without an additional hold or lane writer (INV-1 and INV-3).
+
 Validator PR-diff provenance failures are production failures, not code findings (#3066).
 The validator uses a repository/PR/base/head snapshot whose file list and patch
 agree, records its digest and identity with the verdict, and reuses only a
