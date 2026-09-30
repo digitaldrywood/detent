@@ -1251,16 +1251,16 @@ release policies. Detent honors each project's configuration and branch rules;
 PR CI, merge-group CI, and required status checks remain supported.
 
 **Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
-`merge_group`, and no branch ruleset requires a status check. Each pull request
-runs `make check-fast` in its own worktree before merge. The target takes no
-shared validation lock and supports concurrent worktrees. Short tests skip
-shared databases and ports. Focused tests and vet remain available during edits.
-The lint command disables golangci-lint's shared runner lock with
-`--allow-parallel-runners`; analyzers and the existing timeout remain unchanged.
-The client check stops on dependency installation, typecheck, test, or build
-failure before checking bundle drift and attribution, preserving failure status.
-Each client test command uses at most two workers while retaining file isolation
-and all tests, so concurrent worktrees do not each allocate a machine-sized pool.
+`merge_group`, and no branch ruleset requires a status check. Pull requests do
+not wait for CI or local validation gates before push or merge. The self-hosted
+project uses the existing no-op command `true` and publishes no local status.
+
+`make check-fast`, focused tests, and vet remain available for optional
+diagnostics. When invoked, checks preserve failures. The local tools take no
+shared validation lock and support concurrent worktrees: lint uses
+`--allow-parallel-runners`, and each client test command uses at most two workers
+while retaining file isolation and all tests. These tools do not become merge
+requirements.
 
 GitHub Actions schedules the full suite hourly from the repository's default branch.
 Preflight pins the current `develop` SHA and skips when that commit already has
