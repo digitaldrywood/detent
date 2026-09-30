@@ -1352,6 +1352,10 @@ It explicitly sets `gate.required_status_checks: []`, so pending optional or abs
 CI does not block progress. Reported failed CI still blocks, and native
 base-branch requirements remain authoritative;
 omitting the setting preserves aggregate CI behavior for other projects.
+The operator also sets `gate.automated_review: "off"`; pending automated review
+does not create a completion wait in that mode. Required and optional modes
+retain their existing waits and timeout behavior; reported P1 findings still
+route to Rework. The existing review-mode matrix covers this consolidation.
 
 `make check-fast`, focused tests, and vet remain available for optional
 diagnostics. When invoked, checks preserve failures. The local tools take no
