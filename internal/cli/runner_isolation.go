@@ -94,7 +94,7 @@ func backendVersionAtLeast(output []byte, minimum [3]int) bool {
 	return true
 }
 
-func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) error {
+func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) (probeErr error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	command := strings.TrimSpace(backend.Command)
@@ -113,7 +113,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		shell = backend.ClaudeCodeOptions().Shell
 		minimum = [3]int{2, 1, 285}
 		if policy.Tier == isolation.Sandbox && len(backend.ClaudeCodeOptions().ExtraArgs) != 0 {
-			return errors.New("Claude extra arguments cannot be isolated")
+			return errors.New("claude extra arguments cannot be isolated")
 		}
 	default:
 		return errors.New("backend does not provide isolation")
@@ -138,7 +138,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(base) }()
+	defer func() { probeErr = errors.Join(probeErr, os.RemoveAll(base)) }()
 	inside := filepath.Join(base, "worktree")
 	if err := os.Mkdir(inside, 0o700); err != nil {
 		return err
@@ -152,10 +152,14 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		if err != nil {
 			return err
 		}
-		profile := settings["permissions"].(map[string]any)[options.PermissionProfile]
+		permissions, ok := settings["permissions"].(map[string]any)
+		if !ok {
+			return errors.New("codex isolation permissions are unavailable")
+		}
+		profile := permissions[options.PermissionProfile]
 		args := []string{"-c", "permissions." + options.PermissionProfile + "=" + tomlInline(profile), "-c", "features.network_proxy=true", "sandbox", "-P", options.PermissionProfile, "-C", inside, "/bin/sh", "-c", `touch allowed && ! touch "$1/denied" && test -n "${HTTPS_PROXY:-${https_proxy:-}}"`, "probe", base}
 		if _, err := runBackendProbe(backendProbeCommand(ctx, command, shell, args)); err != nil {
-			return errors.New("Codex sandbox enforcement probe failed")
+			return errors.New("codex sandbox enforcement probe failed")
 		}
 		return nil
 	}
@@ -168,7 +172,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		return err
 	}
 	if runtime.GOOS != "darwin" {
-		return errors.New("Claude Linux Unix socket enforcement is not proven")
+		return errors.New("claude Linux Unix socket enforcement is not proven")
 	}
 	args := []string{"--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--setting-sources", "", "--settings", string(encoded), "--tools", "Bash,Read,Glob,Grep", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`}
 	cmd := backendProbeCommand(ctx, command, shell, args)
@@ -176,11 +180,11 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	procgroup.SetTempDir(cmd, inside)
 	procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"CLAUDE_CODE_TMPDIR": inside}})
 	if err := claudecode.VerifySandboxCommand(ctx, cmd, settings); err != nil {
-		return errors.New("Claude effective sandbox settings probe failed")
+		return errors.New("claude effective sandbox settings probe failed")
 	}
 	host := exec.CommandContext(ctx, "/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)(deny file-write*)", "/usr/bin/true")
 	if err := host.Run(); err != nil {
-		return errors.New("Claude host sandbox probe failed")
+		return errors.New("claude host sandbox probe failed")
 	}
 	return nil
 }

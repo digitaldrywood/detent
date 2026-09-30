@@ -330,7 +330,7 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 	go func() { done <- scheduler.ensureNativeMachine(t.Context(), &NativeConnector{client: native}) }()
 	<-entered
 	acquired := make(chan struct{})
-	go func() { scheduler.mu.Lock(); scheduler.mu.Unlock(); close(acquired) }()
+	go func() { scheduler.mu.Lock(); close(acquired); scheduler.mu.Unlock() }()
 	select {
 	case <-acquired:
 	case <-time.After(time.Second):

@@ -98,7 +98,7 @@ func TestCommandRejectsIsolationFailures(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			called := false
-			backend, err := NewAgentBackend(Options{ExtraArgs: test.extra, CommandFactory: func(context.Context) *exec.Cmd { called = true; return exec.Command("claude") }, IsolationPolicy: func() (isolation.Policy, error) { return test.policy, test.err }})
+			backend, err := NewAgentBackend(Options{ExtraArgs: test.extra, CommandFactory: func(ctx context.Context) *exec.Cmd { called = true; return exec.CommandContext(ctx, "claude") }, IsolationPolicy: func() (isolation.Policy, error) { return test.policy, test.err }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -217,7 +217,8 @@ func TestSandboxShellHelper(t *testing.T) {
 		if err := json.Unmarshal(scanner.Bytes(), &message); err != nil {
 			os.Exit(3)
 		}
-		if message["type"] == "control_request" {
+		switch message["type"] {
+		case "control_request":
 			result := map[string]any{}
 			if message["request_id"] == "get_settings" {
 				if os.Getenv("DETENT_CLAUDE_WEAKEN") == "1" {
@@ -226,7 +227,7 @@ func TestSandboxShellHelper(t *testing.T) {
 				result["effective"] = settings
 			}
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": message["request_id"], "response": result}})
-		} else if message["type"] == "user" {
+		case "user":
 			if err := os.WriteFile(os.Getenv("DETENT_CLAUDE_OBSERVED"), scanner.Bytes(), 0600); err != nil {
 				os.Exit(4)
 			}

@@ -23,7 +23,7 @@ func (b *AgentBackend) RunTurn(
 	ctx context.Context,
 	req runner.AgentTurnRequest,
 	onUpdate runner.AgentUpdateHandler,
-) (runner.AgentTurnResult, error) {
+) (turnResult runner.AgentTurnResult, turnErr error) {
 	ctx = contextOrBackground(ctx)
 	turnTimeout := b.options.TurnTimeout
 	if req.TurnTimeout > 0 {
@@ -50,7 +50,13 @@ func (b *AgentBackend) RunTurn(
 		if err != nil {
 			return runner.AgentTurnResult{}, err
 		}
-		defer func() { _ = sandboxInput.Close() }()
+		defer func() {
+			if sandboxInput != nil {
+				if err := sandboxInput.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+					turnErr = errors.Join(turnErr, err)
+				}
+			}
+		}()
 		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"CLAUDE_CODE_TMPDIR": req.TempDir}})
 	} else {
 		cmd.Stdin = strings.NewReader(req.Prompt)
@@ -135,12 +141,13 @@ func (b *AgentBackend) RunTurn(
 		if verifyErr == nil {
 			verifyErr = json.NewEncoder(sandboxInput).Encode(map[string]any{"type": "user", "session_id": "", "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": req.Prompt}})
 		}
-		_ = sandboxInput.Close()
+		if err := sandboxInput.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			verifyErr = errors.Join(verifyErr, err)
+		}
+		sandboxInput = nil
 		if verifyErr != nil {
-			_ = terminateWithCause(cmd, processGroupID, verifyErr)
-			<-waitDone
-			<-stderrDone
-			return runner.AgentTurnResult{}, errors.Join(verifyErr, stdout.Close(), stderrReader.Close())
+			verifyErr = terminateWithCause(cmd, processGroupID, verifyErr)
+			return runner.AgentTurnResult{}, errors.Join(verifyErr, <-waitDone, <-stderrDone, stdout.Close(), stderrReader.Close())
 		}
 		streamOutput = reader
 	}

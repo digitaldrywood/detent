@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/procgroup"
 	"io"
 	"os/exec"
 	"reflect"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 func IsolationSettings(p isolation.Policy) (map[string]any, error) {
@@ -51,19 +51,17 @@ func VerifySandboxCommand(ctx context.Context, cmd *exec.Cmd, settings map[strin
 	}
 	output, err := cmd.StdoutPipe()
 	if err != nil {
-		_ = input.Close()
-		return err
+		return errors.Join(err, input.Close())
 	}
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
-		_ = input.Close()
-		return err
+		return errors.Join(err, input.Close())
 	}
 	groupID := procgroup.GroupID(cmd)
 	_, err = verifySandboxProcess(ctx, input, output, settings)
-	_ = input.Close()
+	err = errors.Join(err, input.Close())
 	if err != nil {
-		_ = procgroup.TerminateTree(cmd, groupID)
+		err = errors.Join(err, procgroup.TerminateTree(cmd, groupID))
 	}
 	waitErr := cmd.Wait()
 	return errors.Join(err, waitErr, procgroup.Cleanup(groupID))
@@ -105,7 +103,7 @@ func verifySandboxProcess(ctx context.Context, input io.Writer, output io.Reader
 					continue
 				}
 				if response.Response.Subtype != "success" {
-					done <- errors.New("Claude cannot verify effective isolation settings")
+					done <- errors.New("claude cannot verify effective isolation settings")
 					return
 				}
 				if subtype == "get_settings" {
@@ -137,7 +135,7 @@ func VerifyEffectiveIsolation(expected, effective map[string]any) error {
 		return err
 	}
 	if !containsIsolationSettings(effective, normalized) {
-		return errors.New("Claude effective settings do not enforce runner isolation")
+		return errors.New("claude effective settings do not enforce runner isolation")
 	}
 	return nil
 }

@@ -122,7 +122,14 @@ func (b *AgentBackend) runTurn(
 		if options.PermissionProfile != "" {
 			runtimeRoots = policy.WritableRoots
 			if restricted {
-				profile := settings["permissions"].(map[string]any)[options.PermissionProfile].(map[string]any)
+				permissions, ok := settings["permissions"].(map[string]any)
+				if !ok {
+					return runner.AgentTurnResult{}, errors.New("codex isolation permissions are unavailable")
+				}
+				profile, ok := permissions[options.PermissionProfile].(map[string]any)
+				if !ok {
+					return runner.AgentTurnResult{}, errors.New("codex isolation profile is unavailable")
+				}
 				profile["filesystem"] = map[string]any{"/": "read", ":workspace_roots": "read"}
 				profile["network"] = map[string]any{"enabled": false}
 				settings["features.network_proxy"] = false
