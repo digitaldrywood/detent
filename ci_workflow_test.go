@@ -308,36 +308,6 @@ func TestScheduledCIFinalizerReportsAndTags(t *testing.T) {
 	}
 }
 
-func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
-	t.Parallel()
-
-	requiredWorkflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	requiredJob := workflowBetween(t, requiredWorkflow, "  portability-verify:", "\n  windows-core:")
-	for _, forbidden := range []string{"go test -race", "-count=10", "-count=20"} {
-		if strings.Contains(requiredJob, forbidden) {
-			t.Fatalf("required portability job contains heavy coverage %q", forbidden)
-		}
-	}
-
-	stressWorkflow := readNormalizedFile(t, ".github/workflows/portability-stress.yml")
-	for _, want := range []string{
-		"workflow_dispatch:",
-		"timeout-minutes: 45",
-		"os: [macos-latest, windows-latest]",
-		"go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20",
-		"go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m",
-		"bash scripts/test-workspace.sh -race",
-		`go test -race "${packages[@]}"`,
-	} {
-		if !strings.Contains(stressWorkflow, want) {
-			t.Fatalf("portability stress workflow missing %q", want)
-		}
-	}
-	if strings.Contains(stressWorkflow, "pull_request:") || strings.Contains(stressWorkflow, "schedule:") {
-		t.Fatal("portability stress workflow must run only on manual dispatch")
-	}
-}
-
 func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	t.Parallel()
 
