@@ -1851,3 +1851,13 @@ fields:
   completion_cleanliness_resolution: committed
 blockers: []
 human_action: null
+
+# Issue #3408 implementation
+
+- Key files: `internal/hubsecrets/envelope.go`, Hub `project_secrets.go` / `project_sprites.go`, migration 50, Hub serve environment loading and `hub secrets rotate`, account `SpritesCard.tsx`.
+- Per-project envelope encryption uses independent AES-256-GCM data keys, row-bound AAD and version-authenticated wrapping. Presence-only metadata; owner/admin writes recheck authority after validation. No token-bearing native command receipts. Offline rotation uses the existing database ownership lock and rolls back all rows/audits on failure.
+- Focused crypto, provider validation, role/lifecycle, startup and multi-row rotation rollback diagnostics pass, along with existing schema/migration/member checks. All 80 selected account/policy/Sprites UI tests, frontend typechecking and Go vet pass. `make generate` completed and generated app assets are included. Chrome verified set, replace, remove, input clearing, no value in rendered text and viewer controls, with synthetic provider credentials on ephemeral ports. Desktop and narrow (Chrome minimum 500px) layouts were inspected; isolated previews stopped cleanly. Final publication evidence belongs in the canonical issue Workpad.
+- No invariant enforcement change, new operational mechanism, or out-of-scope findings. The issue explicitly authorizes the secret store, settings card and rotation command. Live Detent on port 4000 is untouched.
+- Skill draft: no — standard envelope encryption, focused fixtures and existing preview procedures need no new reusable method.
+
+- Rebased onto develop a80b71009. Renumbered this unpublished migration to 50 because develop already landed linked-issue migration 49; no shipped database has used this branch's former migration 49. Retained develop notes and regenerated the conflicted bundle from combined sources. Prior browser evidence covers the unchanged card. Resolved-source focused Go crypto/Hub/CLI diagnostics, schema/migration checks, vet, frontend typechecking and all 80 selected UI tests passed after this rebase. Canonical issue Workpad carries exact pushed-head gate and review/check evidence.
