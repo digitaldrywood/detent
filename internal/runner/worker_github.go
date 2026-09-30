@@ -764,6 +764,7 @@ func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHu
 func (p workerGitHubPolicy) authenticatedPrincipal(ctx context.Context, token string) (int64, connector.IssueActor, error) {
 	client, err := githubconnector.NewClient(githubconnector.ClientConfig{
 		Endpoint:    p.GraphQLURL,
+		Project:     "worker",
 		TokenSource: githubconnector.StaticTokenSource(token),
 		HTTPClient:  p.HTTPClient,
 		Logger:      p.Logger,
@@ -781,7 +782,7 @@ func (p workerGitHubPolicy) authenticatedPrincipal(ctx context.Context, token st
 	for {
 		// Bound each HTTP probe, not the credential's shared cooldown wait.
 		probeCtx, cancel := p.probeContext(ctx)
-		err = client.GraphQL(probeCtx, "query WorkerCredentialIdentity { viewer { databaseId login __typename } }", nil, &payload)
+		err = client.GraphQLWithType(probeCtx, "audit", "query WorkerCredentialIdentity { viewer { databaseId login __typename } rateLimit { limit used remaining cost resetAt } }", nil, &payload)
 		cancel()
 		if !errors.Is(err, githubconnector.ErrRateLimited) {
 			break
