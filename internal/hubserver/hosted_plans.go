@@ -118,7 +118,7 @@ type HostedEntitlement struct {
 }
 
 func hostedAllowanceNames() []string {
-	return []string{"members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work", "api_mutations", "ingested_events", "collaboration_bytes", "history_records", "artifact_retained_bytes", "artifact_reserved_bytes", "artifact_bytes", "artifact_upload_bytes", "artifact_retention_seconds", "relay_bytes"}
+	return []string{"unarchived_issues", "members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work", "api_mutations", "ingested_events", "collaboration_bytes", "history_records", "artifact_retained_bytes", "artifact_reserved_bytes", "artifact_bytes", "artifact_upload_bytes", "artifact_retention_seconds", "relay_bytes"}
 }
 
 func hostedFeatureNames() []string {
@@ -202,6 +202,9 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 			plan.Allowances = make(map[string]int64)
 		}
 		for _, name := range hostedAllowanceNames() {
+			if name == "unarchived_issues" {
+				continue
+			}
 			if _, exists := plan.Allowances[name]; !exists {
 				plan.Allowances[name] = 0
 			}
@@ -242,6 +245,14 @@ func readHostedPlan(ctx context.Context, query nativeQueryer, ref PlanReference)
 		return plan, err
 	}
 	err := json.Unmarshal([]byte(raw), &plan)
+	if err == nil {
+		if plan.Allowances == nil {
+			plan.Allowances = make(map[string]int64)
+		}
+		if _, exists := plan.Allowances["unarchived_issues"]; !exists {
+			plan.Allowances["unarchived_issues"] = 200
+		}
+	}
 	return plan, err
 }
 

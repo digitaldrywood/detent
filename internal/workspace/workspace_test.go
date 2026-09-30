@@ -3565,7 +3565,7 @@ func TestPrepareWorkerScratchIsOutsideWorkspace(t *testing.T) {
 				t.Fatalf("scratch stat = %v, %v", info, err)
 			}
 			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
-				t.Fatalf("scratch permissions = %v, want 0700", info.Mode().Perm())
+				t.Fatalf("scratch mode = %v, want 0700", info.Mode().Perm())
 			}
 			if err := CleanupWorkerScratch(workspacePath, scratchPath); err != nil {
 				t.Fatalf("CleanupWorkerScratch() error = %v", err)
@@ -3626,6 +3626,7 @@ func TestCleanupOwnedPathRemovesExternalWorkerScratch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			parent := t.TempDir()
+			t.Cleanup(func() { _ = os.RemoveAll(workerScratchGroup(parent)) })
 			workspacePath := filepath.Join(parent, "workspace")
 			otherPath := filepath.Join(parent, "other")
 			for _, path := range []string{workspacePath, otherPath} {
@@ -3661,7 +3662,7 @@ func TestCleanupOwnedPathRemovesExternalWorkerScratch(t *testing.T) {
 	}
 }
 
-func TestRemoveWorkerScratchRootPreservesSharedGroup(t *testing.T) {
+func TestRemoveWorkerScratchRootKeepsSharedGroup(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

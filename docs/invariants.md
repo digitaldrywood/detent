@@ -427,7 +427,7 @@ platform error retry, or new recovery path replaces them. Existing retention
 continues to sweep stale attempts and roots of removed workspaces.
 `TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup` covers concurrent
 attempt cleanup within one workspace and across siblings, plus sibling root
-removal. `TestRemoveWorkerScratchRootPreservesSharedGroup` covers explicit
+removal. `TestRemoveWorkerScratchRootKeepsSharedGroup` covers explicit
 root deletion without shared-parent removal.
 
 Home-project spillover (#3170, human-approved) is claim-time eligibility using
@@ -1191,6 +1191,21 @@ The shared lane writer attempts native queue withdrawal before a departure
 from Merging, but withdrawal failure does not block the lane write (#2826). Its reviewed INV-3 dynamic-reason fingerprint changes
 without altering reason forwarding; operator destinations and reasons remain
 intact, covered by `TestNativeMergeQueueReviewReworkAfterEnqueue`.
+
+Native issue archive (#3267) preserves workflow state and all issue, comment,
+attempt, change, version, and audit records. Archive refuses live ownership
+using the existing lease lifecycle (expired or released attempts are interrupted), and archived issues are
+excluded from tracker and claim candidates. Restore allocates an unarchived
+issue through the existing hosted transaction, as do native creation and import
+pages. Hosted usage counts native unarchived issues per organization across
+projects, including terminal issues; over-limit reads, exports, and reductions
+remain available. Archive reuses the completion mutation exemptions for its
+retained audit records. Catalogs predating the issue allowance default to 200
+without rewriting immutable plan versions. Self-hosted databases have no quota.
+`TestNativeArchiveLifecycle`, `TestNativeArchiveActiveWork`,
+`TestHostedIssueAllowanceBoundaries`, `TestHostedIssueArchiveAndDowngrade`,
+`TestHostedIssueConcurrentAllocation`, and `TestHostedIssueImportAllocation`
+exercise these boundaries without adding a brake, lease, or recovery mechanism.
 
 ## INV-4 — Native merge queue
 

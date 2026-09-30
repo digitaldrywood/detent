@@ -1727,10 +1727,10 @@ func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPat
 }
 
 // RemoveWorkerScratchRoot removes every attempt scratch of a workspace, for
-// callers that delete the workspace itself.
+// callers that delete the workspace itself. The group directory is shared
+// with sibling workspaces that may be creating scratch in it, so it stays.
 func RemoveWorkerScratchRoot(workspacePath string) error {
-	scratchRoot := WorkerScratchRoot(workspacePath)
-	if err := os.RemoveAll(scratchRoot); err != nil {
+	if err := os.RemoveAll(WorkerScratchRoot(workspacePath)); err != nil {
 		return fmt.Errorf("remove worker scratch root: %w", err)
 	}
 	return nil
