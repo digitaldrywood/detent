@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func checkDoctorHumanReviewLane(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
+func checkDoctorHumanReviewLane(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) (check doctorCheck) {
 	name := "Project " + id + " Human Review policy"
 	if cfg.Review.Human {
 		return doctorCheck{Name: name, Status: doctorOK, Detail: "review.human=true"}
@@ -31,7 +31,12 @@ func checkDoctorHumanReviewLane(ctx context.Context, id string, cfg workflowconf
 	if projectConnector == nil {
 		return doctorCheck{Name: name, Status: doctorWarn, Detail: "Human Review occupancy unavailable: connector is nil"}
 	}
-	defer closeDoctorAutoPromoteConnector(projectConnector)
+	defer func() {
+		if err := closeDoctorAutoPromoteConnector(projectConnector); err != nil && check.Status != doctorFail {
+			check.Status = doctorWarn
+			check.Detail += fmt.Sprintf("; close connector: %v", err)
+		}
+	}()
 	states := doctorHumanReviewStates(cfg)
 	scan, err := fetchDoctorAutoPromoteIssues(ctx, projectConnector, states)
 	if err != nil {
