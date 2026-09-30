@@ -12,6 +12,8 @@ import {
   PendingEnrollments,
   type PendingEnrollment,
 } from "./EnrollRunner.tsx";
+import { SettingsHelp } from "../settings/SettingsHelp.tsx";
+import { RUNNER_HELP } from "./runnerHelp.ts";
 import { HostCard } from "./HostCard.tsx";
 
 // --- Providers --------------------------------------------------------------
@@ -82,6 +84,7 @@ export function ProviderSummary({
       {rows.map((row, index) => (
         <SettingsRow
           key={row.provider}
+          help={{ label: `${row.provider} provider capacity`, text: RUNNER_HELP.provider }}
           title={
             <span className="flex min-w-0 items-center gap-2">
               <span
@@ -163,10 +166,28 @@ function RunnerSettingsForm({
       <form className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2" onSubmit={(event) => void submit(event)}>
         <p className="text-muted-foreground sm:col-span-2">Isolation and availability settings are saved but not yet enforced.</p>
         <label>Runner name<input className="mt-1 w-full rounded border p-2" name="display_name" defaultValue={routing.display_name} required /></label>
-        <label>Tags<input className="mt-1 w-full rounded border p-2" name="tags" defaultValue={routing.tags.join(", ")} /></label>
+        <div>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor={`tags-${runner.id}`}>Tags</label>
+            <SettingsHelp label="Tags">{RUNNER_HELP.tags}</SettingsHelp>
+          </div>
+          <input id={`tags-${runner.id}`} className="mt-1 w-full rounded border p-2" name="tags" defaultValue={routing.tags.join(", ")} />
+        </div>
         <label>State<select className="mt-1 w-full rounded border p-2" name="state" defaultValue={routing.state}><option value="active">Active</option><option value="draining">Draining</option><option value="disabled">Disabled</option></select></label>
-        <label>Runner capacity limit<input className="mt-1 w-full rounded border p-2" name="capacity_limit" type="number" min="0" max="10000" defaultValue={routing.capacity_limit} required /></label>
-        <label>Authorized project IDs<input className="mt-1 w-full rounded border p-2" name="project_ids" defaultValue={routing.project_ids.join(", ")} /></label>
+        <div>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor={`capacity_limit-${runner.id}`}>Runner capacity limit</label>
+            <SettingsHelp label="Runner capacity limit">{RUNNER_HELP.limit}</SettingsHelp>
+          </div>
+          <input id={`capacity_limit-${runner.id}`} className="mt-1 w-full rounded border p-2" name="capacity_limit" type="number" min="0" max="10000" defaultValue={routing.capacity_limit} required />
+        </div>
+        <div>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor={`project_ids-${runner.id}`}>Authorized project IDs</label>
+            <SettingsHelp label="Authorized project IDs">{RUNNER_HELP.projects}</SettingsHelp>
+          </div>
+          <input id={`project_ids-${runner.id}`} className="mt-1 w-full rounded border p-2" name="project_ids" defaultValue={routing.project_ids.join(", ")} />
+        </div>
         <label>Home project IDs<input className="mt-1 w-full rounded border p-2" name="home_project_ids" defaultValue={(routing.home_project_ids ?? []).join(", ")} /></label>
         <label>Isolation tier<select className="mt-1 w-full rounded border p-2" name="isolation_tier" defaultValue={routing.isolation_tier}><option value="sandbox">Sandbox</option><option value="native-trusted">Trusted only: full host access</option></select></label>
         <label className="sm:col-span-2">Host services, one per line<textarea className="mt-1 w-full rounded border p-2" name="host_services" rows={2} defaultValue={routing.host_services.join("\n")} placeholder="tcp:127.0.0.1:8080" /></label>

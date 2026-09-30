@@ -10,6 +10,7 @@ import {
   SettingsSection,
   SettingsWarning,
 } from "../settings/settingsLayout.tsx";
+import { RUNNER_HELP } from "../fleet/runnerHelp.ts";
 import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect, PathValue, ToggleControl } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
@@ -98,13 +99,17 @@ export function PolicyRow({
   const [pasted, setPasted] = React.useState("");
   const description =
     observed.length > 0
-      ? "A runner resolved an updated policy and is waiting for owner approval. Repository settings or a runner upgrade can change the policy. Nothing runs on this project until it is approved."
+      ? "A runner reported an updated policy that needs approval."
       : policy === null
-        ? "No policy is approved. Start a runner for this project and it reports the policy it resolved here, or paste the output of the inspect command."
-        : "The resolved policy descriptor a human approved. When the repository's detent.yaml or WORKFLOW.md changes, the runner reports the new policy here for approval.";
+        ? "No policy is approved. Start a runner or paste an inspected descriptor."
+        : "The repository policy descriptor approved for execution.";
   return (
     <SettingsRow
       title="Repository policy"
+      help={{
+        label: "Repository policy",
+        text: "The runner reports the policy descriptor it resolves from the trusted repository revision, including detent.yaml and WORKFLOW.md. Repository changes or a runner upgrade can change that descriptor and make the prior approval stale. Execution is blocked when the runner’s resolved policy does not match an approved descriptor; an owner or admin must approve the current policy.",
+      }}
       description={description}
       status={
         <>
@@ -283,7 +288,11 @@ export function ProjectSettingsView({
         />
         <SettingsRow
           title="Repository and pull request integration"
-          description="Let Detent read and write this repository's pull requests. Attach a repository first."
+          help={{
+            label: "Repository and pull request integration",
+            text: "Enabling this permits repository and pull request operations, including reading, creating and merging pull requests subject to GitHub permissions and branch protections. Disabling it stops these operations but keeps the immutable repository binding. Intake and summary projection are separate settings.",
+          }}
+          description="Allow repository and pull request operations."
           control={
             <ToggleControl
               label="Repository and pull request integration"
@@ -298,7 +307,11 @@ export function ProjectSettingsView({
       <SettingsSection title="Issue flow">
         <SettingsRow
           title="Intake"
-          description="Whether issues opened on GitHub are pulled into this project's board."
+          help={{
+            label: "Intake",
+            text: "Manual intake imports a GitHub issue and its discussion into Detent when you request it; it does not automatically import every new issue. Disabled prevents new manual imports and keeps previously imported work. The project profile determines who owns the imported fields.",
+          }}
+          description="Import selected GitHub issues into this project."
           control={
             <NativeSelect
               aria-label="Intake"
@@ -311,7 +324,11 @@ export function ProjectSettingsView({
         />
         <SettingsRow
           title="Projection"
-          description="Whether Detent writes a summary of each work item back to the GitHub issue. Summary projection requires native authority."
+          help={{
+            label: "Projection",
+            text: "Summary sends a work-item summary from Detent to the linked GitHub issue. Disabled stops new summary writes and leaves existing GitHub content in place. Summary requires native authority; it does not transfer field ownership to GitHub.",
+          }}
+          description="Write work-item summaries back to GitHub."
           control={
             <NativeSelect
               aria-label="Projection"
@@ -324,6 +341,10 @@ export function ProjectSettingsView({
         />
         <SettingsRow
           title="Authority"
+          help={{
+            label: "Authority",
+            text: "The native profile gives Detent ownership of issue title, body, discussion, dependencies, authors, workflow, labels, assignees and priority; the github_compatible profile gives GitHub ownership of those fields. Detent always owns scheduling, progress and native approval. Source timestamps retain their source, repository policy comes from the trusted repository revision, and GitHub controls merge protections. Intake and projection do not change these owners.",
+          }}
           description="Which side owns each field. Set by the project's profile, not by this page."
           status={
             <span className="font-mono text-[11px]">
@@ -348,7 +369,8 @@ export function ProjectSettingsView({
         />
         <SettingsRow
           title="Runner routing"
-          description="Which hosts may take this project's work, and the tags that select them. Routing lives with the fleet, because a runner serves more than one project."
+          help={{ label: "Runner routing", text: RUNNER_HELP.routing }}
+          description="Select authorized runners that can take this project’s work."
           control={
             <Button size="sm" variant="outline" onClick={onOpenFleet}>
               Open the fleet

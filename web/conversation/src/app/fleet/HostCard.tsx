@@ -11,6 +11,8 @@ import { cn } from "../../lib/utils.ts";
 import type { FleetRunner } from "../../contracts/account.ts";
 import { PathValue } from "../account/controls.tsx";
 import { RUNNER_UPGRADE_COMMAND, runnerUpdateLabel } from "../lib/detentUpdates.ts";
+import { SettingsHelp } from "../settings/SettingsHelp.tsx";
+import { RUNNER_HELP } from "./runnerHelp.ts";
 import { formatLocalTime, formatRelativeTime } from "./format.ts";
 
 /** Healthy pulses; anything degraded is amber; anything unknown is inert. */
@@ -22,14 +24,19 @@ function healthTone(health: string): string {
 
 function Field({
   label,
+  help,
   children,
 }: {
   readonly label: string;
+  readonly help?: { readonly label: string; readonly text: string };
   readonly children: React.ReactNode;
 }): React.ReactElement {
   return (
     <div>
-      {label}
+      <div className="flex flex-wrap items-center gap-1">
+        {label}
+        {help ? <SettingsHelp label={help.label}>{help.text}</SettingsHelp> : null}
+      </div>
       <b className="block text-[13px] font-medium tabular-nums text-foreground">{children}</b>
     </div>
   );
@@ -87,10 +94,10 @@ export function HostCard({
       </div>
 
       <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-        <Field label="Slots">
+        <Field label="Slots" help={{ label: "Shared host capacity", text: RUNNER_HELP.host }}>
           {runner.host_used} / {runner.host_capacity} in use
         </Field>
-        <Field label="Runner limit">
+        <Field label="Runner limit" help={{ label: "Runner limit and reported capacity", text: RUNNER_HELP.reported }}>
           {runner.capacity_limit}
           {runner.reported_capacity !== runner.capacity_limit
             ? ` (reports ${runner.reported_capacity})`
@@ -167,6 +174,7 @@ export function HostCard({
               className="flex min-w-0 items-baseline gap-1.5"
             >
               <span className="shrink-0 text-foreground">{capacity.provider}</span>
+              <SettingsHelp label={`${capacity.provider} account capacity`}>{RUNNER_HELP.provider}</SettingsHelp>
               <span className="truncate">{capacity.account_alias}</span>
               <span className="ml-auto shrink-0 tabular-nums">
                 {capacity.availability} · {capacity.state} · {capacity.used}/
