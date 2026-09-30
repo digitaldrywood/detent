@@ -59,7 +59,7 @@ func TestRunnerLocalChecksMigrationPreservesArchive(t *testing.T) {
 			}
 			service = openTestService(t, cfg)
 			for _, check := range []struct{ name, query, want string }{
-				{"schema", "SELECT max(version_id) FROM hub_schema_version WHERE is_applied = 1", "49"},
+				{"schema", "SELECT max(version_id) FROM hub_schema_version WHERE is_applied = 1", "50"},
 				{"archive state", fmt.Sprintf("SELECT archived FROM issues WHERE id = %d", issue), wantArchived},
 				{"archive index", "SELECT count(*) FROM sqlite_schema WHERE name = 'issues_unarchived_organization'", "1"},
 				{"local checks column", "SELECT count(*) FROM pragma_table_info('runner_identities') WHERE name = 'local_checks_json' AND dflt_value = '''{}'''", "1"},

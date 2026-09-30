@@ -23,6 +23,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	GitHubIntake       func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	Problems           func() []runnerauth.Problem
 	IsolationReport    func(context.Context) isolationpolicy.Report
 	ProviderReports    func() ([]providercapacity.Report, error)
@@ -37,6 +38,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	githubIntake       func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	problems           func() []runnerauth.Problem
 	isolationReport    func(context.Context) isolationpolicy.Report
 	providerReports    func() ([]providercapacity.Report, error)
@@ -79,6 +81,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		githubIntake:    config.GitHubIntake,
 		problems:        config.Problems,
 		isolationReport: config.IsolationReport,
 		providerReports: config.ProviderReports,

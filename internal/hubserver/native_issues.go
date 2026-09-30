@@ -50,7 +50,14 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 			return issue, 0, err
 		}
 	}
+	issue.LinkedSource, err = readLinkedIssueSource(ctx, query, id)
+	if err != nil {
+		return issue, 0, err
+	}
 	issue.ExternalReferences = []tracker.ExternalReference{}
+	if issue.LinkedSource != nil {
+		issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: "github", Kind: "issue", ID: issue.LinkedSource.URL})
+	}
 	if externalID != "" && issue.Provenance == nil {
 		issue.Provenance = &tracker.Provenance{Provider: "github", ExternalID: externalID, AuthorID: sourceAuthor}
 		if issue.Provenance.CreatedAt, err = parseTimeValue(sourceCreated); err != nil {
@@ -164,6 +171,10 @@ func validateNativeProvenance(scope nativeScope, provenance *tracker.Provenance)
 	if scope.credential.Scope == apiScopeWorker {
 		return nativeInvalid("Imported provenance requires an operator")
 	}
+	return validateImportProvenance(provenance)
+}
+
+func validateImportProvenance(provenance *tracker.Provenance) error {
 	if provenance.Provider != "github" || strings.TrimSpace(provenance.ExternalID) == "" || len(provenance.ExternalID) > 200 || strings.TrimSpace(provenance.AuthorID) == "" || len(provenance.AuthorID) > 200 || len(provenance.AuthorDisplayName) > 200 {
 		return nativeInvalid("Import source and author are invalid")
 	}
@@ -184,6 +195,9 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 }
 
 func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (any, error) {
+	if request.GitHubIssueURL != "" {
+		return createLinkedIssueTx(ctx, tx, scope, request, now)
+	}
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
 		return nil, err
 	}
