@@ -14,9 +14,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
-	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -605,10 +603,13 @@ func (o *Orchestrator) reconcileAttemptTriagePark(ctx context.Context, state *St
 	summary.SecurityAudit = o.securityAuditEvaluation(ctx, candidate)
 	summary.CompletedFinalState = autoPromoteCompletedFinalState(state, live.ID)
 	summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, live.ID, cfg, now)
-	if gate.Effective(cfg.Gate).SecurityAudit.Enabled && !summary.SecurityAudit.Allowed &&
-		summary.SecurityAudit.Reason != securityaudit.ReasonMissing {
+	if !reworkGateWaitAuditReady(cfg.Gate, summary.SecurityAudit) {
 		return false
 	}
+	// The recovery predicate owns audit eligibility here: a missing audit can
+	// run in Merging. Evaluate the remaining gates without repeating that check;
+	// the instance config still requires the exact-head audit before merging.
+	cfg.Gate.SecurityAudit.Enabled = false
 	candidate, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, candidate, summary, cfg, now)
 	var validatorReady bool
 	decision, validatorReady = o.applyValidatorStage(ctx, state, candidate, &summary, decision, cfg, now)
