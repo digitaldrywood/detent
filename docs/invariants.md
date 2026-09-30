@@ -484,6 +484,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Label refresh (#3017) consolidates candidate and observed lane enumeration into
+one fresh pass. Routing lanes reuse the existing complete, paginated scheduler
+evidence batches for comments and native dependencies; incomplete observations
+retain the existing REST fallback. Non-routing observed lanes remain metadata
+only, matching ProjectV2 refresh. Overlapping PR reads use observed freshness
+once, preserving lane entry, actor, association, head and required-check policy.
+No cache, loop, reason or configuration is added.
+`TestLabelRefreshSharesFreshSchedulerEvidence` covers read counts, unchanged
+issue timestamps with changed comments, lane actors and incomplete evidence.
+
 Workspace Git-read failures no longer apply a second admission brake to
 unrelated merge workers (#3487). The affected operation retains its existing
 forge retry and backoff; ordinary preparation owns its actual remote reads,
