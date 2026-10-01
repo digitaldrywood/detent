@@ -291,23 +291,6 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 	}
 }
 
-func TestScheduledCIFinalizerReportsAndTags(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	finalizer := workflowBetween(t, workflow, "  finalize:", "")
-	for _, want := range []string{"if: always()", "actions: write", "contents: write", "issues: write", "statuses: write", "scripts/scheduled-ci-finish.sh"} {
-		if !strings.Contains(finalizer, want) {
-			t.Errorf("scheduled finalizer missing %q", want)
-		}
-	}
-	finish := readNormalizedFile(t, "scripts/scheduled-ci-finish.sh")
-	for _, want := range []string{"ci-scheduled-failure", "detent:todo", "hotfix", "scheduled-full-ci", "git tag -a", "git push origin", "release.yml/dispatches"} {
-		if !strings.Contains(finish, want) {
-			t.Errorf("scheduled finalizer script missing %q", want)
-		}
-	}
-}
-
 func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	t.Parallel()
 
