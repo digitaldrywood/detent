@@ -689,45 +689,90 @@ func TestManagerAuditCommentDoesNotDuplicateProposal(t *testing.T) {
 
 func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
 	t.Parallel()
+	accept, reject := admissionAcceptCommand("proposal-1"), admissionRejectCommand("proposal-1")
+	for _, tt := range []struct {
+		name             string
+		state            string
+		complete         bool
+		currentDecision  string
+		fallbackDecision string
+		readFailure      bool
+		wantReads        int
+		wantStatus       admissionmodel.ProposalStatus
+	}{
+		{name: "incomplete acceptance", state: "Todo", currentDecision: accept, fallbackDecision: accept, wantReads: 1, wantStatus: admissionmodel.ProposalAccepted},
+		{name: "complete acceptance", state: "Todo", complete: true, currentDecision: accept, fallbackDecision: reject, wantStatus: admissionmodel.ProposalAccepted},
+		{name: "complete empty", state: "Backlog", complete: true, fallbackDecision: accept, wantStatus: admissionmodel.ProposalOpen},
+		{name: "complete edited rejection", state: "Backlog", complete: true, currentDecision: reject, fallbackDecision: accept, wantStatus: admissionmodel.ProposalRejected},
+		{name: "incomplete edited rejection", state: "Backlog", currentDecision: accept, fallbackDecision: reject, wantReads: 1, wantStatus: admissionmodel.ProposalRejected},
+		{name: "incomplete read failure", state: "Backlog", currentDecision: accept, readFailure: true, wantReads: 1, wantStatus: admissionmodel.ProposalOpen},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			issue.State = tt.state
+			issue.CommentsComplete = tt.complete
+			transitionAt := now.Add(2 * time.Minute)
+			decisionAt := now.Add(time.Minute)
+			issue.StageUpdatedAt = &transitionAt
+			issue.Comments = []connector.IssueComment{{
+				ID:               "decision-1",
+				Body:             tt.currentDecision,
+				AuthorLogin:      "ada",
+				AuthorKind:       "User",
+				AuthorAuthorized: true,
+				CreatedAt:        &decisionAt,
+			}}
+			fallback := issue
+			fallback.Comments = append([]connector.IssueComment(nil), issue.Comments...)
+			fallback.Comments[0].Body = tt.fallbackDecision
+			if tt.currentDecision == "" {
+				issue.Comments = nil
+			}
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			commentSource := memory.New(memory.Config{Issues: []connector.Issue{fallback}, Stateful: true})
+			reader := &deferringAdmissionIssueStore{IssueStore: tracker, comments: commentSource}
+			if tt.readFailure {
+				reader.deferCommentCall = 1
+			}
+			backend := openManagerTestStore(t)
+			proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+			if created, err := backend.CreateAdmissionProposal(context.Background(), proposal); err != nil || !created {
+				t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+			}
+			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+			settings := admissionTestSettings(reader, agent)
+			settings.Config.TargetState = "Ready"
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return transitionAt })
 
-	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	issue.State = "Todo"
-	transitionAt := now.Add(2 * time.Minute)
-	decisionAt := now.Add(time.Minute)
-	issue.StageUpdatedAt = &transitionAt
-	issue.Comments = []connector.IssueComment{{
-		ID:               "decision-1",
-		Body:             admissionAcceptCommand("proposal-1"),
-		AuthorLogin:      "ada",
-		AuthorKind:       "User",
-		AuthorAuthorized: true,
-		CreatedAt:        &decisionAt,
-	}}
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
-	backend := openManagerTestStore(t)
-	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
-	if created, err := backend.CreateAdmissionProposal(context.Background(), proposal); err != nil || !created {
-		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
-	}
-	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
-	settings := admissionTestSettings(tracker, agent)
-	settings.Config.TargetState = "Ready"
-	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return transitionAt })
-
-	if _, err := manager.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce() error = %v", err)
-	}
-	history, err := backend.AdmissionProposalHistory(context.Background(), "detent", issue.ID)
-	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalAccepted {
-		t.Fatalf("history = %#v, %v", history, err)
-	}
-	if history[0].DecisionSeconds != 60 || !history[0].TransitionAt.Equal(transitionAt) ||
-		history[0].DecisionCommentID != "decision-1" {
-		t.Fatalf("decision evidence = %#v", history[0])
-	}
-	if agent.calls != 0 {
-		t.Fatalf("runner calls = %d, want 0", agent.calls)
+			_, _, readErr := manager.reconcileOpenProposals(t.Context(), settings, 1, 1, transitionAt)
+			if tt.readFailure {
+				if _, ok := connector.ErrorLocalDeferral(readErr); !ok {
+					t.Fatalf("read error = %v, want existing deferral", readErr)
+				}
+			} else if readErr != nil {
+				t.Fatalf("reconcileOpenProposals() error = %v", readErr)
+			}
+			if reader.commentCalls != tt.wantReads {
+				t.Fatalf("comment reads = %d, want %d", reader.commentCalls, tt.wantReads)
+			}
+			history, err := backend.AdmissionProposalHistory(context.Background(), "detent", issue.ID)
+			if err != nil || len(history) != 1 || history[0].Status != tt.wantStatus {
+				t.Fatalf("history = %#v, %v", history, err)
+			}
+			if tt.wantStatus == admissionmodel.ProposalAccepted &&
+				(history[0].DecisionSeconds != 60 || !history[0].TransitionAt.Equal(transitionAt) ||
+					history[0].DecisionCommentID != "decision-1") {
+				t.Fatalf("decision evidence = %#v", history[0])
+			}
+			if tt.wantStatus == admissionmodel.ProposalRejected && history[0].DecisionCommentID != "decision-1" {
+				t.Fatalf("rejection evidence = %#v", history[0])
+			}
+			if agent.calls != 0 {
+				t.Fatalf("runner calls = %d, want 0", agent.calls)
+			}
+		})
 	}
 }
 

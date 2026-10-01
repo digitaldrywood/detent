@@ -848,9 +848,12 @@ func (m *Manager) reconcileOpenProposals(
 		}
 		comments, loaded := commentsByIssue[proposal.IssueID]
 		if !loaded {
-			comments, err = commentReader.FetchIssueComments(ctx, issue)
-			if err != nil {
-				return commentsRemaining, autoAdmitsRemaining, fmt.Errorf("read backlog admission decision comments: %w", err)
+			comments = issue.Comments
+			if !issue.CommentsComplete {
+				comments, err = commentReader.FetchIssueComments(ctx, issue)
+				if err != nil {
+					return commentsRemaining, autoAdmitsRemaining, fmt.Errorf("read backlog admission decision comments: %w", err)
+				}
 			}
 			commentsByIssue[proposal.IssueID] = comments
 		}
