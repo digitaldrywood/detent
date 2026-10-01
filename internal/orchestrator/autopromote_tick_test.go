@@ -4476,11 +4476,19 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 		}),
 	}
 	tests := []struct {
-		name        string
-		attempts    []store.WorkAttempt
-		wantRestore bool
+		name            string
+		attempts        []store.WorkAttempt
+		wantRestore     bool
+		mergedClaim     bool
+		stopAtAllowance bool
 	}{
 		{name: "successful attempt after declaration", attempts: []store.WorkAttempt{successfulAttempt}, wantRestore: true},
+		{name: "merged branch claim cannot bypass failed allowance", wantRestore: true, mergedClaim: true, stopAtAllowance: true, attempts: []store.WorkAttempt{
+			successfulAttempt,
+			{ID: 2, WorkerType: "agent", StartedAt: now.Add(-time.Hour), TerminalState: store.WorkAttemptTerminalNoProgress, Phase: "no_progress"},
+			{ID: 3, WorkerType: "agent", StartedAt: now.Add(-2 * time.Hour), TerminalState: store.WorkAttemptTerminalNoProgress, Phase: "no_progress"},
+			{ID: 4, WorkerType: "agent", StartedAt: now.Add(-3 * time.Hour), TerminalState: store.WorkAttemptTerminalNoProgress, Phase: "no_progress"},
+		}},
 		{name: "no terminal attempt"},
 		{
 			name: "attempt before declaration",
@@ -4519,6 +4527,9 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 				URL:       "https://github.test/comment/operational-restart",
 				CreatedAt: &workpadRecordedAt,
 			}}
+			if tt.mergedClaim {
+				issue.Comments[0].Body = mergedCompletionWorkpadBody()
+			}
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 			attempts := &recordingWorkAttemptStore{history: tt.attempts}
 			cfg := normalizeConfig(Config{
@@ -4537,14 +4548,18 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			if restored != tt.wantRestore {
 				t.Fatalf("state.Completed[%q] present = %v, want %v", issue.ID, restored, tt.wantRestore)
 			}
+			if tt.stopAtAllowance {
+				state.Running[issue.ID] = Running{Issue: issue}
+			}
 
 			result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
 			_, transitioned := result.transitioned[issue.ID]
-			if transitioned != tt.wantRestore {
-				t.Fatalf("transitioned[%q] present = %v, want %v", issue.ID, transitioned, tt.wantRestore)
+			wantTransition := tt.wantRestore && !tt.stopAtAllowance
+			if transitioned != wantTransition {
+				t.Fatalf("transitioned[%q] present = %v, want %v", issue.ID, transitioned, wantTransition)
 			}
 			wantUpdates := []autoPromoteTickUpdate(nil)
-			if tt.wantRestore {
+			if wantTransition {
 				wantUpdates = []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}
 			}
 			if got, want := tracker.updates, wantUpdates; !reflect.DeepEqual(got, want) {
@@ -4553,7 +4568,7 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			if len(result.dispatchCandidates) != 0 {
 				t.Fatalf("dispatchCandidates = %#v, want none", result.dispatchCandidates)
 			}
-			if tt.wantRestore {
+			if wantTransition {
 				if len(tracker.comments) != 1 || strings.Contains(tracker.comments[0].body, string(AutoPromoteReasonMissingPullRequest)) {
 					t.Fatalf("comments = %#v, want one operational audit comment", tracker.comments)
 				}
@@ -4563,8 +4578,12 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			} else if len(tracker.comments) != 0 {
 				t.Fatalf("comments = %#v, want none", tracker.comments)
 			}
-			if len(attempts.historyQueries) != 1 {
-				t.Fatalf("history queries = %d, want 1", len(attempts.historyQueries))
+			wantQueries := 1
+			if tt.stopAtAllowance {
+				wantQueries = 2
+			}
+			if len(attempts.historyQueries) != wantQueries {
+				t.Fatalf("history queries = %d, want %d", len(attempts.historyQueries), wantQueries)
 			}
 		})
 	}

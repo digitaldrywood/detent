@@ -128,7 +128,8 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 
 		var allowance attemptAllowance
-		if !autoPromoteOperationalCompletionAccepted(state, issue) {
+		workpadSignal, _ := autoPromoteIssueWorkpadSignal(issue)
+		if !autoPromoteOperationalCompletionAccepted(state, issue) || workpad.MergedCompletionEvidence(workpadSignal) {
 			var allowanceErr error
 			allowance, allowanceErr = o.issueAttemptAllowance(ctx, issue)
 			if allowanceErr != nil {

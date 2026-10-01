@@ -1176,7 +1176,15 @@ do not erase failed-session history; verified completion and actual merge
 boundaries keep their existing owners. This removes the competing historical
 blocker release and completion-claim accounting shortcut under INV-3 (#3571).
 The same SQLite regression covers sparse and closed-draft observations,
-exhausted outcomes, and corrected failed-session counts.
+exhausted outcomes, and corrected failed-session counts. A newer authorized
+Workpad clearing a human request does not reset an exhausted failed-session
+allowance; the existing operator lane move remains its explicit reset. This
+ownership applies only to the current allowance cause, preserving the prior
+order for other recorded blocker causes. Recovery does not synthesize an
+exhausted-allowance receipt for an unavailable dependency, database, or PR read.
+Promotion's existing accepted non-merged operational receipt can avoid another
+history read; an authored merged-source claim still uses durable failed-session
+and actual merge accounting, including when its declared branch is mismatched.
 An exhausted issue with a recorded PR head still uses the same promotion gate:
 a clean, green unchanged or
 newer head returns to Merging for

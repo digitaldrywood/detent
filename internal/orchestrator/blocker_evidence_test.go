@@ -253,13 +253,15 @@ func TestRecordedBlockerPredicateRegistry(t *testing.T) {
 func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name           string
-		fingerprint    string
-		wantTransition bool
-		wantStatus     string
+		name             string
+		fingerprint      string
+		wantTransition   bool
+		wantStatus       string
+		priorReworkLimit bool
 	}{
 		{name: "condition holds", fingerprint: "config-a", wantStatus: blockerEvidenceStatusHolds},
 		{name: "condition clears", fingerprint: "config-b", wantTransition: true},
+		{name: "other current causes preserve recorded recovery order", fingerprint: "config-b", wantTransition: true, priorReworkLimit: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -277,6 +279,16 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 			}
 			state := newState(orch.cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: now.Add(-time.Hour), Source: BlockedSourceProjectStatus}
+			if tt.priorReworkLimit {
+				orch.workflowMetrics = openWorkAttemptRecoveryStore(t, t.Context())
+				prior := cloneIssue(issue)
+				prior.State = "Rework"
+				prior.PullRequest = &connector.PullRequest{Number: 24, HeadSHA: "unchanged-head"}
+				orch.recordLaneTransition(t.Context(), prior, blockedStatusState, now.Add(-time.Hour), "rework_limit", workflowLaneMetadata{ReworkBreaker: &workflowLaneReworkBreakerMetadata{Reason: string(AutoPromoteReasonCINotGreen)}})
+				if _, found := orch.latestReworkBreakerPark(t.Context(), issue); !found {
+					t.Fatal("fixture must retain the unrelated Rework-limit owner")
+				}
+			}
 
 			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
 
