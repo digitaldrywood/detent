@@ -629,6 +629,9 @@ provider resumption eligibility remains independent of issue-failure accounting;
 the shared infrastructure attribution applies at the existing counting and
 issue-demotion callers, preserving resumability without charging or parking an
 issue for an instance interruption.
+`TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibility`
+asserts this lane preservation for both legacy metadata-less capacity attempts
+and attempts with durable GitHub REST wait metadata.
 Service-restart reconciliation uses the same existing source-lane restoration
 owner as pre-turn failures, carrying pushed-product evidence so completed work
 stays active. A recorded Rework source returns to Rework, legacy empty source

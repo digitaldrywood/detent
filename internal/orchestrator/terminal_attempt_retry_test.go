@@ -1245,13 +1245,11 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 	retryAt := resetAt.Add(backendCapacityResetJitter)
 	durableMetadata := `{"github_rest_wait":{"consumer":"shared_pool","credential_identity":"github-rest:worker","remaining":1009,"limit":5000,"reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + retryAt.Format(time.RFC3339) + `"}}`
 	tests := []struct {
-		name         string
-		metadata     string
-		wantState    string
-		wantDemotion bool
+		name     string
+		metadata string
 	}{
-		{name: "legacy metadata-less attempt", wantState: "Todo", wantDemotion: true},
-		{name: "durable wait metadata", metadata: durableMetadata, wantState: "In Progress"},
+		{name: "legacy metadata-less attempt"},
+		{name: "durable wait metadata", metadata: durableMetadata},
 	}
 
 	for _, tt := range tests {
@@ -1276,16 +1274,14 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 
 			transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{issue}, now)
 
-			if got := len(transitions) == 1; got != tt.wantDemotion {
-				t.Fatalf("demoted = %v, want %v: %#v", got, tt.wantDemotion, transitions)
+			if len(transitions) != 0 {
+				t.Fatalf("capacity interruption changed the issue lane: %#v", transitions)
 			}
-			if tt.wantDemotion && transitions[0].State != tt.wantState {
-				t.Fatalf("transition state = %q, want %q", transitions[0].State, tt.wantState)
-			}
-			if got := tracker.transitionStates(); tt.wantDemotion && !slices.Equal(got, []string{tt.wantState}) {
-				t.Fatalf("state transitions = %v, want [%s]", got, tt.wantState)
-			} else if !tt.wantDemotion && len(got) != 0 {
+			if got := tracker.transitionStates(); len(got) != 0 {
 				t.Fatalf("state transitions = %v, want none", got)
+			}
+			if len(state.Blocked) != 0 || tracker.issues[issue.ID].State != issue.State {
+				t.Fatalf("capacity interruption parked or moved issue: blocked=%+v state=%s", state.Blocked, tracker.issues[issue.ID].State)
 			}
 		})
 	}
