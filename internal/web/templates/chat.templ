@@ -114,6 +114,9 @@ templ ChatApproval(data ChatData) {
     <p class="mb-4 text-xs text-sec">YOLO skips confirmation for this connection. Permissions and workflow rules still apply.</p>
     for _, action := range data.Conversation.Actions {
      @ChatActionPreview(action)
+     if action.Description != "" {
+      <pre class="my-2 overflow-auto whitespace-pre-wrap break-words text-xs">{ action.Description }</pre>
+     }
      if action.Status == chatpkg.ActionSucceeded && action.ResourceURL != "" && (action.Kind == chatpkg.ActionKind(operatortool.BillingCheckout) || action.Kind == chatpkg.ActionKind(operatortool.BillingPortal)) {
       <a href={ templ.SafeURL(action.ResourceURL) } class="my-2 inline-block text-accent underline" rel="noreferrer">Continue to billing</a>
      }

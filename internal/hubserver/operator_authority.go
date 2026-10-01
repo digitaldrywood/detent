@@ -20,6 +20,8 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	// Hubs expose native work commands and hosted billing/usage operations.
 	// Daemon-only telemetry and lane commands remain unavailable here.
 	s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now))
+	s.administration = s.operatorAdministration()
+	s.administration.Chat = s.operatorChat
 	executor := hostedOperatorExecutor{s}
 	s.mcpHTTP = mcp.NewHTTPHandler(executor, s.config.Version, mcp.HTTPConfig{
 		Principal: func(request *http.Request) operatortool.Identity {
@@ -39,6 +41,11 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		credential, status, err := s.authenticateAPIRequest(c)
+		if err != nil && s.config.Hosted != nil && !s.hostedShared() && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
+			if _, hash, sessionErr := s.hostedSession(c); sessionErr == nil {
+				credential, err = s.hostedAccountCredential(c.Request().Context(), hash)
+			}
+		}
 		if err != nil {
 			return c.JSON(status, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
@@ -77,7 +84,9 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 					}
 					current, _, err = s.hostedSharedCredential(ctx, session, credential.SessionHash, claims.Role)
 				} else {
-					if _, err = s.WebSession(ctx, credential.SessionHash, s.config.now()); err == nil {
+					if credential.HostedRole == "account" {
+						current, err = s.hostedAccountCredential(ctx, credential.SessionHash)
+					} else if _, err = s.WebSession(ctx, credential.SessionHash, s.config.now()); err == nil {
 						current, _, err = s.hostedSessionCredential(ctx, session, credential.SessionHash)
 					}
 				}
@@ -130,16 +139,35 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 	if organization == "" || credential.Runner.RunnerID != "" || credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin || s.config.Hosted != nil && credential.Hosted == nil {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
+	if credential.HostedRole == "account" {
+		if s.config.Hosted == nil || s.hostedShared() || organization != s.config.Hosted.OrganizationID {
+			return operatortool.Authority{}, operatortool.ErrAccessDenied
+		}
+		return operatortool.Authority{Identity: operatorIdentity(credential, organization), Account: operatortool.Account{Subject: credential.Hosted.Subject, Role: "account"}, Check: func(_ context.Context, r operatortool.Requirement) error {
+			if r.ProjectID != "" || r.ResourceID != "" || r.ResourceKind != "" {
+				return operatortool.ErrAccessDenied
+			}
+			return nil
+		}}, nil
+	}
+
 	scope := nativeScope{organization: tracker.OrganizationID(organization), credential: credential}
 	if err := s.authorizeConversationOrganization(ctx, scope); err != nil {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
-	return operatortool.Authority{Identity: operatorIdentity(credential, organization), WorkReads: operatorWorkReads{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
+	account := operatortool.Account{}
+	if credential.Hosted != nil {
+		account = operatortool.Account{Subject: credential.Hosted.Subject, Role: credential.HostedRole, SupportActor: credential.Hosted.SupportActor}
+	}
+	return operatortool.Authority{Account: account, Identity: operatorIdentity(credential, organization), WorkReads: operatorWorkReads{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
 		// Commands consume the freshly resolved originating credential, even when
 		// the context initially came from a different approving browser.
 		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return credential, nil })
 		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
 	}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+		if requirement.OrganizationWide && credential.Hosted == nil && credential.NativeOnly {
+			return operatortool.ErrAccessDenied
+		}
 		if requirement.ResourceKind == "runners" {
 			if credential.NativeOnly && credential.Hosted == nil || credential.Runner.RunnerID != "" {
 				return operatortool.ErrAccessDenied

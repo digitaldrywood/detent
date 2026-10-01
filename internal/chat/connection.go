@@ -37,6 +37,9 @@ func authorizeAction(ctx context.Context, connection operatortool.Connection, ac
 	requirement := operatortool.Requirement{
 		Scope: apikey.ScopeWrite, OrganizationID: action.OrganizationID, ProjectID: action.ProjectID,
 	}
+	if operatortool.IsAdministration(string(action.Kind)) {
+		requirement.Scope = operatortool.AdministrationScope(string(action.Kind))
+	}
 	switch string(action.Kind) {
 	case operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost:
 		// The hub dashboard grants runner administration separately from project
@@ -97,6 +100,24 @@ func (s *Service) connectionSession(ctx context.Context) (*session, error) {
 func (s *Service) CheckConnection(ctx context.Context) error {
 	_, err := s.connectionSession(ctx)
 	return err
+}
+
+// CheckBrowserSession binds hosted approval to the original authenticated
+// browser session without exposing its credential or granting it new powers.
+func (s *Service) CheckBrowserSession(ctx context.Context, id string) error {
+	identity := operatortool.ConnectionIdentity(ctx)
+	s.mu.Lock()
+	current := s.sessions[id]
+	s.mu.Unlock()
+	if current == nil || identity.SessionID == "" {
+		return operatortool.ErrAccessDenied
+	}
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	if current.connection == nil || current.connection.Identity.SessionID != identity.SessionID || current.connection.Identity.OrganizationID != identity.OrganizationID {
+		return operatortool.ErrAccessDenied
+	}
+	return nil
 }
 
 // RetryResult returns the original receipt without proposing a new action against
@@ -163,6 +184,8 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 // Unknown action kinds fail closed, including future billing/access commands.
 func RequiresConfirmation(action Action) bool {
 	switch action.Kind {
+	case ActionKind(operatortool.OrganizationSwitch):
+		return false
 	case ActionSetPriority, ActionKind(operatortool.Refresh), ActionKind(operatortool.AcknowledgeWarnings), ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
 		return false
 	case ActionKind(operatortool.EditItem):
@@ -275,4 +298,24 @@ func (s *Service) RejectConnectionAction(ctx context.Context, id, actionID strin
 	}
 	s.auditAction(ctx, current.actions[index], "rejected")
 	return s.rejectAction(current, index)
+}
+
+// ConnectionResult is the only credential delivery path. Browser conversations
+// never serialize this data. The caller must also recheck resource ownership.
+func (s *Service) ConnectionResult(ctx context.Context, actionID string) (json.RawMessage, error) {
+	current, err := s.connectionSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	index := actionIndex(current.actions, actionID)
+	if index < 0 {
+		return nil, ErrActionNotFound
+	}
+	action := current.actions[index]
+	if _, err := authorizeAction(ctx, *current.connection, action); err != nil {
+		return nil, err
+	}
+	return append(json.RawMessage(nil), action.resultData...), nil
 }
