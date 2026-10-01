@@ -35,7 +35,7 @@ var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
 func NewAgentBackend(options Options) (*AgentBackend, error) {
 	if options.CommandFactory == nil {
 		options.CommandFactory = func(ctx context.Context, args []string) *exec.Cmd {
-			return exec.CommandContext(ctx, "pi", args...)
+			return exec.CommandContext(ctx, "pi", args...) // #nosec G204 -- the fixed Pi executable receives backend-built RPC arguments directly without a shell.
 		}
 	}
 	return &AgentBackend{options: options}, nil
