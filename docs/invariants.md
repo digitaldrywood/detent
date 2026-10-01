@@ -2511,7 +2511,10 @@ the real worktree indexes intact.
 `TestWorkspaceDiagnosticsPreserveSharedGitMetadata` runs diagnostics concurrently
 in two linked worktrees and checks unchanged shared exclusions (contents, inode,
 and modification time), unchanged real indexes, preserved human ignore behavior,
-and worktree-specific source and human documentation changes. `TestPrepareWorkerScratchPreservesGitExclude`
+and worktree-specific source and human documentation changes. Its source and
+worktree-root paths retain leading and embedded spaces on Windows, with trailing
+spaces and embedded newlines additionally exercised on POSIX.
+`TestPrepareWorkerScratchPreservesGitExclude`
 covers scratch preparation without installing exclusions.
 
 Workflow timeline reads consolidate identity matching through the existing
