@@ -28,7 +28,7 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 
 // liveDispatchPlanner shares recorded blocker evidence with recovery. The plain
 // planner remains usable for previews that cannot perform remote reads.
-func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner {
+func (o *Orchestrator) liveDispatchPlanner(ctx context.Context, blockerCache map[string]dependencyBlocker) dispatchPlanner {
 	planner := o.dispatchPlanner()
 	if o.workerHostChecker != nil {
 		planner.workerHostAvailable = func(host string) bool { return o.workerHostChecker.WorkerHostAvailable(ctx, host) }
@@ -43,7 +43,13 @@ func (o *Orchestrator) liveDispatchPlanner(ctx context.Context) dispatchPlanner 
 			markRefreshError(state, "fetch dispatch Workpad comments failed: "+err.Error(), now)
 			return recordedBlockerEvaluation{}, err
 		}
-		return o.evaluateRecordedBlockers(ctx, state, issue, nil, now), nil
+		resolved := make(map[string]connector.Issue, len(blockerCache))
+		for _, blocker := range blockerCache {
+			if identifier := normalizedIssueIdentifier(blocker.Issue.Identifier); blocker.Resolved && identifier != "" {
+				resolved[identifier] = blocker.Issue
+			}
+		}
+		return o.evaluateRecordedBlockers(ctx, state, issue, resolved, now, false), nil
 	}
 	return planner
 }
@@ -163,8 +169,8 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
 	rankingIssues := issues
 	issues = o.prepareDispatchCandidates(ctx, state, issues, now)
-	planner := o.liveDispatchPlanner(ctx)
 	blockerCache := make(map[string]dependencyBlocker)
+	planner := o.liveDispatchPlanner(ctx, blockerCache)
 	o.logOwnershipEligibilityStartup(planner, issues)
 	var lastDispatchFailure string
 	decisions := make([]dispatchPlanDecision, 0, len(issues))
@@ -189,6 +195,8 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return waitForDispatchBackoff(ctx, continuationDelay(continuationIndex))
 		},
 		dispatch: func(action dispatchAction) bool {
+			// Dispatch can write a lane even when the worker ultimately fails to start.
+			defer clear(blockerCache)
 			outcome := o.dispatchIssueWithAction(ctx, state, action, now)
 			if identity := workflowIssueIdentityKey(action.issue); identity != "" {
 				outcomes[identity] = outcome
@@ -228,6 +236,8 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			state.Retry[issue.ID] = rescheduled
 		},
 		pollRetryWait: func(issue connector.Issue, retry Retry) (Retry, bool, string) {
+			// Retry polling can block an exhausted merge worker.
+			defer clear(blockerCache)
 			if retry.Wait.Kind == retryWaitWorkspaceBranchHeld {
 				return o.pollWorkspaceBranchHold(ctx, state, issue, retry, now)
 			}
@@ -440,7 +450,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 			continue
 		}
 		issue = o.hydrateDispatchDependencies(ctx, issue, blockerCache)
-		if !o.liveDispatchPlanner(ctx).dispatchable(issue, state, now) {
+		if !o.liveDispatchPlanner(ctx, nil).dispatchable(issue, state, now) {
 			continue
 		}
 
@@ -722,7 +732,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	projectStats := o.projectStateSlotStats(slotIssue, state)
 
-	workerHost, ok := o.liveDispatchPlanner(ctx).selectWorkerHost(state, preferredWorkerHost)
+	workerHost, ok := o.liveDispatchPlanner(ctx, nil).selectWorkerHost(state, preferredWorkerHost)
 	if !ok && !mergeControlEligible {
 		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
 		o.recordMergeFailed(state, issue, now, "worker_host_unavailable", nil)

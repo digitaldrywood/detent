@@ -228,7 +228,7 @@ func (o *Orchestrator) dispatchGrantedRequest(ctx context.Context, state *State,
 			}
 		}()
 	}
-	if !o.liveDispatchPlanner(ctx).dispatchableIssueDecisionForModelRequirement(action.issue, state, action.retryState != nil, now, action.workerHost, action.modelPermitRequired).dispatchable {
+	if !o.liveDispatchPlanner(ctx, nil).dispatchableIssueDecisionForModelRequirement(action.issue, state, action.retryState != nil, now, action.workerHost, action.modelPermitRequired).dispatchable {
 		return
 	}
 	consumed := grant

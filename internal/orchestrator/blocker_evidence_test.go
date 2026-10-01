@@ -548,7 +548,7 @@ func TestSymbolicBlockerCompletion(t *testing.T) {
 				if !evidence.Unverifiable || evidence.HumanOwned || len(evidence.Evidence) != 1 || evidence.Evidence[0].Owner != workpad.BlockerOwnerInstance || evidence.Evidence[0].Reference != ref || !strings.Contains(evidence.Evidence[0].Reason, "tool unavailable") {
 					t.Fatalf("evidence = %#v", evidence)
 				}
-				planner := o.liveDispatchPlanner(t.Context())
+				planner := o.liveDispatchPlanner(t.Context(), nil)
 				decision := planner.dispatchableIssueDecision(issue, &state, false, now, "")
 				if !decision.dispatchable {
 					t.Fatalf("dispatch = %#v", decision)

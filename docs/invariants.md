@@ -830,6 +830,24 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Dispatch reference evidence (#3696) consolidates dependency hydration and recorded
+predicate resolution under the existing per-plan blocker cache. Only successfully
+resolved issue snapshots seed predicates, keyed by the normalized actual issue
+identifier. Missing or failed references remain unknown and the existing resolver
+still reads missing predicate references (`referencesAttempted=false`). Fresh
+Workpad comment reads, PR/check hydration, native relation authority and human
+completion requirements retain their existing owners. The dispatch callback
+always discards reusable evidence on return, including a lane write followed by
+a failed launch; retry polling also discards it because an exhausted merge worker
+can write Blocked. Evidence never survives a dispatch plan or a mutation callback.
+Ordering, capacity acquisition and launch outcomes are unchanged. Existing
+`TestDispatchRecordedPullRequestBlocker` and
+`TestDispatchWorkpadDependencyEvidence` and
+`TestDispatchReadyIssuesRefreshesStaleBlocker` fixtures assert overlapping reads,
+normalization, unknown/error and human negatives, fresh subsequent plans and
+fresh reads after failed dispatch and retry-poll lane writes. No persistent cache,
+reader, configuration, recovery path or tracker lane writer is introduced.
+
 Retired-park recovery (#3687) consolidates its dependency and typed-predicate
 reference reads into one fresh phase cohort through the existing identifier
 resolver. Identifiers are deduplicated in first-request order, and GitHub's

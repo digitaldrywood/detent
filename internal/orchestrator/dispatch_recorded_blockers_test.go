@@ -18,13 +18,16 @@ import (
 
 func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		missing bool
-		retry   bool
+		name     string
+		mutation string
+		missing  bool
+		retry    bool
 	}{
 		{name: "open PR across ten ticks"},
 		{name: "unverifiable reference", missing: true},
 		{name: "due retry", retry: true},
+		{name: "dispatch failure after lane write", mutation: "dispatch"},
+		{name: "retry poll lane write", mutation: "poll"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
@@ -32,8 +35,11 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 			issue.Identifier = "digitaldrywood/detent#2470"
 			issue.Fields = map[string]string{"Status": "Todo"}
 			issue.DependencySource = connector.BlockedRefSourceNative
+			if !tt.missing {
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#2635", Source: connector.BlockedRefSourceNative}}
+			}
 			issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{Type: workpad.PredicatePullRequestState, Identifier: "digitaldrywood/detent#2635", States: []string{"open"}})}}
-			blocker := connector.Issue{ID: "2635", Identifier: "digitaldrywood/detent#2635", State: "In Progress", PullRequest: &connector.PullRequest{State: "open"}}
+			blocker := connector.Issue{ID: "2635", Identifier: "digitaldrywood/detent#2635", State: "Done", Closed: true, PullRequest: &connector.PullRequest{State: "open"}}
 			tracker := &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{hydratedIssues: []connector.Issue{issue}, blockers: []connector.Issue{blocker}}}
 			if tt.missing {
 				tracker.blockers = nil
@@ -46,8 +52,50 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 			if tt.retry {
 				state.Retry[issue.ID] = savedRetry
 			}
+			if tt.mutation != "" {
+				cfg = normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "Merging", "In Progress"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Todo", "Merging", "In Progress"}, MergeFastPathEnabled: true})
+				orch.cfg = cfg
+				state = newState(cfg)
+				// A due retry keeps the first candidate ahead of the lane writer.
+				state.Retry[issue.ID] = savedRetry
+				writer := dispatchTestIssue("2472", "Todo")
+				writer.Fields = map[string]string{"Status": "Todo"}
+				if tt.mutation == "poll" {
+					writer = nativeMergeQueueTestIssue(2472, "pending")
+					writer.Fields = map[string]string{"Status": "Merging"}
+					writer.PullRequest.MergeableState = "blocked"
+					writer.PullRequest.UnstartedChecks = []connector.PullRequestCheck{{Name: "required-check", Status: "queued", QueueSeconds: 47 * 60}}
+					started := now.Add(-mergeWorkerCurrentHeadCIWaitTimeout)
+					state.MergeTimings[writer.ID] = MergeTiming{CIWaitStartedAt: started}
+					state.Retry[writer.ID] = Retry{Issue: writer, Attempt: 7, DueAt: now, Wait: RetryWait{Kind: retryWaitCurrentHeadCI, StartedAt: started}}
+				}
+				later := cloneIssue(issue)
+				later.ID, later.Identifier, later.State = "2471", "digitaldrywood/detent#2471", "In Progress"
+				later.Fields = map[string]string{"Status": "In Progress"}
+				orch.connector = &dispatchReferenceMutationConnector{blockerEvidenceTestConnector: tracker, writerID: writer.ID, failAfterWrite: tt.mutation == "dispatch"}
+				orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue, writer, later}, now)
+				if tracker.identifierBatches != 2 {
+					t.Fatalf("reference reads = %d, want one before and one after mutation; decisions=%+v", tracker.identifierBatches, state.SchedulerDecisions)
+				}
+				if len(tracker.updates) != 1 || tracker.updates[0].issueID != writer.ID {
+					t.Fatalf("lane writes = %+v, want writer %s", tracker.updates, writer.ID)
+				}
+				if len(state.Running) != 1 || state.Running[later.ID].Issue.ID != later.ID {
+					t.Fatalf("fresh post-write predicate did not launch subsequent candidate: running=%+v decisions=%+v", state.Running, state.SchedulerDecisions)
+				}
+				if tt.mutation == "poll" {
+					if _, ok := state.Blocked[writer.ID]; !ok {
+						t.Fatal("exhausted merge worker was not blocked")
+					}
+				}
+				return
+			}
+
 			for tick := range 10 {
 				orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Duration(tick)*time.Minute))
+				if !tt.missing && tracker.identifierBatches != tick+1 {
+					t.Fatalf("tick %d: reference reads = %d, want %d", tick, tracker.identifierBatches, tick+1)
+				}
 				if len(state.Running) != 0 {
 					t.Fatalf("tick %d launched a worker while PR blocker remained unresolved", tick)
 				}
@@ -66,6 +114,26 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The dispatch failure simulates a lost response after an authoritative lane write.
+type dispatchReferenceMutationConnector struct {
+	*blockerEvidenceTestConnector
+	writerID       string
+	failAfterWrite bool
+}
+
+func (c *dispatchReferenceMutationConnector) UpdateIssueState(ctx context.Context, id, lane string) error {
+	if err := c.dependencyAutoUnblockConnector.UpdateIssueState(ctx, id, lane); err != nil {
+		return err
+	}
+	if id == c.writerID {
+		c.blockers[0].PullRequest = &connector.PullRequest{State: "merged"}
+		if c.failAfterWrite {
+			return errors.New("lane written, response lost")
+		}
+	}
+	return nil
 }
 
 type queuedRecordedBlockerConnector struct {
@@ -244,7 +312,7 @@ func TestDispatchCommentFailureRecordsInstanceEvidence(t *testing.T) {
 			for tick := range 2 {
 				if retrying {
 					state.Retry[issue.ID] = saved
-					_, _, reason := o.liveDispatchPlanner(t.Context()).retryAction(&state, issue, saved, now.Add(time.Duration(tick)*time.Second))
+					_, _, reason := o.liveDispatchPlanner(t.Context(), nil).retryAction(&state, issue, saved, now.Add(time.Duration(tick)*time.Second))
 					if reason != dispatchSkipTrackerUnavailable {
 						t.Fatalf("reason = %s", reason)
 					}
@@ -252,7 +320,7 @@ func TestDispatchCommentFailureRecordsInstanceEvidence(t *testing.T) {
 						t.Fatal("tracker failure discarded retry")
 					}
 				} else {
-					decision := o.liveDispatchPlanner(t.Context()).dispatchableIssueDecision(issue, &state, false, now.Add(time.Duration(tick)*time.Second), "")
+					decision := o.liveDispatchPlanner(t.Context(), nil).dispatchableIssueDecision(issue, &state, false, now.Add(time.Duration(tick)*time.Second), "")
 					if decision.reason != dispatchSkipTrackerUnavailable {
 						t.Fatalf("decision = %+v", decision)
 					}

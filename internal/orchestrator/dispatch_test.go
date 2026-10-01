@@ -4271,8 +4271,12 @@ func TestDispatchReadyIssuesRefreshesStaleBlocker(t *testing.T) {
 					}
 				}
 			}
-			if tracker.identifierBatches != 1 {
-				t.Fatalf("blocker batches = %d, want one shared batch", tracker.identifierBatches)
+			wantBatches := 1
+			if tt.wantRunning > 0 {
+				wantBatches = len(candidates) // Dispatch completion discards pre-callback evidence.
+			}
+			if tracker.identifierBatches != wantBatches {
+				t.Fatalf("blocker batches = %d, want %d", tracker.identifierBatches, wantBatches)
 			}
 		})
 	}
