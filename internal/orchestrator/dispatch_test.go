@@ -2314,6 +2314,12 @@ func TestDispatchPlanReportsMergedPullRequestReconciliationPending(t *testing.T)
 	issues := []connector.Issue{
 		dispatchTestIssueWithPullRequest("issue-todo-merged-pr", "Todo", "MERGED"),
 		func() connector.Issue {
+			issue := dispatchTestIssueWithPullRequest("issue-rework-merged-pr-pending", "Rework", "MERGED")
+			issue.PullRequest.CIStatus = "pending"
+			issue.PullRequest.RunningChecks = []string{"Verify"}
+			return issue
+		}(),
+		func() connector.Issue {
 			issue := dispatchTestIssueWithPullRequest("issue-todo-merged-pr-failed", "Todo", "MERGED")
 			issue.PullRequest.CIStatus = "fail"
 			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{

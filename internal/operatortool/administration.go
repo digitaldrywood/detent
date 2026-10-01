@@ -14,6 +14,8 @@ const (
 	OrganizationSwitch  = "organization_switch"
 	OrganizationCreate  = "organization_create"
 	OrganizationDelete  = "organization_delete"
+	ProvisioningPage    = "provisioning_page"
+	ResumeProvisioning  = "resume_provisioning"
 	InvitationAccept    = "invitation_accept"
 	MembershipList      = "membership_list"
 	InvitationSend      = "invitation_send"
@@ -44,6 +46,8 @@ func AdministrationCatalog() []Definition {
 		adminDefinition(CredentialList, "Read credential metadata and grants; never returns credential hashes or tokens.", `"offset":{"type":"integer","minimum":0,"maximum":100000},"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false),
 		adminDefinition(OrganizationSwitch, "Select an owned organization and return its fresh authenticated connection destination. Reconnect there; existing grants are never transferred.", `"organization_id":`+id, `"organization_id"`, false, false),
 		adminDefinition(OrganizationCreate, "Create an organization through the deployment's existing provisioning command.", `"name":{"type":"string","minLength":1,"maxLength":120}`, `"name"`, false, false),
+		adminDefinition(ProvisioningPage, "Read safe provisioning status for an allocation created by the current account, with a fresh destination when ready.", `"organization_id":`+id, `"organization_id"`, true, false),
+		adminDefinition(ResumeProvisioning, "Resume a creator-owned allocation through the existing provisioning command after operator approval; existing retry and capacity rules apply.", `"organization_id":`+id, `"organization_id"`, false, false),
 		adminDefinition(OrganizationDelete, "Delete the current owned organization after an exact operator preview.", `"organization_id":`+id+`,"confirm_name":{"type":"string","minLength":1,"maxLength":120}`, `"organization_id","confirm_name"`, false, true),
 		adminDefinition(InvitationAccept, "Accept an invitation for the authenticated account and return a fresh login destination.", `"invitation_id":`+id, `"invitation_id"`, false, false),
 		adminDefinition(InvitationSend, "Invite a member with the exact email and role after operator approval.", `"email":{"type":"string","minLength":1,"maxLength":254},"role":`+role, `"email","role"`, false, false),
@@ -86,7 +90,7 @@ func adminDefinition(name, description, properties, required string, readOnly, d
 
 func AdministrationScope(name string) apikey.Scope {
 	switch name {
-	case OrganizationSession, OrganizationList, MembershipList, CredentialList:
+	case OrganizationSession, OrganizationList, ProvisioningPage, MembershipList, CredentialList:
 		return apikey.ScopeRead
 	case OrganizationSwitch, InvitationAccept, SessionLogout:
 		return apikey.ScopeRead

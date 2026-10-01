@@ -786,6 +786,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if (normalizeState(issue.State) == normalizeState(p.cfg.AutoPromote.ReworkState) ||
 		(normalizeState(issue.State) == "todo" && issue.PullRequest.HasMissingLocalStatus(gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus))) && issue.PullRequest != nil &&
+		!stateIn(issue.PullRequest.State, []string{"closed", "merged"}) &&
 		(currentHeadCIStatusPending(issue.PullRequest.CIStatus) || len(mergeWorkerCurrentHeadCIPendingChecks(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)) > 0) {
 		return dispatchableDecision{reason: dispatchSkipCurrentHeadCIWait}
 	}

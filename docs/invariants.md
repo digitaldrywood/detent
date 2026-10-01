@@ -168,6 +168,20 @@ audits. No new revocation or retry mechanism is added (INV-3).
 `TestActionConfirmationClassification` cover these boundaries, including the
 real entry adapter through both transports.
 
+Creator provisioning parity (#3663) shares the browser's creator-bound allocation
+lookup and retryable resume command with the administration MCP executor. Current
+account session, managed allocation ownership and deployment availability are
+checked on direct calls, approval, execution and retry delivery. Resume is a
+material provisioning action: connection YOLO skips confirmation only, and the
+existing audit receipts prevent a retried command from resetting a later failed
+attempt. Status/results and previews omit allocation diagnostics, endpoints and
+provider credentials; ready status returns the current destination. The existing
+allocator retains admission, retry and capacity limits and its wake signal.
+`TestEntryProvisioningAdministration`, `TestAdministrationInputBounds`,
+`TestActionConfirmationClassification` and the existing provisioning capacity and
+tenant-start journeys cover these boundaries through shared stdio/HTTP dispatch.
+This extends INV-1 application authorization without adding an INV-3 mechanism.
+
 MCP mutations carry content-free, trusted audit/correlation context (#3338).
 Dashboard commands reuse durable operator events for retry receipts; native and
 hosted commands reuse `native_commands`, with existing billing intents/provider
@@ -2585,7 +2599,10 @@ Rework candidates reuse the merge worker's current-head CI status and pending-ch
 view before acquiring capacity (#2639, operator-approved). Queued or running CI
 returns the existing `current_head_ci_wait` decision; the lane and retry attempt
 remain unchanged, with no new timer or reservation. Terminal CI or no PR retains
-normal eligibility. `TestReworkCurrentHeadCIDispatch` covers fresh and retry
+normal eligibility. Closed or merged PRs do not retain this CI wait; their
+historical pending statuses leave replacement work or merged reconciliation to
+the existing owner. Unknown PR state remains conservative, and open pending
+checks retain the wait. `TestReworkCurrentHeadCIDispatch` covers fresh and retry
 candidates, immediate dispatch of the next eligible candidate, and release after
 terminal CI. `TestReworkCurrentHeadCIConfiguredLane` preserves configured lane
 selection. This consolidates CI classification with the merge worker (INV-3).

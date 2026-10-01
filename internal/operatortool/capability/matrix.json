@@ -1440,10 +1440,10 @@
         }
       ],
       "authority": {
-        "role": "current account identity and organization membership",
+        "role": "current creator account session",
         "credential_scope": "hosted account session; CSRF for mutation",
         "project_grant": "not project-scoped; organization/instance authority still enforced",
-        "ownership": "current organization/account; no cross-organization resource lookup"
+        "ownership": "managed allocation creator_subject matches the current account; deleted and foreign allocations are denied even without discovery"
       },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
@@ -1452,17 +1452,17 @@
       ],
       "confirmation": [
         {
-          "when": "read or ordinary non-destructive write",
+          "when": "read-only provisioning status",
           "class": "none"
         }
       ],
-      "application": "s.provisioningJSON; s.creatorOrganization, s.organizationHome, s.retryLimit",
-      "extraction": "Extract cloudentry.provisioningJSON application inputs/results and validation from Echo; reuse s.creatorOrganization, s.organizationHome, s.retryLimit. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "cloudentry.entryAdministration uses creatorOrganizationFor, provisioningResult and resumeProvisioningFor, shared with browser provisioning handlers and the existing allocator.",
+      "extraction": "Creator lookup, bounded safe status projection and the existing retryable allocation reset/wake command are shared application operations. Browser diagnostics remain separate; no allocator, recovery loop or transport persistence is added.",
       "tool": {
-        "set": "work_reads",
+        "set": "organization",
         "name": "provisioning_page",
-        "arguments": "Bounded provisioningPageRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "provisioningPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "organization_id: 1–256 bytes; no mutation input. No credentials, identity, confirmation or YOLO input.",
+        "result": "Bounded safe ID/name/state/step/can_resume projection; fresh next destination when ready. Status carries fresh_at; resume carries the shared action receipt, safe result, approval_url and action_result. Allocation error_detail, endpoints, provider payloads and credentials are omitted.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -1471,9 +1471,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3344",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "TestEntryProvisioningAdministration (creator/session/deployment authority, retryable/non-retryable/ready browser parity, approval/rejection, YOLO, reconnect receipts, audit redaction and stdio/HTTP catalog execution); TestAdministrationInputBounds; TestActionConfirmationClassification; TestProvisioningCapacityAndRecovery; TestProvisioningTenantStartFailure; TestProvisioningPollsReuseProviderSessionVerification.",
+      "decision": "Implemented by #3663 using the existing creator-bound browser command and shared administration executor. Current session, allocation ownership and deployment availability are rechecked on direct calls, approval, execution and replay. Resume retains provisioningRetryable, retry/admission/capacity limits and wakeAllocator; safe status is polled for fresh readiness. Parent #3259 retains final conformance and zero-pending acceptance."
     },
     {
       "id": "cloudentry.proxy",
@@ -1634,10 +1634,10 @@
         }
       ],
       "authority": {
-        "role": "current account identity and organization membership",
+        "role": "current creator account session",
         "credential_scope": "hosted account session; CSRF for mutation",
         "project_grant": "not project-scoped; organization/instance authority still enforced",
-        "ownership": "current organization/account; no cross-organization resource lookup"
+        "ownership": "managed allocation creator_subject matches the current account; deleted and foreign allocations are denied even without discovery"
       },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
@@ -1646,28 +1646,28 @@
       ],
       "confirmation": [
         {
-          "when": "read or ordinary non-destructive write",
-          "class": "none"
+          "when": "material provisioning resume; connection YOLO suppresses confirmation only",
+          "class": "operator"
         }
       ],
-      "application": "s.resumeProvisioning; s.config.now, s.creatorOrganization, s.csrfValid, s.next, s.refuse, s.registry.store.db.ExecContext, s.wakeAllocator",
-      "extraction": "Extract cloudentry.resumeProvisioning application inputs/results and validation from Echo; reuse s.config.now, s.creatorOrganization, s.csrfValid, s.next, s.refuse, s.registry.store.db.ExecContext, s.wakeAllocator. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "cloudentry.entryAdministration uses creatorOrganizationFor, provisioningResult and resumeProvisioningFor, shared with browser provisioning handlers and the existing allocator.",
+      "extraction": "Creator lookup, bounded safe status projection and the existing retryable allocation reset/wake command are shared application operations. Browser diagnostics remain separate; no allocator, recovery loop or transport persistence is added.",
       "tool": {
-        "set": "work_reads",
+        "set": "organization",
         "name": "resume_provisioning",
-        "arguments": "Bounded resumeProvisioningRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "resumeProvisioningResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "organization_id: 1–256 bytes; request_id: 1–128 bytes, bound to shared audit/retry receipts. No credentials, identity, confirmation or YOLO input.",
+        "result": "Bounded safe ID/name/state/step/can_resume projection; fresh next destination when ready. Status carries fresh_at; resume carries the shared action receipt, safe result, approval_url and action_result. Allocation error_detail, endpoints, provider payloads and credentials are omitted.",
         "annotations": {
           "readOnly": false,
           "destructive": false,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3344",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "TestEntryProvisioningAdministration (creator/session/deployment authority, retryable/non-retryable/ready browser parity, approval/rejection, YOLO, reconnect receipts, audit redaction and stdio/HTTP catalog execution); TestAdministrationInputBounds; TestActionConfirmationClassification; TestProvisioningCapacityAndRecovery; TestProvisioningTenantStartFailure; TestProvisioningPollsReuseProviderSessionVerification.",
+      "decision": "Implemented by #3663 using the existing creator-bound browser command and shared administration executor. Current session, allocation ownership and deployment availability are rechecked on direct calls, approval, execution and replay. Resume retains provisioningRetryable, retry/admission/capacity limits and wakeAllocator; safe status is polled for fresh readiness. Parent #3259 retains final conformance and zero-pending acceptance."
     },
     {
       "id": "cloudentry.session_json",
