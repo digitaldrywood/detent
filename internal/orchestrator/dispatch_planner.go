@@ -24,6 +24,7 @@ import (
 const dispatchCandidateLookahead = 8
 
 type dispatchPlanner struct {
+	nativeWorkflow       bool
 	workerHostAvailable  func(string) bool
 	operatorRejectedHead func(connector.Issue) (bool, error)
 	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
@@ -344,7 +345,7 @@ func (p dispatchPlanner) retryAction(
 	if p.forgeAvailabilityBlocks(state, issue, retry, now) {
 		return dispatchAction{}, false, dispatchSkipForgeUnavailable
 	}
-	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused && (p.githubRESTDependent(issue) || retry.CapacityScope.Matches(githubRESTCapacityScope)) {
 		if retry.DueAt.Before(outage.ResumeAt) {
 			retry.DueAt = outage.ResumeAt
 			state.Retry[retry.Issue.ID] = retry
@@ -775,7 +776,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if activeCIUnavailable(state) && ciDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipCIUnavailable}
 	}
-	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && p.githubRESTDependent(issue) {
 		return dispatchableDecision{reason: dispatchSkipGitHubRESTCapacity}
 	}
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
@@ -1359,4 +1360,8 @@ func dispatchLabelSelector(auth selector.Selector) selector.Selector {
 		labels.Or = append(labels.Or, dispatchLabelSelector(child))
 	}
 	return labels
+}
+
+func (p dispatchPlanner) githubRESTDependent(issue connector.Issue) bool {
+	return !p.nativeWorkflow || p.cfg.Policy.Gates.GitHubPullRequest && mergeWorkerIssue(issue)
 }

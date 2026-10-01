@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -38,6 +39,8 @@ var githubRESTCapacityScope = backendcapacity.Scope{
 }
 
 type githubRESTBudgetEvidence struct {
+	RateLimitKind      string
+	RetryAfter         time.Duration
 	Consumer           string
 	CredentialIdentity string
 	Remaining          int64
@@ -49,14 +52,17 @@ type githubRESTBudgetEvidence struct {
 }
 
 type githubRESTWaitMetadata struct {
-	Consumer           string    `json:"consumer"`
-	CredentialIdentity string    `json:"credential_identity"`
-	Remaining          int64     `json:"remaining"`
-	Limit              int64     `json:"limit,omitempty"`
-	Reserve            int64     `json:"reserve"`
-	ResetAt            time.Time `json:"reset_at"`
-	ObservedAt         time.Time `json:"observed_at,omitzero"`
-	RetryAt            time.Time `json:"retry_at"`
+	RateLimitKind      string                `json:"rate_limit_kind,omitempty"`
+	RetryAfter         time.Duration         `json:"retry_after,omitempty"`
+	NativeLanding      *runpkg.NativeLanding `json:"native_landing,omitempty"`
+	Consumer           string                `json:"consumer"`
+	CredentialIdentity string                `json:"credential_identity"`
+	Remaining          int64                 `json:"remaining"`
+	Limit              int64                 `json:"limit,omitempty"`
+	Reserve            int64                 `json:"reserve"`
+	ResetAt            time.Time             `json:"reset_at"`
+	ObservedAt         time.Time             `json:"observed_at,omitzero"`
+	RetryAt            time.Time             `json:"retry_at"`
 }
 
 func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time) {
@@ -67,6 +73,9 @@ func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time)
 		now = o.clockNow()
 	}
 	key, existing, exists := githubRESTCapacityOutage(state.BackendOutages)
+	if exists && existing.Trigger != "" {
+		return
+	}
 	evidence, exceeded, observed := gitHubRESTCapacityObservation(state, now)
 	if !observed {
 		return
@@ -146,6 +155,9 @@ func (o *Orchestrator) setGitHubRESTCapacityOutage(state *State, evidence github
 	}
 	resetAt := evidence.ResetAt.UTC()
 	resumeAt := resetAt
+	if evidence.RateLimitKind != "" {
+		resumeAt = githubRESTEvidenceRetryAt(evidence, now)
+	}
 	if !resumeAt.After(now) {
 		resumeAt = now.Add(backendCapacityResetJitter)
 	}
@@ -156,6 +168,7 @@ func (o *Orchestrator) setGitHubRESTCapacityOutage(state *State, evidence github
 	outage := BackendOutage{
 		Scope:          githubRESTCapacityScope,
 		Kind:           githubRESTCapacityKind,
+		Trigger:        evidence.RateLimitKind,
 		Reason:         githubRESTCapacityReason(evidence),
 		DetectedAt:     detectedAt,
 		LastObservedAt: lastObservedAt,
@@ -163,7 +176,9 @@ func (o *Orchestrator) setGitHubRESTCapacityOutage(state *State, evidence github
 		ResumeAt:       resumeAt,
 	}
 	state.BackendOutages[githubRESTCapacityScope.Key()] = outage
-	o.markDispatchRecoveryWait(state, dispatchRecoveryGitHubREST, outage.Reason, outage.ResumeAt, now)
+	if evidence.RateLimitKind == "" {
+		o.markDispatchRecoveryWait(state, dispatchRecoveryGitHubREST, outage.Reason, outage.ResumeAt, now)
+	}
 	if !exists {
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
@@ -175,6 +190,9 @@ func (o *Orchestrator) setGitHubRESTCapacityOutage(state *State, evidence github
 }
 
 func githubRESTCapacityReason(evidence githubRESTBudgetEvidence) string {
+	if evidence.RateLimitKind != "" {
+		return "GitHub REST " + evidence.RateLimitKind + " for credential " + evidence.CredentialIdentity
+	}
 	consumer := strings.TrimSpace(evidence.Consumer)
 	if consumer == "" || consumer == telemetry.RESTConsumerOrchestrator {
 		return fmt.Sprintf("GitHub REST remaining %d is at or below dispatch floor %d", evidence.Remaining, evidence.Reserve)
@@ -220,7 +238,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 	evidence, headroom := githubRESTBudgetEvidenceFromError(event.Err)
 	outage, active := activeGitHubRESTCapacityOutage(state, event.CompletedAt)
 	if headroom {
-		if current, ok := currentGitHubRESTBudget(state, evidence); ok {
+		if current, ok := currentGitHubRESTBudget(state, evidence); ok && evidence.RateLimitKind == "" {
 			evidence.Limit = current.Limit
 			evidence.ObservedAt = current.ObservedAt
 			if evidence.ResetAt.IsZero() {
@@ -238,10 +256,12 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		}
 		recordGitHubRESTBudgetEvidence(state, evidence)
 		outage = o.setGitHubRESTCapacityOutage(state, evidence, event.CompletedAt)
-	} else if !active {
+	} else if !active || event.Err == nil || !o.dispatchPlanner().githubRESTDependent(running.Issue) {
 		return false
 	}
-	running = o.restoreBackendCapacityIssueState(ctx, state, running, event.CompletedAt)
+	if !o.nativeWorkflow() || !mergeWorkerIssue(running.Issue) {
+		running = o.restoreBackendCapacityIssueState(ctx, state, running, event.CompletedAt)
+	}
 	errorMessage := githubRESTCapacityStatusMessage(outage)
 	if event.Err != nil {
 		errorMessage = event.Err.Error()
@@ -249,8 +269,11 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 	metadata := map[string]any(nil)
 	retryAt := time.Time{}
 	if headroom {
-		retryAt = backendCapacityResumeAt(evidence.ResetAt, event.CompletedAt)
+		retryAt = githubRESTEvidenceRetryAt(evidence, event.CompletedAt)
 		metadata = map[string]any{"github_rest_wait": githubRESTWaitMetadata{
+			RateLimitKind:      evidence.RateLimitKind,
+			RetryAfter:         evidence.RetryAfter,
+			NativeLanding:      event.Result.NativeLanding,
 			Consumer:           evidence.Consumer,
 			CredentialIdentity: evidence.CredentialIdentity,
 			Remaining:          evidence.Remaining,
@@ -307,7 +330,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 }
 
 func recordGitHubRESTBudgetEvidence(state *State, evidence githubRESTBudgetEvidence) {
-	if state == nil || evidence.Reserve <= 0 || evidence.ResetAt.IsZero() {
+	if state == nil || evidence.RateLimitKind == "" && (evidence.Reserve <= 0 || evidence.ResetAt.IsZero()) {
 		return
 	}
 	if state.RateLimits == nil {
@@ -401,7 +424,11 @@ func githubRESTWaitMetadataFromAttempt(attempt store.WorkAttempt) (githubRESTWai
 	wait.Consumer = strings.TrimSpace(wait.Consumer)
 	wait.CredentialIdentity = strings.TrimSpace(wait.CredentialIdentity)
 	if wait.Consumer != telemetry.RESTConsumerWorker && wait.Consumer != telemetry.RESTConsumerSharedPool ||
-		wait.CredentialIdentity == "" || wait.Reserve <= 0 || wait.ResetAt.IsZero() || wait.RetryAt.IsZero() || wait.RetryAt.Before(wait.ResetAt) {
+		wait.CredentialIdentity == "" || wait.RetryAt.IsZero() ||
+		(wait.RateLimitKind == "" || wait.RateLimitKind == "primary_exhausted") && wait.RetryAt.Before(wait.ResetAt) ||
+		wait.RateLimitKind != "" && wait.ObservedAt.IsZero() ||
+		wait.RateLimitKind == "" && (wait.Reserve <= 0 || wait.ResetAt.IsZero()) ||
+		wait.RateLimitKind != "" && wait.RateLimitKind != "primary_exhausted" && wait.RateLimitKind != "secondary_throttled" {
 		return githubRESTWaitMetadata{}, false
 	}
 	return wait, true
@@ -446,7 +473,9 @@ func (o *Orchestrator) restoreGitHubRESTCapacityWait(state *State, issue connect
 	if observedAt.IsZero() {
 		observedAt = attempt.CompletedAt
 	}
-	recordGitHubRESTBudgetEvidence(state, githubRESTBudgetEvidence{
+	evidence := githubRESTBudgetEvidence{
+		RateLimitKind:      metadata.RateLimitKind,
+		RetryAfter:         metadata.RetryAfter,
 		Consumer:           metadata.Consumer,
 		CredentialIdentity: metadata.CredentialIdentity,
 		Remaining:          metadata.Remaining,
@@ -454,7 +483,13 @@ func (o *Orchestrator) restoreGitHubRESTCapacityWait(state *State, issue connect
 		Reserve:            metadata.Reserve,
 		ResetAt:            metadata.ResetAt,
 		ObservedAt:         observedAt,
-	})
+	}
+	recordGitHubRESTBudgetEvidence(state, evidence)
+	if metadata.RateLimitKind != "" {
+		outage := o.setGitHubRESTCapacityOutage(state, evidence, now)
+		outage.ResumeAt = metadata.RetryAt
+		state.BackendOutages[githubRESTCapacityScope.Key()] = outage
+	}
 	retryAt := metadata.RetryAt
 	if retryAt.Before(now) {
 		retryAt = now
@@ -478,6 +513,19 @@ func isGitHubRESTBudgetHeadroomMessage(message string) bool {
 }
 
 func githubRESTBudgetEvidenceFromError(err error) (githubRESTBudgetEvidence, bool) {
+	var status *github.StatusError
+	if errors.Is(err, github.ErrRateLimited) && errors.As(err, &status) && status.CredentialIdentity != "" && !status.ObservedAt.IsZero() && status.RateLimitKind != "" {
+		return githubRESTBudgetEvidence{
+			Consumer:           telemetry.RESTConsumerWorker,
+			CredentialIdentity: status.CredentialIdentity,
+			RateLimitKind:      status.RateLimitKind,
+			Remaining:          status.RateLimit.Remaining,
+			Limit:              status.RateLimit.Limit,
+			ResetAt:            status.ResetAt,
+			RetryAfter:         status.RetryAfter,
+			ObservedAt:         status.ObservedAt,
+		}, true
+	}
 	if !isGitHubRESTBudgetHeadroomError(err) {
 		return githubRESTBudgetEvidence{}, false
 	}
@@ -865,4 +913,21 @@ func (o *Orchestrator) setGitHubRESTBudgetParkSurface(state *State, issueID stri
 	}
 	entry.Reason = strings.TrimSpace(reason)
 	state.Blocked[strings.TrimSpace(issueID)] = entry
+}
+
+func githubRESTEvidenceRetryAt(evidence githubRESTBudgetEvidence, now time.Time) time.Time {
+	if evidence.RateLimitKind == "" {
+		return backendCapacityResumeAt(evidence.ResetAt, now)
+	}
+	retryAt := time.Time{}
+	if evidence.RateLimitKind == "primary_exhausted" {
+		retryAt = evidence.ResetAt
+	}
+	if retry := evidence.ObservedAt.Add(evidence.RetryAfter); evidence.RetryAfter > 0 && retry.After(retryAt) {
+		retryAt = retry
+	}
+	if !retryAt.After(now) {
+		retryAt = now.Add(githubRESTBudgetProbeRetryInterval)
+	}
+	return retryAt
 }

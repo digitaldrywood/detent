@@ -572,6 +572,24 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+Native runner GitHub PR landing (#89) uses the existing REST client classifier,
+response accounting, and instance REST capacity completion owner. Actual primary
+or secondary quota responses retain their credential identity, reset and
+Retry-After evidence in the existing persisted wait contract, without fabricated
+reserve or reset values. The reviewed Change Request/version/head stays in
+Merging across retries and restart; capacity completions consume no failed coding
+attempt allowance. Native coding and completions that need no exhausted GitHub
+operation continue normally. Synthetic quota probes cannot clear actual landing
+response evidence; the runner retries through ordinary landing dispatch and
+fresh same-credential operation evidence establishes recovery. Authentication,
+review, check and repository refusals keep their existing handling. Runner
+credentials remain local. This consolidates classification and completion under
+INV-1/INV-2/INV-3 without a mechanism or lane writer.
+`TestLocalGitLandChangeViaGitHub`, `TestNativeLandingQuotaWait`,
+`TestLandNativeChange`, `TestNativeLandingQuotaFinishesRun`,
+`TestNativeRunnerPublishesOnlyAfterRecovery` and `TestSSHErrorRoundTrip` exercise
+these boundaries.
+
 SSH host loss uses the existing host-scoped instance-capacity retry without incrementing issue failure counts or draining healthy hosts. `TestSSHHostLossUsesInstanceRetry`, `TestSSHHostLossClearsResumeOnSpillover`, and `TestSSHLocalTargetIntegration` cover attribution and retry behavior (#3239).
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.

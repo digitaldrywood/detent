@@ -618,6 +618,14 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) {
+			statusErr.CredentialIdentity = credentialIdentity
+			statusErr.ObservedAt = receivedAt
+			c.mu.RLock()
+			statusErr.RateLimit = c.restBudgets[restCredentialFamilyKey(credentialIdentity, family)].RateLimit
+			c.mu.RUnlock()
+		}
 		c.logRESTStatusError(ctx, method, path, family, resp.StatusCode, err)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.restWithTokenRefresh(ctx, method, path, body, out, false)
@@ -975,6 +983,10 @@ func (c *Client) restBackoffError(backoffKey string, now time.Time) error {
 	}
 	if backoffUntil.IsZero() || !backoffUntil.After(now) {
 		return nil
+	}
+	if evidence := c.restBackoffs.failure(backoffKey); evidence != nil && evidence.status != nil {
+		status := *evidence.status
+		return &status
 	}
 	return &StatusError{
 		StatusCode:    http.StatusTooManyRequests,
@@ -1347,7 +1359,13 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 			c.restBackoffUntil = backoffUntil
 		}
 		if c.restBackoffs != nil && backoffKey != "" {
-			c.restBackoffs.set(backoffKey, backoffUntil, method, path, resource)
+			var rateError *StatusError
+			if errors.As(classifyStatusAt(status, headers, body, now), &rateError) {
+				rateError.CredentialIdentity = credentialIdentity
+				rateError.ObservedAt = now
+				rateError.RateLimit = snapshot
+				c.restBackoffs.set(backoffKey, backoffUntil, method, path, resource, rateError)
+			}
 		}
 		c.logger.Warn(
 			"github rest shared backoff recorded",
@@ -2402,7 +2420,7 @@ func (r *restBackoffRegistry) until(key string, now time.Time) time.Time {
 	return time.Time{}
 }
 
-func (r *restBackoffRegistry) set(key string, until time.Time, method, path, resource string) {
+func (r *restBackoffRegistry) set(key string, until time.Time, method, path, resource string, status ...*StatusError) {
 	if r == nil || strings.TrimSpace(key) == "" || until.IsZero() {
 		return
 	}
@@ -2412,6 +2430,9 @@ func (r *restBackoffRegistry) set(key string, until time.Time, method, path, res
 		r.untils[key] = until
 	}
 	evidence := &restRecoveryEvidence{resource: resource}
+	if len(status) > 0 {
+		evidence.status = status[0]
+	}
 	if method == http.MethodGet && path != "/rate_limit" {
 		evidence.path = path
 	} else if previous := r.failures[key]; previous != nil {

@@ -206,11 +206,22 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 			if blocked {
 				execution.recovery = tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "new-machine"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{MachineID: "lost-machine"}, Checkpoint: &tracker.NativeCheckpoint{Storage: "local_only", WorktreeState: "dirty", Resume: "resume_session"}}}}
 			}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+			cfg := config.Config{}
+			cfg.Worker.GitHubToken = "$NATIVE_UNUSED_GITHUB_TOKEN"
+			githubCredentialReads := 0
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, lookupEnv: func(key string) string {
+				if key == "NATIVE_UNUSED_GITHUB_TOKEN" {
+					githubCredentialReads++
+				}
+				return ""
+			}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+			if githubCredentialReads != 0 {
+				t.Fatal("native coding resolved an unused GitHub credential")
+			}
 			if errors.Is(err, ErrNativeRecoveryRequired) != blocked {
 				t.Fatalf("run error = %v", err)
 			}

@@ -2,12 +2,13 @@ package workspace
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/connector/github"
 )
 
 type githubLandingPull struct {
@@ -41,8 +42,8 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if !ok || RepositoryURL(ctx, normalized.Path) != opts.Repository {
 		return LandResult{}, refuse(LandRefusalProtected, "GitHub pull request landing requires the reviewed version and checkout to name the same github.com repository")
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		return LandResult{}, refuse(LandRefusalProtected, "GitHub pull request landing requires gh authentication on the project runner")
+	if opts.GitHubClient == nil {
+		return LandResult{}, refuse(LandRefusalProtected, "GitHub pull request landing requires GitHub authentication on the project runner")
 	}
 	if opts.Method != "squash" && opts.Method != "merge" && opts.Method != "rebase" {
 		return LandResult{}, fmt.Errorf("unsupported merge method %q", opts.Method)
@@ -108,7 +109,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	}
 	var pulls []githubLandingPull
 	query := "repos/" + repository + "/pulls?state=all&head=" + url.QueryEscape(owner+":"+branch) + "&per_page=100"
-	if err := githubLandingAPI(ctx, &pulls, "GET", query); err != nil {
+	if err := githubLandingAPI(ctx, opts.GitHubClient, &pulls, "GET", query); err != nil {
 		return LandResult{}, err
 	}
 	var pull githubLandingPull
@@ -120,7 +121,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	}
 	if pull.Number == 0 {
 		title, _, _ := strings.Cut(opts.Message, "\n")
-		if err := githubLandingAPI(ctx, &pull, "POST", "repos/"+repository+"/pulls",
+		if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "POST", "repos/"+repository+"/pulls",
 			"title="+title, "body="+opts.Message,
 			"head="+owner+":"+branch, "base="+base); err != nil {
 			return LandResult{}, err
@@ -134,7 +135,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the GitHub pull request no longer names the reviewed head")
 		}
 		var merged githubLandingMerge
-		if err := githubLandingAPI(ctx, &merged, "PUT", fmt.Sprintf("repos/%s/pulls/%d/merge", repository, pull.Number),
+		if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", fmt.Sprintf("repos/%s/pulls/%d/merge", repository, pull.Number),
 			"merge_method="+opts.Method, "sha="+head); err != nil {
 			return LandResult{}, err
 		}
@@ -167,23 +168,26 @@ func githubLandingRepository(repository string) (name, owner string, ok bool) {
 	return parts[0] + "/" + parts[1], parts[0], true
 }
 
-func githubLandingAPI(ctx context.Context, result any, method, path string, fields ...string) error {
-	args := []string{"api", "--method", method, path}
-	for _, field := range fields {
-		args = append(args, "-f", field)
-	}
-	command := exec.CommandContext(ctx, "gh", args...) // #nosec G204 -- gh is fixed; validated repository/ref values are separate arguments, never shell code.
-	output, err := command.CombinedOutput()
-	if err != nil {
-		message := strings.TrimSpace(string(output))
-		lower := strings.ToLower(message)
-		if strings.Contains(lower, "authentication") || strings.Contains(lower, "not logged") || strings.Contains(lower, "gh auth login") || strings.Contains(lower, "http 401") || strings.Contains(lower, "http 403") || strings.Contains(lower, "http 405") || strings.Contains(lower, "http 422") || strings.Contains(lower, "required review") || strings.Contains(lower, "required status") || strings.Contains(lower, "mergeable") {
-			return refuse(LandRefusalProtected, "GitHub refused the pull request operation: "+message+". Resolve its authentication, reviews, checks or branch protection, then approve the Change Request again.")
+func githubLandingAPI(ctx context.Context, client GitHubRESTClient, result any, method, path string, fields ...string) error {
+	var body any
+	if len(fields) > 0 {
+		values := make(map[string]string, len(fields))
+		for _, field := range fields {
+			key, value, _ := strings.Cut(field, "=")
+			values[key] = value
 		}
-		return fmt.Errorf("GitHub pull request operation failed: %w: %s", err, message)
+		body = values
 	}
-	if err := json.Unmarshal(output, result); err != nil {
-		return fmt.Errorf("decode GitHub pull request response: %w", err)
+	err := client.REST(ctx, method, path, body, result)
+	if err == nil || errors.Is(err, github.ErrRateLimited) {
+		return err
 	}
-	return nil
+	var status *github.StatusError
+	if errors.As(err, &status) {
+		switch status.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusMethodNotAllowed, http.StatusUnprocessableEntity:
+			return refuse(LandRefusalProtected, "GitHub refused the pull request operation: "+status.Error()+". Resolve its authentication, reviews, checks or branch protection, then approve the Change Request again.")
+		}
+	}
+	return fmt.Errorf("GitHub pull request operation failed: %w", err)
 }

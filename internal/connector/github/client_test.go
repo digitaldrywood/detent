@@ -2344,8 +2344,8 @@ func TestClientRESTBackoffLifetimeAcrossRecreatedClients(t *testing.T) {
 			if tt.wantBackoff {
 				wantCalls = 0
 				var apiErr *StatusError
-				if !errors.Is(err, ErrRateLimited) || !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTooManyRequests {
-					t.Fatalf("recreated REST() error = %v, want synthetic 429 backoff", err)
+				if !errors.Is(err, ErrRateLimited) || !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden || apiErr.CredentialIdentity == "" || apiErr.ObservedAt.IsZero() || apiErr.RateLimitKind != restRateLimitKindSecondaryThrottled || apiErr.RetryAfter != 120*time.Second {
+					t.Fatalf("recreated REST() error = %v, want original 403 quota authority", err)
 				}
 			} else if err != nil {
 				t.Fatalf("recreated REST() error = %v", err)

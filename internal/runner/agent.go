@@ -1486,7 +1486,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			Output:     RunOutputMergeFastPathCheckedHead,
 		}, nil
 	}
-	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
+	workerGitHub := workerGitHubPolicy{}
+	var err error
+	if req.Execution == nil {
+		workerGitHub, err = r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
+	}
 	if err != nil {
 		r.logWorkerGitHubPolicyError(req.Issue, err, telemetry.WorkAttemptIDKey, req.WorkAttemptID)
 		return RunResult{}, err
@@ -1550,7 +1554,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		// A hub-native landing has no pull request to prepare and no agent to
 		// run: the runner lands the reviewed version itself.
 		afterRunPending = false
-		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue)
+		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue, workerGitHub)
 		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); afterErr != nil && err == nil {
 			err = afterErr
 		}

@@ -204,7 +204,7 @@ func sshErrorTypes() []error {
 }
 
 func sshSentinels() []error {
-	return []error{context.Canceled, context.DeadlineExceeded, store.ErrNotFound, syscall.ENOSPC, os.ErrNotExist, os.ErrPermission,
+	return []error{githubconnector.ErrRateLimited, githubconnector.ErrAuthenticationFailed, githubconnector.ErrUnexpectedStatus, context.Canceled, context.DeadlineExceeded, store.ErrNotFound, syscall.ENOSPC, os.ErrNotExist, os.ErrPermission,
 		artifact.ErrInvalid, artifact.ErrIntegrity, artifact.ErrMissing, artifact.ErrStorage, artifact.ErrUnsupported,
 		artifact.ErrConflict, artifact.ErrQuota, artifact.ErrExpired, artifact.ErrDenied, artifact.ErrAuthorization,
 		ErrWorkspacePreparation, ErrWorkspaceBranchHeld, ErrAgentResumeUnsupported,

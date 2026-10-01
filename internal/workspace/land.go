@@ -25,7 +25,12 @@ type GitHubPRLander interface {
 	LandChangeViaGitHub(context.Context, Info, Issue, LandOptions) (LandResult, error)
 }
 
+type GitHubRESTClient interface {
+	REST(context.Context, string, string, any, any) error
+}
+
 type LandOptions struct {
+	GitHubClient GitHubRESTClient
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
 	HeadSHA string

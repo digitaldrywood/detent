@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -17,7 +18,7 @@ import (
 // base branch the forge protects) is reported on the run for the
 // orchestrator to hand back to review with its reason; only an
 // infrastructure failure fails the run.
-func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing LandingExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue) (RunResult, error) {
+func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing LandingExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue, policy workerGitHubPolicy) (runResult RunResult, runErr error) {
 	target, err := landing.LandingTarget(ctx)
 	if err != nil {
 		if errors.Is(err, ErrLandingNotReviewed) {
@@ -37,11 +38,35 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	options := workspace.LandOptions{HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository}
 	var result workspace.LandResult
 	if target.GitHubPullRequest {
-		github, supported := backend.(workspace.GitHubPRLander)
+		githubLander, supported := backend.(workspace.GitHubPRLander)
 		if !supported {
 			return RunResult{}, errors.New("workspace backend cannot land through a GitHub pull request")
 		}
-		result, err = github.LandChangeViaGitHub(ctx, info, issue, options)
+		if policy.Token == "" {
+			workflow, _, _, _ := r.runtimeSnapshot()
+			policy, err = newWorkerGitHubPolicy(ctx, workflow.Config, r.projectID, req.Issue.Identifier, r.lookupEnv, nil, nil, r.logger)
+			if err != nil {
+				return RunResult{}, err
+			}
+		}
+		token := policy.Token
+		if token == "" {
+			token, err = resolveWorkerGitHubToken(ctx, defaultWorkerGitHubToken, workerGitHubTokenResolutionOptions{})
+			if err != nil {
+				return RunResult{}, err
+			}
+		}
+		client, clientErr := newNativeLandingGitHubClient(policy, token)
+		if clientErr != nil {
+			return RunResult{}, clientErr
+		}
+		options.GitHubClient = client
+		defer func() {
+			usage := client.FlushRESTRateLimitUsage()
+			runResult.GitHubRESTUsage = &usage
+			runResult.GitHubRESTConsumer = policy.budgetConsumer()
+		}()
+		result, err = githubLander.LandChangeViaGitHub(ctx, info, issue, options)
 	} else {
 		result, err = lander.LandChange(ctx, info, issue, options)
 	}
@@ -52,6 +77,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		return r.refusedLanding(req, target, refusal.Kind, refusal.Reason), nil
 	}
 	if err != nil {
+		if errors.Is(err, github.ErrRateLimited) {
+			return RunResult{NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
+		}
 		return RunResult{}, err
 	}
 	landed := NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method}
@@ -100,4 +128,14 @@ func (r *Runner) refusedLanding(_ RunRequest, target NativeLandingTarget, kind, 
 	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLandingRefused, NativeLanding: &NativeLanding{
 		ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, RefusalKind: kind, Refusal: reason,
 	}}
+}
+
+func newNativeLandingGitHubClient(policy workerGitHubPolicy, token string) (*github.Client, error) {
+	return github.NewClient(github.ClientConfig{
+		Endpoint:                   policy.GraphQLURL,
+		TokenSource:                github.StaticTokenSource(token),
+		HTTPClient:                 policy.HTTPClient,
+		DisableConditionalRequests: true,
+		Logger:                     policy.Logger,
+	})
 }
