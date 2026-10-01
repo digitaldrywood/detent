@@ -2764,6 +2764,74 @@ func TestWorkflowMetricsStoreRoundTripAndAggregates(t *testing.T) {
 	if err != nil || len(report.SubPhases) != 1 {
 		t.Fatalf("activity changed session totals: %+v, %v", report, err)
 	}
+	wantReport, _ := json.Marshal(report)
+	largeMetadata := `{"payload":"` + strings.Repeat("x", 1<<20) + `"}`
+	if err := writer.UpdateWorkflowPhaseEventMetadata(ctx, id, largeMetadata); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &refreshQueryRecorder{DB: writer.db}
+	writer.queries = sqlc.New(recorder)
+	for _, tt := range []struct {
+		name     string
+		from, to time.Time
+		count    int
+	}{
+		{"bounded", base.Add(-time.Minute), base.Add(2 * time.Hour), 3},
+		{"inclusive from exclusive to", base.Add(10 * time.Minute), base.Add(time.Hour + 20*time.Minute), 1},
+		{"from only", base.Add(10 * time.Minute), time.Time{}, 2},
+		{"to only", time.Time{}, base.Add(10 * time.Minute), 1},
+		{"unbounded", time.Time{}, time.Time{}, 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder.reads = nil
+			got, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{ProjectID: "detent", From: tt.from, To: tt.to})
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := recorder.reads[0]
+			var count int
+			if err := writer.db.QueryRowContext(ctx, "SELECT count(*) FROM ("+read.query+")", read.args...).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != tt.count {
+				t.Fatalf("duration rows=%d, want %d without activity payload", count, tt.count)
+			}
+			if tt.name == "bounded" {
+				data, _ := json.Marshal(got)
+				if string(data) != string(wantReport) {
+					t.Fatal("activity payload changed report")
+				}
+				rows, err := writer.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+read.query, read.args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				var bounded bool
+				for rows.Next() {
+					var id, parent, unused int
+					var detail string
+					if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+						t.Fatal(err)
+					}
+					bounded = bounded || strings.Contains(detail, "workflow_phase_events_finished_at_idx (finished_at>? AND finished_at<?)")
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				if !bounded {
+					t.Fatal("duration query did not search both finished_at bounds")
+				}
+			}
+		})
+	}
+	timeline, err = backend.IssueWorkflowTimeline(ctx, IssueIdentity{ProjectID: "detent", IssueID: "issue-722"})
+	var retainedActivity bool
+	for _, event := range timeline.Events {
+		retainedActivity = retainedActivity || event.PhaseType == workflowmetrics.PhaseTypeAgentActivity && event.MetadataJSON == largeMetadata
+	}
+	if err != nil || len(timeline.Events) != 3 || !retainedActivity {
+		t.Fatalf("timeline lost activity payload: events=%d err=%v", len(timeline.Events), err)
+	}
 
 }
 

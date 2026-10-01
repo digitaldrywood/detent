@@ -790,9 +790,18 @@ WHERE id = 1;
 SELECT *
 FROM workflow_phase_events INDEXED BY workflow_phase_events_finished_at_idx
 WHERE finished_at IS NOT NULL
+  AND phase_type <> 'agent_activity'
   AND (sqlc.narg(project_id) IS NULL OR project_id = sqlc.narg(project_id))
   AND (sqlc.narg(from_time) IS NULL OR finished_at >= sqlc.narg(from_time))
   AND (sqlc.narg(to_time) IS NULL OR finished_at < sqlc.narg(to_time));
+
+-- name: WorkflowPhaseDurationRowsWithinWindow :many
+SELECT *
+FROM workflow_phase_events INDEXED BY workflow_phase_events_finished_at_idx
+WHERE finished_at >= sqlc.narg(from_time)
+  AND finished_at < sqlc.narg(to_time)
+  AND phase_type <> 'agent_activity'
+  AND (sqlc.narg(project_id) IS NULL OR project_id = sqlc.narg(project_id));
 
 -- name: WorkflowPhaseFlowRows :many
 SELECT event.*
