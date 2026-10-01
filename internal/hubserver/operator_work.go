@@ -25,7 +25,10 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err == nil {
 		writable = true
 	}
-	var definitions []operatortool.Definition
+	definitions, err := operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{})).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, definition := range operatortool.CommandCatalog() {
 		switch definition.Name {
 		case operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority:
@@ -40,6 +43,9 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 }
 
 func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	if operatortool.IsWorkRead(call.Name) {
+		return operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{})).Execute(ctx, call)
+	}
 	definition, ok := operatortool.Lookup(call.Name)
 	if !ok {
 		return operatortool.Result{}, operatortool.ErrUnknownTool

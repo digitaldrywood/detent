@@ -109,7 +109,7 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
-	if call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) {
+	if call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) {
 		return (nativeOperatorExecutor{service: e.service}).Execute(ctx, call)
 	}
 	defer func() {

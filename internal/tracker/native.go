@@ -434,6 +434,14 @@ func MutationForContext(ctx context.Context, fallback string) Mutation {
 	return Mutation{IdempotencyKey: fallback}
 }
 
+// NativeLabel is the existing project's label-picker read model.
+type NativeLabel struct {
+	Name  string `json:"name"`
+	Color string `json:"color"`
+	// Count orders the existing project label-picker suggestions by usage.
+	Count int `json:"count"`
+}
+
 // WithExpectedRevision carries an operator command's optimistic precondition
 // to the native connector while the orchestrator owns the lane write.
 type expectedRevisionKey struct{}

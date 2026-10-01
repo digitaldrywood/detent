@@ -181,7 +181,7 @@
     {
       "id": "cloudentry.health",
       "summary": "Health",
-      "audience": "operator",
+      "audience": "transport",
       "sources": [
         {"source": "internal/cloudentry/service.go", "kind": "route", "definition": "e.GET(\"/health\", func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\"}) }) [route=\"/health\"]", "occurrence": 1, "line": 197, "method": "GET", "path": "\"/health\"", "handler": "func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\"}) }", "resolved_path": "/health"}
       ],
@@ -191,22 +191,16 @@
         {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "shared entry account/organization service"},
         {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "shared entry account/organization service", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
       ],
-      "authority": {"role": "current account identity and organization membership", "credential_scope": "hosted account session; CSRF for mutation", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
-      "preconditions": [
-        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
-        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
-      ],
-      "confirmation": [
-        {"when": "read or ordinary non-destructive write", "class": "none"}
-      ],
+      "authority": {"role": "anonymous liveness probe", "credential_scope": "none", "project_grant": "not project-scoped", "ownership": "no organization or application resource data"},
+      "preconditions": ["Public transport liveness; no operator resource or action"],
+      "confirmation": [{"when": "transport liveness probe", "class": "not_applicable"}],
       "application": "func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\"}) }; handler-owned application validation/read/command",
-      "extraction": "Extract cloudentry.health application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "health", "arguments": "Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
+      "extraction": "No application extraction: this anonymous transport liveness route has no operator business data.",
+      "tool": {"set": "", "name": "", "arguments": "", "result": ""},
+      "owner": "digitaldrywood/detent#3339",
+      "status": "excluded",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Public HTTP liveness probe returning only status=ok. This is a transport boundary with no operator resource, organization data or command; MCP discovery already provides protocol liveness. No operator capability is excluded."
     },
     {
       "id": "cloudentry.home",
@@ -233,10 +227,10 @@
       "application": "s.home; s.clientShell, s.landing, s.render",
       "extraction": "Extract cloudentry.home application inputs/results and validation from Echo; reuse s.clientShell, s.landing, s.render. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "home", "arguments": "Bounded homeRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "homeResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3344",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending."
     },
     {
       "id": "cloudentry.logout",
@@ -440,10 +434,10 @@
       "application": "s.provisioningJSON; s.creatorOrganization, s.organizationHome, s.retryLimit",
       "extraction": "Extract cloudentry.provisioningJSON application inputs/results and validation from Echo; reuse s.creatorOrganization, s.organizationHome, s.retryLimit. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "provisioning_page", "arguments": "Bounded provisioningPageRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "provisioningPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3344",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending."
     },
     {
       "id": "cloudentry.proxy",
@@ -500,10 +494,10 @@
       "application": "s.resumeProvisioning; s.config.now, s.creatorOrganization, s.csrfValid, s.next, s.refuse, s.registry.store.db.ExecContext, s.wakeAllocator",
       "extraction": "Extract cloudentry.resumeProvisioning application inputs/results and validation from Echo; reuse s.config.now, s.creatorOrganization, s.csrfValid, s.next, s.refuse, s.registry.store.db.ExecContext, s.wakeAllocator. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "resume_provisioning", "arguments": "Bounded resumeProvisioningRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "resumeProvisioningResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": false, "idempotent": false, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3344",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending."
     },
     {
       "id": "cloudentry.session_json",
@@ -2657,10 +2651,10 @@
       "application": "s.bindArtifactService; s.database.db.ExecContext, s.database.db.QueryRowContext",
       "extraction": "Extract hubserver.bindArtifactService application inputs/results and validation from Echo; reuse s.database.db.ExecContext, s.database.db.QueryRowContext. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "bind_artifact_service", "arguments": "Bounded bindArtifactServiceRequest: organization, project, service; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "bindArtifactServiceResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": true, "idempotent": false, "openWorld": false}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3347",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3347 scope; required parity remains pending."
     },
     {
       "id": "hubserver.bind_native_repository",
@@ -3071,10 +3065,10 @@
       "application": "s.commandGitHubBatch; s.nativeMutation",
       "extraction": "Extract hubserver.commandGitHubBatch application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "command_git_hub_batch", "arguments": "Bounded commandGitHubBatchRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "commandGitHubBatchResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": false, "idempotent": false, "openWorld": false}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3342",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending."
     },
     {
       "id": "hubserver.complete_hosted_login",
@@ -3764,10 +3758,10 @@
       "application": "s.getAttemptDiff; handler-owned application validation/read/command",
       "extraction": "Extract hubserver.getAttemptDiff application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "get_attempt_diff", "arguments": "Bounded getAttemptDiffRequest: organization, project, attempt; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "getAttemptDiffResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3347",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending."
     },
     {
       "id": "hubserver.get_change",
@@ -3947,10 +3941,10 @@
       "application": "s.getGitHubBatch; handler-owned application validation/read/command",
       "extraction": "Extract hubserver.getGitHubBatch application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "get_git_hub_batch", "arguments": "Bounded getGitHubBatchRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "getGitHubBatchResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3342",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending."
     },
     {
       "id": "hubserver.get_git_hub_import",
@@ -4008,12 +4002,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.getNativeIssue; handler-owned application validation/read/command",
-      "extraction": "Extract hubserver.getNativeIssue application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "get_native_issue", "arguments": "Bounded getNativeIssueRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "getNativeIssueResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_item", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "hubserver.get_native_project",
@@ -4070,12 +4064,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.getNativeVersion; s.database.db.QueryRowContext",
-      "extraction": "Extract hubserver.getNativeVersion application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "get_native_version", "arguments": "Bounded getNativeVersionRequest: organization, project, item, comment, revision; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "getNativeVersionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_version", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_version exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "hubserver.get_onboarding",
@@ -4312,12 +4306,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.getWorkItem; s.applyRepositorySyncHealth, s.database.latestWorkpad, s.database.workItemBody, s.database.workItemTimeline, s.tracker.GetWorkItems",
-      "extraction": "Extract hubserver.getWorkItem application inputs/results and validation from Echo; reuse s.applyRepositorySyncHealth, s.database.latestWorkpad, s.database.workItemBody, s.database.workItemTimeline, s.tracker.GetWorkItems. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "get_work_item", "arguments": "Bounded getWorkItemRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "getWorkItemResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_item", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "The broad instance compatibility API is not proxied. Its organization work-item read is consolidated into authorized native work_item/work_list, with comments, durable history and run/reference reads available separately. Existing instance API remains unchanged."
     },
     {
       "id": "hubserver.get_work_item_diff",
@@ -4347,10 +4341,10 @@
       "application": "s.getWorkItemDiff; handler-owned application validation/read/command",
       "extraction": "Extract hubserver.getWorkItemDiff application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "get_work_item_diff", "arguments": "Bounded getWorkItemDiffRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "getWorkItemDiffResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3347",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending."
     },
     {
       "id": "hubserver.get_workspace",
@@ -4554,10 +4548,10 @@
       "application": "s.health; s.OutboxHealth, s.config.now, s.database.health, s.database.repositoryFreshness, s.ready.Load",
       "extraction": "Extract hubserver.health application inputs/results and validation from Echo; reuse s.OutboxHealth, s.config.now, s.database.health, s.database.repositoryFreshness, s.ready.Load. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "health", "arguments": "Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3343",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending."
     },
     {
       "id": "hubserver.heartbeat_machine",
@@ -4869,10 +4863,10 @@
       "application": "s.hostedEvents; s.database.db.QueryRowContext, s.hostedCredential, s.requireHostedProject",
       "extraction": "Extract hubserver.hostedEvents application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext, s.hostedCredential, s.requireHostedProject. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "hosted_events", "arguments": "Bounded hostedEventsRequest: project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "hostedEventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3346",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3346 scope; required parity remains pending."
     },
     {
       "id": "hubserver.hosted_fleet",
@@ -4931,10 +4925,10 @@
       "application": "s.hostedLanding; s.appShell, s.hostedCredential, s.hostedHome",
       "extraction": "Extract hubserver.hostedLanding application inputs/results and validation from Echo; reuse s.appShell, s.hostedCredential, s.hostedHome. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "hosted_landing", "arguments": "Bounded hostedLandingRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "hostedLandingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3344",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending."
     },
     {
       "id": "hubserver.hosted_metadata",
@@ -5519,12 +5513,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.listNativeAttempts; s.config.now, s.database.db.QueryContext, s.nativePage",
-      "extraction": "Extract hubserver.listNativeAttempts application inputs/results and validation from Echo; reuse s.config.now, s.database.db.QueryContext, s.nativePage. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "list_native_attempts", "arguments": "Bounded listNativeAttemptsRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "listNativeAttemptsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_runs", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_runs exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "hubserver.list_native_comments",
@@ -5547,13 +5541,13 @@
         "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
       ],
       "confirmation": [{"when": "read or ordinary non-destructive write", "class": "none"}],
-      "application": "nativeCommentPage / NativeClient.CommentsPage / authorized live issue discussion",
-      "extraction": "nativeCommentPage / NativeClient.CommentsPage / authorized live issue discussion; bounded pagination and observed time.",
-      "tool": {"set": "actions", "name": "list_comments", "arguments": "project_id, identifier, optional cursor (max 2048 bytes) and limit (1–200); identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments", "result": "Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3341",
+      "application": "readComments / nativeWorkComments / NativeClient.CommentsPage / authorized live issue discussion",
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_comments", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "TestMCPNativeWorkCommands; TestHubMCPWorkCommands; TestNativeTenantIsolationAndCursorBinding. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.",
-      "decision": "Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Native comments are cursor-paginated; snapshot-backed discussion/history returns explicit truncation at the requested limit. All five original read tools remain; parent parity remains pending."
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_comments exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "hubserver.list_native_history",
@@ -5580,12 +5574,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.listNativeHistory; s.database.db.QueryContext, s.database.db.QueryRowContext, s.nativePage",
-      "extraction": "Extract hubserver.listNativeHistory application inputs/results and validation from Echo; reuse s.database.db.QueryContext, s.database.db.QueryRowContext, s.nativePage. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "list_native_history", "arguments": "Bounded listNativeHistoryRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "listNativeHistoryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_history", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_history exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "hubserver.list_native_issues",
@@ -5611,12 +5605,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.listNativeIssues; s.nativePage",
-      "extraction": "Extract hubserver.listNativeIssues application inputs/results and validation from Echo; reuse s.nativePage. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "list_native_issues", "arguments": "Bounded listNativeIssuesRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "listNativeIssuesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_list", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_list exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "hubserver.list_native_labels",
@@ -5642,12 +5636,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.listNativeLabels; handler-owned application validation/read/command",
-      "extraction": "Extract hubserver.listNativeLabels application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "list_native_labels", "arguments": "Bounded listNativeLabelsRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "listNativeLabelsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_config", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_config exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "hubserver.list_organization_conversations",
@@ -5832,10 +5826,10 @@
       "application": "s.listWorkItemPullRequests; s.changePullRequestView, s.config.now, s.pullRequests.allowRefresh, s.pullRequests.get, s.pullRequests.set, s.requestPullRequestHydration",
       "extraction": "Extract hubserver.listWorkItemPullRequests application inputs/results and validation from Echo; reuse s.changePullRequestView, s.config.now, s.pullRequests.allowRefresh, s.pullRequests.get, s.pullRequests.set, s.requestPullRequestHydration. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "list_work_item_pull_requests", "arguments": "Bounded listWorkItemPullRequestsRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "listWorkItemPullRequestsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3347",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending."
     },
     {
       "id": "hubserver.list_work_item_references",
@@ -5890,12 +5884,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.listWorkItems; s.allWorkItems",
-      "extraction": "Extract hubserver.listWorkItems application inputs/results and validation from Echo; reuse s.allWorkItems. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "list_work_items", "arguments": "Bounded listWorkItemsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "listWorkItemsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_list", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "The broad instance compatibility API is not proxied. Its organization work-item read is consolidated into authorized native work_item/work_list, with comments, durable history and run/reference reads available separately. Existing instance API remains unchanged."
     },
     {
       "id": "hubserver.list_workspace_terminal_recordings",
@@ -6087,10 +6081,10 @@
       "application": "s.nativeCapabilities; s.database.db.QueryRowContext",
       "extraction": "Extract hubserver.nativeCapabilities application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "native_capabilities", "arguments": "Bounded nativeCapabilitiesRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "nativeCapabilitiesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3343",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 runtime/fleet scope; required parity remains pending."
     },
     {
       "id": "hubserver.native_organizations",
@@ -6237,10 +6231,10 @@
       "application": "s.outboxHealth; s.OutboxHealth",
       "extraction": "Extract hubserver.outboxHealth application inputs/results and validation from Echo; reuse s.OutboxHealth. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "outbox_health", "arguments": "Bounded outboxHealthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "outboxHealthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3343",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending."
     },
     {
       "id": "hubserver.patch_conversation",
@@ -8042,10 +8036,10 @@
       "application": "s.aiDebugPrompt; s.aiDebugProjection",
       "extraction": "Extract web.aiDebugPrompt application inputs/results and validation from Echo; reuse s.aiDebugProjection. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "ai_debug_prompt", "arguments": "Bounded aiDebugPromptRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "aiDebugPromptResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3343",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending."
     },
     {
       "id": "web.analytics_dashboard",
@@ -8075,10 +8069,10 @@
       "application": "s.analyticsDashboard; s.analyticsDashboardData, s.demoAnalyticsDashboard, s.latestSnapshot",
       "extraction": "Extract web.analyticsDashboard application inputs/results and validation from Echo; reuse s.analyticsDashboardData, s.demoAnalyticsDashboard, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "analytics_dashboard", "arguments": "Bounded analyticsDashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "analyticsDashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3345",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3345 scope; required parity remains pending."
     },
     {
       "id": "web.api_board_activity",
@@ -8108,12 +8102,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiBoardActivity; s.boardActivityData, s.demoDashboardData, s.latestSnapshot",
-      "extraction": "Extract web.apiBoardActivity application inputs/results and validation from Echo; reuse s.boardActivityData, s.demoDashboardData, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_board_activity", "arguments": "Bounded apiBoardActivityRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiBoardActivityResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "board_activity", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed board_activity exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_board_activity_events",
@@ -8138,12 +8132,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiBoardActivityEvents; s.hub.Subscribe, s.latestSnapshot, s.sendBoardActivity",
-      "extraction": "Extract web.apiBoardActivityEvents application inputs/results and validation from Echo; reuse s.hub.Subscribe, s.latestSnapshot, s.sendBoardActivity. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_board_activity_events", "arguments": "Bounded apiBoardActivityEventsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiBoardActivityEventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "board_activity", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed board_activity exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_board_card",
@@ -8170,12 +8164,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiBoardCard; s.boardCardDashboardData, s.kanbanConversationShellData, s.loadBoardAttemptCosts",
-      "extraction": "Extract web.apiBoardCard application inputs/results and validation from Echo; reuse s.boardCardDashboardData, s.kanbanConversationShellData, s.loadBoardAttemptCosts. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_board_card", "arguments": "Bounded apiBoardCardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiBoardCardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_item", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_board_card_core",
@@ -8201,12 +8195,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiBoardCardCore; s.boardCardDashboardData",
-      "extraction": "Extract web.apiBoardCardCore application inputs/results and validation from Echo; reuse s.boardCardDashboardData. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_board_card_core", "arguments": "Bounded apiBoardCardCoreRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiBoardCardCoreResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_item", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_board_conversation",
@@ -8269,12 +8263,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiBoardReceipt; s.boardCardDashboardData, s.store.EfficiencyReceipt",
-      "extraction": "Extract web.apiBoardReceipt application inputs/results and validation from Echo; reuse s.boardCardDashboardData, s.store.EfficiencyReceipt. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_board_receipt", "arguments": "Bounded apiBoardReceiptRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiBoardReceiptResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "board_receipt", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed board_receipt exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_board_session",
@@ -8303,12 +8297,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiBoardSession; s.demoDashboardData, s.latestSnapshot",
-      "extraction": "Extract web.apiBoardSession application inputs/results and validation from Echo; reuse s.demoDashboardData, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_board_session", "arguments": "Bounded apiBoardSessionRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiBoardSessionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "board_session", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed board_session exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_board_session_events",
@@ -8333,12 +8327,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiBoardSessionEvents; s.activity.Subscribe, s.latestSnapshot",
-      "extraction": "Extract web.apiBoardSessionEvents application inputs/results and validation from Echo; reuse s.activity.Subscribe, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_board_session_events", "arguments": "Bounded apiBoardSessionEventsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiBoardSessionEventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "board_session", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed board_session exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_board_session_history",
@@ -8363,12 +8357,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiBoardSessionHistory; s.history.Page, s.latestSnapshot",
-      "extraction": "Extract web.apiBoardSessionHistory application inputs/results and validation from Echo; reuse s.history.Page, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_board_session_history", "arguments": "Bounded apiBoardSessionHistoryRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiBoardSessionHistoryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "board_session_history", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed board_session_history exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_budget_override_clear",
@@ -8715,10 +8709,10 @@
       "application": "s.apiDemoScenarios; handler-owned application validation/read/command",
       "extraction": "Extract web.apiDemoScenarios application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "api_demo_scenarios", "arguments": "Bounded apiDemoScenariosRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiDemoScenariosResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3342",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending."
     },
     {
       "id": "web.api_failure_breaker_canary",
@@ -8806,12 +8800,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiIssue; s.cachedEnrichedSnapshot, s.hub.Latest",
-      "extraction": "Extract web.apiIssue application inputs/results and validation from Echo; reuse s.cachedEnrichedSnapshot, s.hub.Latest. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_issue", "arguments": "Bounded apiIssueRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiIssueResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_item", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_issue_explanation",
@@ -8840,8 +8834,8 @@
       "tool": {"set": "billing_usage", "name": "api_issue_explanation", "arguments": "Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments.", "result": "Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3345",
       "status": "implemented",
-      "coverage": "TestMCPDaemonBilling; TestRemoteMCPCurrentProjectAuthority (internal/web); existing explain_item authorization tests (internal/operatortool). Bounded typed alias uses the existing authorized explanation executor.",
-      "decision": "Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259."
+      "coverage": "TestMCPDaemonBilling; TestRemoteMCPCurrentProjectAuthority (internal/web); existing explain_item authorization tests (internal/operatortool). Bounded typed alias uses the existing authorized explanation executor; TestProtocolWorkReadParity preserves work/board read transport parity.",
+      "decision": "The billing_usage.api_issue_explanation alias shares the existing authorized explanation executor. Original explain_item remains compatible; #3340 adds work/board context and #3345 implements this alias. Neither child completes parent #3259."
     },
     {
       "id": "web.api_issue_park_acknowledgement",
@@ -9513,12 +9507,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiState; s.hub.Latest, s.instanceName, s.now, s.stateEndpoints.begin, s.stateSnapshot, s.withManualRefresh",
-      "extraction": "Extract web.apiState application inputs/results and validation from Echo; reuse s.hub.Latest, s.instanceName, s.now, s.stateEndpoints.begin, s.stateSnapshot, s.withManualRefresh. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_state", "arguments": "Bounded apiStateRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiStateResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "board_state", "arguments": "Bounded apiStateRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed board_state exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_stop_run",
@@ -9582,10 +9576,10 @@
       "application": "s.apiTimeSeries; s.latestSnapshot, s.projectSmallMultiples",
       "extraction": "Extract web.apiTimeSeries application inputs/results and validation from Echo; reuse s.latestSnapshot, s.projectSmallMultiples. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "api_time_series", "arguments": "Bounded apiTimeSeriesRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiTimeSeriesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3345",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3345 scope; required parity remains pending."
     },
     {
       "id": "web.api_tracker_availability_clear",
@@ -9703,12 +9697,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.apiWorkAttemptReceipt; s.recovery.WorkAttemptReceipt",
-      "extraction": "Extract web.apiWorkAttemptReceipt application inputs/results and validation from Echo; reuse s.recovery.WorkAttemptReceipt. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "api_work_attempt_receipt", "arguments": "Bounded apiWorkAttemptReceiptRequest: project_id, attempt_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiWorkAttemptReceiptResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_attempt_receipt", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_attempt_receipt exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.api_work_attempt_recovery",
@@ -9831,12 +9825,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.board; s.boardFirstPaintData, s.demoBoard, s.latestBoardSnapshot, s.withKanbanRefreshFeedback",
-      "extraction": "Extract web.board application inputs/results and validation from Echo; reuse s.boardFirstPaintData, s.demoBoard, s.latestBoardSnapshot, s.withKanbanRefreshFeedback. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "board", "arguments": "Bounded boardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "boardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_list", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_list exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.board_live_session_page",
@@ -9864,12 +9858,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.boardLiveSessionPage; s.boardData, s.demoDashboardData, s.latestSnapshot",
-      "extraction": "Extract web.boardLiveSessionPage application inputs/results and validation from Echo; reuse s.boardData, s.demoDashboardData, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "board_live_session_page", "arguments": "Bounded boardLiveSessionPageRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "boardLiveSessionPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "board_session", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed board_session exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.change_detail",
@@ -10128,12 +10122,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.events; s.cachedEnrichedSnapshot, s.dashboardData, s.demoEvents, s.hub.Subscribe, s.now, s.projectDashboardData, s.snapshotMissingRequiredChecks, s.sseSnapshotComponent, s.withManualRefresh",
-      "extraction": "Extract web.events application inputs/results and validation from Echo; reuse s.cachedEnrichedSnapshot, s.dashboardData, s.demoEvents, s.hub.Subscribe, s.now, s.projectDashboardData, s.snapshotMissingRequiredChecks, s.sseSnapshotComponent, s.withManualRefresh. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "events", "arguments": "Bounded eventsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "eventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "board_state", "arguments": "Bounded eventsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed board_state exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.github_webhook",
@@ -10188,10 +10182,10 @@
       "application": "s.health; s.connectorName, s.enforcedBudgets, s.healthNotifications.Failures, s.hub.Latest, s.now, s.orphanedAgentProcesses, s.projectHealth, s.startupLifecycle.State, s.stateEndpoints.health, s.tickLiveness.TickLiveness, s.workflowSources",
       "extraction": "Extract web.health application inputs/results and validation from Echo; reuse s.connectorName, s.enforcedBudgets, s.healthNotifications.Failures, s.hub.Latest, s.now, s.orphanedAgentProcesses, s.projectHealth, s.startupLifecycle.State, s.stateEndpoints.health, s.tickLiveness.TickLiveness, s.workflowSources. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "health", "arguments": "Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3343",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending."
     },
     {
       "id": "web.health_dashboard",
@@ -10278,12 +10272,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.issueDetail; s.latestSnapshot, s.loadNativeWork, s.projectDashboardData, s.registry.Get",
-      "extraction": "Extract web.issueDetail application inputs/results and validation from Echo; reuse s.latestSnapshot, s.loadNativeWork, s.projectDashboardData, s.registry.Get. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "issue_detail", "arguments": "Bounded issueDetailRequest: project_id, issue_ref; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "issueDetailResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_item", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.library",
@@ -10316,10 +10310,10 @@
       "application": "s.library; s.libraryData",
       "extraction": "Extract web.library application inputs/results and validation from Echo; reuse s.libraryData. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "library", "arguments": "Bounded libraryRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "libraryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3347",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending."
     },
     {
       "id": "web.login_page",
@@ -10407,12 +10401,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.nativeIssueExport; s.nativeFormData",
-      "extraction": "Extract web.nativeIssueExport application inputs/results and validation from Echo; reuse s.nativeFormData. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "native_issue_export", "arguments": "Bounded nativeIssueExportRequest: project_id, issue_ref; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "nativeIssueExportResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_export", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_export exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.native_issue_submit",
@@ -10460,10 +10454,10 @@
       "application": "s.nativeIssueForm; s.nativeFormData",
       "extraction": "Extract web.nativeIssueForm application inputs/results and validation from Echo; reuse s.nativeFormData. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "native_issue_submit", "arguments": "Bounded nativeIssueSubmitRequest: project_id, issue_ref; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "nativeIssueSubmitResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": true, "idempotent": false, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3341",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3341 scope; required parity remains pending."
     },
     {
       "id": "web.native_run_detail",
@@ -10492,10 +10486,10 @@
       "application": "s.nativeRunDetail; s.changePageData, s.loadArtifacts",
       "extraction": "Extract web.nativeRunDetail application inputs/results and validation from Echo; reuse s.changePageData, s.loadArtifacts. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "native_run_detail", "arguments": "Bounded nativeRunDetailRequest: project_id, issue_ref, attempt; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "nativeRunDetailResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3347",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending."
     },
     {
       "id": "web.onboarding",
@@ -10816,12 +10810,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "s.redirectToBoard; handler-owned application validation/read/command",
-      "extraction": "Extract web.redirectToBoard application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "redirect_to_board", "arguments": "Bounded redirectToBoardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "redirectToBoardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "tool": {"set": "board", "name": "work_list", "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.", "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "decision": "Typed work_list exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
       "id": "web.redirect_to_dashboard",
@@ -10856,10 +10850,10 @@
       "application": "s.redirectToDashboard; s.demoOnboarding",
       "extraction": "Extract web.redirectToDashboard application inputs/results and validation from Echo; reuse s.demoOnboarding. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "redirect_to_dashboard", "arguments": "Bounded redirectToDashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "redirectToDashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3342",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending."
     },
     {
       "id": "web.redirect_to_onboarding",
@@ -10917,10 +10911,10 @@
       "application": "s.reports; s.demoReports, s.reportsData",
       "extraction": "Extract web.reports application inputs/results and validation from Echo; reuse s.demoReports, s.reportsData. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "reports", "arguments": "Bounded reportsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "reportsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3345",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3345 scope; required parity remains pending."
     },
     {
       "id": "web.request_magic_link",
@@ -11017,10 +11011,10 @@
       "application": "s.settings; s.demoSettings, s.settingsData",
       "extraction": "Extract web.settings application inputs/results and validation from Echo; reuse s.demoSettings, s.settingsData. The HTTP handler and MCP must delegate to this same application operation.",
       "tool": {"set": "work_reads", "name": "settings", "arguments": "Bounded settingsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "settingsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
+      "owner": "digitaldrywood/detent#3342",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending."
     },
     {
       "id": "web.start_o_i_d_c",

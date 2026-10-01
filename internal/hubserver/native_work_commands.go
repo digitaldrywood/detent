@@ -231,14 +231,9 @@ func (s *Service) nativeWorkObservation(ctx context.Context, scope nativeScope, 
 	return issue, err
 }
 
-func (s *Service) nativeWorkComments(ctx context.Context, scope nativeScope, item string, limit int, value string) (tracker.Page[tracker.NativeComment], error) {
-	path := "/api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items/" + item + "/comments"
-	params := url.Values{"limit": {strconv.Itoa(limit)}, "cursor": {value}}
-	limit, cursor, key, err := s.nativePagination(ctx, scope, path, params)
-	if err != nil {
-		return tracker.Page[tracker.NativeComment]{}, err
-	}
-	return s.nativeCommentPage(ctx, scope, item, limit, cursor, key)
+func (s *Service) nativeWorkComments(ctx context.Context, scope nativeScope, item string, limit int, cursor string) (tracker.Page[tracker.NativeComment], error) {
+	params := url.Values{"limit": {strconv.Itoa(limit)}, "cursor": {cursor}}
+	return s.readComments(ctx, scope, item, params)
 }
 
 // operatorCreateNativeWork uses the native application command. Hub-only

@@ -47,18 +47,23 @@ type Explainer interface {
 type Dependencies struct {
 	Snapshots SnapshotSource
 	Explainer Explainer
+	WorkReads WorkReader
 }
 
 type Executor struct {
 	snapshots SnapshotSource
 	explainer Explainer
+	workReads WorkReader
 }
 
 func NewExecutor(deps Dependencies) *Executor {
-	return &Executor{snapshots: deps.Snapshots, explainer: deps.Explainer}
+	return &Executor{snapshots: deps.Snapshots, explainer: deps.Explainer, workReads: deps.WorkReads}
 }
 
 func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
+	if IsWorkRead(call.Name) {
+		return e.readWork(ctx, call)
+	}
 	switch call.Name {
 	case BoardState:
 		return e.boardState(ctx, call.Arguments)

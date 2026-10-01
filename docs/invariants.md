@@ -17,6 +17,21 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Work/board MCP reads (#3340) share the dashboard application read models and
+native organization/project/item reads. Direct calls resolve current read
+scope and grants, then resource ownership; saved versions and history retain
+the same dependency visibility rules. A daemon's broader native connector
+credential does not expand its caller's local project grants; relationship
+projection requires both application boundaries. Bounded pages carry identifiers, URLs
+and source freshness. `work_history` reads durable application records;
+`recent_activity` retains its live snapshot semantics. Board activity marks
+durable and snapshot events explicitly. Review/diff/artifact bodies remain
+with #3347; this child exposes their authorized references. No read adapter
+writes tracker lanes, creates confirmations or adds a protection mechanism.
+`TestOperatorGitHubWorkReads`, `TestOperatorNativeWorkReads`,
+`TestHostedOperatorCurrentAuthority` and `TestProtocolWorkReadParity` exercise
+the application boundary and both transports, including direct-call denial.
+
 Billing/usage MCP parity (#3345) delegates checkout/portal, plan and usage reads,
 exports, and daemon budget overrides to the dashboard application operations.
 Organization billing remains owner-only without support impersonation; plan

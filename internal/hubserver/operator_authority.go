@@ -133,7 +133,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 	if err := s.authorizeConversationOrganization(ctx, scope); err != nil {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
-	return operatortool.Authority{Identity: operatorIdentity(credential, organization), Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+	return operatortool.Authority{Identity: operatorIdentity(credential, organization), WorkReads: operatorWorkReads{service: s, scope: scope}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
 		if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
 			if credential.Hosted == nil || requirement.ResourceID != "" || s.config.Hosted == nil || organization != s.config.Hosted.OrganizationID {
 				return operatortool.ErrAccessDenied

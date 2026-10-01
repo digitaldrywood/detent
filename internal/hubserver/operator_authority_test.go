@@ -99,6 +99,23 @@ func TestHostedOperatorCurrentAuthority(t *testing.T) {
 					if test.kind == "" && test.scope == apikey.ScopeRead && test.denied && !errors.Is(callErr, operatortool.ErrAccessDenied) {
 						t.Fatalf("direct call=%v", callErr)
 					}
+					// New work reads must also resolve grants/roles on direct calls.
+					if test.kind == "" && test.scope == apikey.ScopeRead && test.denied {
+						for _, tool := range []string{operatortool.WorkList, operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkReferences} {
+							arguments := map[string]any{"project_id": project}
+							if tool != operatortool.WorkList {
+								arguments["reference"] = "wi_hidden"
+							}
+							raw, err := json.Marshal(arguments)
+							if err != nil {
+								t.Fatal(err)
+							}
+							_, err = operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{})).Execute(request.Context(), operatortool.Call{Name: tool, Arguments: raw})
+							if !errors.Is(err, operatortool.ErrAccessDenied) {
+								t.Fatalf("%s direct call=%v", tool, err)
+							}
+						}
+					}
 					if _, err := operatortool.AuthorizeCurrent(request.Context(), operatortool.Requirement{Scope: apikey.ScopeRead, OrganizationID: "other", ProjectID: project}); err == nil {
 						t.Fatal("foreign organization authorized")
 					}

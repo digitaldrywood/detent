@@ -341,6 +341,10 @@ func TestNativeTenantIsolationAndCursorBinding(t *testing.T) {
 		{"guessed comments", f.base + "/work-items/" + string(other.WorkItemID) + "/comments", f.token, http.StatusNotFound},
 		{"v1 downgrade", "/api/v1/work-items", f.token, http.StatusForbidden},
 		{"bad cursor", f.base + "/work-items?cursor=modified.invalid", f.token, http.StatusUnprocessableEntity},
+		{"malformed list query", f.base + "/work-items?label=bug%ZZ", f.token, http.StatusUnprocessableEntity},
+		{"malformed comment query", f.base + "/work-items/" + string(one.WorkItemID) + "/comments?cursor=%ZZ", f.token, http.StatusUnprocessableEntity},
+		{"malformed history query", f.base + "/work-items/" + string(one.WorkItemID) + "/history?cursor=%ZZ", f.token, http.StatusUnprocessableEntity},
+		{"malformed attempts query", f.base + "/work-items/" + string(one.WorkItemID) + "/attempts?cursor=%ZZ", f.token, http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, test.path, test.token, nil), test.want)
