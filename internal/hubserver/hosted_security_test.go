@@ -146,6 +146,26 @@ func (p *hostedSecurityProvider) Invitation(_ context.Context, token string) (au
 	return invitation, nil
 }
 
+func (p *hostedSecurityProvider) RevokeInvitation(_ context.Context, id string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	invitation, ok := p.invitations[id]
+	if !ok || invitation.State != "pending" {
+		return auth.ErrHostedIdentity
+	}
+	invitation.State = "revoked"
+	p.invitations[id] = invitation
+	return nil
+}
+
+func (p *hostedSecurityProvider) ResendInvitation(ctx context.Context, id string) error {
+	invitation, err := p.Invitation(ctx, id)
+	if err != nil || invitation.State != "pending" {
+		return auth.ErrHostedIdentity
+	}
+	return nil
+}
+
 func (p *hostedSecurityProvider) AcceptInvitation(_ context.Context, token, user string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

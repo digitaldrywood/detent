@@ -36,6 +36,7 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, session)
 	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, session)
 	e.DELETE(hostedOrganizationBase+"/members/invitations/:invitation", s.revokeHostedInvitationJSON, session)
+	e.POST(hostedOrganizationBase+"/members/invitations/:invitation/resend", s.resendHostedInvitationJSON, session)
 	e.DELETE(hostedOrganizationBase+"/members/:member", s.revokeHostedMemberJSON, session)
 	e.PUT(hostedOrganizationBase+"/members/:member/role", s.changeHostedRoleJSON, session)
 	e.PUT(hostedOrganizationBase+"/members/:member/grants", s.changeHostedGrantJSON, session)
@@ -570,10 +571,6 @@ func (s *Service) hostedJSONError(c echo.Context, status int, message string) er
 	return c.JSON(status, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
 }
 
-// revokeHostedInvitationJSON answers DELETE /members/invitations/:invitation.
-// The provider has no revocation call, so the invitation is withdrawn here:
-// acceptance and the invitation link both require the pending local record,
-// and the member seat it reserved is released.
 func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if c.Request().ContentLength != 0 {
@@ -588,7 +585,30 @@ func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot revoke invitations")
 	}
 	if err := s.revokeHostedInvitationFor(c.Request().Context(), c.Param("invitation")); err != nil {
-		return s.hostedJSONError(c, http.StatusNotFound, "This invitation could not be withdrawn")
+		if errors.Is(err, sql.ErrNoRows) {
+			return s.hostedJSONError(c, http.StatusNotFound, "This invitation is no longer pending")
+		}
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be revoked. Try again.")
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
+	var request hostedIdempotent
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, err := s.hostedAdministrator(c); err != nil {
+		return s.hostedJSONError(c, http.StatusForbidden, "You cannot resend invitations")
+	}
+	if err := s.resendHostedInvitationFor(c.Request().Context(), c.Param("invitation")); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return s.hostedJSONError(c, http.StatusNotFound, "This invitation is no longer pending")
+		}
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be resent. Try again.")
 	}
 	return c.NoContent(http.StatusNoContent)
 }

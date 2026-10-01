@@ -28,17 +28,45 @@ import (
 )
 
 type browserHostedProvider struct {
-	mu             sync.Mutex
-	base           string
-	organization   auth.Organization
-	members        map[string]auth.Membership
-	sessions       map[string]auth.HostedIdentity
-	invitations    map[string]auth.Invitation
-	inviteRoles    map[string]string
-	authorizations map[string]string
-	codes          map[string]auth.Identity
-	emails         map[string]bool
-	sequence       int
+	mu                 sync.Mutex
+	base               string
+	organization       auth.Organization
+	members            map[string]auth.Membership
+	sessions           map[string]auth.HostedIdentity
+	invitations        map[string]auth.Invitation
+	inviteRoles        map[string]string
+	authorizations     map[string]string
+	codes              map[string]auth.Identity
+	emails             map[string]bool
+	sequence           int
+	invitationDelivery func(context.Context, string, string) error
+}
+
+func (p *browserHostedProvider) RevokeInvitation(ctx context.Context, id string) error {
+	return p.deliverInvitation(ctx, id, "revoke")
+}
+
+func (p *browserHostedProvider) ResendInvitation(ctx context.Context, id string) error {
+	return p.deliverInvitation(ctx, id, "resend")
+}
+
+func (p *browserHostedProvider) deliverInvitation(ctx context.Context, id, action string) error {
+	if p.invitationDelivery != nil {
+		if err := p.invitationDelivery(ctx, id, action); err != nil {
+			return err
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	invitation, ok := p.invitations[id]
+	if !ok || invitation.State != "pending" {
+		return auth.ErrHostedIdentity
+	}
+	if action == "revoke" {
+		invitation.State = "revoked"
+		p.invitations[id] = invitation
+	}
+	return nil
 }
 
 func (p *browserHostedProvider) AuthorizationURL(state, _ string, verifier string) string {
@@ -213,8 +241,17 @@ func newBrowserHostedFixture(t *testing.T, allocated bool) *browserHostedFixture
 
 func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organization string, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
-	server := httptest.NewUnstartedServer(http.NotFoundHandler())
-	base := "http://" + server.Listener.Addr().String()
+	return newBrowserHostedFixtureServing(t, allocated, organization, true, configure...)
+}
+
+func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
+	t.Helper()
+	server := &httptest.Server{URL: "https://browser.example.test"}
+	if listen {
+		server = httptest.NewUnstartedServer(http.NotFoundHandler())
+		server.URL = "http://" + server.Listener.Addr().String()
+	}
+	base := server.URL
 	provider := &browserHostedProvider{
 		base: base, organization: auth.Organization{ID: "org_browser_provider", ExternalID: organization, Name: "Browser organization"},
 		members: make(map[string]auth.Membership), sessions: make(map[string]auth.HostedIdentity), invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string), authorizations: make(map[string]string), codes: make(map[string]auth.Identity),
@@ -234,13 +271,17 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 	seedHubDatabaseTemplate(t, cfg.DatabasePath)
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
-		server.Close()
+		if listen {
+			server.Close()
+		}
 		t.Fatal(err)
 	}
 	fixture := &browserHostedFixture{service: service, server: server, provider: provider, cookies: make(map[string]*http.Cookie), stop: make(chan struct{})}
 	accounts := make(map[string]auth.Identity)
 	t.Cleanup(func() {
-		server.Close()
+		if listen {
+			server.Close()
+		}
 		if err := fixture.service.Close(); err != nil {
 			t.Error(err)
 		}
@@ -378,8 +419,10 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 		}
 	})
 	mux.Handle("/", service.Handler())
-	server.Config.Handler = mux
-	server.Start()
+	if listen {
+		server.Config.Handler = mux
+		server.Start()
+	}
 	if allocated {
 		fixture.project = fixture.createProject(t, "Browser collaboration")
 		fixture.privateProject = fixture.createProject(t, "Owner private project")

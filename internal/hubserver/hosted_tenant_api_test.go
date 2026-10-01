@@ -163,7 +163,7 @@ func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
 
 func TestHostedInvitationLifecycle(t *testing.T) {
 	t.Parallel()
-	f := newBrowserHostedFixture(t, true)
+	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
 	var created hostedInvitationView
 	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/members/invitations", map[string]any{
 		"email": "Pending@Example.test", "role": "member", "idempotency_key": "pending",
@@ -200,7 +200,56 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 		t.Fatalf("reserved seats = %d: %v", seats, err)
 	}
 	path := browserHostedOrganizationBase + "/members/invitations/" + url.PathEscape(created.ID)
+	for _, action := range []string{"resend", "revoke"} {
+		t.Run(action+" refusal preserves invitation and seat", func(t *testing.T) {
+			method, target := http.MethodDelete, path
+			if action == "resend" {
+				method, target = http.MethodPost, path+"/resend"
+			}
+			f.api(t, "viewer", method, target, map[string]any{"idempotency_key": action + "-viewer"}, http.StatusForbidden)
+			calls := 0
+			f.provider.invitationDelivery = func(ctx context.Context, id, gotAction string) error {
+				calls++
+				if id != created.ID || gotAction != action {
+					t.Fatalf("provider invitation action = %s %s", gotAction, id)
+				}
+				var pending, held int
+				if err := f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND accepted_user_id=''", id).Scan(&pending); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_member_reservations WHERE email=?", created.Email).Scan(&held); err != nil || pending != 1 || held != 1 {
+					t.Fatalf("provider called after local removal: pending=%d held=%d err=%v", pending, held, err)
+				}
+				return auth.ErrHostedIdentity
+			}
+			defer func() { f.provider.invitationDelivery = nil }()
+			f.api(t, "owner", method, target, map[string]any{"idempotency_key": action + "-failure"}, http.StatusServiceUnavailable)
+			var members hostedMembersResponse
+			browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/members", nil, http.StatusOK), &members)
+			if calls != 1 || len(members.Invitations) != 1 || members.Invitations[0].ID != created.ID {
+				t.Fatalf("failed provider action: calls=%d invitations=%#v", calls, members.Invitations)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_member_reservations WHERE email=?", created.Email).Scan(&seats); err != nil || seats != 1 {
+				t.Fatalf("failed provider action released seat: %d %v", seats, err)
+			}
+		})
+	}
+	f.api(t, "owner", http.MethodPost, path+"/resend", map[string]any{"idempotency_key": "resend"}, http.StatusNoContent)
+	called := false
+	f.provider.invitationDelivery = func(ctx context.Context, id, action string) error {
+		called = true
+		var pending int
+		if err := f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=?", id).Scan(&pending); err != nil || pending != 1 || action != "revoke" {
+			t.Fatalf("revoke called after local deletion: pending=%d action=%s err=%v", pending, action, err)
+		}
+		return nil
+	}
 	response := f.api(t, "owner", http.MethodDelete, path, map[string]any{"idempotency_key": "revoke"}, http.StatusNoContent)
+	f.provider.invitationDelivery = nil
+	providerInvitation, err := f.provider.Invitation(t.Context(), created.ID)
+	if err != nil || !called || providerInvitation.State != "revoked" {
+		t.Fatalf("provider revoke: called=%t invitation=%#v err=%v", called, providerInvitation, err)
+	}
 	if response.Body.Len() != 0 {
 		t.Fatalf("revocation body = %q", response.Body.String())
 	}

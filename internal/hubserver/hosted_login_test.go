@@ -261,6 +261,7 @@ func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 		{name: "accepted by another user during login", entryCode: 303, resultCode: 403, message: "already been used"},
 		{name: "provider rejected expired invitation", entryCode: 303, resultCode: 403, message: "has expired"},
 		{name: "expired during login", entryCode: 303, resultCode: 403, message: "has expired"},
+		{name: "locally revoked during login", entryCode: 303, resultCode: 403, message: "unavailable"},
 		{name: "membership role mismatch", entryCode: 303, resultCode: 403, message: "unavailable"},
 		{name: "provider acceptance failure", entryCode: 303, resultCode: 403, message: "unavailable"},
 		{name: "missing token", entryCode: 403, message: "unavailable"},
@@ -338,6 +339,8 @@ func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 				p.invitation.State, p.invitation.AcceptedUserID = "accepted", "user_other"
 			case "expired during login", "provider rejected expired invitation":
 				p.invitation.ExpiresAt = time.Now().Add(-time.Hour)
+			case "locally revoked during login":
+				hostedLoginExec(t, s, "DELETE FROM hosted_invitations WHERE id=?", p.invitation.ID)
 			}
 			transaction := hostedLoginCookie(t, entry, hostedTransactionCookie)
 			query := url.Values{"code": {"invitation_callback"}, "state": {authorization.Query().Get("state")}, "invitation_token": {"attacker_token"}}
@@ -359,6 +362,9 @@ func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 				assertExplanation(callback.Body.String())
 				if members != 0 {
 					t.Fatal("rejected invitation granted membership")
+				}
+				if tt.name == "locally revoked during login" && p.accepted != 0 {
+					t.Fatal("locally revoked invitation reached provider acceptance")
 				}
 				return
 			}
