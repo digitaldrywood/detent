@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseDiffStat(t *testing.T) {
@@ -231,8 +233,6 @@ func TestLocalGitSeedReviewHeadUsesPullRequestRepository(t *testing.T) {
 }
 
 func TestLocalGitDiffStat(t *testing.T) {
-	t.Parallel()
-
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
 
@@ -250,12 +250,21 @@ func TestLocalGitDiffStat(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
+	head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+	before := time.Now()
 	clean, err := backend.DiffStat(context.Background(), info, Issue{Identifier: "DD-DIFF"})
 	if err != nil {
 		t.Fatalf("clean DiffStat() error = %v", err)
 	}
-	if clean != (DiffStat{}) {
-		t.Fatalf("clean DiffStat() = %+v, want zero", clean)
+	if !clean.IsEmpty() || clean.HeadSHA != head || clean.HeadObservedAt.Before(before) || clean.HeadObservedAt.After(time.Now()) {
+		t.Fatalf("clean DiffStat() = %+v, want clean observation of %s", clean, head)
+	}
+	before = time.Now()
+	runGit(t, info.Path, "commit", "--allow-empty", "-m", "change checked-out head")
+	head = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+	changedHead, err := backend.DiffStat(t.Context(), info, Issue{Identifier: "DD-DIFF"})
+	if err != nil || !changedHead.IsEmpty() || changedHead.HeadSHA != head || changedHead.HeadSHA == clean.HeadSHA || !changedHead.HeadObservedAt.After(clean.HeadObservedAt) || changedHead.HeadObservedAt.Before(before) {
+		t.Fatalf("changed head DiffStat() = %+v, %v", changedHead, err)
 	}
 
 	if err := os.WriteFile(filepath.Join(info.Path, "added.txt"), []byte("first\nsecond\n"), 0o600); err != nil {
@@ -279,12 +288,44 @@ func TestLocalGitDiffStat(t *testing.T) {
 		t.Fatalf("write worker scratch: %v", err)
 	}
 
+	trace := filepath.Join(t.TempDir(), "git-events.json")
+	t.Setenv("GIT_TRACE2_EVENT", trace)
 	got, err := backend.DiffStat(context.Background(), info, Issue{Identifier: "DD-DIFF"})
 	if err != nil {
 		t.Fatalf("DiffStat() error = %v", err)
 	}
 	if got.Files != 4 || got.Added != 4 || got.Removed != 1 || got.Fingerprint == "" {
 		t.Fatalf("DiffStat() = %+v, want 4 files, 4 added, 1 removed, and a fingerprint", got)
+	}
+	if got.HeadSHA != head || !got.HeadObservedAt.After(changedHead.HeadObservedAt) {
+		t.Fatalf("nonempty head observation = %+v", got)
+	}
+	data, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		var event struct {
+			Event string   `json:"event"`
+			Argv  []string `json:"argv"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Event != "start" {
+			continue
+		}
+		commands++
+		if slices.Contains(event.Argv, "diff") && !slices.Contains(event.Argv, head) {
+			t.Fatalf("diff is not pinned to captured head: %v", event.Argv)
+		}
+	}
+	if commands != 4 {
+		t.Fatalf("Git processes per nonempty refresh = %d, want 4", commands)
 	}
 	originalFingerprint := got.Fingerprint
 
@@ -326,6 +367,51 @@ func TestLocalGitDiffStat(t *testing.T) {
 	if !strings.Contains(runGit(t, info.Path, "status", "--short", "--untracked-files=all"), ".detent/notes.md") {
 		t.Fatal("diagnostics changed repository ignore rules for runtime files")
 	}
+	for _, relative := range []bool{false, true} {
+		t.Run(fmt.Sprintf("index pathname/relative=%t", relative), func(t *testing.T) {
+			name := " index pathname "
+			if runtime.GOOS != "windows" {
+				name += "\nfinal record\n "
+			}
+			path := filepath.Join(t.TempDir(), name)
+			if relative {
+				var err error
+				path, err = filepath.Rel(info.Path, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("GIT_INDEX_FILE", path)
+			want := path
+			if relative {
+				want = filepath.Join(info.Path, path)
+			}
+			got, err := gitIndexPath(t.Context(), info.Path)
+			if err != nil || got != want {
+				t.Fatalf("path-only index=%q, %v; want %q", got, err, want)
+			}
+			index, err := gitIndexLookup(t.Context(), info.Path, true)
+			if err != nil || index.Path != want || index.HeadSHA != head || index.HeadObservedAt.IsZero() {
+				t.Fatalf("index observation=%+v, %v", index, err)
+			}
+		})
+	}
+	for _, format := range []string{"sha1", "sha256"} {
+		t.Run("object format/"+format, func(t *testing.T) {
+			path := t.TempDir()
+			runGit(t, path, "init", "--object-format="+format)
+			runGit(t, path, "config", "user.name", "Test User")
+			runGit(t, path, "config", "user.email", "test@example.com")
+			writeFileDiffFile(t, path, "file.txt", "base\n")
+			runGit(t, path, "add", "file.txt")
+			runGit(t, path, "commit", "-m", "base")
+			want := strings.TrimSpace(runGit(t, path, "rev-parse", "HEAD"))
+			stat, err := GitDiffStat(t.Context(), path)
+			if err != nil || !stat.IsEmpty() || stat.HeadSHA != want || stat.HeadObservedAt.IsZero() {
+				t.Fatalf("%s observation=%+v, %v", format, stat, err)
+			}
+		})
+	}
 }
 
 // Diagnostics in linked worktrees must not rewrite their shared exclusions or
@@ -333,6 +419,15 @@ func TestLocalGitDiffStat(t *testing.T) {
 func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 	t.Parallel()
 	source := initSourceRepo(t)
+	name := " source whitespace "
+	if runtime.GOOS != "windows" {
+		name += "\npath\n "
+	}
+	moved := filepath.Join(t.TempDir(), name)
+	if err := os.Rename(source, moved); err != nil {
+		t.Fatal(err)
+	}
+	source = moved
 	writeFileDiffFile(t, source, ".detent/notes.md", "old human knowledge\n")
 	writeFileDiffFile(t, source, ".detent/tmp/tracked", "old scratch\n")
 	runGit(t, source, "add", ".detent/notes.md", ".detent/tmp/tracked")
@@ -344,7 +439,13 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), " source whitespace ")
+	if runtime.GOOS != "windows" {
+		root += "\npath\n "
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	worktrees := []string{filepath.Join(root, "first"), filepath.Join(root, "second")}
 	indexes := make([][]byte, len(worktrees))
 	indexPaths := make([]string, len(worktrees))
@@ -387,7 +488,7 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 	}{
 		{"diffstat", func(t *testing.T, path string) {
 			stat, err := GitDiffStat(t.Context(), path)
-			if err != nil || stat.Files != 4 || stat.Added != 4 || stat.Removed != 1 || stat.Fingerprint == "" {
+			if err != nil || stat.Files != 4 || stat.Added != 4 || stat.Removed != 1 || stat.Fingerprint == "" || stat.HeadSHA == "" || stat.HeadObservedAt.IsZero() {
 				t.Errorf("GitDiffStat = %+v, %v; want source and documentation changes with fingerprint", stat, err)
 			}
 		}},
@@ -507,7 +608,7 @@ func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecoveryState() after push error = %v", err)
 	}
-	if pushed.UnpushedCommits != 0 || pushed.DiffStat != got.DiffStat {
+	if pushed.UnpushedCommits != 0 || pushed.DiffStat.Files != got.DiffStat.Files || pushed.DiffStat.Added != got.DiffStat.Added || pushed.DiffStat.Removed != got.DiffStat.Removed || pushed.DiffStat.Fingerprint != got.DiffStat.Fingerprint {
 		t.Fatalf("RecoveryState() after push = %+v, want no unpushed commits and unchanged dirty diff %+v", pushed, got.DiffStat)
 	}
 }
@@ -671,7 +772,7 @@ func TestLocalGitRecoveryStateDetectsAmendedCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecoveryState() after amend error = %v", err)
 	}
-	if first.UnpushedCommits != amended.UnpushedCommits || first.DiffStat != amended.DiffStat {
+	if first.UnpushedCommits != amended.UnpushedCommits || !first.DiffStat.IsEmpty() || !amended.DiffStat.IsEmpty() {
 		t.Fatalf("amended recovery counts = %+v, want unchanged from %+v", amended, first)
 	}
 	if first.WorkspaceFingerprint == "" || first.WorkspaceFingerprint == amended.WorkspaceFingerprint {
@@ -727,6 +828,7 @@ func TestLocalGitDiffIsBounded(t *testing.T) {
 				"+second",
 			},
 		},
+		{name: "zero bytes", maxBytes: 0, wantTruncated: true},
 		{
 			name:          "stat only over limit",
 			maxBytes:      1,
@@ -861,6 +963,10 @@ func TestLocalGitDiffUsesBaseRefForCleanBranch(t *testing.T) {
 		t.Fatalf("Diff() without base = %+v, want clean HEAD diff", withoutBase)
 	}
 
+	zero, err := provider.Diff(t.Context(), info, Issue{Identifier: "DD-PR-DIFF"}, 0)
+	if err != nil || zero.Truncated || !zero.Stat.IsEmpty() {
+		t.Fatalf("zero-length clean diff = %+v, %v", zero, err)
+	}
 	withBase, err := provider.Diff(context.Background(), info, Issue{Identifier: "DD-PR-DIFF", BaseRef: baseRef}, 4096)
 	if err != nil {
 		t.Fatalf("Diff() with base error = %v", err)
@@ -887,15 +993,44 @@ func TestGitRecoveryBaseFingerprintUsesConfiguredBase(t *testing.T) {
 func TestGitDiffStatMissingWorkspaceIsClassified(t *testing.T) {
 	t.Parallel()
 
-	_, err := GitDiffStat(context.Background(), filepath.Join(t.TempDir(), "missing-worktree"))
-	if err == nil {
-		t.Fatal("GitDiffStat() error = nil, want missing workspace error")
-	}
-	if !IsMissingWorkspaceError(err) {
-		t.Fatalf("IsMissingWorkspaceError(%v) = false, want true", err)
-	}
-	if !errors.Is(err, ErrMissingWorkspace) {
-		t.Fatalf("GitDiffStat() error = %v, want ErrMissingWorkspace", err)
+	for _, name := range []string{"missing", "not git", "unborn", "missing index", "canceled"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "repo")
+			if name != "missing" {
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if name == "unborn" {
+				runGit(t, path, "init")
+				if _, err := gitIndexPath(t.Context(), path); err != nil {
+					t.Fatalf("path-only lookup in unborn repository: %v", err)
+				}
+			}
+			if name == "missing index" || name == "canceled" {
+				path = initSourceRepo(t)
+				if name == "missing index" {
+					if err := os.Remove(filepath.Join(path, ".git", "index")); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if name == "canceled" {
+				cancel()
+			}
+			stat, err := GitDiffStat(ctx, path)
+			if err == nil || !stat.IsEmpty() || stat.HeadSHA != "" || !stat.HeadObservedAt.IsZero() {
+				t.Fatalf("unavailable DiffStat = %+v, %v", stat, err)
+			}
+			if name == "missing" && (!IsMissingWorkspaceError(err) || !errors.Is(err, ErrMissingWorkspace)) {
+				t.Fatalf("missing workspace classification: %v", err)
+			}
+			if name == "canceled" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation lost: %v", err)
+			}
+		})
 	}
 }
 

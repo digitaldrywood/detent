@@ -755,7 +755,7 @@ func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 	if result.Status != MergePrepareStatusClean {
 		t.Fatalf("PrepareMerge() status = %q, want clean", result.Status)
 	}
-	if result.DiffStat != (DiffStat{}) {
+	if !result.DiffStat.IsEmpty() {
 		t.Fatalf("PrepareMerge() DiffStat = %#v, want zero", result.DiffStat)
 	}
 	if !result.HeadChanged {

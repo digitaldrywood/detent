@@ -125,7 +125,7 @@ func (l *LocalGit) PrepareMerge(
 			abortRebaseIfInProgress(ctx, normalized.Path),
 		)
 	}
-	if diffStat != (DiffStat{}) {
+	if !diffStat.IsEmpty() {
 		return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diffStat}, nil
 	}
 
@@ -158,7 +158,7 @@ func (l *LocalGit) PrepareMerge(
 		if err != nil {
 			return MergePrepareResult{}, fmt.Errorf("workspace diff stat after gate: %w", err)
 		}
-		if strings.TrimSpace(current) != localHead || after != (DiffStat{}) {
+		if strings.TrimSpace(current) != localHead || !after.IsEmpty() {
 			return MergePrepareResult{}, fmt.Errorf("%w: workspace changed while the gate ran", ErrMergeResolutionInvalid)
 		}
 		validated = true
@@ -364,7 +364,7 @@ func (l *LocalGit) resolvedMergeHeads(ctx context.Context, info Info, issue Issu
 	if err != nil {
 		return "", "", "", err
 	}
-	if diff != (DiffStat{}) {
+	if !diff.IsEmpty() {
 		return "", "", "", fmt.Errorf("%w: merge resolution workspace is not source-clean", ErrMergeResolutionInvalid)
 	}
 	ref := "refs/remotes/" + remote + "/" + target

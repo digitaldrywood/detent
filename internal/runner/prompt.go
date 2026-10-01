@@ -218,7 +218,7 @@ func BuildAdmissionPrompt(issue connector.Issue, request AdmissionRequest, opts 
 }
 
 func appendWorkspaceRecoveryBlock(prompt string, state *workspace.RecoveryState) string {
-	if state == nil || (state.UnpushedCommits == 0 && state.DiffStat == (workspace.DiffStat{}) && len(state.TrackedPaths) == 0 && len(state.UntrackedPaths) == 0) {
+	if state == nil || (state.UnpushedCommits == 0 && state.DiffStat.IsEmpty() && len(state.TrackedPaths) == 0 && len(state.UntrackedPaths) == 0) {
 		return prompt
 	}
 
@@ -229,7 +229,7 @@ func appendWorkspaceRecoveryBlock(prompt string, state *workspace.RecoveryState)
 		b.WriteString("\n- unpushed commits: ")
 		b.WriteString(strconv.Itoa(state.UnpushedCommits))
 	}
-	if state.DiffStat != (workspace.DiffStat{}) {
+	if !state.DiffStat.IsEmpty() {
 		b.WriteString("\n- diffstat: ")
 		b.WriteString(strconv.Itoa(state.DiffStat.Files))
 		b.WriteString(" files, +")
@@ -406,7 +406,7 @@ func appendValidatorDiffContext(b *strings.Builder, opts ValidatorPromptOptions)
 	if diffPatch == "" {
 		if opts.DiffTruncated {
 			b.WriteString("- Full diff omitted because it exceeds the inline diff limit.\n")
-		} else if opts.DiffStat != nil && *opts.DiffStat == (workspace.DiffStat{}) {
+		} else if opts.DiffStat != nil && opts.DiffStat.IsEmpty() {
 			b.WriteString("- Full diff: no workspace changes detected.\n")
 		}
 		return
@@ -424,7 +424,7 @@ func appendValidatorDiffContext(b *strings.Builder, opts ValidatorPromptOptions)
 }
 
 func formatValidatorDiffStat(stat workspace.DiffStat) string {
-	if stat == (workspace.DiffStat{}) {
+	if stat.IsEmpty() {
 		return "0 files changed"
 	}
 

@@ -1010,7 +1010,8 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 	t.Parallel()
 
 	patch := "diff --git a/README.md b/README.md\n+seeded validator diff\n"
-	stat := workspace.DiffStat{Files: 1, Added: 1}
+	stat := workspace.DiffStat{Files: 1, Added: 1, HeadSHA: "physical-head", HeadObservedAt: time.Now()}
+	clean := workspace.DiffStat{HeadSHA: "physical-head", HeadObservedAt: time.Now()}
 
 	tests := []struct {
 		name      string
@@ -1018,6 +1019,12 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 		want      []string
 		forbidden []string
 	}{
+		{
+			name:      "clean physical observation",
+			opts:      ValidatorPromptOptions{DiffStat: &clean},
+			want:      []string{"Stat: 0 files changed", "Full diff: no workspace changes detected."},
+			forbidden: []string{"Full diff omitted because", "physical-head"},
+		},
 		{
 			name: "inline diff under threshold",
 			opts: ValidatorPromptOptions{
@@ -1193,6 +1200,13 @@ func TestBuildPromptIncludesStrandedWorkspaceRecovery(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, commits := range []int{0, 1} {
+		state := &workspace.RecoveryState{UnpushedCommits: commits, DiffStat: workspace.DiffStat{HeadSHA: "physical-head", HeadObservedAt: time.Now()}}
+		cleanPrompt := appendWorkspaceRecoveryBlock("base", state)
+		if strings.Contains(cleanPrompt, "diffstat:") || (commits == 0 && cleanPrompt != "base") || (commits == 1 && !strings.Contains(cleanPrompt, "unpushed commits: 1")) {
+			t.Fatalf("clean recovery observation changed prompt: %q", cleanPrompt)
 		}
 	}
 }
