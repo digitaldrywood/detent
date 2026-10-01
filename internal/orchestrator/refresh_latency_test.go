@@ -266,14 +266,13 @@ func TestDispatchCandidateStatusBeforeMaintenance(t *testing.T) {
 	}
 }
 
-// Catch duplicate shared-reference hydration and per-root repository discovery.
-// Missing, failed, cancelled and budget-deferred cohorts must keep each hold.
 func TestRetiredParkReferenceCohort(t *testing.T) {
-	for _, mode := range []string{"fresh", "missing", "failure", "partial failure", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
+	for _, mode := range []string{"id-only", "inline", "fresh", "missing", "failure", "partial failure", "independent failure", "independent forbidden", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			paths := map[string]int{}
 			var requestMu sync.Mutex
-			closed := false
+			independentFailure := mode == "independent failure" || mode == "independent forbidden"
+			closed := independentFailure
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestMu.Lock()
 				defer requestMu.Unlock()
@@ -298,8 +297,12 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						fmt.Fprint(w, `{}`)
 						return
 					}
-					if mode == "failure" || mode == "partial failure" && strings.HasSuffix(r.URL.Path, "/issues/2") {
-						w.WriteHeader(http.StatusInternalServerError)
+					if mode == "failure" || (mode == "partial failure" || independentFailure) && strings.HasSuffix(r.URL.Path, "/issues/2") {
+						status := http.StatusInternalServerError
+						if mode == "independent forbidden" {
+							status = http.StatusForbidden
+						}
+						w.WriteHeader(status)
 						fmt.Fprint(w, `{"message":"unavailable"}`)
 						return
 					}
@@ -335,6 +338,28 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			tracker := &phaseReferenceConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, resolver: github}
 			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
 			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			if mode == "id-only" || mode == "inline" {
+				ref := connector.BlockedRef{ID: "native-id", State: "Done", TrackerState: connector.BlockedRefTrackerStateClosed, HumanOwned: true, HumanCompletionReady: true, Source: connector.BlockedRefSourceNative}
+				if mode == "inline" {
+					ref.Identifier = "owner/repo#1"
+					orch.connector = struct{ connector.Connector }{tracker}
+				}
+				issue := connector.Issue{ID: "root", State: "Blocked", BlockedBy: []connector.BlockedRef{ref}}
+				blockers, err := orch.resolveDependencyBlockersWithError(t.Context(), issue)
+				if err != nil || len(blockers) != 1 || blockers[0].Ref != ref || !dependencyBlockerReady(blockers[0], normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock), cfg.TerminalStates) {
+					t.Fatalf("inline authority changed: %+v, error %v", blockers, err)
+				}
+				if mode == "id-only" {
+					evidence := orch.resolveBlockedRecoveryDependencies(t.Context(), nil, []connector.Issue{issue})[issue.ID]
+					if evidence == nil || len(evidence.blockers) != 1 || evidence.blockers[0].Ref != ref {
+						t.Fatalf("ID-only phase authority changed: %+v", evidence)
+					}
+				}
+				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 {
+					t.Fatalf("inline authority read remote: %v %v", tracker.fetchIdentifiers, paths)
+				}
+				return
+			}
 			var roots []connector.Issue
 			for i, refs := range [][]string{{"owner/repo#1"}, {"owner/repo#1", "owner/repo#2"}, {"owner/other#1"}} {
 				issue := connector.Issue{ID: fmt.Sprint("root-", i), Identifier: fmt.Sprintf("owner/repo#%d", i+100), State: "Blocked", DependencySource: connector.BlockedRefSourceNative}
@@ -343,11 +368,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				}
 				roots = append(roots, issue)
 			}
-			// A typed predicate can share a native dependency without issuing another
-			// resolver call; absent phase evidence must stay unverifiable.
 			roots[0].WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Identifier: "owner/repo#1", Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: "owner/repo#1", States: []string{"open"}}}}}
-			// A PR predicate absent from the native issue-dependency list still
-			// requires reference authority. It shares the phase read of #2.
 			roots[2].WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Identifier: "owner/repo#2", Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicatePullRequestState, Identifier: "owner/repo#2", States: []string{"missing"}}}}}
 			ctx := t.Context()
 			if mode == "cancelled" {
@@ -356,15 +377,34 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				cancel()
 			}
 			state := newState(cfg)
-			if got := orch.operatorReturnRetiredParks(ctx, &state, roots, time.Now()); len(got) != 0 || len(tracker.updates) != 0 {
+			got := orch.operatorReturnRetiredParks(ctx, &state, roots, time.Now())
+			if independentFailure {
+				if len(got) != 1 || len(tracker.updates) != 1 || tracker.updates[0].issueID != roots[0].ID {
+					t.Fatalf("independent closed predicate did not recover: %v, updates %v", got, tracker.updates)
+				}
+				for _, root := range roots[1:] {
+					if held, ok := state.Blocked[root.ID]; !ok || held.RecoveryAction == "transition" {
+						t.Fatalf("unavailable reference released %s: %+v", root.ID, held)
+					}
+				}
+				if len(tracker.fetchIdentifiers) < 2 || fmt.Sprint(tracker.fetchIdentifiers[1]) != "[owner/repo#1]" {
+					t.Fatalf("independent authority was not freshly resolved: %v", tracker.fetchIdentifiers)
+				}
+				return
+			}
+			if len(got) != 0 || len(tracker.updates) != 0 {
 				t.Fatalf("unavailable/open reference advanced roots: %v %v", got, tracker.updates)
 			}
 			requestMu.Lock()
 			requests := maps.Clone(paths)
 			requestMu.Unlock()
 			want := []string{"owner/repo#1", "owner/repo#2", "owner/other#1"}
-			if len(tracker.fetchIdentifiers) != 1 || fmt.Sprint(tracker.fetchIdentifiers[0]) != fmt.Sprint(want) {
-				t.Fatalf("resolver calls = %v, requests = %v; want one ordered deduplicated cohort %v", tracker.fetchIdentifiers, requests, want)
+			if len(tracker.fetchIdentifiers) == 0 || fmt.Sprint(tracker.fetchIdentifiers[0]) != fmt.Sprint(want) {
+				t.Fatalf("resolver calls = %v, requests = %v; want first ordered deduplicated cohort %v", tracker.fetchIdentifiers, requests, want)
+			}
+			failedCohort := mode == "failure" || mode == "partial failure" || mode == "discovery failure" || mode == "budget" || mode == "reserve" || mode == "cancelled"
+			if !failedCohort && len(tracker.fetchIdentifiers) != 1 || failedCohort && len(tracker.fetchIdentifiers) <= 1 {
+				t.Fatalf("resolver calls = %v, requests = %v; failed cohort=%t", tracker.fetchIdentifiers, requests, failedCohort)
 			}
 			if mode == "fresh" {
 				if len(requests) != 8 {
@@ -380,8 +420,6 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						t.Fatalf("missing per-root hold for %s: %+v", root.ID, held)
 					}
 				}
-				// The next phase reads fresh authority again, including changed bodies and
-				// closure; neither a result nor a failure is retained across invocations.
 				requestMu.Lock()
 				closed = true
 				requestMu.Unlock()
@@ -410,7 +448,6 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				}
 				if mode == "budget" || mode == "reserve" {
 					if mode == "reserve" {
-						// The existing budget permits the first read of each endpoint family.
 						cap = 2
 					}
 					total := 0
