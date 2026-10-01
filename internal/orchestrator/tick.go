@@ -209,6 +209,21 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.reconcileClosedCompletedIssueStatuses(ctx, state, transitions.issues, now),
 	)
 	if fetched.statusOK {
+		// Capacity recovery can establish an instance outage from tracker
+		// evidence, and blocker promotion can affect current dependencies.
+		// Preserve both admission authorities before dispatch.
+		timing.step("recover_backend_capacity_blocked_issues")
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
+			o.recoverBackendCapacityBlockedIssues(ctx, state, fetched.status, now),
+		)
+		timing.step("auto_promote_blocker_issues")
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
+			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
+		)
 		timing.step("review_plan_issues")
 		fetched = filterReconciledTickIssues(
 			state,
@@ -301,18 +316,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
 		)
-		timing.step("recover_backend_capacity_blocked_issues")
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.recoverBackendCapacityBlockedIssues(ctx, state, fetched.status, now),
-		)
-		timing.step("auto_promote_blocker_issues")
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
-		)
 		timing.step("operator_clear_closed_dependencies")
 		dependencyIssues := fetched.status
 		if priorityDependencyIssue != "" {
@@ -332,8 +335,15 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if _, ok := o.connector.(connector.RESTRateLimitUsageReporter); ok {
 		tail := o.captureConnectorRESTRateLimits(state, now)
 		if tail.HasSummary {
-			mergeRefreshRESTUsage(tail.Usage, restCycle.Usage)
-			if state.RateLimits.GitHubREST != nil {
+			if tail.Usage == nil {
+				// A bucket-only observation has no new request counts. Retain
+				// this refresh's pre-dispatch usage, never a previous refresh's.
+				tail.Usage = restCycle.Usage
+				state.RateLimits.RESTUsage = tail.Usage
+			} else {
+				mergeRefreshRESTUsage(tail.Usage, restCycle.Usage)
+			}
+			if state.RateLimits.GitHubREST != nil && tail.Usage != nil {
 				state.RateLimits.GitHubREST.Cost = tail.Usage.BillableRequests
 			}
 			o.logRESTRateLimitCycle(tail)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -465,18 +466,28 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	// A second usage flush must include maintenance without double-counting the
 	// pre-dispatch sample or reusing a previous refresh's usage when it is empty.
 	for _, before := range []int64{0, 2} {
-		t.Run(fmt.Sprintf("maintenance_after_%d_requests", before), func(t *testing.T) {
-			tracker := &rateLimitConnector{
-				restUsage:     connector.RESTRateLimitUsage{TotalRequests: before, BillableRequests: before},
-				restTailUsage: connector.RESTRateLimitUsage{HasRateLimit: true, RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4800, Resource: "core"}, TotalRequests: 3, BillableRequests: 3},
-			}
-			state := newState(cfg)
-			state.RateLimits = &telemetry.RateLimits{RESTUsage: &telemetry.RESTUsage{TotalRequests: 99, BillableRequests: 99}}
-			newRateLimitTestOrchestrator(cfg, tracker).tick(t.Context(), &state, now)
-			if got := state.RateLimits.RESTUsage; got.TotalRequests != before+3 || got.BillableRequests != before+3 || state.RateLimits.GitHubREST.Cost != before+3 {
-				t.Fatalf("maintenance usage=%+v bucket=%+v", got, state.RateLimits.GitHubREST)
-			}
-		})
+		for _, after := range []int64{0, 3} {
+			t.Run(fmt.Sprintf("maintenance_%d_after_%d_requests", after, before), func(t *testing.T) {
+				tracker := &rateLimitConnector{
+					restUsage:     connector.RESTRateLimitUsage{TotalRequests: before, BillableRequests: before},
+					restTailUsage: connector.RESTRateLimitUsage{HasRateLimit: true, RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4800, Resource: "core"}, TotalRequests: after, BillableRequests: after},
+				}
+				state := newState(cfg)
+				state.RateLimits = &telemetry.RateLimits{RESTUsage: &telemetry.RESTUsage{TotalRequests: 99, BillableRequests: 99}}
+				newRateLimitTestOrchestrator(cfg, tracker).tick(t.Context(), &state, now)
+				got := state.RateLimits.RESTUsage
+				want := before + after
+				if want == 0 {
+					if got != nil || state.RateLimits.GitHubREST.Cost != 0 {
+						t.Fatalf("empty refresh retained old usage: %+v bucket=%+v", got, state.RateLimits.GitHubREST)
+					}
+					return
+				}
+				if got == nil || got.TotalRequests != want || got.BillableRequests != want || state.RateLimits.GitHubREST.Cost != want {
+					t.Fatalf("maintenance usage=%+v bucket=%+v", got, state.RateLimits.GitHubREST)
+				}
+			})
+		}
 	}
 }
 

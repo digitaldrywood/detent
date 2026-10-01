@@ -823,11 +823,12 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
-Refresh dispatch (#3674) runs the existing blocked-maintenance owners after
-unrelated active work has passed current authorization, dependency, human/operator,
-review and visual gates. One rotating dependency priority read remains before
-ordinary reads on alternating refreshes. Current candidate Blocked status is
-applied before admission; full blocked-status tracking and missing-retry cleanup
+Refresh dispatch (#3674) runs the existing retired-park and dependency-maintenance
+owners after unrelated active work has passed current authorization, dependency,
+human/operator, review and visual gates. One rotating dependency priority read remains before
+ordinary reads on alternating refreshes. Backend-capacity recovery and blocker
+promotion remain before dispatch because they can supply admission authority.
+Current candidate Blocked status is applied before admission; full blocked-status tracking and missing-retry cleanup
 remain after recovery, preserving started-work and park evidence. Authorization
 refusals retain every durable per-issue row in one transaction per observation.
 Schema-3 explanation reads preserve available evidence when a configured source

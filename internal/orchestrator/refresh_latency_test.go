@@ -127,7 +127,7 @@ func TestAuthorizationBatchRetainsEveryRefusal(t *testing.T) {
 func TestTickDispatchPrecedesBlockedMaintenance(t *testing.T) {
 	for _, early := range []bool{false, true} {
 		t.Run(fmt.Sprintf("priority_%t", early), func(t *testing.T) {
-			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "latency"}, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 1, DependencyAutoUnblock: DependencyAutoUnblockConfig{Enabled: true}})
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "latency"}, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 2, DependencyAutoUnblock: DependencyAutoUnblockConfig{Enabled: true}})
 			ready := connector.Issue{ID: "ready", AssignedToWorker: true, Title: "Approved implementation", Identifier: "owner/repo#1", State: "In Progress"}
 			dependent := connector.Issue{ID: "dependent", AssignedToWorker: true, Title: "Unresolved implementation", Identifier: "owner/repo#2", State: "In Progress", BlockedBy: []connector.BlockedRef{{ID: "dependency", Identifier: "owner/repo#1000", State: "In Progress", Source: connector.BlockedRefSourceNative}}}
 			issues := []connector.Issue{ready, dependent}
@@ -153,11 +153,37 @@ func TestTickDispatchPrecedesBlockedMaintenance(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 2)}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			go func() { defer close(finished); orch.tick(ctx, &state, time.Now()) }()
+			orch.publishState(&state)
+			orch.startTick(&state, time.Now())
+			go func() {
+				defer close(finished)
+				defer orch.finishTick(&state)
+				orch.tick(ctx, &state, time.Now())
+			}()
+			defer func() {
+				cancel()
+				select {
+				case <-finished:
+				case <-time.After(10 * time.Second):
+					t.Error("tick did not finish after cancellation")
+				}
+			}()
 			select {
 			case <-held:
 			case <-time.After(10 * time.Second):
 				t.Fatal("maintenance did not reach held provider")
+			}
+			readCtx, cancelRead := context.WithTimeout(ctx, 5*time.Second)
+			published, err := orch.State(readCtx)
+			cancelRead()
+			if err != nil {
+				t.Fatalf("published runtime blocked behind provider: %v", err)
+			}
+			if _, ok := published.Running[ready.ID]; !ok {
+				t.Fatal("admitted worker was not published during blocked maintenance")
+			}
+			if _, ok := published.Running[dependent.ID]; ok {
+				t.Fatal("published an unresolved dependent as running")
 			}
 			request := receiveWorkerHostRunRequest(t, runner.started)
 			if request.Issue.ID != ready.ID {
