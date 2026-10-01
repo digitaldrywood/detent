@@ -4112,6 +4112,87 @@
       "decision": "Exact presentation links below render supplied external/documentation, fragment, or application URLs; they do not read or mutate application state. Meaningful server reads producing resource URLs are inventoried separately."
     },
     {
+      "id": "frontend.web_conversation_src_app_settings_MCPSettings_tsx.navigation_results",
+      "summary": "MCPSettings.tsx documentation links",
+      "audience": "local_ui",
+      "sources": [
+        {
+          "source": "web/conversation/src/app/settings/MCPSettings.tsx",
+          "kind": "attribute",
+          "definition": "href=\"https://code.claude.com/docs/en/mcp\"",
+          "occurrence": 1,
+          "line": 125
+        },
+        {
+          "source": "web/conversation/src/app/settings/MCPSettings.tsx",
+          "kind": "attribute",
+          "definition": "href=\"https://cursor.com/docs/mcp\"",
+          "occurrence": 1,
+          "line": 124
+        },
+        {
+          "source": "web/conversation/src/app/settings/MCPSettings.tsx",
+          "kind": "attribute",
+          "definition": "href=\"https://github.com/digitaldrywood/detent/issues/3259\"",
+          "occurrence": 1,
+          "line": 106
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "shared application read/command for this frontend source"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "shared application read/command for this frontend source"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "shared application read/command for this frontend source"
+        }
+      ],
+      "authority": {
+        "role": "authenticated operator",
+        "credential_scope": "current connection authority",
+        "project_grant": "resource project read/write grant where scoped",
+        "ownership": "current organization; resolve identifiers within the authorized project"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution"
+      ],
+      "confirmation": [
+        {
+          "when": "read or ordinary non-destructive write",
+          "class": "none"
+        }
+      ],
+      "application": "web/conversation/src/app/settings/MCPSettings.tsx; static client installation documentation and parent parity issue links",
+      "extraction": "None for link presentation; producing application reads retain typed identifiers/URLs.",
+      "tool": {
+        "set": "",
+        "name": "",
+        "arguments": "",
+        "result": ""
+      },
+      "owner": "digitaldrywood/detent#3335",
+      "status": "excluded",
+      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "decision": "The three exact links open Cursor/Claude Code installation documentation and the parent MCP parity issue. They are local navigation presentation and do not read or mutate Detent application state."
+    },
+    {
       "id": "frontend.web_conversation_src_app_account_SpritesCard_tsx.navigation_results",
       "summary": "SpritesCard.tsx navigation results",
       "audience": "local_ui",
@@ -14278,6 +14359,268 @@
       "status": "implemented",
       "coverage": "TestHostedBillingMCP; TestBillingCommandResponseLoss; TestHostedBillingJSONForTheClient; TestHostedOperatorCurrentAuthority (internal/hubserver); TestSharedBillingJourney (internal/cloudentry). Isolated Chrome verified exact browser approval and one fixture provider effect.",
       "decision": "Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259."
+    },
+    {
+      "id": "hubserver.hosted_credit_checkout",
+      "summary": "Purchase hosted AI credits",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_ui.go",
+          "kind": "route",
+          "definition": "e.POST(\"/api/v2/organizations/:organization/billing/credits/checkout\", s.hostedCreditCheckout) [route=\"/api/v2/organizations/:organization/billing/credits/checkout\"]",
+          "occurrence": 1,
+          "line": 41,
+          "method": "POST",
+          "path": "\"/api/v2/organizations/:organization/billing/credits/checkout\"",
+          "handler": "s.hostedCreditCheckout",
+          "resolved_path": "/api/v2/organizations/:organization/billing/credits/checkout"
+        },
+        {
+          "source": "internal/hubserver/hosted_ui.go",
+          "kind": "route",
+          "definition": "e.POST(\"/organization/billing/credits/checkout\", s.hostedCreditCheckout) [route=\"/organization/billing/credits/checkout\"]",
+          "occurrence": 1,
+          "line": 36,
+          "method": "POST",
+          "path": "\"/organization/billing/credits/checkout\"",
+          "handler": "s.hostedCreditCheckout",
+          "resolved_path": "/organization/billing/credits/checkout"
+        },
+        {
+          "source": "internal/web/templates/hosted_billing.templ",
+          "kind": "attribute",
+          "definition": "action={ hostedURL(data, \"/organization/billing/credits/checkout\") }",
+          "occurrence": 1,
+          "line": 93
+        },
+        {
+          "source": "internal/web/templates/hosted_billing.templ",
+          "kind": "form",
+          "definition": "<form method=\"post\" action={ hostedURL(data, \"/organization/billing/credits/checkout\") } class=\"max-w-md space-y-3\">",
+          "occurrence": 1,
+          "line": 93
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(CheckoutResponse,\"POST\",`${base}/billing/credits/checkout`,{ price: input.price, idempotency_key: input.key, })",
+          "occurrence": 1,
+          "line": 421
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "Hosted organization/billing/identity service is absent in an unhosted hub."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "hosted organization owner only; reject support impersonation",
+        "credential_scope": "Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.",
+        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Current handler authority checks: s.hostedBillingOwner(c); configured credit pack; billing credit provider and current organization purchase intent."
+      ],
+      "confirmation": [
+        {
+          "when": "material purchase, portal or budget change",
+          "class": "operator"
+        }
+      ],
+      "application": "s.hostedCreditCheckout; s.hostedBillingOwner, s.creditPack, s.ensureHostedCustomer, ai_credit_purchases and billing.CreditProvider.CreditCheckout",
+      "extraction": "Extract the credit checkout application command and durable purchase-key retry contract from Echo. HTTP and MCP must share current owner checks, configured pack validation and the same purchase intent; do not proxy the handler.",
+      "tool": {
+        "set": "billing_usage",
+        "name": "hosted_credit_checkout",
+        "arguments": "Bounded price identifier (1\u2013256 bytes) and request_id (1\u2013256 bytes); current organization and confirmation mode come from connection authority, never arguments.",
+        "result": "Bounded credit checkout destination URL and purchase receipt; at most 256 KiB; opaque service-unavailable errors.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": true,
+          "idempotent": false,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3345",
+      "status": "pending",
+      "coverage": "TestDashboardCapabilityCoverage inventories the exact browser/API/frontend sites; TestAICreditPaymentConfirmation covers HTTP purchase replay and provider confirmation. MCP authority, approval and replay parity remains pending under #3345.",
+      "decision": "Credit purchases are distinct from implemented subscription checkout. Required operator MCP parity remains pending under #3345; this inventory does not expose a runtime tool."
+    },
+    {
+      "id": "hubserver.hosted_credit_auto_fund",
+      "summary": "Configure hosted AI credit auto-funding",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_ui.go",
+          "kind": "route",
+          "definition": "e.POST(\"/organization/billing/credits/auto-fund\", s.hostedCreditAutoFund) [route=\"/organization/billing/credits/auto-fund\"]",
+          "occurrence": 1,
+          "line": 37,
+          "method": "POST",
+          "path": "\"/organization/billing/credits/auto-fund\"",
+          "handler": "s.hostedCreditAutoFund",
+          "resolved_path": "/organization/billing/credits/auto-fund"
+        },
+        {
+          "source": "internal/hubserver/hosted_ui.go",
+          "kind": "route",
+          "definition": "e.PUT(\"/api/v2/organizations/:organization/billing/credits/auto-fund\", s.hostedCreditAutoFund) [route=\"/api/v2/organizations/:organization/billing/credits/auto-fund\"]",
+          "occurrence": 1,
+          "line": 42,
+          "method": "PUT",
+          "path": "\"/api/v2/organizations/:organization/billing/credits/auto-fund\"",
+          "handler": "s.hostedCreditAutoFund",
+          "resolved_path": "/api/v2/organizations/:organization/billing/credits/auto-fund"
+        },
+        {
+          "source": "internal/web/templates/hosted_billing.templ",
+          "kind": "attribute",
+          "definition": "action={ hostedURL(data, \"/organization/billing/credits/auto-fund\") }",
+          "occurrence": 1,
+          "line": 104
+        },
+        {
+          "source": "internal/web/templates/hosted_billing.templ",
+          "kind": "form",
+          "definition": "<form method=\"post\" action={ hostedURL(data, \"/organization/billing/credits/auto-fund\") } class=\"max-w-md space-y-3\">",
+          "occurrence": 1,
+          "line": 104
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(Empty,\"PUT\",`${base}/billing/credits/auto-fund`,input)",
+          "occurrence": 1,
+          "line": 425
+        },
+        {
+          "source": "web/conversation/src/app/settings/CreditSettings.tsx",
+          "kind": "attribute",
+          "definition": "onSubmit={(event) => { event.preventDefault(); void save.call(); }}",
+          "occurrence": 1,
+          "line": 106
+        },
+        {
+          "source": "web/conversation/src/app/settings/CreditSettings.tsx",
+          "kind": "form",
+          "definition": "<form className=\"flex flex-col gap-3 py-3\" onSubmit={(event) => { event.preventDefault(); void save.call(); }} >",
+          "occurrence": 1,
+          "line": 104
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "Hosted organization/billing/identity service is absent in an unhosted hub."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "hosted organization owner only; reject support impersonation",
+        "credential_scope": "Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.",
+        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Current handler authority checks: s.hostedBillingOwner(c); AI credit mode and billing provider available; enabling requires a configured pack, a positive threshold smaller than the pack and a saved payment method."
+      ],
+      "confirmation": [
+        {
+          "when": "enable or change automatic charges; YOLO suppresses confirmation only",
+          "class": "operator"
+        },
+        {
+          "when": "disable automatic charges",
+          "class": "none"
+        }
+      ],
+      "application": "s.hostedCreditAutoFund; s.hostedBillingOwner, s.creditPack, s.database.hostedBillingBinding, ai_credit_accounts and billing.CreditProvider.SavedCreditPaymentMethod",
+      "extraction": "Extract the auto-fund settings application command from Echo. HTTP and MCP must share current owner checks, pack/threshold/payment-method validation and organization-bound account updates; mutations reuse the shared audit/retry contract (#3338).",
+      "tool": {
+        "set": "billing_usage",
+        "name": "hosted_credit_auto_fund",
+        "arguments": "Bounded enabled boolean, threshold_cents integer and price identifier (1\u2013256 bytes), plus request_id (1\u2013256 bytes) for the shared mutation receipt; current organization and confirmation mode come from connection authority.",
+        "result": "Bounded organization credit auto-fund settings receipt with outcome and freshness; at most 256 KiB; opaque service-unavailable errors.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": true,
+          "idempotent": false,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3345",
+      "status": "pending",
+      "coverage": "TestDashboardCapabilityCoverage inventories the exact browser/API/frontend sites; TestAICreditOwnerSettings and TestAICreditAutoFund cover HTTP owner settings and automatic charges. MCP authority, approval and replay parity remains pending under #3345.",
+      "decision": "Automatic credit funding settings are a separate operator command from subscription checkout. Required operator MCP parity remains pending under #3345; this inventory does not expose a runtime tool."
     },
     {
       "id": "hubserver.hosted_billing_export",
