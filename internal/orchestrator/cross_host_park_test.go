@@ -293,7 +293,7 @@ func TestRecoveryParkAcknowledgementBoundaries(t *testing.T) {
 				cause = spendProgressReason
 			}
 			host := &Orchestrator{cfg: normalizeConfig(Config{})}
-			got := host.recoveryParkAcknowledged(store.WorkflowPhaseEvent{Reason: tt.reason, PreviousPhaseName: tt.from, PhaseName: tt.to}, workflowLaneMetadata{Provenance: provenance.AttributionFromSource(tt.source, provenance.Actor{Login: "shared-user", Kind: "User"})}, workflowLaneBlockedRecoveryMetadata{Owner: tt.owner, Cause: cause}, connector.Issue{}, time.Time{})
+			got := host.recoveryParkAcknowledged(t.Context(), store.WorkflowPhaseEvent{Reason: tt.reason, PreviousPhaseName: tt.from, PhaseName: tt.to}, workflowLaneMetadata{Provenance: provenance.AttributionFromSource(tt.source, provenance.Actor{Login: "shared-user", Kind: "User"})}, workflowLaneBlockedRecoveryMetadata{Owner: tt.owner, Cause: cause}, connector.Issue{}, time.Time{})
 			if got != tt.want {
 				t.Fatalf("acknowledged = %t, want %t", got, tt.want)
 			}
@@ -728,9 +728,9 @@ func TestLegacyRecordedHumanClearanceRetainsNativeAuthority(t *testing.T) {
 		identifier string
 		decision   string
 	}{
-		{"digitaldrywood/pyroapex#2783", "Do not wait for #2784. Add the header menu to the existing Edit Product page. Resume implementation."},
-		{"digitaldrywood/pyroapex#2864", "Use user dates, current destination season, or tenant calendar year as specified. Resume implementation."},
-		{"digitaldrywood/pyroapex#2894", "Drop the Where did things go line and dialog completely. Everything else in the plan stands."},
+		{"example/project#101", "Use the existing page layout and continue the implementation."},
+		{"example/project#102", "Use the specified date window and continue the implementation."},
+		{"example/project#103", "Omit the optional explanation and continue the accepted plan."},
 	}
 	for _, answer := range answers {
 		for _, tt := range []struct {
@@ -816,7 +816,7 @@ func TestLegacyRecordedHumanClearanceRetainsNativeAuthority(t *testing.T) {
 					host.recordLaneTransition(t.Context(), issue, blockedStatusState, releasedAt.Add(2*time.Minute), workpadBlockedUnactionedReason, parkMetadata)
 				}
 				if tt.dependency {
-					issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/pyroapex#9999", State: "Todo"}}
+					issue.BlockedBy = []connector.BlockedRef{{Identifier: "example/project#999", State: "Todo"}}
 				}
 				for _, restarted := range []bool{false, true} {
 					state := newState(host.cfg)
@@ -831,4 +831,99 @@ func TestLegacyRecordedHumanClearanceRetainsNativeAuthority(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestLegacyHumanClearanceSurvivesWorkpadOverwrite(t *testing.T) {
+	for _, persistence := range []string{"available", "failed", "unsupported"} {
+		t.Run(persistence, func(t *testing.T) {
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+			host.cfg.ActiveStates = append(host.cfg.ActiveStates, "rework")
+			issue := recoveryTestIssue()
+			parkedAt := time.Date(2026, 9, 28, 10, 40, 58, 0, time.UTC)
+			answerAt := parkedAt.Add(time.Hour)
+			releasedAt := answerAt.Add(time.Minute)
+			park := &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerHuman, Cause: workpadBlockedUnactionedReason, CauseFingerprint: "native-human-request", TargetState: "Rework"}
+			host.recordLaneTransition(t.Context(), issue, blockedStatusState, parkedAt, workpadBlockedUnactionedReason, workflowLaneMetadata{BlockedRecovery: park})
+			issue.State = blockedStatusState
+			host.recordLaneTransition(t.Context(), issue, "Rework", releasedAt, workflowActionRecordedBlockerRecovery, workflowLaneMetadata{})
+			issue.State = "Rework"
+			issue.StageUpdatedAt = &releasedAt
+			issue.Comments = []connector.IssueComment{{ID: "same-workpad", AuthorLogin: "operator", AuthorAuthorized: true, CreatedAt: &answerAt,
+				Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"}}
+			identity := store.IssueIdentity{ProjectID: host.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL}
+			timeline, err := db.IssueWorkflowTimeline(t.Context(), identity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var released store.WorkflowPhaseEvent
+			for _, event := range timeline.Events {
+				if event.Reason == workflowActionRecordedBlockerRecovery && event.Status == "entered" {
+					released = event
+				}
+			}
+			var original map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(released.MetadataJSON), &original); err != nil {
+				t.Fatal(err)
+			}
+			original["future_context"] = json.RawMessage(`{"unchanged":true}`)
+			raw, err := json.Marshal(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.(WorkflowMetricsMetadataUpdater).UpdateWorkflowPhaseEventMetadata(t.Context(), released.ID, string(raw)); err != nil {
+				t.Fatal(err)
+			}
+			if persistence == "failed" {
+				host.workflowMetrics = failingHumanClearanceMetadataWriter{Store: db}
+			} else if persistence == "unsupported" {
+				host.workflowMetrics = struct{ store.Store }{db}
+			}
+			state := newState(host.cfg)
+			host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{issue})
+			_, held := state.Blocked[issue.ID]
+			if held != (persistence != "available") {
+				t.Fatalf("clearance held = %t with persistence %s", held, persistence)
+			}
+			timelineAfter, err := db.IssueWorkflowTimeline(t.Context(), identity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(timelineAfter.Events) != len(timeline.Events) {
+				t.Fatal("receipt enrichment appended workflow history")
+			}
+			for _, event := range timelineAfter.Events {
+				if event.ID != released.ID {
+					continue
+				}
+				var enriched map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(event.MetadataJSON), &enriched); err != nil {
+					t.Fatal(err)
+				}
+				for key, value := range original {
+					if string(enriched[key]) != string(value) {
+						t.Fatalf("original metadata %s changed", key)
+					}
+				}
+			}
+			issue.Comments[0].Body = strings.Replace(issue.Comments[0].Body, "status: in_progress", "status: complete", 1)
+			updatedAt := releasedAt.Add(time.Minute)
+			issue.Comments[0].UpdatedAt = &updatedAt
+			restarted := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+			restarted.cfg.ActiveStates = append(restarted.cfg.ActiveStates, "rework")
+			state = newState(restarted.cfg)
+			restarted.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{issue})
+			if _, held := state.Blocked[issue.ID]; held != (persistence != "available") {
+				t.Fatalf("overwritten clearance held = %t after restart with persistence %s", held, persistence)
+			}
+		})
+	}
+}
+
+type failingHumanClearanceMetadataWriter struct {
+	store.Store
+}
+
+func (f failingHumanClearanceMetadataWriter) UpdateWorkflowPhaseEventMetadata(context.Context, int64, string) error {
+	return errors.New("instance store unavailable")
 }
