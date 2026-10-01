@@ -297,7 +297,6 @@ type Orchestrator struct {
 	globalDispatchGate      scheduler.ProjectDispatchGate
 	globalDispatchReady     chan struct{}
 	globalDispatchPending   map[string]pendingGlobalDispatch
-	lastDispatchCandidates  []connector.Issue
 	readMemoryPressure      func(context.Context) (hostpressure.Sample, error)
 	readIOPressure          func(context.Context) (hostpressure.Sample, error)
 	readCPUPressure         func(context.Context) (hostpressure.Sample, error)

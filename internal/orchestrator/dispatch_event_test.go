@@ -16,6 +16,7 @@ func TestCompletionRefillsProjectSlotWithoutRefresh(t *testing.T) {
 		wantNextID string
 	}{
 		{name: "ready next candidate", wantNextID: "second"},
+		{name: "new candidate identity", staleKind: "identity", wantNextID: "newly-ready"},
 		{name: "changed lane skipped", staleKind: "lane", wantNextID: "third"},
 		{name: "changed Workpad skipped", staleKind: "workpad", wantNextID: "third"},
 		{name: "changed dependency skipped", staleKind: "dependency", wantNextID: "third"},
@@ -44,6 +45,8 @@ func TestCompletionRefillsProjectSlotWithoutRefresh(t *testing.T) {
 			tracker.mu.Lock()
 			tracker.candidates[0].State = "Done"
 			switch tt.staleKind {
+			case "identity":
+				tracker.candidates[1].ID = "newly-ready"
 			case "lane":
 				tracker.candidates[1].State = "Done"
 			case "dependency":
