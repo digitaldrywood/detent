@@ -835,8 +835,10 @@ which the collector runs before acknowledging a submission. Strict JSON and
 semantic rejections receive bounded diagnostics without echoing candidate IDs,
 criteria, quotes, rationale or raw input. A valid correction in the same runner
 conversation retires the pending rejection; rejected calls do not count as
-accepted evaluations. Two valid submissions still violate the exact-one contract,
-and an uncorrected later rejection remains malformed. All-invalid tool
+accepted evaluations. The producer prompt requires one accepted terminal result
+and permits correcting rejected input within that same conversation, without
+another runner invocation. Two valid submissions still violate the exact-one
+contract, and an uncorrected later rejection remains malformed. All-invalid tool
 conversations cannot fall through to final text. The tool-unavailable typed
 final-text envelope uses the same validator, preserving candidate count and
 fail-closed behavior. Delayed tool validation is removed; final source, dependency,
