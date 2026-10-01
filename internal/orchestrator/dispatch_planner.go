@@ -105,16 +105,7 @@ func (p dispatchPlanner) plan(
 	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
 	knownWaits := make(map[string]bool, len(plannedCandidates))
 	for _, issue := range plannedCandidates {
-		if _, retryDue := dueRetries[issue.ID]; retryDue {
-			continue
-		}
-		_, running := state.Running[issue.ID]
-		_, deferred := state.deferredCompletions[issue.ID]
-		_, retry := state.Retry[issue.ID]
-		_, claimed := state.Claimed[issue.ID]
-		blocked, parked := state.Blocked[issue.ID]
-		knownWaits[issue.ID] = running || deferred || retry || claimed || (parked && !blockedFromDependency(blocked)) ||
-			(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, p.cfg.TerminalStates))
+		knownWaits[issue.ID] = knownDispatchWait(issue, state, dueRetries, p.cfg.TerminalStates)
 	}
 	slices.SortStableFunc(plannedCandidates, func(a, b connector.Issue) int {
 		waitingA, waitingB := knownWaits[a.ID], knownWaits[b.ID]
@@ -291,6 +282,19 @@ func (p dispatchPlanner) plan(
 	plan.BudgetRefusals = budgetRefusalIDs(state.BudgetRefusals)
 	plan.Retry = retryIDs(state.Retry)
 	return plan
+}
+
+func knownDispatchWait(issue connector.Issue, state *State, dueRetries map[string]Retry, terminalStates []string) bool {
+	if _, retryDue := dueRetries[issue.ID]; retryDue {
+		return false
+	}
+	_, running := state.Running[issue.ID]
+	_, deferred := state.deferredCompletions[issue.ID]
+	_, retry := state.Retry[issue.ID]
+	_, claimed := state.Claimed[issue.ID]
+	blocked, parked := state.Blocked[issue.ID]
+	return running || deferred || retry || claimed || (parked && !blockedFromDependency(blocked)) ||
+		(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, terminalStates))
 }
 
 func clearBlockedUnblockerCounts(issues []connector.Issue, blocked map[string]Blocked) {

@@ -148,14 +148,17 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		}
 	}
 	claimRequest := tracker.NativeClaim{
-		PolicyID:  request.Policy.ID,
-		MachineID: s.machine.ID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2,
+		DispatchPriorityByState: request.DispatchPriorityByState,
+		DispatchPriorityByLabel: request.DispatchPriorityByLabel,
+		PrioritizeUnblockers:    request.PrioritizeUnblockers,
+		PolicyID:                request.Policy.ID,
+		MachineID:               s.machine.ID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2,
 		Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: request.WorkflowStates,
 		Authors: request.Filter.Authors, Assignees: request.Filter.Assignees, LabelInclude: request.Filter.LabelInclude, LabelExclude: request.Filter.LabelExclude,
 	}
 	var lease tracker.NativeLease
-	if s.providerReports != nil {
-		lease, err = s.claimProviderCandidate(ctx, request, source, claimRequest)
+	if s.providerReports != nil || request.CandidateReady != nil {
+		lease, err = s.claimPreviewCandidate(ctx, request, source, claimRequest)
 	} else {
 		lease, err = source.client.Claim(ctx, claimRequest)
 	}

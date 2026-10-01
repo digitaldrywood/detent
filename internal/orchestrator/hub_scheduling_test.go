@@ -43,7 +43,7 @@ func TestHubSchedulingCycle(t *testing.T) {
 			runner := &hubSchedulingRunner{started: make(chan struct{}, 1)}
 			cfg := normalizeConfig(Config{
 				PollInterval: 30 * time.Second, MaxConcurrentAgents: 1,
-				DispatchPriorityByState: []string{"Todo"}, TerminalStates: []string{"Done"},
+				DispatchPriorityByState: []string{"Merging", "Rework", "Todo"}, DispatchPriorityByLabel: []string{"hotfix", "bug"}, PrioritizeUnblockers: true, TerminalStates: []string{"Done"},
 				Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets",
 			})
 			orch, err := New(cfg, Dependencies{Connector: trackerBackend, Scheduling: scheduling, Runner: runner, Now: func() time.Time { return now }})
@@ -65,6 +65,13 @@ func TestHubSchedulingCycle(t *testing.T) {
 			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 
 			orch.tick(t.Context(), &state, now)
+			request := scheduling.request
+			if !reflect.DeepEqual(request.DispatchPriorityByState, cfg.DispatchPriorityByState) || !reflect.DeepEqual(request.DispatchPriorityByLabel, cfg.DispatchPriorityByLabel) || !request.PrioritizeUnblockers || request.CandidateLimit != 9 || request.CandidateReady == nil {
+				t.Fatalf("scheduling request lost configured ranking/readiness: %+v", request)
+			}
+			if test.wantRunning && request.CandidateReady(t.Context(), issue) {
+				t.Fatal("running work remained ready for a new native claim")
+			}
 
 			if candidates, ids := trackerBackend.candidateReads.Load(), trackerBackend.idReads.Load(); candidates != 0 || ids != 0 {
 				t.Fatalf("scheduling-time connector reads = candidates %d ids %d, want zero", candidates, ids)
@@ -131,6 +138,7 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 }
 
 type hubSchedulingSource struct {
+	request    SchedulingRequest
 	issue      connector.Issue
 	fetchError error
 	fetches    int
@@ -144,6 +152,7 @@ func (s *hubSchedulingSource) HeartbeatInterval() time.Duration {
 
 func (s *hubSchedulingSource) FetchCandidateIssues(_ context.Context, request SchedulingRequest) ([]connector.Issue, error) {
 	s.fetches++
+	s.request = request
 	if request.Repository != "acme/widgets" {
 		return nil, errors.New("unexpected repository")
 	}
@@ -274,6 +283,59 @@ func TestHubRefillRetainsNewClaims(t *testing.T) {
 			}
 			if tracker.candidateReads.Load() != 0 {
 				t.Fatal("Hub refill read tracker candidates")
+			}
+		})
+	}
+}
+
+func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name  string
+		state string
+		setup func(*State, connector.Issue)
+		want  bool
+	}{
+		{name: "ready todo", state: "Todo", want: true},
+		{name: "merging state full", state: "Merging", setup: func(s *State, _ connector.Issue) {
+			s.Running["other"] = Running{Issue: dispatchTestIssue("other", "Merging")}
+		}},
+		{name: "future rework retry", state: "Rework", setup: func(s *State, issue connector.Issue) {
+			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(time.Hour)}
+		}},
+		{name: "due rework retry remains owned", state: "Rework", setup: func(s *State, issue connector.Issue) {
+			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2}
+		}, want: true},
+		{name: "fresh native dependency cleared", state: "Todo", setup: func(s *State, issue connector.Issue) {
+			s.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceDependency, Reason: blockedReasonDependency}
+		}, want: true},
+		{name: "running work never preempted", state: "Merging", setup: func(s *State, issue connector.Issue) {
+			s.Running[issue.ID] = Running{Issue: issue, cancel: func() { t.Error("preview cancelled running work") }}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MaxConcurrentAgentsByState: map[string]int{"Merging": 1}, ActiveStates: []string{"Merging", "Rework", "Todo"}, TerminalStates: []string{"Done"}, Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets"})
+			issue := dispatchTestIssue("candidate", test.state)
+			issue.DependencySource = connector.BlockedRefSourceNative
+			source := &hubSchedulingSource{issue: issue}
+			o := Orchestrator{cfg: cfg, connector: &hubSchedulingConnector{}, scheduling: source, now: func() time.Time { return now }}
+			state := newState(cfg)
+			if test.setup != nil {
+				test.setup(&state, issue)
+			}
+			beforeRetry, hadRetry := state.Retry[issue.ID]
+			beforeBlocked, hadBlocked := state.Blocked[issue.ID]
+			beforeRunning := len(state.Running)
+			if _, err := o.fetchCandidateIssuesForTick(t.Context(), &state); err != nil {
+				t.Fatal(err)
+			}
+			if ready := source.request.CandidateReady(t.Context(), issue); ready != test.want {
+				t.Fatalf("ready = %t, want %t", ready, test.want)
+			}
+			afterRetry, hasRetry := state.Retry[issue.ID]
+			afterBlocked, hasBlocked := state.Blocked[issue.ID]
+			if hadRetry != hasRetry || hadBlocked != hasBlocked || !reflect.DeepEqual(afterRetry, beforeRetry) || !reflect.DeepEqual(afterBlocked, beforeBlocked) || len(state.Running) != beforeRunning {
+				t.Fatal("pre-lease readiness mutated live scheduling state")
 			}
 		})
 	}

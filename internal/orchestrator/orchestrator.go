@@ -179,12 +179,18 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
-	ProviderRequirement func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
-	Policy              policy.Descriptor
-	ProjectID           string
-	Repository          string
-	WorkflowStates      []string
-	Filter              connector.IssueFilterHint
+	DispatchPriorityByState []string
+	DispatchPriorityByLabel []string
+	PrioritizeUnblockers    bool
+	CandidateReady          func(context.Context, connector.Issue) bool
+	CandidateKnownWait      func(connector.Issue) bool
+	CandidateLimit          int
+	ProviderRequirement     func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
+	Policy                  policy.Descriptor
+	ProjectID               string
+	Repository              string
+	WorkflowStates          []string
+	Filter                  connector.IssueFilterHint
 }
 
 type SchedulingSource interface {

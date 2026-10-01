@@ -18,21 +18,20 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	}
 	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		scope := nativeRequestScope(c)
-		if scope.credential.Runner.RunnerID == "" {
-			return nil, nativeInvalid("Provider selection requires an enrolled runner")
-		}
 		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 			return nil, err
 		}
 		if err := authorizeClaimScope(ctx, tx, tracker.ClaimRequest{MachineID: request.MachineID}, &scope); err != nil {
 			return nil, err
 		}
-		query := claimCandidateQuery{PolicyID: request.PolicyID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
+		query := claimCandidateQuery{DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers, PolicyID: request.PolicyID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
 		if _, err := validateClaimPolicy(ctx, tx, query, request.MachineID); err != nil {
 			return nil, err
 		}
-		if err := validateRunnerDispatch(ctx, tx, scope, now); err != nil {
-			return nil, err
+		if scope.credential.Runner.RunnerID != "" {
+			if err := validateRunnerDispatch(ctx, tx, scope, now); err != nil {
+				return nil, err
+			}
 		}
 		ids, err := claimCandidateIDs(ctx, tx, query, nil, nil, normalizedQueryStrings(request.WorkflowStates), normalizedQueryStrings(request.Authors), normalizedQueryStrings(request.Assignees), normalizedQueryStrings(request.LabelInclude), normalizedQueryStrings(request.LabelExclude), nil)
 		if err != nil {
@@ -50,6 +49,13 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 				return nil, err
 			}
 			if found && lease.session.ExpiresAt.After(now) {
+				continue
+			}
+			ready, err := nativeLandingCandidateReady(ctx, tx, &scope, id, now)
+			if err != nil {
+				return nil, err
+			}
+			if !ready {
 				continue
 			}
 			var native string

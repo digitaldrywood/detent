@@ -674,12 +674,43 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	}
 	if o.scheduling != nil {
 		request := SchedulingRequest{
-			Policy:         o.cfg.Policy,
-			ProjectID:      o.cfg.Project.ID,
-			Repository:     o.cfg.SchedulingRepository,
-			WorkflowStates: states,
-			Filter:         o.authorizationFilterHint(),
+			DispatchPriorityByState: append([]string(nil), o.cfg.DispatchPriorityByState...),
+			DispatchPriorityByLabel: append([]string(nil), o.cfg.DispatchPriorityByLabel...),
+			PrioritizeUnblockers:    o.cfg.PrioritizeUnblockers,
+			CandidateLimit:          o.dispatchPlanner().hardAvailableSlots(state) + dispatchCandidateLookahead,
+			Policy:                  o.cfg.Policy,
+			ProjectID:               o.cfg.Project.ID,
+			Repository:              o.cfg.SchedulingRepository,
+			WorkflowStates:          states,
+			Filter:                  o.authorizationFilterHint(),
 		}
+		request.CandidateKnownWait = func(issue connector.Issue) bool {
+			now := time.Now()
+			if o.now != nil {
+				now = o.now()
+			}
+			return knownDispatchWait(issue, state, dueRetriesByIssue(state, now), o.cfg.TerminalStates)
+		}
+		request.CandidateReady = func(ctx context.Context, issue connector.Issue) bool {
+			now := time.Now()
+			if o.now != nil {
+				now = o.now()
+			}
+			preview := state.clone()
+			if blocked, exists := preview.Blocked[issue.ID]; exists && blockedFromDependency(blocked) && issue.DependencySource == connector.BlockedRefSourceNative && !issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
+				delete(preview.Blocked, issue.ID)
+			}
+			planner := o.liveDispatchPlanner(ctx, nil)
+			if retry, ok := preview.Retry[issue.ID]; ok {
+				if retry.DueAt.After(now) {
+					return false
+				}
+				_, ready, _ := planner.retryAction(&preview, issue, retry, now)
+				return ready
+			}
+			return planner.dispatchable(issue, &preview, now)
+		}
+
 		if resolver := o.providerCapacity; resolver != nil {
 			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
 				return resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext(), ProviderReports: reports})

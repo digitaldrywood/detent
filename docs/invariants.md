@@ -2803,6 +2803,26 @@ is not an authorized resurrection.
 
 ## INV-10 — Priority only picks the next job
 
+Native claim and provider preview carry the project's existing dispatch state,
+label and unblocker policy to the shared `dispatchpriority` comparator before
+acquiring a lease. Merging overrides numeric priority only when that project
+configures Merging first; native queue rank remains a tie-breaker after the
+configured priorities. Both paths retain native scope, dependencies, live
+leases, current reviewed Change Request readiness and policy/runner authority.
+Runner home selection uses the same requested dispatch states and readiness;
+its project grants and spillover rules remain authoritative.
+The existing preview evaluates local readiness before claim within the free-slot
+plus eight-candidate allowance. The planner's existing known-wait classification
+excludes known local waits from expensive evaluation. Unavailable local or
+provider candidates fall through without a lease or capacity hold. Claim rechecks current revisions and
+provider capacity, and dispatch retains its fresh checks. This consolidates
+selection under INV-3 without a new queue, configuration key, reservation,
+preemption or recovery mechanism. Landing protections and refusal evidence
+remain owned by the existing landing path.
+`TestProviderQueueOrderAndSelectors` covers native claim/preview ordering and
+unavailable-head fallthrough; `TestProviderSchedulerEndToEnd` covers pre-lease
+local readiness and provider fallback.
+
 Project dispatch evaluates candidates in the existing priority order, with at
 most the initial free project slots plus eight candidates of lookahead per pass
 (#3190). Failed hydration, dependency waits, due retries, and rejected dispatches
