@@ -224,6 +224,25 @@ resource projection and entry/session binding. `TestConnectionActions` and
 `TestMCPActionApprovalBoundary` cover exact preview, replay, rejection, stale
 targets, closed protocol sessions, self-approval and operator-selected YOLO.
 
+Cloud API and MCP setup (#3745) reuse expiring `api_tokens`, bound to the
+issuing user, organization and membership, with selected read/write/admin scope
+and existing project grants. The canonical organization MCP endpoint accepts
+bearer JSON POSTs without browser cookies or CSRF; shared-entry machine
+assertions authenticate transport, while the tenant resolves the operator key.
+Every API authentication and MCP discovery/call/approved execution resolves
+current provider membership, the lesser provider/local role, active issuer
+principal, key expiry/revocation and the intersection of key and user project
+grants. Keys cannot switch organizations, elevate their issuer, become runner
+credentials, manage keys through bearer traffic, or approve operations. Browser
+key creation/revocation retain session/CSRF authorization; listings expose only
+metadata and creation returns the secret once. Key-originated material previews
+retain their original credential authority and use the existing browser approval
+surface. No parallel credential system or lane writer is added.
+`TestHostedAPIKeyCurrentAuthority`, `TestHostedAPIKeyManagement`,
+`TestSharedOriginAPIKeyConnection` and key cases in
+`TestHostedOperatorPolicyApproval` cover these boundaries. The tested client
+handoff and release verification procedure are in [API & MCP setup](api-mcp-setup.md).
+
 Workspace/conversation/action MCP commands (#3346) share extracted native dashboard
 commands and the existing `native_commands` receipts. Direct calls and approved
 execution resolve current project/resource authority and runner grants; hosted

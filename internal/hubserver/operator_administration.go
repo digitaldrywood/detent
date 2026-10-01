@@ -41,6 +41,9 @@ func (a hubAdministration) credential(ctx context.Context) (apiCredential, error
 		return apiCredential{}, operatortool.ErrAccessDenied
 	}
 	s := a.service
+	if resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (apiCredential, error)); ok {
+		return resolve(ctx)
+	}
 	if c.Identity.SessionID != "" {
 		session, err := s.storedWebSession(ctx, c.Identity.SessionID, s.config.now())
 		if err != nil || session.Identity == nil {
@@ -178,7 +181,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		}
 	}
 	if name == operatortool.OrganizationSwitch || name == operatortool.InvitationAccept {
-		if s.hostedShared() || credential.Hosted.SupportActor != "" {
+		if s.hostedShared() || credential.Hosted.SupportActor != "" || credential.HostedKeyScope != "" {
 			return operatortool.ErrAccessDenied
 		}
 		if name == operatortool.OrganizationSwitch && in.OrganizationID != "" {
@@ -224,7 +227,7 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 	switch name {
 	case operatortool.OrganizationSession:
 		setup := hostedAccountSetup{}
-		if credential.Hosted != nil {
+		if credential.Hosted != nil && credential.SessionHash != "" {
 			session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
 			if err != nil {
 				return nil, err
@@ -591,7 +594,7 @@ func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenRespon
 
 func (s *Service) hostedOrganizationChoicesFor(ctx context.Context, credential apiCredential) ([]nativeOrganization, error) {
 	choices := []nativeOrganization{{ID: tracker.OrganizationID(s.config.Hosted.OrganizationID), Name: s.config.Hosted.OrganizationID}}
-	if s.hostedShared() || credential.Hosted.SupportActor != "" {
+	if s.hostedShared() || credential.Hosted.SupportActor != "" || credential.HostedKeyScope != "" {
 		return choices, nil
 	}
 	for _, destination := range s.config.Hosted.Directory {

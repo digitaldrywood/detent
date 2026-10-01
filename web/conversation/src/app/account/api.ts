@@ -11,6 +11,8 @@ import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts
 import * as Schema from "effect/Schema";
 
 import {
+  CreatedOperatorAPIKey,
+  OperatorAPIKeys,
   BillingReport,
   CheckoutResponse,
   CreateOrganizationResponse,
@@ -152,6 +154,10 @@ export function makeAccountApi(options: AccountApiOptions) {
   const project = (projectId: string) => `${base}/projects/${encodeURIComponent(projectId)}`;
 
   return {
+    apiKeys: () => send(OperatorAPIKeys, "GET", `${base}/api-keys`),
+    createAPIKey: (input: { name: string; scope: string; expires_days: number; project_ids: readonly string[] }) =>
+      send(CreatedOperatorAPIKey, "POST", `${base}/api-keys`, input),
+    revokeAPIKey: (id: string) => send(null, "DELETE", `${base}/api-keys/${encodeURIComponent(id)}`),
     origin: options.origin,
     apiBase: base,
     csrfToken: options.csrfToken,

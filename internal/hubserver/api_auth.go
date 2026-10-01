@@ -34,6 +34,8 @@ type apiCredential struct {
 	// HostedMembership is the provider membership the credential was
 	// resolved from; mutation rechecks compare it against the member row.
 	HostedMembership string
+	HostedPrincipal  string
+	HostedKeyScope   apikey.Scope
 	ManageRunners    bool
 	SessionHash      string
 	Hash             string
@@ -53,8 +55,12 @@ type apiErrorResponse struct {
 }
 
 type tokenRequest struct {
-	Name  string   `json:"name"`
-	Scope apiScope `json:"scope"`
+	Name       string         `json:"name"`
+	Scope      apiScope       `json:"scope"`
+	Issuer     *apiCredential `json:"-"`
+	KeyScope   apikey.Scope   `json:"-"`
+	ExpiresAt  *time.Time     `json:"-"`
+	ProjectIDs []string       `json:"-"`
 }
 
 type tokenGrantResponse struct {
@@ -62,6 +68,8 @@ type tokenGrantResponse struct {
 	ProjectID      string `json:"project_id"`
 }
 type tokenResponse struct {
+	ExpiresAt   *time.Time           `json:"expires_at,omitempty"`
+	KeyScope    apikey.Scope         `json:"key_scope,omitempty"`
 	NativeOnly  bool                 `json:"native_only"`
 	RevokedAt   *time.Time           `json:"revoked_at,omitempty"`
 	Grants      []tokenGrantResponse `json:"grants"`
@@ -110,6 +118,9 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 				if credential.Hosted != nil && (!strings.HasPrefix(c.Path(), nativeBase) || strings.HasSuffix(c.Path(), "/checks") || strings.Contains(c.Path(), "/imports")) {
 					return s.nativeAPIError(c, nativeNotFound())
 				}
+			}
+			if credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite) && !hostedReadRequest(c) {
+				return c.NoContent(http.StatusForbidden)
 			}
 			if credential.Runner.RunnerID != "" && !runnerOperationAllowed(c, credential.Runner.Operations) {
 				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
@@ -187,6 +198,12 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
 	credential.Hash = hash
+	if s.config.Hosted != nil {
+		credential, err = s.hostedAPITokenCredential(ctx, credential, createdAt, expiresAt)
+		if err != nil {
+			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
+		}
+	}
 	if _, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, fmt.Errorf("record hub API token use: %w", err)
 	}

@@ -764,3 +764,16 @@ export const ProjectSecretStatus = Schema.Struct({
  key_version: Schema.optional(Schema.Number),
 });
 export type ProjectSecretStatus = typeof ProjectSecretStatus.Type;
+
+export const OperatorAPIKey = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  scope: Schema.Literals(["read", "write", "admin"]),
+  expires_at: Schema.String,
+  fingerprint: Schema.String,
+  revoked: Schema.Boolean,
+  project_ids: Schema.Array(Schema.String),
+});
+export type OperatorAPIKey = typeof OperatorAPIKey.Type;
+export const OperatorAPIKeys = Schema.Struct({ keys: Schema.Array(OperatorAPIKey) });
+export const CreatedOperatorAPIKey = Schema.Struct({ token: Schema.String });

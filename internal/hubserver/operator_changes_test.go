@@ -17,7 +17,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -285,7 +287,7 @@ func TestOperatorArtifactResults(t *testing.T) {
 func TestHostedOperatorPolicyApproval(t *testing.T) {
 	for _, tool := range []string{operatortool.ApproveChangeReviewPolicy, operatortool.BindArtifactService} {
 		t.Run(tool, func(t *testing.T) {
-			for _, scenario := range []string{"confirm", "reject", "YOLO", "role lost", "stale policy", "API approval", "policy floor"} {
+			for _, scenario := range []string{"confirm", "reject", "YOLO", "role lost", "stale policy", "API approval", "policy floor", "key confirm", "key revoked", "key approval"} {
 				if tool == operatortool.BindArtifactService && (scenario == "stale policy" || scenario == "policy floor") {
 					continue
 				}
@@ -297,7 +299,25 @@ func TestHostedOperatorPolicyApproval(t *testing.T) {
 						ctxs <- operatortool.BindConnection(c.Request().Context(), "policy-connection", "generic-client")
 						return c.NoContent(http.StatusOK)
 					}, f.service.operatorAuthority)
-					requireNativeStatus(t, f.request(t, u, http.MethodGet, "/capture-authority", nil), http.StatusOK)
+					var key tokenResponse
+					if strings.HasPrefix(scenario, "key ") {
+						issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: u.identity.Hosted, Email: u.identity.Email}, apikey.HashToken(u.token))
+						if err != nil {
+							t.Fatal(err)
+						}
+						expiry := time.Now().Add(time.Hour)
+						key, err = f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "approval-client", Scope: apiScopeAdmin, Issuer: &issuer, KeyScope: apikey.ScopeAdmin, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project)}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						r := httptest.NewRequest(http.MethodGet, "/capture-authority", nil)
+						r.Header.Set("Authorization", "Bearer "+key.Token)
+						response := httptest.NewRecorder()
+						f.service.Handler().ServeHTTP(response, r)
+						requireNativeStatus(t, response, http.StatusOK)
+					} else {
+						requireNativeStatus(t, f.request(t, u, http.MethodGet, "/capture-authority", nil), http.StatusOK)
+					}
 					ctx := <-ctxs
 					ex := hubOperatorExecutor{f.service}
 					if err := ex.OpenConnection(ctx); err != nil {
@@ -371,6 +391,11 @@ func TestHostedOperatorPolicyApproval(t *testing.T) {
 					if scenario == "role lost" {
 						operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", u.identity.Subject)
 					}
+					if scenario == "key revoked" {
+						if err := f.service.revokeAPITokenFor(t.Context(), key.ID); err != nil {
+							t.Fatal(err)
+						}
+					}
 
 					if scenario == "role lost" {
 						definitions, err := ex.ListTools(ctx)
@@ -392,10 +417,13 @@ func TestHostedOperatorPolicyApproval(t *testing.T) {
 						requireNativeStatus(t, f.request(t, u, http.MethodPut, f.base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "concurrent-policy"}, Policy: *args.Policy}), http.StatusOK)
 					}
 					var response *httptest.ResponseRecorder
-					if scenario == "API approval" {
+					if scenario == "API approval" || scenario == "key approval" {
 						r := httptest.NewRequest(http.MethodPost, "/chat/approval", strings.NewReader(form.Encode()))
 						r.Header.Set("Content-Type", echo.MIMEApplicationForm)
 						r.Header.Set("Authorization", "Bearer forged")
+						if scenario == "key approval" {
+							r.Header.Set("Authorization", "Bearer "+key.Token)
+						}
 						response = httptest.NewRecorder()
 						f.service.echo.ServeHTTP(response, r)
 					} else {
@@ -407,7 +435,7 @@ func TestHostedOperatorPolicyApproval(t *testing.T) {
 						if a.Status != chat.ActionRejected {
 							t.Fatal("rejection ignored")
 						}
-					} else if scenario == "confirm" {
+					} else if scenario == "confirm" || scenario == "key confirm" {
 						requireNativeStatus(t, response, http.StatusSeeOther)
 						action, _ := f.service.operatorChat.Action("policy-connection", preview.ID)
 						if action.Status != chat.ActionSucceeded {
@@ -426,7 +454,7 @@ func TestHostedOperatorPolicyApproval(t *testing.T) {
 					} else if response.Code < 400 {
 						t.Fatalf("invalid authorization/policy succeeded: %d", response.Code)
 					}
-					if scenario != "confirm" {
+					if scenario != "confirm" && scenario != "key confirm" {
 						assertNoEffect()
 					}
 				})
