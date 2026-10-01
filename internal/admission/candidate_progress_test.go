@@ -2,8 +2,10 @@ package admission
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -227,9 +230,10 @@ func TestManagerPartialReadWithStaleHistory(t *testing.T) {
 func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, source            string
-		enabled, human, unknown bool
-		wantFirst               string
+		name, source, prerequisite, snapshotState string
+		enabled, human, unknown, bodyOnly         bool
+		wantReady                                 bool
+		wantFirst                                 string
 	}{
 		{name: "active frontier", source: "Rework", enabled: true, wantFirst: "frontier"},
 		{name: "blocked frontier", source: "Blocked", enabled: true, wantFirst: "frontier"},
@@ -237,12 +241,43 @@ func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 		{name: "unaccepted backlog dependent", source: "Backlog", enabled: true, wantFirst: "older"},
 		{name: "human dependent", source: "Blocked", enabled: true, human: true, wantFirst: "older"},
 		{name: "unavailable owner", source: "Rework", enabled: true, unknown: true, wantFirst: "older"},
+		{name: "fresh closed prerequisite", source: "Todo", enabled: true, prerequisite: "closed", wantReady: true, wantFirst: "frontier"},
+		{name: "fresh merged prerequisite", source: "Todo", enabled: true, prerequisite: "merged", wantReady: true, wantFirst: "frontier"},
+		{name: "fresh open prerequisite", source: "Todo", enabled: true, prerequisite: "open", snapshotState: "Done", wantFirst: "older"},
+		{name: "missing prerequisite", source: "Todo", enabled: true, prerequisite: "missing", snapshotState: "Done", wantFirst: "older"},
+		{name: "failed prerequisite read", source: "Todo", enabled: true, prerequisite: "error", snapshotState: "Done", wantFirst: "older"},
+		{name: "closed unverified human prerequisite", source: "Todo", enabled: true, prerequisite: "human", snapshotState: "Done", wantFirst: "older"},
+		{name: "body-only closed prerequisite", source: "Todo", enabled: true, prerequisite: "closed", bodyOnly: true, wantReady: true, wantFirst: "frontier"},
+		{name: "body-only open prerequisite", source: "Todo", enabled: true, prerequisite: "open", bodyOnly: true, wantFirst: "older"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 30, 22, 30, 0, 0, time.UTC)
 			older := admissionIssueFixture("older", "owner/repo#1", 0, now.Add(-time.Hour))
 			frontier := admissionIssueFixture("frontier", "owner/repo#3242", 0, now)
+			prerequisite := admissionIssueFixture("prerequisite", "owner/repo#2", 0, now)
+			prerequisite.State = "Todo"
+			switch tt.prerequisite {
+			case "closed", "human":
+				prerequisite.Closed = true
+				prerequisite.State = "Done"
+			case "merged":
+				prerequisite.PullRequest = &connector.PullRequest{State: "merged"}
+			}
+			if tt.prerequisite == "human" {
+				prerequisite.Labels = []string{"human-owned"}
+			}
+			if tt.prerequisite != "" {
+				if tt.bodyOnly {
+					frontier.Description += "\nDepends on: #2"
+				} else {
+					state := tt.snapshotState
+					if state == "" {
+						state = "Backlog"
+					}
+					frontier.BlockedBy = []connector.BlockedRef{{ID: prerequisite.ID, Identifier: prerequisite.Identifier, State: state, Source: connector.BlockedRefSourceNative}}
+				}
+			}
 			dependent := admissionIssueFixture("dependent", "owner/repo#3187", 0, now)
 			dependent.State = tt.source
 			dependent.BlockedBy = []connector.BlockedRef{{ID: frontier.ID, Identifier: frontier.Identifier, State: "Backlog"}}
@@ -250,8 +285,17 @@ func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 				dependent.Labels = []string{"human-owned"}
 			}
 			cohort := []connector.Issue{dependent, dependent}
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{older, frontier}, Stateful: true})
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{older, frontier, prerequisite}, Stateful: true})
 			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{})
+			resolver := &dependencyAdmissionTracker{IssueStore: tracker, issues: []connector.Issue{prerequisite}}
+			if tt.prerequisite == "missing" {
+				resolver.issues = nil
+			}
+			if tt.prerequisite == "error" {
+				resolver.err = errors.New("inaccessible prerequisite")
+			}
+			settings.Issues = resolver
+			settings.dependencies = make(map[string]*runner.AdmissionDependencies)
 			settings.DispatchStates = []string{"Merging", "Rework", "In Progress", "Todo"}
 			settings.TerminalStates = []string{"Done"}
 			settings.PrioritizeBlockers = tt.enabled
@@ -278,6 +322,25 @@ func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 			}
 			if got[0].ID == "frontier" && got[0].UnblockerCount != 1 {
 				t.Fatalf("duplicate-dependent count=%d", got[0].UnblockerCount)
+			}
+			wantReads := 0
+			if tt.prerequisite != "" {
+				wantReads = 1
+				if evidence := settings.dependencies[frontier.ID]; evidence == nil || evidence.Ready != tt.wantReady {
+					t.Fatalf("fresh dependency evidence=%+v", evidence)
+				}
+			}
+			if resolver.calls != wantReads {
+				t.Fatalf("dependency reads=%d want=%d", resolver.calls, wantReads)
+			}
+			for _, candidate := range got {
+				if candidate.ID == frontier.ID {
+					expected := frontier
+					expected.UnblockerCount = candidate.UnblockerCount
+					if !reflect.DeepEqual(candidate, expected) || issueFingerprint(candidate, settings.dependencies[frontier.ID]) != issueFingerprint(frontier, settings.dependencies[frontier.ID]) {
+						t.Fatalf("ranking changed candidate authority or fingerprint: %+v", candidate)
+					}
+				}
 			}
 		})
 	}
