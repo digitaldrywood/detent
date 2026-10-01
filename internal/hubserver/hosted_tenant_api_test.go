@@ -49,6 +49,10 @@ func TestHostedTenantAPIAuthorization(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
 	owner := f.cookies["owner"]
+	viewer := f.cookies["viewer"]
+	if owner == nil || viewer == nil {
+		t.Fatal("owner or viewer session cookie is missing")
+	}
 	csrf := map[string]string{"X-CSRF-Token": hostedCSRF(owner.Value)}
 	invite := `{"email":"boundary@example.test","role":"member","idempotency_key":"boundary"}`
 	project := `{"name":"Boundary project","grant_access":true,"idempotency_key":"boundary"}`
@@ -71,9 +75,9 @@ func TestHostedTenantAPIAuthorization(t *testing.T) {
 		{name: "project without CSRF", account: "owner", method: http.MethodPost, path: "/projects", body: project, status: http.StatusForbidden, code: "invalid_csrf"},
 		{name: "bearer on the session API", method: http.MethodPost, path: "/members/invitations", body: invite, headers: map[string]string{"Authorization": "Bearer " + testHubAdminToken}, status: http.StatusForbidden, code: "forbidden"},
 		{name: "bearer member read", method: http.MethodGet, path: "/members", headers: map[string]string{"Authorization": "Bearer " + testHubAdminToken}, status: http.StatusForbidden, code: "forbidden"},
-		{name: "viewer invites", account: "viewer", method: http.MethodPost, path: "/members/invitations", body: invite, headers: map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["viewer"].Value)}, status: http.StatusForbidden, code: "forbidden"},
-		{name: "viewer revokes an invitation", account: "viewer", method: http.MethodDelete, path: "/members/invitations/invitation_browser_1", headers: map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["viewer"].Value)}, status: http.StatusForbidden, code: "forbidden"},
-		{name: "viewer creates a project", account: "viewer", method: http.MethodPost, path: "/projects", body: project, headers: map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["viewer"].Value)}, status: http.StatusNotFound, code: "not_found"},
+		{name: "viewer invites", account: "viewer", method: http.MethodPost, path: "/members/invitations", body: invite, headers: map[string]string{"X-CSRF-Token": hostedCSRF(viewer.Value)}, status: http.StatusForbidden, code: "forbidden"},
+		{name: "viewer revokes an invitation", account: "viewer", method: http.MethodDelete, path: "/members/invitations/invitation_browser_1", headers: map[string]string{"X-CSRF-Token": hostedCSRF(viewer.Value)}, status: http.StatusForbidden, code: "forbidden"},
+		{name: "viewer creates a project", account: "viewer", method: http.MethodPost, path: "/projects", body: project, headers: map[string]string{"X-CSRF-Token": hostedCSRF(viewer.Value)}, status: http.StatusNotFound, code: "not_found"},
 		{name: "invite without idempotency key", account: "owner", method: http.MethodPost, path: "/members/invitations", body: `{"email":"key@example.test","role":"member"}`, headers: csrf, status: http.StatusUnprocessableEntity, code: "invalid_request"},
 		{name: "invite with unknown field", account: "owner", method: http.MethodPost, path: "/members/invitations", body: `{"email":"key@example.test","role":"member","idempotency_key":"k","admin":true}`, headers: csrf, status: http.StatusUnprocessableEntity, code: "invalid_request"},
 		{name: "invite staff address", account: "owner", method: http.MethodPost, path: "/members/invitations", body: `{"email":"staff@example.test","role":"member","idempotency_key":"staff"}`, headers: csrf, status: http.StatusUnprocessableEntity, code: "invalid_request"},
@@ -642,9 +646,13 @@ func TestHostedInvitationKeyClaim(t *testing.T) {
 func TestHostedInvitationConcurrentKeyInvitesOnce(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
+	owner := f.cookies["owner"]
+	if owner == nil {
+		t.Fatal("owner session cookie is missing")
+	}
 	path := browserHostedOrganizationBase + "/members/invitations"
 	body := `{"email":"race@example.test","role":"member","idempotency_key":"race"}`
-	headers := map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["owner"].Value)}
+	headers := map[string]string{"X-CSRF-Token": hostedCSRF(owner.Value)}
 	const requests = 8
 	start := make(chan struct{})
 	responses := make(chan *httptest.ResponseRecorder, requests)
