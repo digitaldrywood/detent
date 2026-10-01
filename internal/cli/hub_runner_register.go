@@ -17,6 +17,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -111,7 +112,7 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
 			for _, project := range projects {
 				workdir := filepath.Join(paths.workspaces, project.Name)
-				result.Projects = append(result.Projects, runnerRegisteredCheck{Name: project.Name, ID: project.ID, Workdir: workdir, Checkout: runnerCheckoutReady(workdir)})
+				result.Projects = append(result.Projects, runnerRegisteredCheck{Name: project.Name, ID: project.ID, Workdir: workdir, Checkout: runnerCheckoutReady(cmd.Context(), globalconfig.Project{Workdir: workdir})})
 			}
 			config := runnerConfig(base, org, name, capacity, paths, result.Projects)
 			result.Created, err = writeRunnerConfig(paths.config, config)
@@ -130,7 +131,7 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 				for _, project := range configuration.Projects {
 					result.Projects = append(result.Projects, runnerRegisteredCheck{
 						Name: project.ID, ID: tracker.ProjectID(configuration.Client.NativeProjects[project.ID]),
-						Workdir: project.Workdir, Checkout: runnerCheckoutReady(project.Workdir),
+						Workdir: project.Workdir, Checkout: runnerCheckoutReady(cmd.Context(), project),
 					})
 				}
 			}
@@ -199,13 +200,17 @@ func prepareRunnerIdentity(path, base string, org tracker.OrganizationID) error 
 	return nil
 }
 
-// runnerCheckoutReady reports whether a project's checkout can boot: a
-// repository with its WORKFLOW.md.
-func runnerCheckoutReady(workdir string) bool {
-	if _, err := os.Stat(filepath.Join(workdir, ".git")); err != nil {
+func runnerCheckoutReady(ctx context.Context, selected globalconfig.Project) bool {
+	if selected.Workdir == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(workdir, "WORKFLOW.md"))
+	if _, err := os.Stat(filepath.Join(selected.Workdir, ".git")); err != nil {
+		return false
+	}
+	if strings.TrimSpace(selected.Workflow) == "" && strings.TrimSpace(selected.WorkflowRef) == "" {
+		selected.Workflow = filepath.Join(selected.Workdir, "WORKFLOW.md")
+	}
+	_, err := project.LoadWorkflowContext(ctx, selected)
 	return err == nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -76,10 +77,10 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	for name, id := range clientConfig.NativeProjects {
 		nativeProjects[name] = tracker.ProjectID(id)
 	}
-	checkoutRoots := make(map[string]string, len(nativeProjects))
-	for _, project := range cfg.Projects {
-		if _, ok := nativeProjects[project.ID]; ok {
-			checkoutRoots[project.ID] = project.Workdir
+	checkouts := make(map[string]globalconfig.Project, len(nativeProjects))
+	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
+		if _, ok := nativeProjects[selected.ID]; ok {
+			checkouts[selected.ID] = selected
 		}
 	}
 	var providerReports func() ([]providercapacity.Report, error)
@@ -113,7 +114,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		CheckoutRepository: func(project string) string {
-			return runnerCheckoutRepository(ctx, checkoutRoots[project])
+			return runnerCheckoutRepository(ctx, checkouts[project])
 		},
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
@@ -132,11 +133,11 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	})
 }
 
-func runnerCheckoutRepository(ctx context.Context, root string) string {
-	if root == "" || !runnerCheckoutReady(root) {
+func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project) string {
+	if !runnerCheckoutReady(ctx, selected) {
 		return ""
 	}
-	remote, err := defaultGitRemoteURL(ctx, root)
+	remote, err := defaultGitRemoteURL(ctx, selected.Workdir)
 	if err != nil {
 		return ""
 	}
