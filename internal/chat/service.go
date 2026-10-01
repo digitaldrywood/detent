@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -126,14 +127,40 @@ func (s *Service) Send(ctx context.Context, sessionID string, content string) (C
 	}
 	current.messages = append(current.messages, Message{ID: messageID, Role: RoleUser, Content: content, At: s.now().UTC()})
 
+	tools := Tools()
+	if current.connection != nil {
+		tools = tools[:len(operatortool.Catalog())]
+	}
 	actionsBefore := len(current.actions)
 	response, err := s.provider.Reply(ctx, TurnRequest{
 		ThreadID: current.threadID,
 		Prompt:   content,
-		Tools:    Tools(),
+		Tools:    tools,
 		Handle: func(ctx context.Context, call ToolCall) (ToolResult, error) {
 			if s.tools == nil {
 				return ToolResult{}, errors.New("chat tools unavailable")
+			}
+			if current.connection != nil {
+				allowed := false
+				for _, definition := range operatortool.Catalog() {
+					if definition.Name == call.Name {
+						allowed = true
+					}
+				}
+				if !allowed {
+					return ToolResult{}, operatortool.ErrAccessDenied
+				}
+				var selector struct {
+					ProjectID string `json:"project_id"`
+				}
+				if json.Unmarshal(call.Arguments, &selector) != nil {
+					return ToolResult{}, operatortool.ErrInvalidArguments
+				}
+				var err error
+				ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: selector.ProjectID})
+				if err != nil {
+					return ToolResult{}, err
+				}
 			}
 			result, err := s.tools.ExecuteTool(ctx, call)
 			if err != nil || result.Proposal == nil {

@@ -269,26 +269,11 @@ type conversationWorkItemReferencePage struct {
 // issue read proves the issue exists in it, and the conversation read rule
 // drops entries from private chats the reader does not own.
 func (s *Service) listWorkItemReferences(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item")); err != nil {
-		return s.nativeAPIError(c, translateConversationError(err))
-	}
-	stored, err := s.conversations.store.listWorkItemReferences(ctx, s.database.db, scope.organization, scope.project, c.Param("item"), conversationReferencePage)
+	value, err := s.readWorkItemReferences(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	page := conversationWorkItemReferencePage{References: make([]conversationWorkItemReference, 0, len(stored))}
-	for _, reference := range stored {
-		if reference.Visibility == conversation.VisibilityPrivate && reference.OwnerPrincipalID != scope.credential.ID {
-			continue
-		}
-		page.References = append(page.References, conversationWorkItemReference{
-			MessageID: reference.MessageID, ConversationID: reference.ConversationID,
-			Excerpt: conversationExcerpt(reference.Excerpt, conversationReferenceExcerptRunes), CreatedAt: reference.CreatedAt,
-		})
-	}
-	return c.JSON(http.StatusOK, page)
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // Settle sweep.
@@ -360,4 +345,25 @@ func (c *conversationService) settleConversation(ctx context.Context, id string,
 		c.broker.notify(id)
 	}
 	return changed, nil
+}
+
+func (s *Service) readWorkItemReferences(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, id); err != nil {
+		return nil, translateConversationError(err)
+	}
+	stored, err := s.conversations.store.listWorkItemReferences(ctx, s.database.db, scope.organization, scope.project, id, conversationReferencePage)
+	if err != nil {
+		return nil, err
+	}
+	page := conversationWorkItemReferencePage{References: make([]conversationWorkItemReference, 0, len(stored))}
+	for _, reference := range stored {
+		if reference.Visibility == conversation.VisibilityPrivate && reference.OwnerPrincipalID != scope.credential.ID {
+			continue
+		}
+		page.References = append(page.References, conversationWorkItemReference{
+			MessageID: reference.MessageID, ConversationID: reference.ConversationID,
+			Excerpt: conversationExcerpt(reference.Excerpt, conversationReferenceExcerptRunes), CreatedAt: reference.CreatedAt,
+		})
+	}
+	return json.Marshal(page)
 }

@@ -146,6 +146,18 @@ func (s *Service) authorizeOperatorBrowserActions(c echo.Context, id string, act
 			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID}); err != nil {
 				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 			}
+		} else if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+			var request workspaceToolRequest
+			if operatortool.DecodeArguments(action.Arguments, &request) != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+			requirement := workspaceRequirement(string(action.Kind), request, true)
+			if action.Kind == "delete_project_action" && action.Status == chat.ActionSucceeded {
+				requirement.ResourceKind, requirement.ResourceID = "", ""
+			}
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), requirement); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
 		} else if hubFleetTool(string(action.Kind)) {
 			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(string(action.Kind))); err != nil {
 				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())

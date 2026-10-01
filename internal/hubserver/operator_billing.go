@@ -63,6 +63,11 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	if err != nil {
 		return nil, err
 	}
+	workspaceTools, err := (workspaceOperatorExecutor{server: e.service}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	definitions = append(definitions, workspaceTools...)
 	changes, err := (hubOperatorExecutor{service: e.service}).ListTools(ctx)
 	if err != nil {
 		return nil, err
@@ -107,10 +112,6 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		}
 		definitions = append(definitions, definition)
 	}
-	for _, name := range []string{operatortool.ActionResult, operatortool.ConnectionInfo} {
-		definition, _ := operatortool.Lookup(name)
-		definitions = append(definitions, definition)
-	}
 	return definitions, nil
 }
 
@@ -132,6 +133,9 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	if _, err := operatortool.WorkspaceDefinition(call.Name); err == nil {
+		return (workspaceOperatorExecutor{server: e.service}).Execute(ctx, call)
+	}
 	if _, ok := operatortool.ChangeDefinition(call.Name); ok {
 		return (hubOperatorExecutor{service: e.service}).Execute(ctx, call)
 	}
@@ -143,8 +147,13 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			ActionID string `json:"action_id"`
 		}
 		if operatortool.DecodeArguments(call.Arguments, &request) == nil {
-			if action, ok := e.service.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok && operatortool.IsAdministration(string(action.Kind)) {
-				return e.service.administration.Execute(ctx, call)
+			if action, ok := e.service.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok {
+				if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+					return (workspaceOperatorExecutor{server: e.service}).Execute(ctx, call)
+				}
+				if operatortool.IsAdministration(string(action.Kind)) {
+					return e.service.administration.Execute(ctx, call)
+				}
 			}
 		}
 	}
@@ -392,6 +401,9 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Action) (execution chat.ActionExecution, err error) {
+	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+		return (workspaceOperatorExecutor{server: e.service}).ExecuteAction(ctx, action)
+	}
 	if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
 		return (hubOperatorExecutor{service: e.service}).ExecuteAction(ctx, action)
 	}
@@ -438,6 +450,10 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 }
 
 func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Action, outcome string) {
+	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+		(workspaceOperatorExecutor{server: e.service}).AuditAction(ctx, action, outcome)
+		return
+	}
 	if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
 		(hubOperatorExecutor{service: e.service}).AuditAction(ctx, action, outcome)
 		return

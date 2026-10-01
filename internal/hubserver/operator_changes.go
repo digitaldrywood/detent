@@ -60,7 +60,7 @@ func (e hubOperatorExecutor) Execute(ctx context.Context, call operatortool.Call
 				return result, operatortool.ErrInvalidArguments
 			}
 			c := s.operatorChat.Conversation(id)
-			return hubOperatorResult(struct {
+			return hubChangeResult(struct {
 				ID           string              `json:"connection_id"`
 				Organization string              `json:"organization_id"`
 				Mode         chat.ConnectionMode `json:"mode"`
@@ -239,7 +239,7 @@ func (s *Service) hubApprovalURL(id string) string {
 	return base + "/chat/approval?connection_id=" + url.QueryEscape(id)
 }
 func (s *Service) hubActionResult(action chat.Action) (operatortool.Result, error) {
-	return hubOperatorResult(struct {
+	return hubChangeResult(struct {
 		Action     chat.Action       `json:"preview"`
 		ID         string            `json:"action_id"`
 		Status     chat.ActionStatus `json:"status"`
@@ -247,7 +247,7 @@ func (s *Service) hubActionResult(action chat.Action) (operatortool.Result, erro
 		ResultTool string            `json:"result_tool"`
 	}{action, action.ID, action.Status, s.hubApprovalURL(action.ConnectionID), operatortool.ActionResult})
 }
-func hubOperatorResult(value any) (operatortool.Result, error) {
+func hubChangeResult(value any) (operatortool.Result, error) {
 	raw, err := json.Marshal(value)
 	if err != nil || len(raw) > operatortool.MaxResultBytes {
 		return operatortool.Result{}, operatortool.ErrServiceUnavailable

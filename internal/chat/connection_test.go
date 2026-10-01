@@ -18,6 +18,14 @@ func TestConnectionActions(t *testing.T) {
 		name string
 		run  func(*testing.T, *Service, *actionExecutorStub, context.Context, context.Context, *bool)
 	}{
+		{"another principal cannot select YOLO", func(t *testing.T, s *Service, executor *actionExecutorStub, ctx, human context.Context, revoked *bool) {
+			identity := operatortool.ConnectionIdentity(ctx)
+			identity.PrincipalID = "other-operator"
+			if err := s.SetConnectionMode(WithOperatorApproval(ctx, identity), "connection", YOLOMode); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("cross-principal YOLO=%v", err)
+			}
+		}},
+
 		{"ordinary organization context selection", func(t *testing.T, s *Service, executor *actionExecutorStub, ctx, human context.Context, revoked *bool) {
 			action := connectionTestAction()
 			action.Kind = ActionKind(operatortool.OrganizationSwitch)
@@ -218,7 +226,7 @@ func TestConnectionActions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			revoked := false
-			identity := operatortool.Identity{PrincipalID: "operator", OrganizationID: "organization", CredentialID: "credential"}
+			identity := operatortool.Identity{PrincipalID: "operator", OrganizationID: "organization", CredentialID: "credential", SessionID: "browser-session"}
 			connection := operatortool.Connection{ID: "connection", Client: "MCP client", Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 				if revoked {
 					return operatortool.Authority{}, operatortool.ErrAccessDenied
@@ -257,6 +265,16 @@ func TestActionConfirmationClassification(t *testing.T) {
 		{Action{Kind: ActionMoveItem, CurrentState: "In Progress", TargetState: "Backlog"}, true},
 		{Action{Kind: ActionSetPriority}, false}, {Action{Kind: ActionStopRun}, true},
 		{Action{Kind: ActionFileIssue}, false}, {Action{Kind: ActionFileIssue, State: "Done"}, true},
+		{Action{Kind: "create_workspace"}, false},
+		{Action{Kind: "delete_workspace"}, true},
+		{Action{Kind: "delete_conversation_attachment"}, true},
+		{Action{Kind: "create_project_action_run"}, true},
+		{Action{Kind: "post_conversation_command", Arguments: json.RawMessage(`{"input":{"kind":"message"}}`)}, false},
+		{Action{Kind: "post_conversation_command", Arguments: json.RawMessage(`{"input":{"kind":"interrupt"}}`)}, true},
+		{Action{Kind: "patch_project_action", Arguments: json.RawMessage(`{"input":{"name":"Renamed"}}`)}, false},
+		{Action{Kind: "patch_project_action", Arguments: json.RawMessage(`{"input":{"command":"changed"}}`)}, true},
+		{Action{Kind: "patch_project_action", Arguments: json.RawMessage(`{"input":{"run_on_worktree_creation":false}}`)}, true},
+
 		{Action{Kind: ActionKind(operatortool.UpdateRunnerHost)}, false},
 		{Action{Kind: ActionKind(operatortool.UpdateRunnerHost), MaterialChange: true}, true},
 		{Action{Kind: ActionKind(operatortool.RecoverAttempt), Destination: "inspect"}, false},

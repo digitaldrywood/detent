@@ -386,3 +386,49 @@ are advertised accurately: this server exposes tools, not subscriptions, samplin
 roots, tasks, logging, caching or MRTR elicitation. Operator approval uses the
 existing dashboard flow; no new revocation/recovery mechanism or lane writer is
 introduced.
+
+## Workspace, conversation and project actions
+
+Native hub endpoints advertise the `conversations_workspaces` tools when their
+application services exist. Workspace and conversation selectors use a current
+`project_id` plus a typed resource ID. Organization conversation lists project
+only the caller's readable projects. Lists accept at most 200 entries; message
+history retains older-page cursors. Attachment, action output and terminal recording
+reads return base64 byte chunks of at most 32 KiB with offsets and total size.
+Attachment uploads accept at most 32 KiB per MCP request and retain the application's
+attachment ownership, MIME, expiry and size checks.
+
+Create/post/edit commands require a business `request_id`, reused unchanged across
+retries and reconnects. Completed requests return their original application receipt
+without another approval or action-definition lookup, including deleted actions,
+after current project authority is checked. Workspace/attachment/action deletion, conversation linking,
+execution controls and action command or automatic-run changes return a pending
+preview in confirmation mode. A configured action run takes `action_id`,
+`workspace_id` and `expected_revision`; its browser preview shows the command, and
+editing the definition invalidates that run request. Ordinary messages and metadata
+edits execute directly. Results include shared action status, application data and
+an approval URL; `action_result` reads the current connection's outcome and never
+approves it. Hosted operators use their existing login and CSRF-protected form at
+`/chat/approval`. Only the originating hosted browser principal can select its session connection's YOLO, and
+current grants are still enforced on every execution. Standalone native hubs without
+an authenticated browser approval service return an opaque unavailable result for
+material operations; reads and ordinary commands retain their application boundaries.
+
+`workspace_terminal` and `workspace_file_read` return an authorized
+`unsupported_transport` result with workspace state/capabilities. They accept no
+shell, path or relay ticket. `stream_conversation_events` returns an authorized
+snapshot/cursor and an explicit unsupported SSE transport result; poll bounded
+conversation history instead. Configured action runs and their output provide
+headless action execution using the existing runner dispatch.
+
+The daemon's `get_operator_chat` reads only the current connection's history;
+`post_operator_chat` sends a bounded message to its configured provider using the
+same durable audit/retry contract. The nested provider receives authorized read
+tools. Operator mutations use the named MCP tools and existing approval surface,
+never model-generated conversation confirmation. An absent provider or native
+workspace/runtime service returns an opaque unavailable result. No browser cookie,
+authentication context, arbitrary session ID or YOLO setting is a tool argument.
+
+This child implements #3346, not the final deployment/tracker/transport parity
+acceptance on #3259. The legacy board conversation panel reads tracker/PR comments,
+so its matrix ownership is corrected to the comments child #3341.
