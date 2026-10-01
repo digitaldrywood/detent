@@ -78,7 +78,7 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 	defer cleanup()
 
 	env := []string{"GIT_INDEX_FILE=" + tempIndex}
-	if _, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("add", "--intent-to-add")...); err != nil {
+	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
 		return FileDiffs{}, fmt.Errorf("git add intent to add: %w", err)
 	}
 	diffBase := gitDiffBase(ctx, workspacePath, baseRef)

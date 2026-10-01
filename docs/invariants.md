@@ -721,6 +721,14 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Workspace intent-to-add (#3653) uses ordinary Git ignore handling in the existing
+temporary index. Runtime exclusion pathspecs remain on subsequent diagnostic
+reads, but no longer cause Git add to reject an ignored scratch directory or
+symlink. Shared exclusions and real indexes remain untouched. The existing
+`TestWorkspaceDiagnosticsPreserveSharedGitMetadata` fixture covers both ignored
+scratch forms and their absence from diagnostic output. This removes misapplied
+exclusions without adding a retry, cleanup or recovery mechanism.
+
 GitHub budget recovery resolves current credentials and reserves through the
 existing policy constructor. Exact identical worker/orchestrator tokens already
 establish shared-pool ownership without a duplicate principal lookup; recovery
