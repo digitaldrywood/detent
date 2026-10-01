@@ -171,9 +171,10 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			capacity := 6
-			if mode == "running" {
+			switch mode {
+			case "running":
 				capacity += 24
-			} else if mode == "mixed" {
+			case "mixed":
 				capacity += 6
 			}
 			cfg := normalizeConfig(Config{
@@ -259,9 +260,10 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 			})
 			if mode != "unknown waits" && mode != "due retries" && mode != "pending CI" && mode != "completed gate" && mode != "artifact wait" {
 				want := []string{"24", "25", "26", "27", "28", "29"}
-				if mode == "refreshed CI" || mode == "operator rejection" {
+				switch mode {
+				case "refreshed CI", "operator rejection":
 					want = []string{"00", "01", "02", "03", "04", "05"}
-				} else if mode == "ready merge" {
+				case "ready merge":
 					want = []string{"29", "24", "25", "26", "27", "28"}
 				}
 				var dispatched []string

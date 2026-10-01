@@ -16,6 +16,7 @@ var ErrMissingOperatorMoveIssueID = errors.New("operator move issue id is requir
 type OperatorMoveRequest struct {
 	Tracker         connector.Connector
 	Attribution     provenance.Attribution
+	Remove          bool
 	WriteTracker    bool
 	Reason          string
 	StateFieldID    int
@@ -74,6 +75,32 @@ func (o *Orchestrator) ReconcileOperatorMove(ctx context.Context, request Operat
 }
 
 func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, request OperatorMoveRequest, at time.Time) OperatorMoveResult {
+	if request.Remove {
+		if !request.WriteTracker {
+			return OperatorMoveResult{err: connector.ErrNotImplemented}
+		}
+		unlock := o.lockLaneWrites()
+		defer unlock()
+		backend := o.connector
+		if request.Tracker != nil {
+			backend = request.Tracker
+		}
+		if request.StateFieldID > 0 {
+			clearer, ok := backend.(connector.IssueFieldClearer)
+			if !ok {
+				return OperatorMoveResult{err: connector.ErrNotImplemented}
+			}
+			err := clearer.ClearIssueField(ctx, request.IssueID, request.StateFieldID)
+			return OperatorMoveResult{err: err, Reconciled: err == nil}
+		}
+		remover, ok := backend.(connector.ProjectRemover)
+		if !ok {
+			return OperatorMoveResult{err: connector.ErrNotImplemented}
+		}
+		err := remover.RemoveIssueFromProject(ctx, request.IssueID)
+		return OperatorMoveResult{err: err, Reconciled: err == nil}
+	}
+
 	if request.WriteTracker {
 		owner := o
 		ownerState := state

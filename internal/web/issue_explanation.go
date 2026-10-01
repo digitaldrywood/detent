@@ -35,9 +35,17 @@ func (s *Server) apiIssueParkAcknowledgement(c echo.Context) error {
 	if !ok {
 		return err
 	}
+	explanation, err = s.acknowledgeIssueParks(c.Request().Context(), explanation)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue park acknowledgement store is unavailable"))
+	}
+	return c.JSON(http.StatusOK, explanation)
+}
+
+func (s *Server) acknowledgeIssueParks(ctx context.Context, explanation explain.IssueExplanation) (explain.IssueExplanation, error) {
 	acknowledger, ok := s.store.(store.ParkSummaryStore)
 	if !ok {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue park acknowledgement store is unavailable"))
+		return explain.IssueExplanation{}, errOperatorCommandUnavailable
 	}
 	identity := store.IssueIdentity{
 		ProjectID:  explanation.Identity.ProjectID,
@@ -46,17 +54,17 @@ func (s *Server) apiIssueParkAcknowledgement(c echo.Context) error {
 		IssueURL:   explanation.Identity.IssueURL,
 	}
 	acknowledgedAt := time.Now().UTC()
-	if err := acknowledger.AcknowledgeIssueParks(c.Request().Context(), identity, explanation.ParkSummary.ParkCount, acknowledgedAt); err != nil {
+	if err := acknowledger.AcknowledgeIssueParks(ctx, identity, explanation.ParkSummary.ParkCount, acknowledgedAt); err != nil {
 		s.logger.Error("issue park acknowledgement failed", slog.Any("error", err))
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue park acknowledgement store is unavailable"))
+		return explain.IssueExplanation{}, errOperatorCommandUnavailable
 	}
-	acknowledged, err := acknowledger.IssueParkSummary(c.Request().Context(), identity)
+	acknowledged, err := acknowledger.IssueParkSummary(ctx, identity)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Park acknowledgement was recorded; current park summary is unavailable, retry inspection"))
+		return explain.IssueExplanation{}, errOperatorCommandUnavailable
 	}
 	explanation.ParkSummary.AcknowledgedParkSequence = acknowledged.AcknowledgedParkSequence
 	explanation.ParkSummary.AcknowledgedAt = acknowledged.AcknowledgedAt
-	return c.JSON(http.StatusOK, explanation)
+	return explanation, nil
 }
 
 func (s *Server) apiIssueProgressCredit(c echo.Context) error {

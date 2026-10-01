@@ -24,6 +24,7 @@ when the dashboard needs corroboration or a different window.
 | Is a capacity or rate-window mechanism binding? | Its recorded `scheduler_decisions.wait_reason` signature, correlated with `work_attempts` concurrency | Inferring a cause from a low current count or a null live bucket |
 | How often did one issue dispatch? | The issue's `work_attempts` history and per-issue timeline | Board or list endpoints, which collapse repeated attempts |
 | Why is an issue in this lane? | `workflow_phase_events`, or `/api/v1/workflow/timeline?project_id=<project>&identifier=<identifier>` | The issue's current lane alone |
+| Where did an agent spend time following instructions? | Recorded `agent_activity` profiles, their activity intervals, instruction hashes and attribution labels | Treating a file read or an activity category as proof that instructions caused all later work |
 | Which Detent build served the page? | The page's `data-detent-served-version` attribute | `detent version`, which identifies the CLI binary invoked from the shell |
 | What is true right now? | `/api/v1/state` | Treating that snapshot as historical evidence |
 | What does an omitted setting mean? | The loaded configuration and its code default | Treating absence as an unset runtime value |
@@ -33,6 +34,15 @@ Read the served build directly from the live page:
 ```sh
 curl -fsS http://127.0.0.1:4000/ | rg -o 'data-detent-served-version="[^"]+"' -m 1
 ```
+
+Activity classification uses the provider's existing parsed command actions
+when available, preserving the original command fingerprint. These actions
+are best-effort metadata, not original argument arrays. Observed instruction
+reads retain source hashes; exact instruction text matches remain explicitly
+inferred. Opaque, mixed or missing actions remain uncertain. Profiles store safe
+fingerprints and references rather than commands, arguments or instruction
+contents. Partial coverage and unattributed intervals are evidence limits;
+parallel command durations must not be summed as sequential elapsed time.
 
 ## Token spend
 

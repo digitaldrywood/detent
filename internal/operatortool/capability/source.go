@@ -56,7 +56,8 @@ func Discover(root fs.FS) ([]Candidate, error) {
 		if strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, "_templ.go") || strings.Contains(path, ".test.") || strings.Contains(path, ".spec.") {
 			return nil
 		}
-		if !catalog && !(backend && ext == ".go") && !(frontend && (ext == ".templ" || ext == ".tsx" || ext == ".ts" || ext == ".js" || ext == ".html")) {
+		supported := catalog || backend && ext == ".go" || frontend && (ext == ".templ" || ext == ".tsx" || ext == ".ts" || ext == ".js" || ext == ".html")
+		if !supported {
 			return nil
 		}
 		data, err := fs.ReadFile(root, path)
@@ -351,7 +352,10 @@ func collectConstants(path string, data []byte, all map[string]map[string]ast.Ex
 			continue
 		}
 		for _, spec := range g.Specs {
-			v := spec.(*ast.ValueSpec)
+			v, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
 			for i, name := range v.Names {
 				if i < len(v.Values) {
 					all[dir][name.Name] = v.Values[i]

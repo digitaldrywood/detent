@@ -3,114 +3,133 @@ package hubserver
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strings"
 
-	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 	"github.com/labstack/echo/v4"
 )
 
-// Use the existing dashboard approval view and hosted browser authentication.
-// Neither API tokens nor MCP messages can approve actions or select YOLO.
-func (s *Service) hubOperatorBrowser(c echo.Context) (string, error) {
+func (s *Service) hostedOperatorBrowser(c echo.Context, next echo.HandlerFunc) error {
 	if s.config.Hosted == nil || c.Request().Header.Get(echo.HeaderAuthorization) != "" {
-		return "", operatortool.ErrAccessDenied
+		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 	}
-	credential, err := currentHubOperator(c.Request().Context())
-	if err != nil || credential.SessionHash == "" || credential.Hosted == nil {
-		return "", operatortool.ErrAccessDenied
-	}
+	return s.operatorAuthority(func(c echo.Context) error {
+		credential, err := currentHubOperator(c.Request().Context())
+		if err != nil || credential.SessionHash == "" || credential.Hosted == nil || s.operatorFormCSRF(c) == "" {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+		id := c.QueryParam("connection_id")
+		if c.Request().Method == http.MethodPost {
+			c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
+			id = c.FormValue("connection_id")
+		}
+		conversation := s.operatorChat.Conversation(id)
+		billing := false
+		for _, action := range conversation.Actions {
+			if action.Kind == chat.ActionKind(operatortool.BillingCheckout) || action.Kind == chat.ActionKind(operatortool.BillingPortal) {
+				billing = true
+				break
+			}
+		}
+		if billing {
+			if _, err := s.hostedBillingOwner(c); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
+			// Owners can configure billing confirmation before their first preview.
+			if _, err := s.hostedBillingOwner(c); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		}
+		return next(c)
+	})(c)
+}
+
+func (s *Service) operatorFormCSRF(c echo.Context) string {
 	if s.hostedShared() {
-		return s.hostedSharedCSRF(c), nil
+		return s.hostedSharedCSRF(c)
 	}
 	cookie, err := c.Cookie(hostedCookie)
 	if err != nil {
-		return "", operatortool.ErrAccessDenied
-	}
-	return hostedCSRF(cookie.Value), nil
-}
-func (s *Service) hubOperatorFormToken(c echo.Context, id, actionID, secret string) string {
-	conversation := s.operatorActions.Conversation(id)
-	var action chatpkg.Action
-	if actionID != "" {
-		var ok bool
-		action, ok = s.operatorActions.Action(id, actionID)
-		if !ok {
-			return ""
-		}
-	}
-	raw, err := json.Marshal(struct {
-		Identity operatortool.Identity
-		ID       string
-		Mode     chatpkg.ConnectionMode
-		Action   chatpkg.Action
-	}{operatortool.ConnectionIdentity(c.Request().Context()), id, conversation.Mode, action})
-	if err != nil {
 		return ""
 	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write(raw)
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return hostedCSRF(cookie.Value)
 }
-func (s *Service) hubOperatorApprovalPage(c echo.Context) error {
-	secret, err := s.hubOperatorBrowser(c)
-	if err != nil || secret == "" {
-		return c.NoContent(http.StatusForbidden)
+
+// Reuse the authenticated dashboard session's form secret and the existing
+// approval conversation. Bind each decision to what this browser displayed.
+func (s *Service) billingDecisionToken(c echo.Context, id, actionID string) string {
+	conversation := s.operatorChat.Conversation(id)
+	var action chat.Action
+	if actionID != "" {
+		action, _ = s.operatorChat.Action(id, actionID)
 	}
-	id := strings.TrimSpace(c.QueryParam("connection_id"))
-	conversation := s.operatorActions.Conversation(id)
+	raw, _ := json.Marshal(struct {
+		ID       string
+		Identity operatortool.Identity
+		Mode     chat.ConnectionMode
+		Action   chat.Action
+	}{id, operatortool.ConnectionIdentity(c.Request().Context()), conversation.Mode, action})
+	mac := hmac.New(sha256.New, []byte(s.operatorFormCSRF(c)))
+	_, _ = mac.Write(raw)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Service) hostedOperatorApproval(c echo.Context) error {
+	return s.hostedOperatorBrowser(c, func(c echo.Context) error {
+		return s.renderBillingApproval(c, strings.TrimSpace(c.QueryParam("connection_id")))
+	})
+}
+
+func (s *Service) renderBillingApproval(c echo.Context, id string) error {
+	if id == "" || len(id) > 256 {
+		return echo.NewHTTPError(http.StatusNotFound, "Connection is unavailable")
+	}
+	conversation := s.operatorChat.Conversation(id)
 	if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
-		return c.NoContent(http.StatusNotFound)
+		return echo.NewHTTPError(http.StatusNotFound, "Connection is unavailable")
 	}
-	if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
-		return c.NoContent(http.StatusForbidden)
+	tokens := make(map[string]string, len(conversation.Actions))
+	for _, action := range conversation.Actions {
+		tokens[action.ID] = s.billingDecisionToken(c, id, action.ID)
 	}
-	tokens := map[string]string{}
-	for _, a := range conversation.Actions {
-		tokens[a.ID] = s.hubOperatorFormToken(c, id, a.ID, secret)
-	}
+	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
 	c.Response().Header().Set("Cache-Control", "no-store")
 	c.Response().Header().Set("Referrer-Policy", "same-origin")
-	c.Response().Header().Set("Content-Type", "text/html; charset=utf-8")
-	return templates.ChatApproval(templates.ChatData{Conversation: conversation, FormToken: s.hubOperatorFormToken(c, id, "", secret), ActionTokens: tokens}).Render(c.Request().Context(), c.Response())
+	return templates.ChatApproval(templates.ChatData{Conversation: conversation, FormToken: s.billingDecisionToken(c, id, ""), ActionTokens: tokens, ApprovalPath: s.hostedPath("/chat/approval"), CSRF: s.operatorFormCSRF(c)}).Render(c.Request().Context(), c.Response().Writer)
 }
-func (s *Service) hubOperatorApprovalDecision(c echo.Context) error {
-	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
-	secret, err := s.hubOperatorBrowser(c)
-	if err != nil || secret == "" {
-		return c.NoContent(http.StatusForbidden)
-	}
-	id, actionID := c.FormValue("connection_id"), c.FormValue("action_id")
-	conversation := s.operatorActions.Conversation(id)
-	if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
-		return c.NoContent(http.StatusForbidden)
-	}
-	expected := s.hubOperatorFormToken(c, id, actionID, secret)
-	if expected == "" || subtle.ConstantTimeCompare([]byte(c.FormValue("form_token")), []byte(expected)) != 1 {
-		return c.NoContent(http.StatusForbidden)
-	}
-	if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
-		return c.NoContent(http.StatusForbidden)
-	}
-	ctx := chatpkg.WithOperatorApproval(c.Request().Context(), operatortool.ConnectionIdentity(c.Request().Context()))
-	switch c.FormValue("decision") {
-	case "confirm":
-		_, err = s.operatorActions.Confirm(ctx, id, actionID)
-	case "reject":
-		_, err = s.operatorActions.RejectConnectionAction(ctx, id, actionID)
-	case "mode":
-		err = s.operatorActions.SetConnectionMode(ctx, id, chatpkg.ConnectionMode(c.FormValue("mode")))
-	default:
-		return c.NoContent(http.StatusBadRequest)
-	}
-	if err != nil {
-		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "action_unavailable", Message: "Operator action could not be applied"})
-	}
-	return c.Redirect(http.StatusSeeOther, "/chat/approval?connection_id="+url.QueryEscape(id))
+
+func (s *Service) hostedOperatorDecision(c echo.Context) error {
+	return s.hostedOperatorBrowser(c, func(c echo.Context) error {
+		c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
+		id, actionID := c.FormValue("connection_id"), c.FormValue("action_id")
+		if id == "" || len(id) > 256 || len(actionID) > 256 || !s.hostedCSRFValid(c) || !hmac.Equal([]byte(c.FormValue("form_token")), []byte(s.billingDecisionToken(c, id, actionID))) {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+		conversation := s.operatorChat.Conversation(id)
+		if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+		ctx := chat.WithOperatorApproval(c.Request().Context(), operatortool.ConnectionIdentity(c.Request().Context()))
+		var err error
+		switch c.FormValue("decision") {
+		case "confirm":
+			_, err = s.operatorChat.Confirm(ctx, id, actionID)
+		case "reject":
+			_, err = s.operatorChat.RejectConnectionAction(ctx, id, actionID)
+		case "mode":
+			err = s.operatorChat.SetConnectionMode(ctx, id, chat.ConnectionMode(c.FormValue("mode")))
+		default:
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid operator decision")
+		}
+		if err != nil {
+			return echo.NewHTTPError(http.StatusConflict, "Operator decision is unavailable; refresh the preview")
+		}
+		return c.Redirect(http.StatusSeeOther, s.hostedPath("/chat/approval")+"?connection_id="+id)
+	})
 }

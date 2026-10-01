@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 	"github.com/digitaldrywood/detent/internal/workitem"
 )
@@ -213,6 +214,7 @@ func (s *Server) newReadOnlyToolExecutor() *operatortool.Executor {
 			return s.chatSnapshot(ctx), nil
 		}),
 		Explainer: explainer,
+		WorkReads: dashboardWorkReads{server: s},
 	})
 }
 
@@ -261,9 +263,10 @@ func (s chatExplanationSnapshots) Snapshot(ctx context.Context) (explain.Snapsho
 
 func (s *Server) chatMoveProposal(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
 	var request struct {
-		ProjectID   string `json:"project_id"`
-		Identifier  string `json:"identifier"`
-		TargetState string `json:"target_state"`
+		ExpectedRevision int64  `json:"expected_revision"`
+		ProjectID        string `json:"project_id"`
+		Identifier       string `json:"identifier"`
+		TargetState      string `json:"target_state"`
 	}
 	if err := decodeChatToolArguments(raw, &request); err != nil {
 		return chatpkg.ToolResult{}, err
@@ -291,20 +294,29 @@ func (s *Server) chatMoveProposal(ctx context.Context, raw json.RawMessage) (cha
 	if !kanbanstate.StateAllowed(target.workflow, request.TargetState) || !target.workflow.KanbanTransitionAllowed(issue.State, request.TargetState) {
 		return chatpkg.ToolResult{}, errors.New("target state is not an allowed transition")
 	}
-	return chatpkg.ToolResult{Proposal: &chatpkg.Action{Kind: chatpkg.ActionMoveItem, ProjectID: request.ProjectID, IssueID: issue.ID, Identifier: issue.Identifier, CurrentState: issue.State, TargetState: request.TargetState}}, nil
+	action := chatpkg.Action{Kind: chatpkg.ActionMoveItem, ProjectID: request.ProjectID, IssueID: issue.ID, Identifier: issue.Identifier, ResourceURL: issue.URL, CurrentState: issue.State, TargetState: request.TargetState}
+	if err := s.pinNativeCommandRevision(ctx, &action, request.ExpectedRevision); err != nil {
+		return chatpkg.ToolResult{}, err
+	}
+	action.Material = s.workTerminalState(ctx, request.ProjectID, request.TargetState)
+	return chatpkg.ToolResult{Proposal: &action}, nil
 }
 
 func (s *Server) chatPriorityProposal(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
 	var request struct {
-		ProjectID  string `json:"project_id"`
-		Identifier string `json:"identifier"`
-		Priority   string `json:"priority"`
+		ExpectedRevision int64  `json:"expected_revision"`
+		ProjectID        string `json:"project_id"`
+		Identifier       string `json:"identifier"`
+		Priority         string `json:"priority"`
 	}
 	if err := decodeChatToolArguments(raw, &request); err != nil {
 		return chatpkg.ToolResult{}, err
 	}
 	action, err := s.priorityProposal(ctx, strings.TrimSpace(request.ProjectID), request.Identifier, request.Priority)
 	if err != nil {
+		return chatpkg.ToolResult{}, err
+	}
+	if err := s.pinNativeCommandRevision(ctx, &action, request.ExpectedRevision); err != nil {
 		return chatpkg.ToolResult{}, err
 	}
 	return chatpkg.ToolResult{Proposal: &action}, nil
@@ -371,7 +383,7 @@ func (s *Server) chatFileIssueProposal(ctx context.Context, raw json.RawMessage)
 			return chatpkg.ToolResult{}, errors.New("project was not found")
 		}
 	}
-	action := chatpkg.Action{Kind: chatpkg.ActionFileIssue, ProjectID: request.ProjectID, Title: request.Title, Description: request.Description, State: strings.TrimSpace(request.State), Labels: trimChatStrings(request.Labels), PriorityRank: request.Priority, ScenarioID: chatScenario(ctx).ID}
+	action := chatpkg.Action{Kind: chatpkg.ActionFileIssue, Material: s.workTerminalState(ctx, request.ProjectID, request.State), ProjectID: request.ProjectID, Title: request.Title, Description: request.Description, State: strings.TrimSpace(request.State), Labels: trimChatStrings(request.Labels), PriorityRank: request.Priority, ScenarioID: chatScenario(ctx).ID}
 	return chatpkg.ToolResult{Proposal: &action}, nil
 }
 
@@ -409,7 +421,7 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			if receipt.Outcome != "succeeded" {
 				return execution, mutation.ErrUncertain
 			}
-			return chatpkg.ActionExecution{Message: "Action completed.", ResourceID: receipt.ResourceID, Identifier: receipt.Identifier, URL: receipt.URL}, nil
+			return chatpkg.ActionExecution{Message: "Action completed.", ResourceID: receipt.ResourceID, Identifier: receipt.Identifier, URL: receipt.URL, Revision: receipt.Revision, CommentID: receipt.CommentID}, nil
 		}
 		defer func() {
 			if executionErr != nil {
@@ -419,7 +431,7 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			m.ResourceID = execution.ResourceID
 			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 			defer cancel()
-			if err := records.CompleteOperatorMutation(persistCtx, store.OperatorReceipt{Metadata: m, Outcome: "succeeded", Identifier: execution.Identifier, URL: execution.URL}); err != nil {
+			if err := records.CompleteOperatorMutation(persistCtx, store.OperatorReceipt{Metadata: m, Outcome: "succeeded", Identifier: execution.Identifier, URL: execution.URL, Revision: execution.Revision, CommentID: execution.CommentID}); err != nil {
 				execution = chatpkg.ActionExecution{}
 				executionErr = errOperatorCommandUnavailable
 			}
@@ -431,6 +443,8 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 	var result string
 	var err error
 	switch action.Kind {
+	case chatpkg.ActionKind(operatortool.BudgetOverrideSet), chatpkg.ActionKind(operatortool.BudgetOverrideClear):
+		err = s.executeBudgetAction(ctx, action)
 	case chatpkg.ActionMoveItem:
 		result, err = s.executeChatMove(ctx, action)
 	case chatpkg.ActionSetPriority:
@@ -440,6 +454,10 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 	case chatpkg.ActionFileIssue:
 		result, action, err = s.executeChatFileIssue(ctx, action)
 	default:
+		if operatortool.IsWorkTool(string(action.Kind)) {
+			execution, executionErr = s.executeWorkAction(ctx, action)
+			return execution, executionErr
+		}
 		if dashboardFleetTool(string(action.Kind)) {
 			result, err = s.executeFleetAction(ctx, action)
 		} else {
@@ -452,6 +470,15 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 		}
 		return chatpkg.ActionExecution{Message: result}, err
 	}
+	if source, ok := s.registry.Get(project.ID(action.ProjectID)); !dashboardFleetTool(string(action.Kind)) && ok && source != nil {
+		if native, ok := source.Connector().(nativeClientSource); ok && native.NativeClient() != nil && action.Kind != chatpkg.ActionStopRun {
+			item, readErr := native.NativeClient().Issue(ctx, tracker.NativeWorkItemID(action.IssueID))
+			if readErr != nil {
+				return chatpkg.ActionExecution{}, errOperatorCommandUnavailable
+			}
+			action.Revision = int64(item.Revision)
+		}
+	}
 	if action.ConnectionID != "" && !dashboardFleetTool(string(action.Kind)) {
 		result = "Action completed."
 	}
@@ -460,13 +487,16 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			s.logger.WarnContext(ctx, "chat action audit failed", "action", action.Kind, "issue_id", action.IssueID, "error", err)
 		}
 	}
-	return chatpkg.ActionExecution{Message: result, ResourceID: action.IssueID, Identifier: action.Identifier, URL: action.ResourceURL}, nil
+	return chatpkg.ActionExecution{Message: result, ResourceID: action.IssueID, Identifier: action.Identifier, URL: action.ResourceURL, Revision: action.Revision, CommentID: action.CommentID}, nil
 }
 
 func (s *Server) executeChatMove(ctx context.Context, action chatpkg.Action) (string, error) {
 	source := provenance.SourceHumanSession
 	if action.ConnectionID != "" && (action.Mode == chatpkg.YOLOMode || !chatpkg.RequiresConfirmation(action)) {
 		source = provenance.SourceExternalAutomation
+	}
+	if action.Work != nil {
+		ctx = tracker.WithExpectedRevision(ctx, tracker.Revision(action.Work.ExpectedRevision))
 	}
 	message, status, err := s.moveKanbanCard(ctx, kanbanMoveRequest{projectID: action.ProjectID, issueID: action.IssueID, currentState: action.CurrentState, targetState: action.TargetState, board: "project", exactState: action.ConnectionID != ""}, source)
 	if err != nil {
@@ -480,6 +510,9 @@ func (s *Server) executeChatMove(ctx context.Context, action chatpkg.Action) (st
 }
 
 func (s *Server) executeChatPriority(ctx context.Context, action chatpkg.Action) (string, error) {
+	if action.Work != nil {
+		ctx = tracker.WithExpectedRevision(ctx, tracker.Revision(action.Work.ExpectedRevision))
+	}
 	if _, _, err := s.setIssuePriority(ctx, action.ProjectID, action.IssueID, action.Priority); err != nil {
 		return "", err
 	}

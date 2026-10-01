@@ -60,7 +60,7 @@ func (e hubFleetExecutor) OpenConnection(ctx context.Context) error {
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return err
 	}
-	return e.service.operatorActions.AttachConnection(ctx)
+	return e.service.operatorChat.AttachConnection(ctx)
 }
 func (e hubFleetExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
@@ -100,16 +100,16 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		if operatortool.DecodeArguments(call.Arguments, &struct{}{}) != nil {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
-		if err := s.operatorActions.CheckConnection(ctx); err != nil {
+		if err := s.operatorChat.CheckConnection(ctx); err != nil {
 			return operatortool.Result{}, err
 		}
-		c := s.operatorActions.Conversation(operatortool.CurrentConnection(ctx).ID)
+		c := s.operatorChat.Conversation(operatortool.CurrentConnection(ctx).ID)
 		return hubOperatorResult(struct {
 			ID           string                 `json:"connection_id"`
 			Organization string                 `json:"organization_id"`
 			Mode         chatpkg.ConnectionMode `json:"mode"`
 			URL          string                 `json:"setup_url"`
-		}{c.ConnectionID, c.OrganizationID, c.Mode, c.ApprovalBaseURL + "/chat/approval?connection_id=" + c.ConnectionID})
+		}{c.ConnectionID, c.OrganizationID, c.Mode, s.billingApprovalURL(c.ConnectionID)})
 	}
 	if call.Name == operatortool.ActionResult {
 		var r struct {
@@ -118,10 +118,10 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		if operatortool.DecodeArguments(call.Arguments, &r) != nil || r.ActionID == "" || len(r.ActionID) > 256 {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
-		if err := s.operatorActions.CheckConnection(ctx); err != nil {
+		if err := s.operatorChat.CheckConnection(ctx); err != nil {
 			return operatortool.Result{}, err
 		}
-		a, ok := s.operatorActions.Action(operatortool.CurrentConnection(ctx).ID, r.ActionID)
+		a, ok := s.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, r.ActionID)
 		if !ok {
 			return operatortool.Result{}, errHubOperatorUnavailable
 		}
@@ -221,14 +221,14 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 	delete(fields, "request_id")
 	encoded, _ := json.Marshal(fields)
 	arguments := json.RawMessage(encoded)
-	if prior, found, err := s.operatorActions.RetryResult(ctx, chatpkg.ActionKind(call.Name), r.RequestID, arguments); found || err != nil {
+	if prior, found, err := s.operatorChat.RetryResult(ctx, chatpkg.ActionKind(call.Name), r.RequestID, arguments); found || err != nil {
 		if err != nil {
 			return operatortool.Result{}, err
 		}
 		return e.actionResult(ctx, prior)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: r.ProjectID, Action: call.Name, Source: "mcp", Mode: string(s.operatorActions.Conversation(operatortool.CurrentConnection(ctx).ID).Mode), Confirmation: "pending", CorrelationID: newNativeID("mcp")}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: r.ProjectID, Action: call.Name, Source: "mcp", Mode: string(s.operatorChat.Conversation(operatortool.CurrentConnection(ctx).ID).Mode), Confirmation: "pending", CorrelationID: newNativeID("mcp")}
 	defer func() {
 		s.config.Logger.InfoContext(ctx, "operator mutation request", "principal_id", m.PrincipalID, "organization_id", m.OrganizationID, "action", m.Action, "mode", m.Mode, "correlation_id", m.CorrelationID)
 	}()
@@ -264,7 +264,7 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 	}
 	m.ResourceID = action.IssueID
 	action.RequestID, action.Arguments, action.Mutation = r.RequestID, arguments, m
-	action, err = s.operatorActions.Submit(ctx, action)
+	action, err = s.operatorChat.Submit(ctx, action)
 	if err != nil {
 		return operatortool.Result{}, safeHubOperatorError(err)
 	}
@@ -434,7 +434,6 @@ func (e hubFleetExecutor) actionResult(ctx context.Context, a chatpkg.Action) (o
 		}
 		receipt = raw
 	}
-	c := e.service.operatorActions.Conversation(a.ConnectionID)
 	return hubOperatorResult(struct {
 		Action     chatpkg.Action       `json:"preview"`
 		ID         string               `json:"action_id"`
@@ -442,7 +441,7 @@ func (e hubFleetExecutor) actionResult(ctx context.Context, a chatpkg.Action) (o
 		URL        string               `json:"approval_url"`
 		ResultTool string               `json:"result_tool"`
 		Receipt    json.RawMessage      `json:"receipt,omitempty"`
-	}{a, a.ID, a.Status, c.ApprovalBaseURL + "/chat/approval?connection_id=" + a.ConnectionID, operatortool.ActionResult, receipt})
+	}{a, a.ID, a.Status, e.service.billingApprovalURL(a.ConnectionID), operatortool.ActionResult, receipt})
 }
 func (e hubFleetExecutor) AuditAction(ctx context.Context, a chatpkg.Action, outcome string) {
 	m := a.Mutation

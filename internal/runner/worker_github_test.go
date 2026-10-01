@@ -614,7 +614,7 @@ func TestWorkerGitHubCredentialPrincipalClassification(t *testing.T) {
 			if classified.CredentialMode != tt.wantMode {
 				t.Fatalf("CredentialMode = %q, want %q", classified.CredentialMode, tt.wantMode)
 			}
-			if classified.Principal.Login != "detent-worker[bot]" {
+			if classified.PrincipalID != 42 || classified.Principal.Login != "detent-worker[bot]" || classified.Principal.Kind != "Bot" {
 				t.Fatalf("Principal = %#v, want Detent worker bot", classified.Principal)
 			}
 			warning := strings.Contains(logs.String(), "worker github credential uses shared REST budget")

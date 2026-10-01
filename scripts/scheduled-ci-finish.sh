@@ -6,46 +6,20 @@ issues_file="$RUNNER_TEMP/scheduled-ci-issues.json"
 run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
 gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' | jq -s . > "$jobs_file"
-gh issue list --repo "$GITHUB_REPOSITORY" --label ci-scheduled-failure --state open --limit 100 --json number,body > "$issues_file"
-
 report_failure() {
-  local job="$1"
-  local fingerprint number body_file
-  fingerprint="$(printf 'scheduled-ci:%s:%s' "$GITHUB_REPOSITORY" "$job" | sha256sum | cut -d' ' -f1)"
-  number="$(jq -r --arg fingerprint "$fingerprint" '.[] | select(.body | contains("fingerprint: " + $fingerprint)) | .number' "$issues_file" | head -1)"
-  if [ -n "$number" ]; then
-    gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "Scheduled validation failed again: $run_url"
-    return
-  fi
-  body_file="$RUNNER_TEMP/scheduled-ci-issue-${fingerprint}.md"
-  cat > "$body_file" <<EOF
-The scheduled full suite failed in job $job on development commit $CI_DEVELOP_SHA.
-
-Run: $run_url
-
-Fix the failing job, then let the next scheduled validation confirm the repair. A green run closes this issue.
-
-\`\`\`detent-origin
-origin_kind: doctor
-instance_identity: github-actions
-source_ref: $run_url
-fingerprint: $fingerprint
-\`\`\`
-EOF
-  gh issue create --repo "$GITHUB_REPOSITORY" --title "fix(ci): scheduled $job failure" --label detent:todo --label hotfix --label ci-scheduled-failure --body-file "$body_file"
+  go run ./tools/cifailure < "$jobs_file"
 }
 
 failures="$(jq -r '.[] | select(.name != "Finalize scheduled validation" and .conclusion != "success") | .name' "$jobs_file")"
 if [ -n "$failures" ]; then
-  while IFS= read -r job; do
-    report_failure "$job"
-  done <<< "$failures"
+  report_failure
   exit 1
 fi
 
 publish_failure() {
   trap - ERR
-  report_failure 'Finalize scheduled validation'
+  jq -n --arg url "$run_url" '[{name:"Finalize scheduled validation",conclusion:"failure",html_url:$url,id:0}]' > "$jobs_file"
+  report_failure
   exit 1
 }
 trap publish_failure ERR
@@ -77,6 +51,7 @@ EOF
 git tag -a "$tag" "$CI_DEVELOP_SHA" -F "$message_file"
 git push origin "refs/tags/$tag"
 gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$tag"
+gh issue list --repo "$GITHUB_REPOSITORY" --label ci-scheduled-failure --state open --limit 10000 --json number > "$issues_file"
 for number in $(jq -r '.[].number' "$issues_file"); do
   gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Scheduled full validation passed: $run_url"
 done

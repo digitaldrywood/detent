@@ -2668,9 +2668,28 @@ type projectKanbanRecentCompletion struct {
 func projectKanbanRecentCompletions(data DashboardData) []projectKanbanRecentCompletion {
 	now := pipelineNow(data.Snapshot)
 	cutoff := now.Add(-recentCompletionWindow)
-	rows := make([]projectKanbanRecentCompletion, 0, len(data.Snapshot.Completed)+len(data.Snapshot.WorkAttempts))
+	rows := make([]projectKanbanRecentCompletion, 0, len(data.Snapshot.Shipped)+len(data.Snapshot.Completed)+len(data.Snapshot.WorkAttempts))
 	seen := map[string]struct{}{}
+	completionIssue := func(issue telemetry.Issue) telemetry.Issue {
+		if strings.TrimSpace(issue.ProjectID) == "" {
+			issue.ProjectID = strings.TrimSpace(data.Snapshot.Project.ID)
+			if issue.ProjectID == "" {
+				issue.ProjectID = strings.TrimSpace(data.ProjectID)
+			}
+		}
+		return issue
+	}
+	knownIssues := map[string]telemetry.Issue{}
+	for _, attempt := range data.Snapshot.WorkAttempts {
+		issue := completionIssue(telemetry.Issue{ID: attempt.IssueID, ProjectID: attempt.ProjectID, Identifier: attempt.Identifier, URL: attempt.IssueURL, Title: recentWorkAttemptIssueTitle(attempt), RuntimeIdentity: attempt.RuntimeIdentity})
+		knownIssues[recentCompletionKey(issue)] = issue
+	}
+	for _, completed := range data.Snapshot.Completed {
+		issue := completionIssue(completed.Issue)
+		knownIssues[recentCompletionKey(issue)] = issue
+	}
 	appendCompletion := func(issue telemetry.Issue, state string, completedAt time.Time) {
+		issue = completionIssue(issue)
 		if completedAt.IsZero() || completedAt.Before(cutoff) || completedAt.After(now) {
 			return
 		}
@@ -2697,6 +2716,28 @@ func projectKanbanRecentCompletions(data DashboardData) []projectKanbanRecentCom
 		rows = append(rows, projectKanbanRecentCompletion{issue: issue, state: state, completedAt: completedAt.UTC()})
 	}
 
+	// Durable writer evidence owns the timestamp, even when it is outside the
+	// window. A later session receipt must not make an old delivery recent.
+	for _, completed := range data.Snapshot.Shipped {
+		issue := completionIssue(completed.Issue)
+		key := recentCompletionKey(issue)
+		if known, ok := knownIssues[key]; key != "" && ok {
+			if strings.TrimSpace(known.Title) != "" {
+				issue.Title = known.Title
+			}
+			if issue.Identifier == "" {
+				issue.Identifier = known.Identifier
+			}
+			if issue.URL == "" {
+				issue.URL = known.URL
+			}
+			issue.RuntimeIdentity = known.RuntimeIdentity
+		}
+		appendCompletion(issue, strings.TrimSpace(completed.State), completed.CompletedAt)
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+	}
 	for _, completed := range data.Snapshot.Completed {
 		state := strings.TrimSpace(completed.State)
 		appendCompletion(completed.Issue, state, completed.CompletedAt)
@@ -2728,10 +2769,10 @@ func projectKanbanRecentCompletions(data DashboardData) []projectKanbanRecentCom
 
 func recentCompletionKey(issue telemetry.Issue) string {
 	if id := strings.TrimSpace(issue.ID); id != "" {
-		return "id:" + id
+		return strings.TrimSpace(issue.ProjectID) + ":id:" + id
 	}
 	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
-		return "identifier:" + identifier
+		return strings.TrimSpace(issue.ProjectID) + ":identifier:" + identifier
 	}
 	return ""
 }

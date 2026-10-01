@@ -108,6 +108,10 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	supported, err := native.HubFeature(t.Context(), tracker.NativeLocalChecksCapability)
+	if err != nil || !supported {
+		t.Fatalf("current Hub diagnostic capability = %v, %v", supported, err)
+	}
 	fleetAdmin, err := NewFleetClient(admin, organization, map[string]tracker.ProjectID{"native": project.ID})
 	if err != nil {
 		t.Fatal(err)

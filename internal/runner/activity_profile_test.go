@@ -59,6 +59,16 @@ func TestActivityObservationAttributionAndGaps(t *testing.T) {
 			if p.Spans[0].Kind != tt.kind || p.Spans[0].Attribution != tt.attribution || p.Spans[1].Repeat != 2 || p.Spans[1].Outcome != "completed" {
 				t.Fatalf("spans = %+v", p.Spans)
 			}
+			if tt.attribution != "unattributed" && (len(p.Spans[0].Sources) != 1 || p.Spans[0].Sources[0].Hash != activityHash("instructions")) {
+				t.Fatalf("observed instruction provenance lost: %+v", p.Spans[0].Sources)
+			}
+			fingerprintCommand := tt.command
+			if strings.HasPrefix(fingerprintCommand, "{") {
+				fingerprintCommand = activityInputCommand(fingerprintCommand)
+			}
+			if p.Spans[0].Fingerprint != activityHash(tt.tool+"\x00"+fingerprintCommand) {
+				t.Fatalf("native command fingerprint changed: %+v", p.Spans[0])
+			}
 			applyActivityObservation(&p, open, repeats, sources, activityObservation{at: at, update: activityUpdate{Type: AgentUpdateToolCompleted, ItemID: "missing", TurnID: "turn"}})
 			start := activityUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "locked", Tool: "Bash", Command: "go test ./internal/foo"}
 			applyActivityObservation(&p, open, repeats, sources, activityObservation{at: at.Add(20 * time.Second), head: "new-head", headAt: at.Add(20 * time.Second), update: start})
@@ -78,6 +88,43 @@ func TestActivityObservationAttributionAndGaps(t *testing.T) {
 			data, _ := json.Marshal(p)
 			if (tt.command != "" && strings.Contains(string(data), tt.command)) || strings.Contains(string(data), "private patch") {
 				t.Fatalf("private input persisted: %s", data)
+			}
+		})
+	}
+}
+
+func TestActivityNativeCommandInput(t *testing.T) {
+	at := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+	for _, tt := range []struct{ name, input, kind, attribution string }{
+		{"read", "cat AGENTS.md", "context_read", "observed_read_request"},
+		{"quoted read", "cat 'AGENTS.md'", "context_read", "observed_read_request"},
+		{"validation", "go test ./internal/foo", "local_validation", "inferred_text_match"},
+		{"env validation", "env GOMAXPROCS=2 go test ./internal/foo", "local_validation", "unattributed"},
+		{"unset env validation", "env -u TMPDIR -u TMP -u TEMP GOMAXPROCS=2 go test ./internal/foo", "local_validation", "unattributed"},
+		{"opaque env script", `env -S "go test ./internal/foo"`, "tool_execution", "unattributed"},
+		{"review", "git diff", "review", "unattributed"},
+		{"wait", "sleep 3", "waiting", "unattributed"},
+		{"mixed", "cat AGENTS.md; go test ./internal/foo", "unclassified", "unattributed"},
+		{"quoted validation text", "echo 'go test ./internal/foo'", "tool_execution", "unattributed"},
+		{"expansion", "$VALIDATION", "tool_execution", "unattributed"},
+		{"missing native actions", "", "tool_execution", "unattributed"},
+		{"other directory", "cat /private/other/AGENTS.md", "context_read", "unattributed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			command := "/bin/zsh -lc 'native command'"
+			profile := workflowmetrics.ActivityProfile{StartedAt: at}
+			sources := []activityInstruction{{ref: workflowmetrics.InstructionRef{Name: "AGENTS.md", Hash: activityHash("instructions"), ObservedAt: at}, text: "Run go test ./internal/foo"}}
+			applyActivityObservation(&profile, map[string]int{}, map[string]int{}, sources, activityObservation{at: at, update: activityUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "tool", Tool: "commandExecution", Command: command, Delta: tt.input}})
+			span := profile.Spans[0]
+			if span.Kind != tt.kind || span.Attribution != tt.attribution || span.Fingerprint != activityHash("commandExecution\x00"+command) {
+				t.Fatalf("native activity = %+v", span)
+			}
+			if tt.attribution != "unattributed" && (len(span.Sources) != 1 || span.Sources[0].Hash != activityHash("instructions")) {
+				t.Fatalf("instruction provenance lost: %+v", span.Sources)
+			}
+			data, _ := json.Marshal(profile)
+			if strings.Contains(string(data), command) || (tt.input != "" && strings.Contains(string(data), tt.input)) {
+				t.Fatal("private command persisted")
 			}
 		})
 	}

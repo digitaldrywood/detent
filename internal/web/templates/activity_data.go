@@ -23,6 +23,7 @@ type BoardActivityData struct {
 }
 
 type BoardActivityEvent struct {
+	Source        string `json:"source"`
 	ID            string
 	At            time.Time
 	Kind          string

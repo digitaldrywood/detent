@@ -35,6 +35,43 @@ safe opaque unavailable result when its application service is absent; this
 inventory does not install services or change current authority. The current
 read executors already handle missing telemetry/explanation dependencies.
 
+## Work and board reads (#3340)
+
+The original five tools retain their names and schemas. Additional reads use
+`project_id`, plus an item `reference` where needed. Native IDs and scoped
+numbers resolve through the existing application identity rules. Organization,
+principal, grants and credential scope come from the connection on every call.
+
+| Tools | Application result |
+| --- | --- |
+| `work_list`, `work_item`, `work_config` | Search/list/detail; configured lanes, priorities and labels |
+| `work_comments`, `work_history`, `work_version` | Current comments with edit metadata, durable history, native issue/comment revisions |
+| `work_relationships` | Visible dependencies and source references |
+| `work_runs`, `work_references` | Attempts and PR/change/version/artifact identifiers and links |
+| `board_activity`, `board_receipt` | Activity with durable/snapshot provenance; efficiency receipt |
+| `board_session`, `board_session_history`, `work_attempt_receipt` | Session context, persisted rollout pages, owned attempt receipt |
+| `work_export` | Native application issue JSON without browser form credentials |
+
+Pages accept `limit` from 1 to 200 (default 100). Native tracker pages use their
+credential/resource/filter-bound `cursor`; snapshot-backed GitHub lists and
+application history use `offset` and return `next_offset`. Supplying the other
+pagination mode returns invalid arguments. Empty pages contain `items: []`.
+Every envelope identifies the project/resource and source freshness/time;
+expired snapshots remain explicitly expired. Freshly fetched comments carry
+their own read time. Artifact references include availability and expiration;
+PR references retain the projection observation time. Results over 256 KiB
+return a safe unavailable error rather than an unbounded payload.
+
+`work_history` is separate from `recent_activity`: GitHub's dashboard history
+uses persisted workflow records when its connector has no durable event reader,
+and identifies that source as `workflow`; native history uses collaboration
+events. GitHub comment edits expose current body and update metadata; saved
+revision reads and native exports require a native service. Hosted hubs without
+daemon receipt/session services omit those tools from discovery and direct calls
+return opaque unavailable errors. #3347 owns PR/review/change/diff/artifact
+content details and reuses the extracted application reads; this child supplies
+references, not another detail implementation. Parent #3259 remains pending.
+
 ## Current connection authority
 
 `operatortool.Identity` binds principal, organization, credential and session;

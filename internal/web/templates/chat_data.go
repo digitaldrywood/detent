@@ -7,6 +7,8 @@ import (
 )
 
 type ChatData struct {
+	ApprovalPath string
+	CSRF         string
 	Conversation chatpkg.Conversation
 	Error        string
 	FormToken    string
@@ -52,4 +54,11 @@ func chatActionStatus(action chatpkg.Action) string {
 
 func chatActionPath(action chatpkg.Action, decision string) string {
 	return "/api/v1/chat/actions/" + action.ID + "/" + strings.TrimSpace(decision)
+}
+
+func chatApprovalPath(data ChatData) string {
+	if data.ApprovalPath != "" {
+		return data.ApprovalPath
+	}
+	return "/chat/approval"
 }

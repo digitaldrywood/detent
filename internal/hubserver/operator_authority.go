@@ -9,7 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -17,10 +17,10 @@ import (
 )
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
-	// Hubs expose their fleet application services. Daemon telemetry and issue
-	// explanation remain safely unavailable when those services are absent.
-	executor := hubFleetExecutor{service: s}
-	s.operatorActions = chatpkg.NewService(nil, nil, executor)
+	// Hubs expose native work commands and hosted billing/usage operations.
+	// Daemon-only telemetry and lane commands remain unavailable here.
+	s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now))
+	executor := hostedOperatorExecutor{s}
 	s.mcpHTTP = mcp.NewHTTPHandler(executor, s.config.Version, mcp.HTTPConfig{
 		Principal: func(request *http.Request) operatortool.Identity {
 			return operatortool.ConnectionIdentity(request.Context())
@@ -29,8 +29,10 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	e.Any("/api/v2/organizations/:organization/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	if s.config.Hosted != nil {
 		e.Any("/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
-		e.GET("/chat/approval", s.hubOperatorApprovalPage, s.operatorAuthority)
-		e.POST("/chat/approval", s.hubOperatorApprovalDecision, s.operatorAuthority)
+	}
+	if s.config.Hosted != nil {
+		e.GET("/chat/approval", s.hostedOperatorApproval)
+		e.POST("/chat/approval", s.hostedOperatorDecision)
 	}
 }
 
@@ -56,7 +58,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		claims, shared := hostedSharedClaims(c)
-		resolveCredential := func(ctx context.Context) (apiCredential, error) {
+		resolve := func(ctx context.Context) (apiCredential, error) {
 			current := credential
 			if token != "" {
 				var err error
@@ -85,14 +87,22 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 			return current, nil
 		}
-		connection := operatortool.Connection{Identity: identity, DashboardURL: s.operatorPublicURL(c), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
-			current, err := resolveCredential(ctx)
+		connection := operatortool.Connection{Identity: identity, DashboardURL: s.operatorDashboardURL(), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+			current, err := resolve(ctx)
 			if err != nil {
 				return operatortool.Authority{}, err
 			}
 			return s.operatorCurrentAuthority(ctx, current, organization)
 		}}
-		ctx := operatortool.WithConnection(context.WithValue(c.Request().Context(), hubOperatorResolverKey{}, resolveCredential), connection)
+		ctx := operatortool.WithConnection(context.WithValue(c.Request().Context(), operatorCredentialKey{}, billingAuthorization(resolve)), connection)
+		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, resolve)
+		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(ctx context.Context) (nativeScope, error) {
+			current, err := resolve(ctx)
+			if err != nil {
+				return nativeScope{}, err
+			}
+			return nativeScope{organization: tracker.OrganizationID(organization), credential: current}, nil
+		})
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
@@ -124,10 +134,11 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 	if err := s.authorizeConversationOrganization(ctx, scope); err != nil {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
-	return operatortool.Authority{Identity: operatorIdentity(credential, organization), BindContext: func(ctx context.Context) context.Context {
+	return operatortool.Authority{Identity: operatorIdentity(credential, organization), WorkReads: operatorWorkReads{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
 		// Commands consume the freshly resolved originating credential, even when
 		// the context initially came from a different approving browser.
-		return context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return credential, nil })
+		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return credential, nil })
+		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
 	}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
 		if requirement.ResourceKind == "runners" {
 			if credential.NativeOnly && credential.Hosted == nil || credential.Runner.RunnerID != "" {
@@ -144,7 +155,17 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 			}
 			return nil
 		}
-		if requirement.ResourceKind != "" || requirement.ResourceID != "" {
+		if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
+			if credential.Hosted == nil || requirement.ResourceID != "" || s.config.Hosted == nil || organization != s.config.Hosted.OrganizationID {
+				return operatortool.ErrAccessDenied
+			}
+			if requirement.ResourceKind == "billing" && (credential.HostedRole != "owner" || credential.Hosted.SupportActor != "") {
+				return operatortool.ErrAccessDenied
+			}
+			if requirement.ResourceKind == "plan" && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+				return operatortool.ErrAccessDenied
+			}
+		} else if requirement.ResourceID != "" || requirement.ResourceKind != "" {
 			// Resource-specific commands must use their application's ownership
 			// check; this initial read adapter never grants an unknown resource.
 			return operatortool.ErrAccessDenied

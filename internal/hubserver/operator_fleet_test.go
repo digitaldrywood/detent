@@ -186,7 +186,11 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					if len(token) != 2 {
 						t.Fatal("no form token")
 					}
-					return request(approver, http.MethodPost, "/chat/approval", url.Values{"connection_id": {info.ID}, "action_id": {action}, "decision": {kind}, "mode": {mode}, "form_token": {html.UnescapeString(token[1])}})
+					csrf := regexp.MustCompile(`name="csrf" value="([^"]+)"`).FindStringSubmatch(fragment)
+					if len(csrf) != 2 {
+						t.Fatal("no CSRF token")
+					}
+					return request(approver, http.MethodPost, "/chat/approval", url.Values{"csrf": {html.UnescapeString(csrf[1])}, "connection_id": {info.ID}, "action_id": {action}, "decision": {kind}, "mode": {mode}, "form_token": {html.UnescapeString(token[1])}})
 				}
 				if scenario == "YOLO" {
 					requireNativeStatus(t, decision("", "mode", "yolo"), http.StatusSeeOther)

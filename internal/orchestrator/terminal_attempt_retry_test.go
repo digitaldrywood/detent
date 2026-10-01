@@ -813,18 +813,22 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 				t.Fatalf("work attempt completions = %#v, want successful reconciliation", attempts.completions)
 			}
+			if tt.wantMergedReason {
+				record := implementProgressRecordFromCompletion(t, attempts.completions[0])
+				if record.Reason != implementMergedCompletionReason {
+					t.Fatalf("completion reason = %q, want %q", record.Reason, implementMergedCompletionReason)
+				}
+				if got := tracker.transitionStates(); !slices.Equal(got, []string{"Done"}) || len(state.Retry) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 {
+					t.Fatalf("merged recovery: transitions=%v retry=%d claimed=%d completed=%d, want Done without continuation", got, len(state.Retry), len(state.Claimed), len(state.Completed))
+				}
+				return
+			}
 			completed := state.Completed[issue.ID]
 			if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.Number != tt.wantPRNumber {
 				t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want reconciled PR %d", issue.ID, completed.Issue.PullRequest, tt.wantPRNumber)
 			}
 			if tt.wantActive && completed.FinalState != issue.State {
 				t.Fatalf("Completed[%q].FinalState = %q, want active state %q", issue.ID, completed.FinalState, issue.State)
-			}
-			if tt.wantMergedReason {
-				record := implementProgressRecordFromCompletion(t, attempts.completions[0])
-				if record.Reason != implementMergedCompletionReason {
-					t.Fatalf("completion reason = %q, want %q", record.Reason, implementMergedCompletionReason)
-				}
 			}
 		})
 	}
@@ -955,7 +959,7 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 			TerminalState:      string(store.WorkAttemptTerminalAbandoned),
 			ErrorClass:         "service_restart",
 			CompletedAt:        timePointer(now.Add(-time.Minute)),
-			WorkerMetadataJSON: `{"work_product_pushed":true}`,
+			WorkerMetadataJSON: `{"dispatch_source_state":"Rework","work_product_pushed":true}`,
 		},
 		{
 			AttemptID:     1,
@@ -1243,11 +1247,25 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 	tests := []struct {
 		name         string
 		metadata     string
+		errorClass   string
+		foreignClaim bool
+		ownClaim     bool
+		unhydrated   bool
+		limit        *int
 		wantState    string
 		wantDemotion bool
 	}{
 		{name: "legacy metadata-less attempt", wantState: "Todo", wantDemotion: true},
+		{name: "legacy zero limit", limit: new(0), wantState: "Todo", wantDemotion: true},
+		{name: "legacy recorded Rework source", metadata: `{"dispatch_source_state":"Rework"}`, limit: new(0), wantState: "Rework", wantDemotion: true},
+		{name: "legacy pushed product", metadata: `{"dispatch_source_state":"Rework","work_product_pushed":true}`, limit: new(0), wantState: "In Progress"},
+		{name: "legacy foreign claim", foreignClaim: true, wantState: "In Progress"},
+		{name: "legacy unhydrated PR", unhydrated: true, wantState: "In Progress"},
+		{name: "service restart foreign claim", errorClass: "service_restart", foreignClaim: true, wantState: "In Progress"},
+		{name: "pre-turn foreign claim", errorClass: workAttemptErrorWorkspace, foreignClaim: true, wantState: "In Progress"},
+		{name: "service restart own claim", errorClass: "service_restart", ownClaim: true, wantState: "Todo", wantDemotion: true},
 		{name: "durable wait metadata", metadata: durableMetadata, wantState: "In Progress"},
+		{name: "durable wait zero limit", metadata: durableMetadata, limit: new(0), wantState: "In Progress"},
 	}
 
 	for _, tt := range tests {
@@ -1255,17 +1273,36 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 			t.Parallel()
 
 			issue := terminalRetryTestIssue(strings.ReplaceAll(tt.name, " ", "-"))
+			if tt.foreignClaim {
+				issue.Assignees = []string{"other-worker"}
+				issue.Fields["Lease"] = formatClaimTime(now.Add(-30 * time.Second))
+			}
+			if tt.ownClaim {
+				issue.Assignees = []string{"detent-worker"}
+				issue.Fields["Lease"] = formatClaimTime(now.Add(-30 * time.Second))
+			}
+			if tt.unhydrated {
+				issue.PullRequest = &connector.PullRequest{HydrationUnavailableReason: connector.PullRequestHydrationReasonRateLimited}
+			}
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			cfg := normalizeConfig(Config{
+				ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"},
+				Recovery: workflowconfig.Recovery{TerminalAttemptRetryLimit: tt.limit},
+				Claiming: ClaimingConfig{Enabled: tt.foreignClaim || tt.ownClaim, AssigneeLogin: "detent-worker", LeaseField: "Lease", LeaseTTL: time.Minute},
+			})
 			o := &Orchestrator{cfg: cfg, connector: tracker}
 			state := newState(cfg)
+			errorClass := tt.errorClass
+			if errorClass == "" {
+				errorClass = githubRESTCapacityError
+			}
 			state.WorkAttempts = []telemetry.WorkAttempt{{
 				AttemptID:          1,
 				IssueID:            issue.ID,
 				Identifier:         issue.Identifier,
 				Status:             string(store.WorkAttemptStatusTerminal),
 				TerminalState:      string(store.WorkAttemptTerminalCapacity),
-				ErrorClass:         githubRESTCapacityError,
+				ErrorClass:         errorClass,
 				CompletedAt:        timePointer(now.Add(-time.Minute)),
 				WorkerMetadataJSON: tt.metadata,
 			}}
@@ -1282,6 +1319,9 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 				t.Fatalf("state transitions = %v, want [%s]", got, tt.wantState)
 			} else if !tt.wantDemotion && len(got) != 0 {
 				t.Fatalf("state transitions = %v, want none", got)
+			}
+			if len(state.Blocked) != 0 || tracker.issues[issue.ID].State != tt.wantState {
+				t.Fatalf("capacity restoration entered issue failure park or wrong lane: blocked=%+v lane=%s", state.Blocked, tracker.issues[issue.ID].State)
 			}
 		})
 	}
@@ -1716,7 +1756,7 @@ func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
 		{name: "pushed restart resets", sequence: "FFRPRF", wantCount: 1, wantLatest: 6},
 		{name: "linked PR restart resets", sequence: "FFRLRF", wantCount: 1, wantLatest: 6},
 		{name: "workspace failures straddle restarts", sequence: "WRWRW", cause: workspacePreparationRetryLimitCause},
-		{name: "workspace failure resets terminal", sequence: "FFRWRF", wantCount: 1, wantLatest: 6},
+		{name: "workspace interruption preserves terminal failures", sequence: "FFRWRF", wantCount: 3, wantLatest: 6},
 		{name: "implementation resets workspace", sequence: "WWRFRW", cause: workspacePreparationRetryLimitCause},
 	}
 	for _, tt := range tests {

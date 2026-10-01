@@ -17,6 +17,7 @@ const NativeProtocolMajor = 2
 
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
 const NativeCheckoutRepositoryCapability = "runner_checkout_repository"
+const NativeLocalChecksCapability = "runner_local_checks"
 
 // NativeWorkspaceCapability is declared by a runner's workspace lane on its
 // claim. It is what separates the lane that holds a workspace session open
@@ -431,4 +432,24 @@ func MutationForContext(ctx context.Context, fallback string) Mutation {
 		return Mutation{IdempotencyKey: m.RetryIdentity}
 	}
 	return Mutation{IdempotencyKey: fallback}
+}
+
+// NativeLabel is the existing project's label-picker read model.
+type NativeLabel struct {
+	Name  string `json:"name"`
+	Color string `json:"color"`
+	// Count orders the existing project label-picker suggestions by usage.
+	Count int `json:"count"`
+}
+
+// WithExpectedRevision carries an operator command's optimistic precondition
+// to the native connector while the orchestrator owns the lane write.
+type expectedRevisionKey struct{}
+
+func WithExpectedRevision(ctx context.Context, revision Revision) context.Context {
+	return context.WithValue(ctx, expectedRevisionKey{}, revision)
+}
+func ExpectedRevision(ctx context.Context) Revision {
+	revision, _ := ctx.Value(expectedRevisionKey{}).(Revision)
+	return revision
 }
