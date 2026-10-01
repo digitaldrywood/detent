@@ -47,6 +47,13 @@ func ActionSummary(action Action) string {
 	case ActionKind(operatortool.BudgetOverrideClear):
 		return "Clear budget override for " + action.ProjectID
 	default:
+		if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" && !definition.Annotations.ReadOnly {
+			summary := strings.ReplaceAll(string(action.Kind), "_", " ")
+			if action.ProjectID != "" {
+				summary += " for project " + action.ProjectID
+			}
+			return summary
+		}
 		if definition, ok := operatortool.FleetDefinition(string(action.Kind)); ok {
 			return definition.Description + " " + action.Identifier
 		}

@@ -1397,20 +1397,20 @@ Sources: [POST /internal/v1/invitations/accept](../internal/hubserver/hosted_sha
 
 Advance git hub import
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.advance_git_hub_import` — Bounded advanceGitHubImportRequest: organization, project, import; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → advanceGitHubImportResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.advanceGitHubImport; s.config.now, s.database.checkHostedGrowth, s.database.db.BeginTx, s.database.hostedConsumption, s.fetchImportPage
-- Extraction: Extract hubserver.advanceGitHubImport application inputs/results and validation from Echo; reuse s.config.now, s.database.checkHostedGrowth, s.database.db.BeginTx, s.database.hostedConsumption, s.fetchImportPage. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.advance_git_hub_import` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/imports/:import/advance](../internal/hubserver/integration.go#L155)
 ## hubserver.app_bootstrap_payload
@@ -1534,23 +1534,22 @@ Sources: [PUT /api/v2/organizations/:organization/projects/:project/change-revie
 
 Approve project policy
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.approve_project_policy` — Bounded approveProjectPolicyRequest: owner, repo; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → approveProjectPolicyResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.approveProjectPolicy; s.database.approvePolicy, s.policyScope
-- Extraction: Extract hubserver.approveProjectPolicy application inputs/results and validation from Echo; reuse s.database.approvePolicy, s.policyScope. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service
-- Availability: hosted_dedicated / github,native / hub application service
-- Availability: hosted_shared / github,native / hub application service
-- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: ordinary non-destructive edit → none
-- Confirmation: arguments remove data, alter access or create material external effects → operator
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.approve_project_policy` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub project application — unavailable: Material variants require an authenticated hosted browser approval service; absent in an unhosted hub. Non-material argument variants remain available.
+- Availability: hosted_dedicated / github,native / hub project application
+- Availability: hosted_shared / github,native / hub project application
+- Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [PUT /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L59), [PUT /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L111), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/policy](../internal/hubserver/onboarding.go#L29), [web/conversation/src/app/account/ProjectSettings.tsx:254](../web/conversation/src/app/account/ProjectSettings.tsx#L254)
+Sources: [PUT /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L58), [PUT /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L111), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/policy](../internal/hubserver/onboarding.go#L29), [web/conversation/src/app/account/ProjectSettings.tsx:254](../web/conversation/src/app/account/ProjectSettings.tsx#L254), [web/conversation/src/app/account/api.ts:270](../web/conversation/src/app/account/api.ts#L270)
 ## hubserver.archive_native_issue
 
 Archive native issue
@@ -1709,27 +1708,27 @@ Bind artifact service
 - Confirmation: ordinary non-destructive edit → none
 - Confirmation: arguments remove data, alter access or create material external effects → operator
 
-Sources: [PUT /api/v2/organizations/:organization/projects/:project/artifact-services/:service](../internal/hubserver/artifacts.go#L22), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/artifact-services/:service](../internal/hubserver/onboarding.go#L30)
+Sources: [PUT /api/v2/organizations/:organization/projects/:project/artifact-services/:service](../internal/hubserver/artifacts.go#L19), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/artifact-services/:service](../internal/hubserver/onboarding.go#L30), [web/conversation/src/app/account/api.ts:399](../web/conversation/src/app/account/api.ts#L399)
 ## hubserver.bind_native_repository
 
 Bind native repository
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.bind_native_repository` — Bounded bindNativeRepositoryRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → bindNativeRepositoryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.bindNativeRepository; s.bindRunnerCheckoutRepository, s.config.ReconcileBackend.Reconcile, s.nativeMutation
-- Extraction: Extract hubserver.bindNativeRepository application inputs/results and validation from Echo; reuse s.bindRunnerCheckoutRepository, s.config.ReconcileBackend.Reconcile, s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.bind_native_repository` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application — unavailable: Material variants require an authenticated hosted browser approval service; absent in an unhosted hub. Non-material argument variants remain available.
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/integration/repository](../internal/hubserver/integration.go#L150), [POST /api/v2/organizations/:organization/projects/:project/onboarding/repository](../internal/hubserver/onboarding.go#L26)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/integration/repository](../internal/hubserver/integration.go#L150), [POST /api/v2/organizations/:organization/projects/:project/onboarding/repository](../internal/hubserver/onboarding.go#L26), [web/conversation/src/app/account/api.ts:387](../web/conversation/src/app/account/api.ts#L387)
 ## hubserver.bind_workspace_worker
 
 Bind workspace worker
@@ -1971,22 +1970,23 @@ Sources: [POST /api/v1/claims](../internal/hubserver/api_http.go#L65)
 
 Command git hub batch
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
-- Tool: `work_reads.command_git_hub_batch` — Bounded commandGitHubBatchRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → commandGitHubBatchResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.commandGitHubBatch; s.nativeMutation
-- Extraction: Extract hubserver.commandGitHubBatch application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.command_git_hub_batch` — Typed ProjectRequest[GitHubBatchInput]: current project_id, business request_id, action discover/more/apply/retry, expected revision, runner, bounded labels/numbers and existing destination/allow_dispatch fields. No authority or secret arguments. → Exact action preview or durable application receipt; current authority and expected revision preserved on execution and replay. Batch lists capped at 200 with next_cursor; use get_git_hub_batch to page further.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: commandGitHubBatchOperation/executeNativeMutation; existing dashboard intake command, runner/lane validation and receipt
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestGitHubBatchIntakeRetryAndNativeOwnership MCP fixture: bounded/redacted reads and results, reconnect replay, changed retry/stale revision conflict, cross-project isolation and unavailable unapproved dispatch; TestActionConfirmationClassification argument split; TestProjectArgumentBounds numbers bound; TestHostedOperatorCurrentAuthority role/grants.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: dispatchable batch apply or existing batch retry → operator
+- Confirmation: discovery, more or non-dispatchable intake → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake](../internal/hubserver/onboarding.go#L21)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake](../internal/hubserver/onboarding.go#L21), [web/conversation/src/app/account/api.ts:279](../web/conversation/src/app/account/api.ts#L279)
 ## hubserver.complete_hosted_login
 
 Complete hosted login
@@ -2109,40 +2109,40 @@ Sources: [POST /organization/create](../internal/hubserver/hosted_ui.go#L41), [i
 
 Create hosted project
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.create_hosted_project` — Bounded createHostedProjectRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createHostedProjectResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.createHostedProject; s.createHostedProjectRecord, s.hostedAdministrator
-- Extraction: Extract hubserver.createHostedProject application inputs/results and validation from Echo; reuse s.createHostedProjectRecord, s.hostedAdministrator. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_dedicated / github,native / hub application service
-- Availability: hosted_shared / github,native / hub application service
-- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.create_hosted_project` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Hosted project creation requires the hosted membership/grant service; native creation is available in an unhosted hub.
+- Availability: hosted_dedicated / github,native / hub project application
+- Availability: hosted_shared / github,native / hub project application
+- Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [POST /projects](../internal/hubserver/hosted_ui.go#L47), [internal/web/templates/board.templ:183](../internal/web/templates/board.templ#L183), [internal/web/templates/board.templ:181](../internal/web/templates/board.templ#L181), [internal/web/templates/hosted.templ:194](../internal/web/templates/hosted.templ#L194), [internal/web/templates/hosted.templ:194](../internal/web/templates/hosted.templ#L194), [internal/web/templates/native_work.templ:13](../internal/web/templates/native_work.templ#L13), [web/conversation/src/app/account/api.ts:219](../web/conversation/src/app/account/api.ts#L219), [web/conversation/src/app/account/api.ts:221](../web/conversation/src/app/account/api.ts#L221)
+Sources: [POST /projects](../internal/hubserver/hosted_ui.go#L48), [internal/web/templates/board.templ:183](../internal/web/templates/board.templ#L183), [internal/web/templates/board.templ:181](../internal/web/templates/board.templ#L181), [internal/web/templates/hosted.templ:204](../internal/web/templates/hosted.templ#L204), [internal/web/templates/hosted.templ:204](../internal/web/templates/hosted.templ#L204), [internal/web/templates/native_work.templ:13](../internal/web/templates/native_work.templ#L13), [web/conversation/src/app/account/api.ts:219](../web/conversation/src/app/account/api.ts#L219), [web/conversation/src/app/account/api.ts:221](../web/conversation/src/app/account/api.ts#L221)
 ## hubserver.create_hosted_project_json
 
 Create hosted project j s o n
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.create_hosted_project_json` — Bounded createHostedProjectJSONRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createHostedProjectJSONResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.createHostedProjectJSON; s.createHostedProjectRecord
-- Extraction: Extract hubserver.createHostedProjectJSON application inputs/results and validation from Echo; reuse s.createHostedProjectRecord. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.create_hosted_project` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub application service — unavailable: Hosted project creation requires the hosted membership/grant service; native creation is available in an unhosted hub.
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: policy/access/destructive/budget/material external operation → operator
 
 Sources: [POST /api/v2/organizations/:organization/projects](../internal/hubserver/native_api.go#L118), [web/conversation/src/app/account/Organization.tsx:123](../web/conversation/src/app/account/Organization.tsx#L123), [web/conversation/src/app/account/Organization.tsx:121](../web/conversation/src/app/account/Organization.tsx#L121), [web/conversation/src/app/projects/NewProject.tsx:148](../web/conversation/src/app/projects/NewProject.tsx#L148), [web/conversation/src/app/projects/NewProject.tsx:145](../web/conversation/src/app/projects/NewProject.tsx#L145)
 ## hubserver.create_native_comment
@@ -2209,20 +2209,20 @@ Sources: [POST /api/v2/organizations](../internal/hubserver/native_api.go#L116)
 
 Create native project
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.create_native_project` — Bounded createNativeProjectRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createNativeProjectResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.createNativeProject; s.nativeMutation
-- Extraction: Extract hubserver.createNativeProject application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.create_native_project` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub application service — unavailable: Hosted deployments use create_hosted_project and its current owner/admin/grant checks.
+- Availability: hosted_shared / native / hub application service — unavailable: Hosted deployments use create_hosted_project and its current owner/admin/grant checks.
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
 Sources: [POST /api/v2/organizations/:organization/projects](../internal/hubserver/native_api.go#L120)
 ## hubserver.create_project_action
@@ -2309,20 +2309,21 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces]
 
 Cutover project
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.cutover_project` — Bounded cutoverProjectRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → cutoverProjectResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.cutoverProject; s.nativeMutation
-- Extraction: Extract hubserver.cutoverProject application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.cutover_project` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application — unavailable: Material variants require an authenticated hosted browser approval service; absent in an unhosted hub. Non-material argument variants remain available.
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: dry_run=true → none
+- Confirmation: live cutover/link-and-close → operator
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/integration/cutover](../internal/hubserver/integration.go#L151)
 ## hubserver.delete_conversation_attachment
@@ -2529,60 +2530,60 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/conversation
 
 Get cutover receipt
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.get_cutover_receipt` — Bounded getCutoverReceiptRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getCutoverReceiptResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getCutoverReceipt; s.database.db.QueryRowContext
-- Extraction: Extract hubserver.getCutoverReceipt application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.get_cutover_receipt` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/integration/cutover](../internal/hubserver/integration.go#L152)
 ## hubserver.get_git_hub_batch
 
 Get git hub batch
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
-- Tool: `work_reads.get_git_hub_batch` — Bounded getGitHubBatchRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getGitHubBatchResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getGitHubBatch; handler-owned application validation/read/command
-- Extraction: Extract hubserver.getGitHubBatch application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.get_git_hub_batch` — Typed ProjectReadRequest with current project authority; limit 1–200 and bounded after cursor for batch pages. → Bounded typed application read with identifiers, checkpoint/revision, URLs and freshness; provider diagnostics are redacted. Setup returns the existing browser flow and requirements.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: projectGitHubBatch/githubBatchResponse; existing dashboard batch read, bounded redacted MCP page
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestGitHubBatchIntakeRetryAndNativeOwnership MCP fixture: bounded/redacted reads and results, reconnect replay, changed retry/stale revision conflict, cross-project isolation and unavailable unapproved dispatch; TestActionConfirmationClassification argument split; TestProjectArgumentBounds numbers bound; TestHostedOperatorCurrentAuthority role/grants.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: read or setup navigation → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake](../internal/hubserver/onboarding.go#L20), [web/conversation/src/app/account/IssueIntake.tsx:65](../web/conversation/src/app/account/IssueIntake.tsx#L65)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake](../internal/hubserver/onboarding.go#L20), [web/conversation/src/app/account/IssueIntake.tsx:65](../web/conversation/src/app/account/IssueIntake.tsx#L65), [web/conversation/src/app/account/api.ts:278](../web/conversation/src/app/account/api.ts#L278)
 ## hubserver.get_git_hub_import
 
 Get git hub import
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.get_git_hub_import` — Bounded getGitHubImportRequest: organization, project, import; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getGitHubImportResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getGitHubImport; handler-owned application validation/read/command
-- Extraction: Extract hubserver.getGitHubImport application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.get_git_hub_import` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/imports/:import](../internal/hubserver/integration.go#L154)
 ## hubserver.get_native_attempt
@@ -2629,20 +2630,20 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 Get native project
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.get_native_project` — Bounded getNativeProjectRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getNativeProjectResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getNativeProject; handler-owned application validation/read/command
-- Extraction: Extract hubserver.getNativeProject application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.get_native_project` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project](../internal/hubserver/native_api.go#L123), [web/conversation/src/app/work/lib/workHttp.ts:535](../web/conversation/src/app/work/lib/workHttp.ts#L535)
 ## hubserver.get_native_version
@@ -2669,22 +2670,22 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 Get onboarding
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.get_onboarding` — Bounded getOnboardingRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getOnboardingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getOnboarding; s.projectOnboarding
-- Extraction: Extract hubserver.getOnboarding application inputs/results and validation from Echo; reuse s.projectOnboarding. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.get_onboarding` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/onboarding](../internal/hubserver/onboarding.go#L27)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/onboarding](../internal/hubserver/onboarding.go#L27), [web/conversation/src/app/account/api.ts:280](../web/conversation/src/app/account/api.ts#L280)
 ## hubserver.get_project_action_run
 
 Get project action run
@@ -2729,42 +2730,42 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:act
 
 Get project integration
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.get_project_integration` — Bounded getProjectIntegrationRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getProjectIntegrationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getProjectIntegration; handler-owned application validation/read/command
-- Extraction: Extract hubserver.getProjectIntegration application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.get_project_integration` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/integration](../internal/hubserver/integration.go#L148), [web/conversation/src/app/account/api.ts:235](../web/conversation/src/app/account/api.ts#L235)
 ## hubserver.get_project_policy
 
 Get project policy
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.get_project_policy` — Bounded getProjectPolicyRequest: owner, repo; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getProjectPolicyResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.getProjectPolicy; s.policyScope
-- Extraction: Extract hubserver.getProjectPolicy application inputs/results and validation from Echo; reuse s.policyScope. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.get_project_policy` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service
-- Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
-- Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
-- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub project application
+- Availability: hosted_dedicated / github,native / hub project application
+- Availability: hosted_shared / github,native / hub project application
+- Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L58), [GET /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L110), [web/conversation/src/app/account/api.ts:257](../web/conversation/src/app/account/api.ts#L257)
+Sources: [GET /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L57), [GET /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L110), [web/conversation/src/app/account/api.ts:257](../web/conversation/src/app/account/api.ts#L257)
 ## hubserver.get_runner_identity
 
 Get runner identity
@@ -3514,20 +3515,20 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/conversation
 
 List git hub import records
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.list_git_hub_import_records` — Bounded listGitHubImportRecordsRequest: organization, project, import; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listGitHubImportRecordsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.listGitHubImportRecords; s.database.db.QueryContext, s.nativePage
-- Extraction: Extract hubserver.listGitHubImportRecords application inputs/results and validation from Echo; reuse s.database.db.QueryContext, s.nativePage. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.list_git_hub_import_records` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/imports/:import/records](../internal/hubserver/integration.go#L156)
 ## hubserver.list_hosted_members
@@ -3554,22 +3555,22 @@ Sources: [GET /api/v2/organizations/:organization/members](../internal/hubserver
 
 List hosted projects
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.list_hosted_projects` — Bounded listHostedProjectsRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listHostedProjectsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.listHostedProjects; s.hostedCredential, s.hostedReadableProjects, s.projectOnboarding
-- Extraction: Extract hubserver.listHostedProjects application inputs/results and validation from Echo; reuse s.hostedCredential, s.hostedReadableProjects, s.projectOnboarding. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.list_projects` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedCredential(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_dedicated / github,native / hub application service
-- Availability: hosted_shared / github,native / hub application service
-- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub project application
+- Availability: hosted_dedicated / github,native / hub project application
+- Availability: hosted_shared / github,native / hub project application
+- Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects](../internal/hubserver/hosted_org_api.go#L41), [internal/web/templates/hosted.templ:172](../internal/web/templates/hosted.templ#L172), [internal/web/templates/hosted.templ:119](../internal/web/templates/hosted.templ#L119), [internal/web/templates/hosted.templ:189](../internal/web/templates/hosted.templ#L189)
+Sources: [GET /api/v2/organizations/:organization/projects](../internal/hubserver/hosted_org_api.go#L40), [internal/web/templates/hosted.templ:182](../internal/web/templates/hosted.templ#L182), [internal/web/templates/hosted.templ:122](../internal/web/templates/hosted.templ#L122), [internal/web/templates/hosted.templ:199](../internal/web/templates/hosted.templ#L199)
 ## hubserver.list_native_attempts
 
 List native attempts
@@ -4149,42 +4150,42 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/claims/prev
 
 Project native summary
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.project_native_summary` — Bounded projectNativeSummaryRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → projectNativeSummaryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.projectNativeSummary; s.nativeMutation
-- Extraction: Extract hubserver.projectNativeSummary application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.project_native_summary` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application — unavailable: Material variants require an authenticated hosted browser approval service; absent in an unhosted hub. Non-material argument variants remain available.
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: policy/access/destructive/budget/material external operation → operator
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/projection](../internal/hubserver/integration.go#L157)
 ## hubserver.project_secret_metadata
 
 Project secret metadata
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.project_secret_metadata` — Bounded projectSecretMetadataRequest: organization, project, kind; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → projectSecretMetadataResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.projectSecretMetadata; handler-owned application validation/read/command
-- Extraction: Extract hubserver.projectSecretMetadata application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.project_secret_metadata` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L81), [web/conversation/src/app/account/api.ts:229](../web/conversation/src/app/account/api.ts#L229)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L80), [web/conversation/src/app/account/api.ts:229](../web/conversation/src/app/account/api.ts#L229)
 ## hubserver.publish_change_version
 
 Publish change version
@@ -4303,22 +4304,22 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/leases/:lea
 
 Remove project secret
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.remove_project_secret` — Bounded removeProjectSecretRequest: organization, project, kind; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → removeProjectSecretResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role hosted owner/admin for provider secrets; unhosted native operator/admin per project-secret administration guard; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.removeProjectSecret; s.config.now, s.secretMutation
-- Extraction: Extract hubserver.removeProjectSecret application inputs/results and validation from Echo; reuse s.config.now, s.secretMutation. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.remove_project_secret` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application — unavailable: Material variants require an authenticated hosted browser approval service; absent in an unhosted hub. Non-material argument variants remain available.
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L83), [web/conversation/src/app/account/api.ts:233](../web/conversation/src/app/account/api.ts#L233)
+Sources: [DELETE /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L82), [web/conversation/src/app/account/api.ts:233](../web/conversation/src/app/account/api.ts#L233)
 ## hubserver.renew_lease
 
 Renew lease
@@ -4418,22 +4419,22 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/
 
 Repository freshness
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.repository_freshness` — Bounded repositoryFreshnessRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → repositoryFreshnessResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.repositoryFreshness; s.config.now, s.database.repositoryFreshness
-- Extraction: Extract hubserver.repositoryFreshness application inputs/results and validation from Echo; reuse s.config.now, s.database.repositoryFreshness. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.repository_freshness` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service
-- Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
-- Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
-- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub project application
+- Availability: hosted_dedicated / github,native / hub project application
+- Availability: hosted_shared / github,native / hub project application
+- Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v1/repositories/freshness](../internal/hubserver/api_http.go#L75)
+Sources: [GET /api/v1/repositories/freshness](../internal/hubserver/api_http.go#L74)
 ## hubserver.restore_native_issue
 
 Restore native issue
@@ -4576,22 +4577,22 @@ Sources: [POST /internal/v1/sessions/revoke](../internal/hubserver/hosted_shared
 
 Revoke project policy
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.revoke_project_policy` — Bounded revokeProjectPolicyRequest: owner, repo; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → revokeProjectPolicyResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.revokeProjectPolicy; s.database.db.ExecContext, s.policyScope
-- Extraction: Extract hubserver.revokeProjectPolicy application inputs/results and validation from Echo; reuse s.database.db.ExecContext, s.policyScope. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service
-- Availability: hosted_dedicated / github,native / hub application service
-- Availability: hosted_shared / github,native / hub application service
-- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.revoke_project_policy` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub project application — unavailable: Material variants require an authenticated hosted browser approval service; absent in an unhosted hub. Non-material argument variants remain available.
+- Availability: hosted_dedicated / github,native / hub project application
+- Availability: hosted_shared / github,native / hub project application
+- Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [DELETE /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L60), [DELETE /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L112)
+Sources: [DELETE /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L59), [DELETE /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L112)
 ## hubserver.revoke_runner_enrollment
 
 Revoke runner enrollment
@@ -4770,61 +4771,61 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Save onboarding
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.save_onboarding` — Bounded saveOnboardingRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → saveOnboardingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.saveOnboarding; s.nativeMutation
-- Extraction: Extract hubserver.saveOnboarding application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: ordinary non-destructive edit → none
-- Confirmation: arguments remove data, alter access or create material external effects → operator
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.save_onboarding` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [PUT /api/v2/organizations/:organization/projects/:project/onboarding](../internal/hubserver/onboarding.go#L28)
+Sources: [PUT /api/v2/organizations/:organization/projects/:project/onboarding](../internal/hubserver/onboarding.go#L28), [web/conversation/src/app/account/api.ts:295](../web/conversation/src/app/account/api.ts#L295)
 ## hubserver.set_project_secret
 
 Set project secret
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.set_project_secret` — Bounded setProjectSecretRequest: organization, project, kind; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → setProjectSecretResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role hosted owner/admin for provider secrets; unhosted native operator/admin per project-secret administration guard; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.setProjectSecret; s.config.SecretKeys.Seal, s.config.SecretKeys.Version, s.config.now, s.secretMutation
-- Extraction: Extract hubserver.setProjectSecret application inputs/results and validation from Echo; reuse s.config.SecretKeys.Seal, s.config.SecretKeys.Version, s.config.now, s.secretMutation. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.project_setup` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [PUT /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L82), [web/conversation/src/app/account/SpritesCard.tsx:50](../web/conversation/src/app/account/SpritesCard.tsx#L50), [web/conversation/src/app/account/SpritesCard.tsx:50](../web/conversation/src/app/account/SpritesCard.tsx#L50), [web/conversation/src/app/account/api.ts:231](../web/conversation/src/app/account/api.ts#L231)
+Sources: [PUT /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L81), [web/conversation/src/app/account/SpritesCard.tsx:50](../web/conversation/src/app/account/SpritesCard.tsx#L50), [web/conversation/src/app/account/SpritesCard.tsx:50](../web/conversation/src/app/account/SpritesCard.tsx#L50), [web/conversation/src/app/account/api.ts:231](../web/conversation/src/app/account/api.ts#L231)
 ## hubserver.start_git_hub_import
 
 Start git hub import
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.start_git_hub_import` — Bounded startGitHubImportRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → startGitHubImportResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.startGitHubImport; s.nativeMutation
-- Extraction: Extract hubserver.startGitHubImport application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.start_git_hub_import` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application — unavailable: Material variants require an authenticated hosted browser approval service; absent in an unhosted hub. Non-material argument variants remain available.
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: initial import → none
+- Confirmation: restart discards prior import history → operator
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/imports](../internal/hubserver/integration.go#L153)
 ## hubserver.start_hosted_invitation
@@ -5067,21 +5068,21 @@ Sources: [PATCH /api/v2/organizations/:organization/projects/:project/work-items
 
 Update project integration
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.update_project_integration` — Bounded updateProjectIntegrationRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → updateProjectIntegrationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.updateProjectIntegration; s.nativeMutation
-- Extraction: Extract hubserver.updateProjectIntegration application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: ordinary non-destructive edit → none
-- Confirmation: arguments remove data, alter access or create material external effects → operator
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.update_project_integration` — Typed ProjectRequest: authorized project_id, business request_id (1–128 bytes), concrete input DTO; application revisions/policy IDs/checkpoints retained. Request <=64 KiB, strings and arrays bounded; no authority/YOLO/credential arguments. → Typed exact chat action/approval URL or completed command receipt, with project/request identity, status and bounded safe application result. Retries reauthorize before receipt lookup; no secrets/raw provider errors.
+- Authority: role Current native operator/admin credential; hosted owner/admin/member/viewer as required by the shared command; workers/runners cannot acquire operator authority; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: hubProjectExecutor; shared dashboard native project/onboarding/integration/import/policy application reads and commands; existing chat exact approval and executeNativeMutation
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real hosted/dashboard browser approval for material variants; YOLO suppresses confirmation only. Completed retries do not require repeat approval and still reauthorize current resource ownership.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub project application — unavailable: Material variants require an authenticated hosted browser approval service; absent in an unhosted hub. Non-material argument variants remain available.
+- Availability: hosted_dedicated / native / hub project application
+- Availability: hosted_shared / native / hub project application
+- Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: projection disabled and repository effects disabled → none
+- Confirmation: summary projection or repository effects enabled → operator
 
 Sources: [PUT /api/v2/organizations/:organization/projects/:project/integration](../internal/hubserver/integration.go#L149), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/integration](../internal/hubserver/onboarding.go#L25), [web/conversation/src/app/account/api.ts:250](../web/conversation/src/app/account/api.ts#L250)
 ## hubserver.update_runner_host
@@ -5436,14 +5437,14 @@ Api budget override clear
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
 - Coverage: TestMCPDaemonBilling; TestMCPActionApprovalBoundary; TestServerBudgetOverrideUIUsesSharedStore (internal/web); TestUsageReportAggregates (internal/store). Exact approval, stale allowances, YOLO limits, project grants, replay and scoped totals.
-- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: material purchase, portal or budget change → operator
+- Confirmation: ordinary reversible budget override clear → none
 
-Sources: [DELETE /api/v1/projects/:project_id/budget/override](../internal/web/server.go#L522)
+Sources: [DELETE /api/v1/projects/:project_id/budget/override](../internal/web/server.go#L517)
 ## web.api_budget_override_set
 
 Api budget override set
@@ -5503,7 +5504,7 @@ Api chat confirm
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: real operator confirms the pending material action → operator
 
-Sources: [POST /api/v1/chat/actions/:action_id/confirm](../internal/web/server.go#L561), [internal/web/templates/chat.templ:86](../internal/web/templates/chat.templ#L86), [POST /chat/approval](../internal/web/server.go#L515), [internal/web/templates/chat.templ:122](../internal/web/templates/chat.templ#L122), [internal/web/templates/chat.templ:122](../internal/web/templates/chat.templ#L122), [POST /chat/approval](../internal/hubserver/operator_authority.go#L35)
+Sources: [POST /api/v1/chat/actions/:action_id/confirm](../internal/web/server.go#L556), [internal/web/templates/chat.templ:98](../internal/web/templates/chat.templ#L98), [POST /chat/approval](../internal/web/server.go#L513), [internal/web/templates/chat.templ:122](../internal/web/templates/chat.templ#L122), [internal/web/templates/chat.templ:122](../internal/web/templates/chat.templ#L122), [POST /chat/approval](../internal/hubserver/operator_authority.go#L36)
 ## web.api_chat_message
 
 Api chat message
@@ -5588,22 +5589,22 @@ Sources: [POST /api/v1/projects/:project_id/work-items](../internal/web/server.g
 
 Api demo scenarios
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
-- Tool: `work_reads.api_demo_scenarios` — Bounded apiDemoScenariosRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiDemoScenariosResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiDemoScenarios; handler-owned application validation/read/command
-- Extraction: Extract web.apiDemoScenarios application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.demo_setup_scenarios` — Typed ProjectReadRequest with current project authority; limit 1–200 and bounded after cursor for batch pages. → Bounded typed application read with identifiers, checkpoint/revision, URLs and freshness; provider diagnostics are redacted. Setup returns the existing browser flow and requirements.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: demoSetupScenarios; shared dashboard demo scenario application read
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: Project settings case in TestMCPActionApprovalBoundary across legacy HTTP, modern HTTP and stdio: disabled demo unavailable, enabled shared scenario result. Existing demo HTTP fixtures preserve the same application read.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: read or setup navigation → none
 
-Sources: [GET /api/v1/demo/scenarios](../internal/web/server.go#L511)
+Sources: [GET /api/v1/demo/scenarios](../internal/web/server.go#L510)
 ## web.api_failure_breaker_canary
 
 Api failure breaker canary
@@ -6009,22 +6010,22 @@ Sources: [GET /api/v1/operator-tools](../internal/web/server.go#L516)
 
 Api project
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.api_project` — Bounded apiProjectRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiProjectResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiProject; s.apiProjectState, s.apiProjectTimeSeries
-- Extraction: Extract web.apiProject application inputs/results and validation from Echo; reuse s.apiProjectState, s.apiProjectTimeSeries. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.project_settings` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v1/projects/*](../internal/web/server.go#L532), [internal/web/templates/dashboard.templ:2398](../internal/web/templates/dashboard.templ#L2398)
+Sources: [GET /api/v1/projects/*](../internal/web/server.go#L527), [internal/web/templates/dashboard.templ:2398](../internal/web/templates/dashboard.templ#L2398)
 ## web.api_refresh
 
 Api refresh
@@ -6405,7 +6406,7 @@ Chat approval stylesheet
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: static asset → not_applicable
 
-Sources: [internal/web/templates/chat.templ:97](../internal/web/templates/chat.templ#L97)
+Sources: [internal/web/templates/chat.templ:96](../internal/web/templates/chat.templ#L96)
 ## web.complete_o_i_d_c
 
 Complete o i d c
@@ -6744,122 +6745,122 @@ Sources: [GET /projects/:project_id/issues/:issue_ref/runs/:attempt](../internal
 
 Onboarding
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.onboarding` — Bounded onboardingRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → onboardingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.onboarding; s.onboardingData
-- Extraction: Extract web.onboarding application inputs/results and validation from Echo; reuse s.onboardingData. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.project_setup` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /onboarding](../internal/web/server.go#L454), [internal/web/templates/onboarding.templ:193](../internal/web/templates/onboarding.templ#L193), [internal/web/templates/onboarding.templ:211](../internal/web/templates/onboarding.templ#L211), [internal/web/templates/onboarding.templ:213](../internal/web/templates/onboarding.templ#L213)
+Sources: [GET /onboarding](../internal/web/server.go#L453), [internal/web/templates/onboarding.templ:193](../internal/web/templates/onboarding.templ#L193), [internal/web/templates/onboarding.templ:211](../internal/web/templates/onboarding.templ#L211), [internal/web/templates/onboarding.templ:213](../internal/web/templates/onboarding.templ#L213)
 ## web.onboarding_agent
 
 Onboarding agent
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.onboarding_agent` — Bounded onboardingAgentRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → onboardingAgentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential write; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.onboardingAgent; s.renderOnboardingStep
-- Extraction: Extract web.onboardingAgent application inputs/results and validation from Echo; reuse s.renderOnboardingStep. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.project_setup` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/agent](../internal/web/server.go#L458), [POST /onboarding/agent](../internal/web/server.go#L490), [internal/web/templates/onboarding.templ:355](../internal/web/templates/onboarding.templ#L355), [internal/web/templates/onboarding.templ:355](../internal/web/templates/onboarding.templ#L355)
+Sources: [POST /onboarding/agent](../internal/web/server.go#L457), [POST /onboarding/agent](../internal/web/server.go#L489), [internal/web/templates/onboarding.templ:355](../internal/web/templates/onboarding.templ#L355), [internal/web/templates/onboarding.templ:355](../internal/web/templates/onboarding.templ#L355)
 ## web.onboarding_credentials
 
 Onboarding credentials
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.onboarding_credentials` — Bounded onboardingCredentialsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → onboardingCredentialsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential write; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.onboardingCredentials; s.renderOnboardingStep
-- Extraction: Extract web.onboardingCredentials application inputs/results and validation from Echo; reuse s.renderOnboardingStep. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.project_setup` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/credentials](../internal/web/server.go#L456), [POST /onboarding/credentials](../internal/web/server.go#L488), [internal/web/templates/onboarding.templ:286](../internal/web/templates/onboarding.templ#L286), [internal/web/templates/onboarding.templ:408](../internal/web/templates/onboarding.templ#L408), [internal/web/templates/onboarding.templ:286](../internal/web/templates/onboarding.templ#L286)
+Sources: [POST /onboarding/credentials](../internal/web/server.go#L455), [POST /onboarding/credentials](../internal/web/server.go#L487), [internal/web/templates/onboarding.templ:286](../internal/web/templates/onboarding.templ#L286), [internal/web/templates/onboarding.templ:408](../internal/web/templates/onboarding.templ#L408), [internal/web/templates/onboarding.templ:286](../internal/web/templates/onboarding.templ#L286)
 ## web.onboarding_project
 
 Onboarding project
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.onboarding_project` — Bounded onboardingProjectRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → onboardingProjectResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential write; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.onboardingProject; s.renderOnboardingStep
-- Extraction: Extract web.onboardingProject application inputs/results and validation from Echo; reuse s.renderOnboardingStep. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.project_setup` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/project](../internal/web/server.go#L457), [POST /onboarding/project](../internal/web/server.go#L489), [internal/web/templates/onboarding.templ:311](../internal/web/templates/onboarding.templ#L311), [internal/web/templates/onboarding.templ:311](../internal/web/templates/onboarding.templ#L311)
+Sources: [POST /onboarding/project](../internal/web/server.go#L456), [POST /onboarding/project](../internal/web/server.go#L488), [internal/web/templates/onboarding.templ:311](../internal/web/templates/onboarding.templ#L311), [internal/web/templates/onboarding.templ:311](../internal/web/templates/onboarding.templ#L311)
 ## web.onboarding_tracker
 
 Onboarding tracker
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.onboarding_tracker` — Bounded onboardingTrackerRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → onboardingTrackerResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential write; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.onboardingTracker; s.renderOnboardingStep
-- Extraction: Extract web.onboardingTracker application inputs/results and validation from Echo; reuse s.renderOnboardingStep. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.project_setup` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/tracker](../internal/web/server.go#L455), [POST /onboarding/tracker](../internal/web/server.go#L487), [internal/web/templates/onboarding.templ:261](../internal/web/templates/onboarding.templ#L261), [internal/web/templates/onboarding.templ:346](../internal/web/templates/onboarding.templ#L346), [internal/web/templates/onboarding.templ:261](../internal/web/templates/onboarding.templ#L261)
+Sources: [POST /onboarding/tracker](../internal/web/server.go#L454), [POST /onboarding/tracker](../internal/web/server.go#L486), [internal/web/templates/onboarding.templ:261](../internal/web/templates/onboarding.templ#L261), [internal/web/templates/onboarding.templ:346](../internal/web/templates/onboarding.templ#L346), [internal/web/templates/onboarding.templ:261](../internal/web/templates/onboarding.templ#L261)
 ## web.onboarding_write
 
 Onboarding write
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.onboarding_write` — Bounded onboardingWriteRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → onboardingWriteResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential write; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.onboardingWrite; s.onboardingCloseoutSnapshot, s.renderOnboardingStep, s.runOnboardingCloseout
-- Extraction: Extract web.onboardingWrite application inputs/results and validation from Echo; reuse s.onboardingCloseoutSnapshot, s.renderOnboardingStep, s.runOnboardingCloseout. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.project_setup` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/write](../internal/web/server.go#L459), [POST /onboarding/write](../internal/web/server.go#L491), [internal/web/templates/onboarding.templ:460](../internal/web/templates/onboarding.templ#L460), [internal/web/templates/onboarding.templ:481](../internal/web/templates/onboarding.templ#L481), [internal/web/templates/onboarding.templ:481](../internal/web/templates/onboarding.templ#L481), [internal/web/templates/onboarding.templ:460](../internal/web/templates/onboarding.templ#L460)
+Sources: [POST /onboarding/write](../internal/web/server.go#L458), [POST /onboarding/write](../internal/web/server.go#L490), [internal/web/templates/onboarding.templ:460](../internal/web/templates/onboarding.templ#L460), [internal/web/templates/onboarding.templ:481](../internal/web/templates/onboarding.templ#L481), [internal/web/templates/onboarding.templ:481](../internal/web/templates/onboarding.templ#L481), [internal/web/templates/onboarding.templ:460](../internal/web/templates/onboarding.templ#L460)
 ## web.open_api
 
 Open a p i
@@ -6918,27 +6919,27 @@ Bind local/remote operator connection confirmation mode
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: operator selects connection mode through the authenticated dashboard form → connection
 
-Sources: [GET /chat/approval](../internal/web/server.go#L514), [POST /api/v1/operator-connections](../internal/web/server.go#L513), [internal/web/templates/chat.templ:106](../internal/web/templates/chat.templ#L106), [internal/web/templates/chat.templ:106](../internal/web/templates/chat.templ#L106), [GET /chat/approval](../internal/hubserver/operator_authority.go#L34)
+Sources: [GET /chat/approval](../internal/web/server.go#L512), [POST /api/v1/operator-connections](../internal/web/server.go#L511), [internal/web/templates/chat.templ:106](../internal/web/templates/chat.templ#L106), [internal/web/templates/chat.templ:106](../internal/web/templates/chat.templ#L106), [GET /chat/approval](../internal/hubserver/operator_authority.go#L35)
 ## web.project_dashboard
 
 Project dashboard
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.project_dashboard` — Bounded projectDashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → projectDashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.projectDashboard; s.demoProjectDashboard, s.latestBoardSnapshot, s.projectFirstPaintData, s.projectPageTitle, s.settingsData, s.withKanbanRefreshFeedback
-- Extraction: Extract web.projectDashboard application inputs/results and validation from Echo; reuse s.demoProjectDashboard, s.latestBoardSnapshot, s.projectFirstPaintData, s.projectPageTitle, s.settingsData, s.withKanbanRefreshFeedback. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.project_settings` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /projects/*](../internal/web/server.go#L480), [internal/web/templates/project.templ:33](../internal/web/templates/project.templ#L33), [internal/web/templates/project.templ:17](../internal/web/templates/project.templ#L17)
+Sources: [GET /projects/*](../internal/web/server.go#L479), [internal/web/templates/project.templ:33](../internal/web/templates/project.templ#L33), [internal/web/templates/project.templ:17](../internal/web/templates/project.templ#L17)
 ## web.redirect_to_board
 
 Redirect to board
@@ -6963,42 +6964,42 @@ Sources: [GET /kanban](../internal/web/server.go#L467)
 
 Redirect to dashboard
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
-- Tool: `work_reads.redirect_to_dashboard` — Bounded redirectToDashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → redirectToDashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.redirectToDashboard; s.demoOnboarding
-- Extraction: Extract web.redirectToDashboard application inputs/results and validation from Echo; reuse s.demoOnboarding. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.project_setup` — Typed ProjectReadRequest with current project authority; limit 1–200 and bounded after cursor for batch pages. → Bounded typed application read with identifiers, checkpoint/revision, URLs and freshness; provider diagnostics are redacted. Setup returns the existing browser flow and requirements.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData; existing authenticated browser setup and redirect destinations
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: read or setup navigation → none
 
-Sources: [GET /onboarding](../internal/web/server.go#L486), [internal/web/templates/onboarding.templ:302](../internal/web/templates/onboarding.templ#L302), [web/conversation/src/app/account/api.ts:278](../web/conversation/src/app/account/api.ts#L278), [web/conversation/src/app/account/api.ts:279](../web/conversation/src/app/account/api.ts#L279), [web/conversation/src/app/account/api.ts:280](../web/conversation/src/app/account/api.ts#L280), [web/conversation/src/app/account/api.ts:295](../web/conversation/src/app/account/api.ts#L295), [web/conversation/src/app/account/api.ts:270](../web/conversation/src/app/account/api.ts#L270), [web/conversation/src/app/account/api.ts:387](../web/conversation/src/app/account/api.ts#L387), [web/conversation/src/app/account/api.ts:399](../web/conversation/src/app/account/api.ts#L399)
+Sources: [GET /onboarding](../internal/web/server.go#L485), [internal/web/templates/onboarding.templ:302](../internal/web/templates/onboarding.templ#L302)
 ## web.redirect_to_onboarding
 
 Redirect to onboarding
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `projects.redirect_to_onboarding` — Bounded redirectToOnboardingRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → redirectToOnboardingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.redirectToOnboarding; handler-owned application validation/read/command
-- Extraction: Extract web.redirectToOnboarding application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools.
+- Tool: `projects.project_setup` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /](../internal/web/server.go#L453)
+Sources: [GET /](../internal/web/server.go#L452)
 ## web.reports
 
 Reports
@@ -7062,22 +7063,22 @@ Sources: [GET /fleet/runners](../internal/web/server.go#L466), [internal/web/tem
 
 Settings
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
-- Tool: `work_reads.settings` — Bounded settingsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → settingsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.settings; s.demoSettings, s.settingsData
-- Extraction: Extract web.settings application inputs/results and validation from Echo; reuse s.demoSettings, s.settingsData. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Implemented through named typed project tools and shared dashboard application commands (#3342). Current principal/organization/role/scope/grants/ownership and existing hosted entitlements are enforced on direct calls, execution and replay.
+- Tool: `projects.project_settings` — Typed ProjectReadRequest: authorized project_id; import_id for import reads; limit 1–200 and bounded after cursor for lists; repository_policy only selects the authorized project binding. → Typed application DTO with organization/project identifiers, observation time, bounded pagination and existing setup URL/requirements where interactive browser input is needed; <=256 KiB; opaque unavailable errors.
+- Authority: role Current local dashboard credential/session scopes and project grants; credential Read for reads; write for ordinary commands; admin for project creation, binding/integration/cutover and policy/secret management. Hosted material approval requires a real browser session and exact CSRF/form token.; project Current project read/write grant, including returned created-project ownership on cached/reconnect/action-result replay; creation requires organization authority.; ownership Resolve project under current organization; imports/items under that project; repository policy only via that project binding. Browser mode requires the connection principal or current admin, and each preview requires current action authority..
+- Application: dashboardProjectRead/onboardingData/settingsTrackerProjectURL
+- Extraction: Shared dashboard project/read adapter and executeNativeMutation/native_commands or dashboard operator mutation receipts; no handler proxy, direct forge client, tracker lane writer, new configuration or recovery mechanism.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Coverage: TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon project application
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: Local daemon operation; use hosted project/application tools for this deployment.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
+- Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /settings](../internal/web/server.go#L481), [internal/web/templates/settings.templ:66](../internal/web/templates/settings.templ#L66), [internal/web/templates/settings.templ:14](../internal/web/templates/settings.templ#L14)
+Sources: [GET /settings](../internal/web/server.go#L480), [internal/web/templates/settings.templ:66](../internal/web/templates/settings.templ#L66), [internal/web/templates/settings.templ:14](../internal/web/templates/settings.templ#L14)
 ## web.start_o_i_d_c
 
 Start o i d c

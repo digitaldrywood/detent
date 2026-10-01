@@ -62,25 +62,31 @@ func (s *Service) getProjectIntegration(c echo.Context) error {
 }
 
 func (s *Service) getCutoverReceipt(c echo.Context) error {
-	var raw string
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT receipt_json FROM github_cutovers WHERE project_id = ?", nativeRequestScope(c).project).Scan(&raw); err != nil {
+	result, err := s.readCutoverReceipt(c.Request().Context(), nativeRequestScope(c))
+	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, []byte(raw))
+	return c.JSON(http.StatusOK, result)
+}
+
+type updateProjectIntegrationRequest struct {
+	tracker.Mutation
+	ExpectedRevision  tracker.Revision `json:"expected_revision,string"`
+	Intake            string           `json:"intake"`
+	Projection        string           `json:"projection"`
+	RepositoryEnabled bool             `json:"repository_enabled"`
 }
 
 func (s *Service) updateProjectIntegration(c echo.Context) error {
-	var request struct {
-		tracker.Mutation
-		ExpectedRevision  tracker.Revision `json:"expected_revision,string"`
-		Intake            string           `json:"intake"`
-		Projection        string           `json:"projection"`
-		RepositoryEnabled bool             `json:"repository_enabled"`
-	}
+	var request updateProjectIntegrationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, s.updateProjectIntegrationOperation(request))
+}
+
+func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegrationRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		current, err := readProjectIntegration(ctx, tx, scope)
 		if err != nil {
 			return nil, err
@@ -108,7 +114,7 @@ func (s *Service) updateProjectIntegration(c echo.Context) error {
 			return nil, err
 		}
 		return readProjectIntegration(ctx, tx, scope)
-	})
+	}
 }
 
 func requireIntegrationIdle(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {

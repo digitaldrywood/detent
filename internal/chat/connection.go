@@ -188,6 +188,9 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 // RequiresConfirmation classifies arguments, independently of tool annotations.
 // Unknown action kinds fail closed, including future billing/access commands.
 func RequiresConfirmation(action Action) bool {
+	if required, known := operatortool.ProjectConfirmation(string(action.Kind), action.Arguments); known {
+		return required
+	}
 	switch action.Kind {
 	case ActionSetPriority, "create_workspace", "create_conversation", "patch_conversation", "upload_conversation_attachment":
 		return false
@@ -222,7 +225,7 @@ func RequiresConfirmation(action Action) bool {
 		return args.Decision != "commented"
 	case ActionKind(operatortool.OrganizationSwitch):
 		return false
-	case ActionKind(operatortool.Refresh), ActionKind(operatortool.AcknowledgeWarnings), ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
+	case ActionKind(operatortool.BudgetOverrideClear), ActionKind(operatortool.Refresh), ActionKind(operatortool.AcknowledgeWarnings), ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
 		return false
 	case ActionKind(operatortool.EditItem):
 		return action.Material

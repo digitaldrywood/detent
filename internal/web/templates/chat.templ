@@ -94,7 +94,7 @@ templ ChatAction(action chatpkg.Action) {
 templ ChatApproval(data ChatData) {
  <!DOCTYPE html>
  <html lang="en">
-  <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Detent operator approval</title><link rel="stylesheet" href="/static/css/output.css"/></head>
+  <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Detent operator approval</title><link rel="stylesheet" href={ data.approvalStylesheet() }/></head>
   <body class="bg-page text-text">
    <main class="mx-auto max-w-2xl p-6">
     <h1 class="text-lg font-semibold">Detent chat · operator approval</h1>

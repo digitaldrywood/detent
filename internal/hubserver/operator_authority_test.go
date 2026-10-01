@@ -116,6 +116,21 @@ func TestHostedOperatorCurrentAuthority(t *testing.T) {
 							}
 						}
 					}
+					if test.kind == "" && test.scope == apikey.ScopeRead {
+						_, err := (hubProjectExecutor{f.service}).Execute(request.Context(), operatortool.Call{Name: "get_native_project", Arguments: json.RawMessage(`{"project_id":"` + project + `"}`)})
+						if (err != nil) != test.denied {
+							t.Fatalf("direct project read=%v want denied=%v", err, test.denied)
+						}
+					} else if test.kind == "" && test.denied {
+						name := "save_onboarding"
+						if test.scope == apikey.ScopeAdmin {
+							name = "update_project_integration"
+						}
+						_, err := (hubProjectExecutor{f.service}).Execute(request.Context(), operatortool.Call{Name: name, Arguments: json.RawMessage(`{"project_id":"` + project + `","request_id":"denied","input":{}}`)})
+						if !errors.Is(err, operatortool.ErrAccessDenied) {
+							t.Fatalf("direct project write=%v", err)
+						}
+					}
 					if _, err := operatortool.AuthorizeCurrent(request.Context(), operatortool.Requirement{Scope: apikey.ScopeRead, OrganizationID: "other", ProjectID: project}); err == nil {
 						t.Fatal("foreign organization authorized")
 					}

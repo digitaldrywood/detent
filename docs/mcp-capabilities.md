@@ -387,6 +387,46 @@ roots, tasks, logging, caching or MRTR elicitation. Operator approval uses the
 existing dashboard flow; no new revocation/recovery mechanism or lane writer is
 introduced.
 
+## Project settings and onboarding
+
+The `projects` toolset (#3342) exposes authorized project listing/detail,
+creation, onboarding progress, repository/integration configuration, import
+jobs/records/advance, runner batch intake, cutover receipts, native/repository policy inspection,
+policy approval/revoke and change-review policy. Use `repository_policy: true`
+to address a legacy policy through its authorized project's repository binding;
+clients never choose an unrelated owner/repository. Mutations take a typed
+`input` and business `request_id`; revisions, policy IDs and cutover checkpoints
+remain application preconditions. A completed retry returns the original receipt
+after current authority checks, without another approval or provider fetch.
+Batch discovery, additional preview pages and non-dispatchable apply use the
+existing intake command directly. Dispatchable apply and batch retry require
+exact approval; selecting a destination retains the application's lane and
+runner checks. Batch reads and receipts redact runner/provider diagnostics and
+return at most 200 preview issues/items with a cursor for subsequent reads.
+
+Local daemon tools expose project settings, setup navigation and temporary
+budget overrides. Reads and ordinary writes (including initial imports, progress,
+import advance, disabled projection configuration and budget clear) execute
+directly. Import restart, live cutover, policy changes, access grants, secret
+removal, budget override and external projection/binding require exact browser
+approval, unless the authenticated operator chose YOLO for that connection.
+Dry-run cutover does not require confirmation. An unhosted hub has no hosted
+browser approval service and returns opaque unavailable for material variants;
+the local daemon and hosted dedicated/shared paths use their existing browser
+authority. Hosted role, project grant and entitlement checks still apply in YOLO.
+
+`project_setup` returns the existing authenticated setup URL and required steps.
+`demo_setup_scenarios` reads the shared browser scenario manifest when demo
+scenarios are enabled, and returns opaque unavailable otherwise.
+Credential and workflow-file setup stays in that browser flow: tool inputs,
+results, approvals and audit records never carry provider secrets. Secret
+metadata is available through its existing safe read; removal uses its existing
+command. Local project editing/tracker binding is part of interactive onboarding;
+settings/library/reports have no configuration mutation in that dashboard.
+Their read/filter parity remains with the corresponding inventory owners. This
+child implements its matrix rows and shared settings/budget/review-policy
+prerequisites, and does not complete parent #3259 or those other children.
+
 ## Workspace, conversation and project actions
 
 Native hub endpoints advertise the `conversations_workspaces` tools when their

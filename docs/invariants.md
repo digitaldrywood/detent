@@ -17,6 +17,41 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Project MCP parity (#3342) calls the same dashboard project, onboarding,
+integration, import, policy and budget application commands. Native command
+receipts are checked before revisions/provider reads and before repeat approval,
+with current role/scope/grant/resource ownership checked again. The current
+application context is bound by the shared authority resolver, never by tool
+arguments. Native and repository policy scopes resolve through the authorized
+project; change-review policy retains its principal/provenance checks. Hosted
+browser approval reuses the existing chat form with session, CSRF and exact
+payload tokens, including the shared organization's path. Browser viewers cannot
+inspect ungranted previews or toggle another principal's confirmation mode;
+current operators need their own connection or administrator authority and each
+action's current grant/scope. Created-project receipts recheck the returned
+resource on cached, reconnect and action-result paths. YOLO suppresses only
+confirmation. Approval by a different administrator retains the original
+requester's freshly resolved native command scope and attribution; fleet
+previews retain their existing explicit runner-grant authority. Unhosted hubs
+without that browser authority return opaque unavailable errors for material
+variants. Tools accept no credentials; browser
+setup returns navigation/requirements, and import/provider errors are redacted
+from reads, actions and replay results. This extends INV-1 authorization
+adapters without a tracker lane writer or an INV-3 recovery/revocation mechanism.
+`TestHostedProjectTools`, `TestProjectImportToolReceipts`,
+`TestHostedOperatorCurrentAuthority`, `TestProjectArgumentBounds`,
+`TestActionConfirmationClassification` and project/budget cases in
+`TestMCPActionApprovalBoundary` cover these boundaries.
+
+Runner batch intake reuses `commandGitHubBatchOperation` and the existing native
+receipt contract. Discovery and non-dispatchable apply execute directly;
+dispatchable apply and retry require exact operator approval. Current project
+administrator/write grants, matching runner checkout, revisions and destination
+lane checks remain application authority. Bounded batch reads/results redact
+stored provider diagnostics. `TestGitHubBatchIntakeRetryAndNativeOwnership` and
+`TestActionConfirmationClassification` cover the MCP adapter without adding an
+intake mechanism or tracker lane writer.
+
 Work/board MCP reads (#3340) share the dashboard application read models and
 native organization/project/item reads. Direct calls resolve current read
 scope and grants, then resource ownership; saved versions and history retain

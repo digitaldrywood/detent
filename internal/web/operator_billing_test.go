@@ -157,13 +157,9 @@ func TestMCPDaemonBilling(t *testing.T) {
 			}
 			if scenario == "clear" {
 				response = call(operatortool.BudgetOverrideClear, `{"project_id":"detent","request_id":"clear"}`)
-				if json.Unmarshal(response.Body.Bytes(), &preview) != nil || preview.Preview.Status != chat.ActionPending {
-					t.Fatalf("clear=%s", response.Body.String())
+				if json.Unmarshal(response.Body.Bytes(), &preview) != nil || preview.Preview.Status != chat.ActionSucceeded {
+					t.Fatalf("ordinary clear=%s", response.Body.String())
 				}
-				if _, err := writer.ActiveBudgetOverride(t.Context(), "detent", time.Now()); err != nil {
-					t.Fatal("clear before approval")
-				}
-				decision(preview.Preview.ID, "confirm", "")
 				if _, err := writer.ActiveBudgetOverride(t.Context(), "detent", time.Now()); !errors.Is(err, store.ErrNotFound) {
 					t.Fatalf("clear failed=%v", err)
 				}

@@ -45,7 +45,11 @@ func (s *Service) cutoverProject(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, s.cutoverProjectOperation(request))
+}
+
+func (s *Service) cutoverProjectOperation(request CutoverRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if err := validateNativeStates(request.States); err != nil {
 			return nil, err
 		}
@@ -94,7 +98,7 @@ func (s *Service) cutoverProject(c echo.Context) error {
 		}
 		_, err = tx.ExecContext(ctx, "INSERT INTO github_cutovers (project_id, checkpoint, receipt_json, actor_id, created_at) VALUES (?, ?, ?, ?, ?)", scope.project, receipt.Checkpoint, raw, scope.credential.ID, formatHubTime(now))
 		return receipt, err
-	})
+	}
 }
 
 func inspectCutover(ctx context.Context, tx *sql.Tx, scope nativeScope, request CutoverRequest, now time.Time) (CutoverReceipt, error) {
@@ -304,15 +308,21 @@ func preserveCutoverPolicy(ctx context.Context, tx *sql.Tx, scope nativeScope) e
 	return err
 }
 
+type projectNativeSummaryRequest struct {
+	tracker.Mutation
+	Body string `json:"body"`
+}
+
 func (s *Service) projectNativeSummary(c echo.Context) error {
-	var request struct {
-		tracker.Mutation
-		Body string `json:"body"`
-	}
+	var request projectNativeSummaryRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, s.projectNativeSummaryOperation(request, c.Param("item")))
+}
+
+func (s *Service) projectNativeSummaryOperation(request projectNativeSummaryRequest, item string) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		integration, err := readProjectIntegration(ctx, tx, scope)
 		if err != nil {
 			return nil, err
@@ -320,13 +330,13 @@ func (s *Service) projectNativeSummary(c echo.Context) error {
 		if integration.Profile != "native" || integration.Projection != "summary" {
 			return nil, nativeInvalid("Native summary projection is not enabled")
 		}
-		if err := enqueueNativeSummary(ctx, tx, scope, c.Param("item"), request.IdempotencyKey, request.Body, false, now); err != nil {
+		if err := enqueueNativeSummary(ctx, tx, scope, item, request.IdempotencyKey, request.Body, false, now); err != nil {
 			return nil, err
 		}
 		return struct {
 			Status string `json:"status"`
 		}{"pending"}, nil
-	})
+	}
 }
 
 func enqueueNativeSummary(ctx context.Context, tx *sql.Tx, scope nativeScope, item, key, body string, closeSource bool, now time.Time) error {

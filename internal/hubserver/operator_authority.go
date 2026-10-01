@@ -33,8 +33,8 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 		e.Any("/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	}
 	if s.config.Hosted != nil {
-		e.GET("/chat/approval", s.hostedOperatorApproval)
-		e.POST("/chat/approval", s.hostedOperatorDecision)
+		e.GET("/chat/approval", s.hostedOperatorApproval, s.operatorProjectBrowser)
+		e.POST("/chat/approval", s.hostedOperatorDecision, s.operatorProjectBrowser)
 	}
 }
 
@@ -164,6 +164,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		// the context initially came from a different approving browser.
 		ctx = context.WithValue(ctx, operatorScopeKey{}, scope)
 		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return credential, nil })
+		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
 		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
 	}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
 		if requirement.OrganizationWide && credential.Hosted == nil && credential.NativeOnly {

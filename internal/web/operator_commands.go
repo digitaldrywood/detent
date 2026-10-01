@@ -81,6 +81,7 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 			definitions = append(definitions, definition)
 		}
 	}
+	definitions = append(definitions, e.server.dashboardProjectTools(ctx)...)
 	admin, err := e.server.credentialExecutor().ListTools(ctx)
 	if err != nil {
 		return nil, err
@@ -95,6 +96,9 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 
 func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.server
+	if definition, ok := operatortool.Lookup(call.Name); ok && definition.Meta.Toolset == "projects" {
+		return e.server.dashboardProjectRead(ctx, call)
+	}
 	if d, ok := operatortool.ChangeDefinition(call.Name); ok {
 		args, err := operatortool.DecodeChangeArguments(call.Name, call.Arguments)
 		if err != nil {

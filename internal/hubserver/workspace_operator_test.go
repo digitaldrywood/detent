@@ -498,6 +498,8 @@ func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
 
 // Catches a material operation approved by bearer credentials, a forged form,
 // an insufficient browser grant, or a model-replayed rejection after reconnect.
+// Hosted discovery, submission and result dispatch must retain workspace and
+// project tools together when their shared executor is integrated.
 func TestWorkspaceOperatorBrowserApproval(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
@@ -511,8 +513,29 @@ func TestWorkspaceOperatorBrowserApproval(t *testing.T) {
 		return c.NoContent(http.StatusOK)
 	}, f.service.operatorAuthority)
 	requireNativeStatus(t, f.request(t, owner, http.MethodPost, "/browser-connection", nil), http.StatusOK)
+	executor := hostedOperatorExecutor{service: f.service}
+	definitions, err := executor.ListTools(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool)
+	for _, definition := range definitions {
+		if seen[definition.Name] {
+			t.Fatalf("duplicate hosted tool %s", definition.Name)
+		}
+		seen[definition.Name] = true
+	}
+	for _, name := range []string{"create_project_action", "list_projects", operatortool.ActionResult, operatortool.ConnectionInfo} {
+		if !seen[name] {
+			t.Fatalf("missing hosted tool %s", name)
+		}
+	}
 	args := map[string]any{"project_id": f.project, "request_id": "browser", "input": map[string]any{"name": "Compile <project>", "command": "go build ./cmd/detent"}}
-	result, err := workspaceOperatorCall(t, f.service, ctx, "create_project_action", args)
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.Execute(ctx, operatortool.Call{Name: "create_project_action", Arguments: raw})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,6 +574,13 @@ func TestWorkspaceOperatorBrowserApproval(t *testing.T) {
 	applied, _ := f.service.operatorChat.Action("browser", action.ID)
 	if applied.Status != chat.ActionSucceeded {
 		t.Fatal(applied)
+	}
+	result, err = executor.Execute(ctx, operatortool.Call{Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + action.ID + `"}`)})
+	var returned struct {
+		Name string `json:"name"`
+	}
+	if err != nil || workspaceOperatorAction(t, result).Status != chat.ActionSucceeded || json.Unmarshal(workspaceOperatorData(t, result), &returned) != nil || returned.Name != "Compile <project>" {
+		t.Fatalf("hosted workspace result=%s %v", result.Content, err)
 	}
 	args["request_id"] = "reject"
 	result, err = workspaceOperatorCall(t, f.service, ctx, "create_project_action", args)

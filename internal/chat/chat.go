@@ -78,6 +78,7 @@ type Action struct {
 }
 
 type Conversation struct {
+	PrincipalID     string `json:"-"`
 	ApprovalBaseURL string
 	ConnectionID    string
 	OrganizationID  string

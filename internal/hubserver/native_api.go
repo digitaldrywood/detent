@@ -306,12 +306,10 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	encoded, err := json.Marshal(input)
+	requestHash, err := nativeCommandHash(input)
 	if err != nil {
 		return nil, err
 	}
-	hash := sha256.Sum256(encoded)
-	requestHash := hex.EncodeToString(hash[:])
 	operationID := options.OperationID
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -336,19 +334,15 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	}
 	// Older hosted receipts included the originating session in operation.
 	// Read those records as the same business operation across reconnects.
-	var storedHash, response string
-	err = tx.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, command.IdempotencyKey, operationID, operationID, operationID).Scan(&storedHash, &response)
-	if err == nil {
-		if storedHash != requestHash {
-			return nil, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
-		}
+	response, found, err := nativeCommandReceipt(ctx, tx, scope, operationID, command.IdempotencyKey, requestHash)
+	if err != nil {
+		return nil, err
+	}
+	if found {
 		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
 		return json.RawMessage(response), nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
@@ -412,4 +406,53 @@ func (s *Service) requireCompatibilityResource(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: "Resource was not found"})
 	}
 	return nil
+}
+
+func nativeCommandHash(input any) (string, error) {
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(encoded)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope nativeScope, operation, key, hash string) (string, bool, error) {
+	var storedHash, response string
+	err := query.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, key, operation, operation, operation).Scan(&storedHash, &response)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if storedHash != hash {
+		return "", false, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
+	}
+	return response, true, nil
+}
+
+// External-read commands consult the same receipt before fetching a provider.
+// Current application authority is rechecked even when returning a replay.
+func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, operation, key string, input any) (json.RawMessage, bool, error) {
+	if strings.TrimSpace(key) == "" || len(key) > 128 {
+		return nil, false, nativeInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	hash, err := nativeCommandHash(input)
+	if err != nil {
+		return nil, false, err
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		return nil, false, err
+	}
+	response, found, err := nativeCommandReceipt(ctx, tx, scope, operation, key, hash)
+	if !found || err != nil {
+		return nil, found, err
+	}
+	return json.RawMessage(response), true, nil
 }

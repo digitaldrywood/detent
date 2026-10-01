@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -241,6 +243,16 @@ func TestProjectSecretLifecycle(t *testing.T) {
 				}
 			}
 			if step.name == "metadata" {
+				// The project tool reuses the same authenticated metadata read, never
+				// the encrypted envelope or the provider credential setup payload.
+				var captured context.Context
+				f.service.echo.GET("/api/v2/organizations/:organization/secret-tool-fixture", func(c echo.Context) error { captured = c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+				f.api(t, "owner", http.MethodGet, "/api/v2/organizations/org_secret_lifecycle/secret-tool-fixture", nil, http.StatusOK)
+				result, err := (hubProjectExecutor{f.service}).Execute(captured, operatortool.Call{Name: "project_secret_metadata", Arguments: json.RawMessage(`{"project_id":"` + f.project + `"}`)})
+				if err != nil || !strings.Contains(string(result.Content), `"present":true`) || strings.Contains(string(result.Content), "SPRITES-VALUE-SENTINEL") || strings.Contains(string(result.Content), "ciphertext") {
+					t.Fatalf("tool metadata=%s %v", result.Content, err)
+				}
+
 				scope := nativeScope{organization: tracker.OrganizationID("org_secret_lifecycle"), project: tracker.ProjectID(f.project), credential: apiCredential{ID: "internal-provisioner"}}
 				if slug, err := f.service.checkProjectSprites(t.Context(), scope); err != nil || slug != "detent-test" {
 					t.Fatalf("internal use=%s %v", slug, err)

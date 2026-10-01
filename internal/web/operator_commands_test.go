@@ -31,7 +31,7 @@ const modernOperatorMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-
 // targets, and request metadata/header attempts to enable YOLO.
 func TestMCPActionApprovalBoundary(t *testing.T) {
 	for _, transport := range []string{"remote", "remote modern", "stdio"} {
-		for _, scenario := range []string{"ordinary", "different credential", "reconnect retry", "concurrent retry", "application failure", "approve", "approve after YOLO", "pending reconnect conflict", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard", "comment add", "comment edit", "comment delete", "comment delete approve", "comment delete reject", "comment delete YOLO", "comment replay", "comment pr", "comment pr ownership", "work create", "work priority", "work remove", "work remove YOLO", "work unsupported edit"} {
+		for _, scenario := range []string{"project settings", "demo setup", "ordinary", "different credential", "reconnect retry", "concurrent retry", "application failure", "approve", "approve after YOLO", "pending reconnect conflict", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard", "comment add", "comment edit", "comment delete", "comment delete approve", "comment delete reject", "comment delete YOLO", "comment replay", "comment pr", "comment pr ownership", "work create", "work priority", "work remove", "work remove YOLO", "work unsupported edit"} {
 			if transport != "remote" && scenario == "closed connection" || transport == "remote modern" && scenario == "pending reconnect conflict" {
 				continue // Modern HTTP has no protocol session to close or replace.
 			}
@@ -55,6 +55,9 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					t.Fatal(err)
 				}
 				cfg := web.Config{Logger: slog.New(slog.NewJSONHandler(&mutationLogs, nil)), ServerAddress: "127.0.0.1:0", Now: func() time.Time { return clock }, GlobalConfig: globalconfig.Config{APIToken: "detent_admin_token", DashboardAccess: globalconfig.DashboardAccess{Mode: globalconfig.DashboardAccessModePrivateToken, Token: "human-only-fixture", AllowWrite: true}}}
+				if scenario == "demo setup" {
+					cfg.Demo = web.DemoConfig{Mode: web.DemoModeScreenshots}
+				}
 				if scenario == "unprotected dashboard" {
 					cfg.GlobalConfig.DashboardAccess = globalconfig.DashboardAccess{}
 				}
@@ -193,6 +196,26 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					if reply := decision("", "mode", "yolo", false); reply.Code != 200 {
 						t.Fatalf("YOLO setup=%d %s", reply.Code, reply.Body.String())
 					}
+				}
+				if scenario == "project settings" {
+					for _, name := range []string{"list_projects", "project_settings", "project_setup"} {
+						r := call(name, `{"project_id":"detent"}`)
+						if r.Code != 200 || !strings.Contains(r.Body.String(), "setup_url") {
+							t.Fatalf("%s=%d %s", name, r.Code, r.Body.String())
+						}
+					}
+					unavailable := call("demo_setup_scenarios", `{}`)
+					if !strings.Contains(unavailable.Body.String(), "unavailable") {
+						t.Fatalf("disabled demo=%s", unavailable.Body.String())
+					}
+					return
+				}
+				if scenario == "demo setup" {
+					demo := call("demo_setup_scenarios", `{}`)
+					if demo.Code != 200 || !strings.Contains(demo.Body.String(), "generated_at") || !strings.Contains(demo.Body.String(), "scenarios") {
+						t.Fatalf("demo setup=%d %s", demo.Code, demo.Body.String())
+					}
+					return
 				}
 				headers["X-Detent-YOLO"] = "true"
 				state := "Cancelled"
