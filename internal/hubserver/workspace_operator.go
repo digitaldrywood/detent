@@ -191,8 +191,9 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
-	command := hostedCommand{actor: identity.PrincipalID, organization: identity.OrganizationID, operation: "mcp " + call.Name, key: m.RetryIdentity, input: json.RawMessage(arguments)}
-	if found, raw, err := e.server.readHostedOperation(ctx, command); err != nil {
+	ctx = mutation.WithContext(ctx, m)
+	command := hostedCommand{actor: identity.PrincipalID, operation: "mcp " + call.Name, key: m.RetryIdentity, input: json.RawMessage(arguments)}
+	if raw, found, err := e.server.readHostedOperation(ctx, command); err != nil {
 		return operatortool.Result{}, safeWorkspaceError(err)
 	} else if found {
 		var rejection workspaceRejectedAction
@@ -227,6 +228,12 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 			return operatortool.Result{}, errWorkspaceOperationUnavailable
 		}
 		proposal.Title, proposal.Description = configured.Name, configured.Command
+	}
+	// Standalone hubs have no authenticated operator browser. Connection
+	// setup supplies this authority; tool arguments cannot invent an approval
+	// service. Completed receipts above remain readable without confirmation.
+	if chat.RequiresConfirmation(proposal) && operatortool.CurrentConnection(ctx).DashboardURL == "" {
+		return operatortool.Result{}, errWorkspaceOperationUnavailable
 	}
 	action, err := e.server.operatorChat.Submit(ctx, proposal)
 	if err != nil {
@@ -285,7 +292,7 @@ func (e workspaceOperatorExecutor) ExecuteAction(ctx context.Context, action cha
 	scope := ctx.Value(operatorScopeKey{}).(nativeScope)
 	scope.project = tracker.ProjectID(request.ProjectID)
 	ctx = mutation.WithContext(ctx, m)
-	command := hostedCommand{actor: identity.PrincipalID, organization: identity.OrganizationID, operation: "mcp " + string(action.Kind), key: m.RetryIdentity, input: action.Arguments}
+	command := hostedCommand{actor: identity.PrincipalID, operation: "mcp " + string(action.Kind), key: m.RetryIdentity, input: action.Arguments}
 	claimed, previous, err := e.server.claimHostedOperation(ctx, command)
 	if err != nil {
 		return chat.ActionExecution{}, safeWorkspaceError(err)
@@ -343,8 +350,8 @@ type workspaceCompletedAction struct {
 
 func (e workspaceOperatorExecutor) AuditAction(ctx context.Context, action chat.Action, outcome string) {
 	if outcome == "rejected" {
-		command := hostedCommand{actor: action.Mutation.PrincipalID, organization: action.OrganizationID, operation: "mcp " + string(action.Kind), key: action.Mutation.RetryIdentity, input: action.Arguments}
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		command := hostedCommand{actor: action.Mutation.PrincipalID, operation: "mcp " + string(action.Kind), key: action.Mutation.RetryIdentity, input: action.Arguments}
+		persistCtx, cancel := context.WithTimeout(mutation.WithContext(context.WithoutCancel(ctx), action.Mutation), 2*time.Second)
 		defer cancel()
 		claimed, _, err := e.server.claimHostedOperation(persistCtx, command)
 		if err == nil && claimed {

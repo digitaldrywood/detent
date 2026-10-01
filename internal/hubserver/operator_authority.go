@@ -95,6 +95,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			return s.operatorCurrentAuthority(ctx, current, organization)
 		}}
 		ctx := operatortool.WithConnection(context.WithValue(c.Request().Context(), operatorCredentialKey{}, billingAuthorization(resolve)), connection)
+		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, resolve)
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(ctx context.Context) (nativeScope, error) {
 			current, err := resolve(ctx)
 			if err != nil {
@@ -133,7 +134,28 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 	if err := s.authorizeConversationOrganization(ctx, scope); err != nil {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
-	return operatortool.Authority{Identity: operatorIdentity(credential, organization), WorkReads: operatorWorkReads{service: s, scope: scope}, ApplicationContext: func(ctx context.Context) context.Context { return context.WithValue(ctx, operatorScopeKey{}, scope) }, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+	return operatortool.Authority{Identity: operatorIdentity(credential, organization), WorkReads: operatorWorkReads{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
+		// Commands consume the freshly resolved originating credential, even when
+		// the context initially came from a different approving browser.
+		ctx = context.WithValue(ctx, operatorScopeKey{}, scope)
+		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return credential, nil })
+		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
+	}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+		if requirement.ResourceKind == "runners" {
+			if credential.NativeOnly && credential.Hosted == nil || credential.Runner.RunnerID != "" {
+				return operatortool.ErrAccessDenied
+			}
+			if credential.Hosted != nil {
+				if credential.HostedRole == "viewer" || !s.hostedAllRunnerGrants(ctx, credential) {
+					return operatortool.ErrAccessDenied
+				}
+				return nil
+			}
+			if credential.Scope != apiScopeAdmin {
+				return operatortool.ErrAccessDenied
+			}
+			return nil
+		}
 		if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
 			if credential.Hosted == nil || requirement.ResourceID != "" || s.config.Hosted == nil || organization != s.config.Hosted.OrganizationID {
 				return operatortool.ErrAccessDenied

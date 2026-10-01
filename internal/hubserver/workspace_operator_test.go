@@ -28,7 +28,7 @@ func workspaceOperatorContext(t *testing.T, s *Service, token, organization, con
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: connection, Client: "regression", Identity: operatorIdentity(credential, organization), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+	ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: connection, Client: "regression", DashboardURL: "https://approval.example.test", Identity: operatorIdentity(credential, organization), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 		current, _, err := s.authenticateAPIToken(ctx, token, "", "")
 		if err != nil {
 			return operatortool.Authority{}, err
@@ -563,5 +563,16 @@ func TestWorkspaceOperatorUnavailable(t *testing.T) {
 		if !errors.Is(err, errWorkspaceOperationUnavailable) {
 			t.Fatalf("%s=%v", test.name, err)
 		}
+	}
+	// A standalone transport must not return a pending action whose human
+	// decision surface does not exist. The URL is trusted connection setup.
+	connection := operatortool.CurrentConnection(ctx)
+	before := len(f.service.operatorChat.Conversation(connection.ID).Actions)
+	connection.DashboardURL = ""
+	_, err := workspaceOperatorCall(t, f.service, operatortool.WithConnection(ctx, connection), "create_project_action", map[string]any{
+		"project_id": f.project.ID, "request_id": "no-browser", "input": map[string]any{"name": "Test", "command": "true"},
+	})
+	if !errors.Is(err, errWorkspaceOperationUnavailable) || len(f.service.operatorChat.Conversation(connection.ID).Actions) != before {
+		t.Fatalf("missing browser=%v actions=%d", err, len(f.service.operatorChat.Conversation(connection.ID).Actions))
 	}
 }

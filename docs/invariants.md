@@ -132,6 +132,27 @@ only authorized read tools, while operator actions use the named command tools.
 `TestWorkspaceOperatorUnavailable` and `TestMCPOperatorChatRetry` cover these boundaries.
 No MCP adapter writes tracker lanes or introduces a new protection/recovery mechanism.
 
+Fleet/operator MCP adapters (#3343) share the dashboard refresh, availability
+clear, canary, update, progress-credit, warning-acknowledgment, recovery and
+runner administration commands. Runner display edits execute directly; capacity,
+scheduling, access, enrollment, revoke, stop and other material actions use the
+existing authenticated browser approval surface. Unknown action kinds still
+require confirmation. Fresh authority resolution binds application command
+credentials from the originating connection, including when another authorized
+browser approves. Hosted runner administration retains current all-project
+runner grants and transaction-time membership/credential checks. Browser previews
+containing fleet actions also require current runner grants, including for owners.
+Health and outbox reads retain dashboard deployment boundaries; AI debug projects
+its snapshot through current project grants. Missing runtime
+or approval services return opaque unavailable results; an unhosted hub bearer
+credential cannot stand in for a human. Worker enrollment redemption, credential
+renewal/rotation, claims, leases and heartbeat protocols remain worker-only.
+`TestMCPFleetReads`, `TestMCPFleetMutation`, `TestMCPOperatorControls`,
+`TestMCPStopExactRun`, `TestHostedMCPFleetControls`, `TestHubMCPFleetBoundary`
+and `TestFleetArgumentBoundary` cover current authority, bounded calls, exact
+targets, confirmation and safe retries. No adapter writes tracker lanes or adds
+a protection/recovery mechanism (INV-3); recovery/stop use existing services.
+
 SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
 
 Hub-native SSH runs capture Git artifacts and attempt diffs on the selected
@@ -714,6 +735,17 @@ existing completion and retry owners. `TestCloseCompletedEpics` covers a large
 unresolved checklist, a later child reopen, and independent parent completion;
 the existing affected-epic retry tests retain transient failure behavior. No
 cache, timer, configuration, or recovery mechanism is added.
+
+Rework gate restoration owns its fresh tracker and Workpad read once, retaining
+the refreshed issue for later tick consumers. Required-gate snapshots project
+that evidence without another tracker read. The existing completion reader still
+fetches current evidence for callers outside restoration; history selection
+consumes that evidence rather than reading it again. Fresh blocked Workpads and
+unavailable reads cannot restore a wait, and current-head validator hydration
+keeps its existing owner. `TestReworkGateWaitHistoryCannotResurrectSupersededWait`
+checks one tracker/comment read, failed reads, and fresh blocker propagation;
+the existing current-head restoration cases cover validator handoff. This
+consolidates readers without a cache, configuration, or recovery mechanism.
 
 Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
 existing optional feature negotiation. The `runner_local_checks` capability

@@ -267,6 +267,10 @@ func TestActionConfirmationClassification(t *testing.T) {
 		{Action{Kind: "patch_project_action", Arguments: json.RawMessage(`{"input":{"command":"changed"}}`)}, true},
 		{Action{Kind: "patch_project_action", Arguments: json.RawMessage(`{"input":{"run_on_worktree_creation":false}}`)}, true},
 
+		{Action{Kind: ActionKind(operatortool.UpdateRunnerHost)}, false},
+		{Action{Kind: ActionKind(operatortool.UpdateRunnerHost), MaterialChange: true}, true},
+		{Action{Kind: ActionKind(operatortool.RecoverAttempt), Destination: "inspect"}, false},
+		{Action{Kind: ActionKind(operatortool.RecoverAttempt), Destination: "abandon"}, true},
 		{Action{Kind: ActionKind(operatortool.AddComment)}, false},
 		{Action{Kind: ActionKind(operatortool.EditComment)}, false},
 		{Action{Kind: ActionKind(operatortool.DeleteComment)}, true},

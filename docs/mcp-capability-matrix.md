@@ -2271,20 +2271,20 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/actions/:ac
 
 Create runner enrollment
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.create_runner_enrollment` — Bounded createRunnerEnrollmentRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createRunnerEnrollmentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.createRunnerEnrollment; s.config.generateToken, s.runnerTransaction
-- Extraction: Extract hubserver.createRunnerEnrollment application inputs/results and validation from Echo; reuse s.config.generateToken, s.runnerTransaction. The HTTP handler and MCP must delegate to this same application operation.
+- Tool: `runs_fleet.create_runner_enrollment` — Typed create_runner_enrollment schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO. Enrollment token is returned in the authorized command receipt, never the preview or audit.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: Service.createRunnerEnrollmentCommand
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls (dedicated/shared, current runner grants, ordinary edits, approval, YOLO, stale targets, original principal, replay) and TestHubMCPFleetBoundary (private admin reads and no worker/approval escalation); internal/operatortool/fleet_test.go; existing runner application regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v2/organizations/:organization/runner-enrollments](../internal/hubserver/runner_enrollment.go#L25), [web/conversation/src/app/account/api.ts:339](../web/conversation/src/app/account/api.ts#L339), [web/conversation/src/app/fleet/RunnersSection.tsx:166](../web/conversation/src/app/fleet/RunnersSection.tsx#L166), [web/conversation/src/app/fleet/RunnersSection.tsx:166](../web/conversation/src/app/fleet/RunnersSection.tsx#L166), [web/conversation/src/app/fleet/RunnersSection.tsx:166](../web/conversation/src/app/fleet/RunnersSection.tsx#L166)
 ## hubserver.create_workspace
@@ -2750,18 +2750,18 @@ Sources: [GET /api/v2/organizations/:organization/runners/:runner](../internal/h
 
 Get runner routing
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.get_runner_routing` — Bounded getRunnerRoutingRequest: organization, runner; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getRunnerRoutingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.get_runner_routing` — Typed get_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.getRunnerRouting; s.config.now
-- Extraction: Extract hubserver.getRunnerRouting application inputs/results and validation from Echo; reuse s.config.now. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Service.readRunnerRouting
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls (dedicated/shared, current runner grants, ordinary edits, approval, YOLO, stale targets, original principal, replay) and TestHubMCPFleetBoundary (private admin reads and no worker/approval escalation); internal/operatortool/fleet_test.go; existing runner application regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
-- Availability: hosted_dedicated / github,native / hub application service
-- Availability: hosted_shared / github,native / hub application service
+- Availability: hosted_dedicated / github,native / hub application service — unavailable: Current application forbids this private instance/worker read for hosted organization credentials; hosted fleet/list reads remain available under their own grants.
+- Availability: hosted_shared / github,native / hub application service — unavailable: Current application forbids this private instance/worker read for hosted organization credentials; hosted fleet/list reads remain available under their own grants.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
@@ -2850,20 +2850,20 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:
 
 Github request counts
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the current instance-admin request-count read under the same administration authority; ordinary operators cannot invoke it.
-- Tool: `runs_fleet.github_request_counts` — Authorized instance/organization context; bounded window; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → Typed bounded request counts with timestamps/freshness; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.github_request_counts` — Typed github_request_counts schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role requireInstanceAdmin: unhosted instance admin; hosted owner/admin through requireHostedAdministration; credential staff session or dedicated private instance-admin credential; not an organization operator credential; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.githubRequestCounts; s.config.GitHubRequestCounts
-- Extraction: Extract githubRequestCounts authorized application read from HTTP and retain current request-accounting service.
+- Application: Config.GitHubRequestCounts / private instance administrator authority
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls (dedicated/shared, current runner grants, ordinary edits, approval, YOLO, stale targets, original principal, replay) and TestHubMCPFleetBoundary (private admin reads and no worker/approval escalation); internal/operatortool/fleet_test.go; existing runner application regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
-- Availability: hosted_dedicated / github,native / hub application service
-- Availability: hosted_shared / github,native / hub application service
+- Availability: hosted_dedicated / github,native / hub application service — unavailable: Current application forbids this private instance/worker read for hosted organization credentials; hosted fleet/list reads remain available under their own grants.
+- Availability: hosted_shared / github,native / hub application service — unavailable: Current application forbids this private instance/worker read for hosted organization credentials; hosted fleet/list reads remain available under their own grants.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: this non-operator source site → not_applicable
+- Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/github/requests](../internal/hubserver/integration.go#L144)
 ## hubserver.github_webhook
@@ -2928,18 +2928,18 @@ Sources: [POST /api/v2/tokens/:id/grants](../internal/hubserver/credential_maint
 
 Health
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending.
-- Tool: `work_reads.health` — Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
+- Tool: `work_reads.health` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.health; s.OutboxHealth, s.config.now, s.database.health, s.database.repositoryFreshness, s.ready.Load
-- Extraction: Extract hubserver.health application inputs/results and validation from Echo; reuse s.OutboxHealth, s.config.now, s.database.health, s.database.repositoryFreshness, s.ready.Load. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Service.readInstanceHealth
+- Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHubMCPFleetBoundary and TestHostedMCPFleetControls; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
-- Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
-- Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
+- Availability: hosted_dedicated / github,native / hub application service — unavailable: Existing dashboard route forbids hosted operators; MCP preserves that boundary.
+- Availability: hosted_shared / github,native / hub application service — unavailable: Existing dashboard route forbids hosted operators; MCP preserves that boundary.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
@@ -3144,15 +3144,15 @@ Sources: [GET /projects/:project/events](../internal/hubserver/hosted_ui.go#L49)
 
 Hosted fleet
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.hosted_fleet` — Bounded hostedFleetRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → hostedFleetResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.hosted_fleet` — Typed hosted_fleet schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.hostedFleet; s.database.db.QueryRowContext, s.hostedAllRunnerGrants, s.hostedCredential, s.hostedFleetRunners, s.hostedFleetUsage, s.hostedReadableProjects, s.hostedVisibleReservations
-- Extraction: Extract hubserver.hostedFleet application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext, s.hostedAllRunnerGrants, s.hostedCredential, s.hostedFleetRunners, s.hostedFleetUsage, s.hostedReadableProjects, s.hostedVisibleReservations. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Service.readHostedFleet
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedCredential(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls (dedicated/shared, current runner grants, ordinary edits, approval, YOLO, stale targets, original principal, replay) and TestHubMCPFleetBoundary (private admin reads and no worker/approval escalation); internal/operatortool/fleet_test.go; existing runner application regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
@@ -3716,15 +3716,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/conversation
 
 List runner routing
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.list_runner_routing` — Bounded listRunnerRoutingRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listRunnerRoutingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.listRunnerRouting; s.config.now, s.database.db.QueryContext
-- Extraction: Extract hubserver.listRunnerRouting application inputs/results and validation from Echo; reuse s.config.now, s.database.db.QueryContext. The HTTP handler and MCP must delegate to this same application operation.
+- Tool: `runs_fleet.list_runner_routing` — Typed list_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: Service.listRunnerRoutingData
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls (dedicated/shared, current runner grants, ordinary edits, approval, YOLO, stale targets, original principal, replay) and TestHubMCPFleetBoundary (private admin reads and no worker/approval escalation); internal/operatortool/fleet_test.go; existing runner application regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
@@ -3894,18 +3894,18 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/
 
 Native capabilities
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 runtime/fleet scope; required parity remains pending.
-- Tool: `work_reads.native_capabilities` — Bounded nativeCapabilitiesRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → nativeCapabilitiesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
+- Tool: `work_reads.native_capabilities` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.nativeCapabilities; s.database.db.QueryRowContext
-- Extraction: Extract hubserver.nativeCapabilities application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Service.readNativeCapabilities
+- Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHubMCPFleetBoundary and TestHostedMCPFleetControls; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
-- Availability: hosted_dedicated / native / hub application service
-- Availability: hosted_shared / native / hub application service
+- Availability: hosted_dedicated / native / hub application service — unavailable: Existing dashboard route forbids hosted operators; MCP preserves that boundary.
+- Availability: hosted_shared / native / hub application service — unavailable: Existing dashboard route forbids hosted operators; MCP preserves that boundary.
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
@@ -3991,18 +3991,18 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:
 
 Outbox health
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending.
-- Tool: `work_reads.outbox_health` — Bounded outboxHealthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → outboxHealthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.outboxHealth; s.OutboxHealth
-- Extraction: Extract hubserver.outboxHealth application inputs/results and validation from Echo; reuse s.OutboxHealth. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
+- Tool: `work_reads.outbox_health` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
+- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential current legacy instance operator/admin credential; scoped native and runner credentials do not gain access; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: Service.readOutboxHealthPage / OutboxHealth
+- Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHubMCPFleetBoundary and TestHostedMCPFleetControls; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
-- Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
-- Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
+- Availability: hosted_dedicated / github,native / hub application service — unavailable: Existing dashboard route forbids hosted operators; MCP preserves that boundary.
+- Availability: hosted_shared / github,native / hub application service — unavailable: Existing dashboard route forbids hosted operators; MCP preserves that boundary.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
@@ -4559,40 +4559,40 @@ Sources: [DELETE /api/v1/repositories/:owner/:repo/policy](../internal/hubserver
 
 Revoke runner enrollment
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.revoke_runner_enrollment` — Bounded revokeRunnerEnrollmentRequest: organization, enrollment; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → revokeRunnerEnrollmentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.revokeRunnerEnrollment; s.runnerTransaction
-- Extraction: Extract hubserver.revokeRunnerEnrollment application inputs/results and validation from Echo; reuse s.runnerTransaction. The HTTP handler and MCP must delegate to this same application operation.
+- Tool: `runs_fleet.revoke_runner_enrollment` — Typed revoke_runner_enrollment schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: Service.revokeRunnerEnrollmentCommand
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls (dedicated/shared, current runner grants, ordinary edits, approval, YOLO, stale targets, original principal, replay) and TestHubMCPFleetBoundary (private admin reads and no worker/approval escalation); internal/operatortool/fleet_test.go; existing runner application regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [DELETE /api/v2/organizations/:organization/runner-enrollments/:enrollment](../internal/hubserver/runner_enrollment.go#L26)
 ## hubserver.revoke_runner_identity
 
 Revoke runner identity
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.revoke_runner_identity` — Bounded revokeRunnerIdentityRequest: organization, runner; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → revokeRunnerIdentityResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.revokeRunnerIdentity; s.runnerTransaction
-- Extraction: Extract hubserver.revokeRunnerIdentity application inputs/results and validation from Echo; reuse s.runnerTransaction. The HTTP handler and MCP must delegate to this same application operation.
+- Tool: `runs_fleet.revoke_runner_identity` — Typed revoke_runner_identity schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: Service.revokeRunnerIdentityCommand
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls (dedicated/shared, current runner grants, ordinary edits, approval, YOLO, stale targets, original principal, replay) and TestHubMCPFleetBoundary (private admin reads and no worker/approval escalation); internal/operatortool/fleet_test.go; existing runner application regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [DELETE /api/v2/organizations/:organization/runners/:runner](../internal/hubserver/runner_enrollment.go#L31)
 ## hubserver.rotate_api_token
@@ -5052,42 +5052,42 @@ Sources: [PUT /api/v2/organizations/:organization/projects/:project/integration]
 
 Update runner host
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.update_runner_host` — Bounded updateRunnerHostRequest: organization, machine; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → updateRunnerHostResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.updateRunnerHost; s.runnerTransaction
-- Extraction: Extract hubserver.updateRunnerHost application inputs/results and validation from Echo; reuse s.runnerTransaction. The HTTP handler and MCP must delegate to this same application operation.
+- Tool: `runs_fleet.update_runner_host` — Typed update_runner_host schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: Service.updateRunnerHostCommand
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls (dedicated/shared, current runner grants, ordinary edits, approval, YOLO, stale targets, original principal, replay) and TestHubMCPFleetBoundary (private admin reads and no worker/approval escalation); internal/operatortool/fleet_test.go; existing runner application regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: ordinary non-destructive edit → none
-- Confirmation: arguments remove data, alter access or create material external effects → operator
+- Confirmation: display name or descriptive tag edit → none
+- Confirmation: capacity, scheduling, isolation, services or access changes → operator
 
 Sources: [PUT /api/v2/organizations/:organization/machines/:machine/routing](../internal/hubserver/runner_enrollment.go#L35)
 ## hubserver.update_runner_routing
 
 Update runner routing
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.update_runner_routing` — Bounded updateRunnerRoutingRequest: organization, runner; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → updateRunnerRoutingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.updateRunnerRouting; s.runnerTransaction
-- Extraction: Extract hubserver.updateRunnerRouting application inputs/results and validation from Echo; reuse s.runnerTransaction. The HTTP handler and MCP must delegate to this same application operation.
+- Tool: `runs_fleet.update_runner_routing` — Typed update_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: Service.updateRunnerRoutingCommand / runnerRoutingRequest.effective
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
-- Availability: self_hosted / github,native / hub application service
+- Coverage: internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls (dedicated/shared, current runner grants, ordinary edits, approval, YOLO, stale targets, original principal, replay) and TestHubMCPFleetBoundary (private admin reads and no worker/approval escalation); internal/operatortool/fleet_test.go; existing runner application regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: ordinary non-destructive edit → none
-- Confirmation: arguments remove data, alter access or create material external effects → operator
+- Confirmation: display name or descriptive tag edit → none
+- Confirmation: capacity, scheduling, isolation, services or access changes → operator
 
 Sources: [PUT /api/v2/organizations/:organization/runners/:runner/routing](../internal/hubserver/runner_enrollment.go#L34), [web/conversation/src/app/account/api.ts:368](../web/conversation/src/app/account/api.ts#L368)
 ## hubserver.upload_conversation_attachment
@@ -5172,15 +5172,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 Ai debug prompt
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending.
-- Tool: `work_reads.ai_debug_prompt` — Bounded aiDebugPromptRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → aiDebugPromptResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.aiDebugPrompt; s.aiDebugProjection
-- Extraction: Extract web.aiDebugPrompt application inputs/results and validation from Echo; reuse s.aiDebugProjection. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
+- Tool: `work_reads.ai_debug_prompt` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
+- Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project Current project read grant and ownership for project/issue scopes, with snapshot projection; fleet scope requires an unscoped current read credential.; ownership current organization/account; no cross-organization resource lookup.
+- Application: Server.aiDebugProjectionFromSnapshot / aidebug.Projection.Prompt
+- Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5432,20 +5432,20 @@ Sources: [POST /api/v1/projects/:project_id/budget/override](../internal/web/ser
 
 Api capacity clear
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_capacity_clear` — Bounded apiCapacityClearRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiCapacityClearResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.capacity_clear` — Typed capacity_clear schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiCapacityClear; s.registry.Get, s.registry.List
-- Extraction: Extract web.apiCapacityClear application inputs/results and validation from Echo; reuse s.registry.Get, s.registry.List. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.clearCapacity
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v1/capacity/clear](../internal/web/server.go#L535), [internal/web/templates/dashboard.templ:337](../internal/web/templates/dashboard.templ#L337), [internal/web/templates/dashboard.templ:337](../internal/web/templates/dashboard.templ#L337)
 ## web.api_chat_confirm
@@ -5457,7 +5457,7 @@ Api chat confirm
 - Tool: `conversations_workspaces.action_result` — action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments → bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result
 - Authority: role operator with an existing authenticated dashboard login/private session; credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: chat.Service.Confirm/RejectConnectionAction and shared dashboard action commands; operatorApprovalDecision authenticates the human browser and exact stored preview.
-- Extraction: Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution.
+- Extraction: Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution. Fleet, billing and work actions share these same hosted approval routes; current runner grants apply to fleet previews, including owners. No sibling approval handler remains.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool.
 - Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending. Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner. Hosted billing reuses this browser surface (#3345): TestHostedBillingMCP and isolated Chrome provider fixture.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
@@ -5572,40 +5572,40 @@ Sources: [GET /api/v1/demo/scenarios](../internal/web/server.go#L510)
 
 Api failure breaker canary
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_failure_breaker_canary` — Bounded apiFailureBreakerCanaryRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiFailureBreakerCanaryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.failure_breaker_canary` — Typed failure_breaker_canary schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiFailureBreakerCanary; s.registry.Get, s.registry.List
-- Extraction: Extract web.apiFailureBreakerCanary application inputs/results and validation from Echo; reuse s.registry.Get, s.registry.List. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.requestBreakerCanary
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v1/failure-breaker/canary](../internal/web/server.go#L538), [internal/web/templates/dashboard.templ:227](../internal/web/templates/dashboard.templ#L227), [internal/web/templates/dashboard.templ:227](../internal/web/templates/dashboard.templ#L227)
 ## web.api_forge_availability_clear
 
 Api forge availability clear
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_forge_availability_clear` — Bounded apiForgeAvailabilityClearRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiForgeAvailabilityClearResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.forge_availability_clear` — Typed forge_availability_clear schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiForgeAvailabilityClear; s.registry.Get, s.registry.List
-- Extraction: Extract web.apiForgeAvailabilityClear application inputs/results and validation from Echo; reuse s.registry.Get, s.registry.List. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.clearForgeAvailability
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v1/forge/availability/clear](../internal/web/server.go#L537)
 ## web.api_issue
@@ -5692,20 +5692,20 @@ Sources: [POST /api/v1/projects/:project_id/issues/:issue_id/priority](../intern
 
 Api issue progress credit
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_issue_progress_credit` — Bounded apiIssueProgressCreditRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiIssueProgressCreditResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.issue_progress_credit` — Typed issue_progress_credit schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.apiIssueProgressCredit; s.issueExplanation, s.now
-- Extraction: Extract web.apiIssueProgressCredit application inputs/results and validation from Echo; reuse s.issueExplanation, s.now. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.creditOperatorProgress
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v1/projects/:project_id/issues/progress-credit](../internal/web/server.go#L521)
 ## web.api_kanban_comment
@@ -5915,15 +5915,15 @@ Sources: [GET /api/v1/keys/:id/rotate](../internal/web/server.go#L530), [POST /a
 
 Api operations
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_operations` — Bounded apiOperationsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiOperationsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.operations_report` — Typed operations_report schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiOperations; s.operationsReport
-- Extraction: Extract web.apiOperations application inputs/results and validation from Echo; reuse s.operationsReport. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.readOperationsReport
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5993,15 +5993,15 @@ Sources: [GET /api/v1/projects/*](../internal/web/server.go#L527), [internal/web
 
 Api refresh
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_refresh` — Bounded apiRefreshRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiRefreshResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.refresh` — Typed refresh schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiRefresh; s.demoRefresh, s.refreshRefusal, s.refresher.RequestRefresh
-- Extraction: Extract web.apiRefresh application inputs/results and validation from Echo; reuse s.demoRefresh, s.refreshRefusal, s.refresher.RequestRefresh. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.requestOperatorRefresh
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6034,15 +6034,15 @@ Sources: [POST /api/v1/projects/:project_id/security-audits/dispositions](../int
 
 Api staleness warning acknowledgement
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_staleness_warning_acknowledgement` — Bounded apiStalenessWarningAcknowledgementRequest: project_id, warning_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiStalenessWarningAcknowledgementResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.acknowledge_staleness_warnings` — Typed acknowledge_staleness_warnings schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.apiStalenessWarningAcknowledgement; s.acknowledgeStalenessWarnings
-- Extraction: Extract web.apiStalenessWarningAcknowledgement application inputs/results and validation from Echo; reuse s.acknowledgeStalenessWarnings. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.acknowledgeOperatorWarnings
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6054,15 +6054,15 @@ Sources: [POST /api/v1/projects/:project_id/staleness-warnings/:warning_id/ackno
 
 Api staleness warnings acknowledgement
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_staleness_warnings_acknowledgement` — Bounded apiStalenessWarningsAcknowledgementRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiStalenessWarningsAcknowledgementResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.acknowledge_staleness_warnings` — Typed acknowledge_staleness_warnings schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.apiStalenessWarningsAcknowledgement; s.acknowledgeStalenessWarnings
-- Extraction: Extract web.apiStalenessWarningsAcknowledgement application inputs/results and validation from Echo; reuse s.acknowledgeStalenessWarnings. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.acknowledgeOperatorWarnings
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6094,20 +6094,20 @@ Sources: [GET /api/v1/state](../internal/web/server.go#L508), [internal/web/temp
 
 Api stop run
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_stop_run` — Bounded apiStopRunRequest: project_id, attempt; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiStopRunResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.stop_run` — Typed stop_run schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.apiStopRunDialog; s.latestSnapshot, s.stopRunDemoScenario
-- Extraction: Extract web.apiStopRunDialog application inputs/results and validation from Echo; reuse s.latestSnapshot, s.stopRunDemoScenario. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.stopRun / RunStopper.StopRun; exact dashboard stop/reroute identity
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [GET /api/v1/projects/:project_id/runs/:attempt/stop](../internal/web/server.go#L525), [POST /api/v1/projects/:project_id/runs/:attempt/stop](../internal/web/server.go#L526), [internal/web/templates/stop_run.templ:42](../internal/web/templates/stop_run.templ#L42), [internal/web/templates/stop_run.templ:42](../internal/web/templates/stop_run.templ#L42), [internal/web/templates/activity.templ:175](../internal/web/templates/activity.templ#L175), [internal/web/templates/fleet.templ:199](../internal/web/templates/fleet.templ#L199)
 ## web.api_time_series
@@ -6134,40 +6134,40 @@ Sources: [GET /api/v1/timeseries](../internal/web/server.go#L511), [internal/web
 
 Api tracker availability clear
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_tracker_availability_clear` — Bounded apiTrackerAvailabilityClearRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiTrackerAvailabilityClearResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.tracker_availability_clear` — Typed tracker_availability_clear schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiTrackerAvailabilityClear; s.registry.Get, s.registry.List
-- Extraction: Extract web.apiTrackerAvailabilityClear application inputs/results and validation from Echo; reuse s.registry.Get, s.registry.List. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.clearTrackerAvailability
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v1/tracker/availability/clear](../internal/web/server.go#L536)
 ## web.api_update_apply
 
 Api update apply
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_update_apply` — Bounded apiUpdateApplyRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiUpdateApplyResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.update_apply` — Typed update_apply schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiUpdateApply; s.updateApplier.ApplyPending
-- Extraction: Extract web.apiUpdateApply application inputs/results and validation from Echo; reuse s.updateApplier.ApplyPending. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.applyOperatorUpdate
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: material action; YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v1/update/apply](../internal/web/server.go#L534), [internal/web/templates/update_pending.templ:23](../internal/web/templates/update_pending.templ#L23), [internal/web/templates/update_pending.templ:23](../internal/web/templates/update_pending.templ#L23)
 ## web.api_usage
@@ -6214,20 +6214,21 @@ Sources: [GET /api/v1/projects/:project_id/work-attempts/:attempt_id](../interna
 
 Api work attempt recovery
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.api_work_attempt_recovery` — Bounded apiWorkAttemptRecoveryRequest: project_id, attempt_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiWorkAttemptRecoveryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.recover_work_attempt` — Typed recover_work_attempt schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.apiWorkAttemptRecovery; s.recovery.RecoverWorkAttempt
-- Extraction: Extract web.apiWorkAttemptRecovery application inputs/results and validation from Echo; reuse s.recovery.RecoverWorkAttempt. The HTTP handler and MCP must delegate to this same application operation.
+- Application: WorkAttemptRecovery.WorkAttemptReceipt / RecoverWorkAttempt
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: inspect exact attempt → none
+- Confirmation: any existing material recovery action → operator
 
 Sources: [POST /api/v1/projects/:project_id/work-attempts/:attempt_id/recovery](../internal/web/server.go#L524), [internal/web/templates/dashboard.templ:3909](../internal/web/templates/dashboard.templ#L3909), [internal/web/templates/dashboard.templ:3909](../internal/web/templates/dashboard.templ#L3909), [internal/web/templates/dashboard.templ:3910](../internal/web/templates/dashboard.templ#L3910)
 ## web.api_workflow_timeline
@@ -6392,15 +6393,15 @@ Sources: [GET /auth/magic-link](../internal/web/server.go#L445)
 
 Dashboard
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.dashboard` — Bounded dashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → dashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.dashboard` — Typed dashboard schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.dashboard; s.dashboardFirstPaintData, s.demoDashboard, s.latestBoardSnapshot
-- Extraction: Extract web.dashboard application inputs/results and validation from Echo; reuse s.dashboardFirstPaintData, s.demoDashboard, s.latestBoardSnapshot. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6412,15 +6413,15 @@ Sources: [GET /fleet](../internal/web/server.go#L464), [internal/web/templates/r
 
 Diagnostics dashboard
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.diagnostics_dashboard` — Bounded diagnosticsDashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → diagnosticsDashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.diagnostics_dashboard` — Typed diagnostics_dashboard schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.diagnosticsDashboard; s.diagnosticsDashboardData, s.latestSnapshot
-- Extraction: Extract web.diagnosticsDashboard application inputs/results and validation from Echo; reuse s.diagnosticsDashboardData, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6490,15 +6491,15 @@ Sources: [POST /api/v1/webhooks/github](../internal/web/server.go#L539)
 
 Health
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending.
-- Tool: `work_reads.health` — Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.health; s.connectorName, s.enforcedBudgets, s.healthNotifications.Failures, s.hub.Latest, s.now, s.orphanedAgentProcesses, s.projectHealth, s.startupLifecycle.State, s.stateEndpoints.health, s.tickLiveness.TickLiveness, s.workflowSources
-- Extraction: Extract web.health application inputs/results and validation from Echo; reuse s.connectorName, s.enforcedBudgets, s.healthNotifications.Failures, s.hub.Latest, s.now, s.orphanedAgentProcesses, s.projectHealth, s.startupLifecycle.State, s.stateEndpoints.health, s.tickLiveness.TickLiveness, s.workflowSources. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
+- Tool: `work_reads.health` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
+- Authority: role local operator (dashboard authentication when configured); credential read; project Instance report requires an unscoped current read credential; project-scoped credentials cannot read unrelated instance data.; ownership current organization/account; no cross-organization resource lookup.
+- Application: Server.readInstanceHealth
+- Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6510,15 +6511,15 @@ Sources: [GET /health](../internal/web/server.go#L438)
 
 Health dashboard
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.health_dashboard` — Bounded healthDashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → healthDashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.health_dashboard` — Typed health_dashboard schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.healthDashboard; s.demoHealthDashboard, s.healthDashboardData, s.latestSnapshot
-- Extraction: Extract web.healthDashboard application inputs/results and validation from Echo; reuse s.demoHealthDashboard, s.healthDashboardData, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6827,15 +6828,15 @@ Sources: [GET /api/v1/openapi.yaml](../internal/web/server.go#L439)
 
 Operations page
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.operations_page` — Bounded operationsPageRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → operationsPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.operations_report` — Typed operations_report schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.operationsPage; s.analyticsDashboardData, s.latestSnapshot, s.operationsReport
-- Extraction: Extract web.operationsPage application inputs/results and validation from Echo; reuse s.analyticsDashboardData, s.latestSnapshot, s.operationsReport. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Server.readOperationsReport
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6966,14 +6967,14 @@ Sources: [POST /login](../internal/web/server.go#L444), [internal/web/templates/
 
 Runner fleet page
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.runner_fleet_page` — Bounded runnerFleetPageRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → runnerFleetPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.runner_fleet` — Typed runner_fleet schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.runnerFleetPage; s.apiKeyDashboardManagementToken, s.dashboardFirstPaintData, s.instanceName, s.latestSnapshot, s.runnerFleet.Fleet, s.runnerFleet.ProjectEligibility
-- Extraction: Extract web.runnerFleetPage application inputs/results and validation from Echo; reuse s.apiKeyDashboardManagementToken, s.dashboardFirstPaintData, s.instanceName, s.latestSnapshot, s.runnerFleet.Fleet, s.runnerFleet.ProjectEligibility. The HTTP handler and MCP must delegate to this same application operation.
+- Application: RunnerFleet.Fleet / ProjectEligibility
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -7044,40 +7045,42 @@ Sources: [GET /static/*](../internal/web/server.go#L437)
 
 Update fleet host
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.update_fleet_host` — Bounded updateFleetHostRequest: machine; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → updateFleetHostResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.update_fleet_host` — Typed update_fleet_host schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.updateFleetHost; s.runnerFleet.UpdateHost
-- Extraction: Extract web.updateFleetHost application inputs/results and validation from Echo; reuse s.runnerFleet.UpdateHost. The HTTP handler and MCP must delegate to this same application operation.
+- Application: RunnerFleet.UpdateHost
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: display name or descriptive tag edit → none
+- Confirmation: capacity, scheduling, isolation, services or access changes → operator
 
 Sources: [POST /fleet/hosts/:machine](../internal/web/server.go#L507)
 ## web.update_fleet_runner
 
 Update fleet runner
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.update_fleet_runner` — Bounded updateFleetRunnerRequest: runner; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → updateFleetRunnerResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Tool: `runs_fleet.update_fleet_runner` — Typed update_fleet_runner schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.updateFleetRunner; s.runnerFleet.UpdateRunner
-- Extraction: Extract web.updateFleetRunner application inputs/results and validation from Echo; reuse s.runnerFleet.UpdateRunner. The HTTP handler and MCP must delegate to this same application operation.
+- Application: RunnerFleet.UpdateRunner
+- Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/web/operator_fleet_test.go: TestMCPFleetReads, TestMCPFleetMutation, TestMCPOperatorControls and TestMCPStopExactRun; existing dashboard command regressions; internal/operatortool/fleet_test.go; parent #3259 remains pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: display name or descriptive tag edit → none
+- Confirmation: capacity, scheduling, isolation, services or access changes → operator
 
 Sources: [POST /fleet/runners/:runner](../internal/web/server.go#L506)
 ## workspace.file_read
@@ -7108,7 +7111,7 @@ Bind local/remote operator connection confirmation mode
 - Tool: `connection_authority.connection_info` — empty typed object; identity, connection and mode are trusted transport/server state → connection_id, organization_id, originating client, current mode and authenticated dashboard setup URL
 - Authority: role authenticated connection; dashboard login/private session for mode selection; credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: chat.Service.AttachConnection/SetConnectionMode; operatorBrowserFormAuth; mcp HTTP session binding and DashboardReadClient.OpenConnection
-- Extraction: Authenticated transports bind connection identity and default confirmation mode. Only a same-origin authenticated dashboard form can select YOLO; mode never grants scope or workflow authority.
+- Extraction: Authenticated transports bind connection identity and default confirmation mode. Only a same-origin authenticated dashboard form can select YOLO; mode never grants scope or workflow authority. Fleet, billing and work actions share these same hosted approval routes; current runner grants apply to fleet previews, including owners. No sibling approval handler remains.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool.
 - Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending. Hosted billing reuses this browser surface (#3345): TestHostedBillingMCP and isolated Chrome provider fixture.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.

@@ -385,7 +385,9 @@ edits execute directly. Results include shared action status, application data a
 an approval URL; `action_result` reads the current connection's outcome and never
 approves it. Hosted operators use their existing login and CSRF-protected form at
 `/chat/approval`. Only the originating hosted browser principal can select its session connection's YOLO, and
-current grants are still enforced on every execution.
+current grants are still enforced on every execution. Standalone native hubs without
+an authenticated browser approval service return an opaque unavailable result for
+material operations; reads and ordinary commands retain their application boundaries.
 
 `workspace_terminal` and `workspace_file_read` return an authorized
 `unsupported_transport` result with workspace state/capabilities. They accept no

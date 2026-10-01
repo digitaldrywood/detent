@@ -34,9 +34,16 @@ func authorizeHuman(ctx context.Context, organization string) error {
 }
 
 func authorizeAction(ctx context.Context, connection operatortool.Connection, action Action) (context.Context, error) {
-	return operatortool.AuthorizeCurrent(operatortool.WithConnection(ctx, connection), operatortool.Requirement{
+	requirement := operatortool.Requirement{
 		Scope: apikey.ScopeWrite, OrganizationID: action.OrganizationID, ProjectID: action.ProjectID,
-	})
+	}
+	switch string(action.Kind) {
+	case operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost:
+		// The hub dashboard grants runner administration separately from project
+		// writes; a member with all current runner grants need not be an owner.
+		requirement.Scope, requirement.ResourceKind = apikey.ScopeAdmin, "runners"
+	}
+	return operatortool.AuthorizeCurrent(operatortool.WithConnection(ctx, connection), requirement)
 }
 
 // AttachConnection stores the original authority in the existing bounded chat
@@ -184,10 +191,14 @@ func RequiresConfirmation(action Action) bool {
 			return true
 		}
 		return request.Input.Command != nil || request.Input.RunOnWorktreeCreation != nil
-	case ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
+	case ActionKind(operatortool.Refresh), ActionKind(operatortool.AcknowledgeWarnings), ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
 		return false
 	case ActionKind(operatortool.EditItem):
 		return action.Material
+	case ActionKind(operatortool.RecoverAttempt):
+		return action.Destination != "inspect"
+	case ActionKind(operatortool.UpdateFleetRunner), ActionKind(operatortool.UpdateFleetHost), ActionKind(operatortool.UpdateRunnerRouting), ActionKind(operatortool.UpdateRunnerHost):
+		return action.MaterialChange
 	case ActionFileIssue:
 		return action.Material || strings.EqualFold(action.State, "Done") || strings.EqualFold(action.State, "Cancelled")
 	case ActionMoveItem:
