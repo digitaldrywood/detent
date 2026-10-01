@@ -267,6 +267,13 @@ func TestActionConfirmationClassification(t *testing.T) {
 		{Action{Kind: "patch_project_action", Arguments: json.RawMessage(`{"input":{"command":"changed"}}`)}, true},
 		{Action{Kind: "patch_project_action", Arguments: json.RawMessage(`{"input":{"run_on_worktree_creation":false}}`)}, true},
 
+		{Action{Kind: ActionKind(operatortool.AddComment)}, false},
+		{Action{Kind: ActionKind(operatortool.EditComment)}, false},
+		{Action{Kind: ActionKind(operatortool.DeleteComment)}, true},
+		{Action{Kind: ActionKind(operatortool.EditItem)}, false},
+		{Action{Kind: ActionKind(operatortool.EditItem), Material: true}, true},
+		{Action{Kind: ActionFileIssue, Material: true}, true},
+		{Action{Kind: ActionMoveItem, CurrentState: "Todo", TargetState: "Backlog", Material: true}, true},
 		{Action{Kind: "billing"}, true}, {Action{Kind: "access"}, true},
 	} {
 		if got := RequiresConfirmation(tt.action); got != tt.want {

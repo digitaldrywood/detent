@@ -1,0 +1,52 @@
+package operatortool
+
+import "encoding/json"
+
+const (
+	BillingStatus       = "billing_usage.hosted_billing_page"
+	BillingUsage        = "billing_usage.hosted_billing"
+	BillingExport       = "billing_usage.billing_export"
+	BillingCheckout     = "billing_usage.hosted_billing_checkout"
+	BillingPortal       = "billing_usage.hosted_billing_portal"
+	HostedPlan          = "billing_usage.hosted_plan_page"
+	HostedUsage         = "billing_usage.hosted_usage_report"
+	BudgetOverrideSet   = "billing_usage.api_budget_override_set"
+	BudgetOverrideClear = "billing_usage.api_budget_override_clear"
+	UsageReport         = "billing_usage.api_usage"
+	IssueExplanation    = "billing_usage.api_issue_explanation"
+)
+
+// BillingCatalog describes application capabilities, not platform staff powers.
+// Deployment adapters advertise only operations their current authority permits.
+func BillingCatalog() []Definition {
+	var tools []Definition
+	for _, item := range []struct {
+		name, description, properties, required string
+		write, external                         bool
+	}{
+		{BillingStatus, "Read owner-only subscription status, approved prices, current allowances and recent safe billing audit.", "", "", false, false},
+		{BillingUsage, "Read owner-only billing metadata, entitlement usage and cost drivers.", "", "", false, false},
+		{BillingExport, "Export owner-only subscription, allowance, usage and safe audit data with an export identifier and freshness.", "", "", false, false},
+		{HostedPlan, "Read the current organization plan and allowances with owner/admin dashboard authority.", "", "", false, false},
+		{HostedUsage, "Read usage for currently granted projects in a bounded time window.", `"project_id":{"type":"string","maxLength":256},"range":{"type":"string","enum":["24h","7d","30d","90d"]}`, "", false, false},
+		{BillingCheckout, "Create or resume an approved subscription checkout. Requires exact browser approval unless this connection uses operator-selected YOLO.", `"price":{"type":"string","minLength":1,"maxLength":256}`, `,"price"`, true, true},
+		{BillingPortal, "Create a billing portal session. Requires exact browser approval unless this connection uses operator-selected YOLO.", "", "", true, true},
+		{BudgetOverrideSet, "Set project daily/per-issue budget overrides through the dashboard command; requires exact operator approval.", `"project_id":{"type":"string","minLength":1,"maxLength":256},"per_day_max_usd":{"type":"number","exclusiveMinimum":0},"per_issue_max_usd":{"type":"number","exclusiveMinimum":0},"duration":{"type":"string","minLength":1,"maxLength":128},"reason":{"type":"string","minLength":1,"maxLength":280}`, `,"project_id","duration","reason"`, true, false},
+		{BudgetOverrideClear, "Clear a project daily budget override through the dashboard command; requires exact operator approval.", `"project_id":{"type":"string","minLength":1,"maxLength":256}`, `,"project_id"`, true, false},
+		{UsageReport, "Read durable daemon usage for currently authorized projects with bounded dates and grouping.", `"project_id":{"type":"string","maxLength":256},"from":{"type":"string","maxLength":10},"to":{"type":"string","maxLength":10},"by":{"type":"string","enum":["day","project","issue","pr","model"]}`, "", false, false},
+		{IssueExplanation, "Read the shared dashboard issue explanation within the currently authorized project.", `"project_id":{"type":"string","minLength":1,"maxLength":256},"reference":{"type":"string","minLength":1,"maxLength":256}`, `,"project_id","reference"`, false, false},
+	} {
+		properties, required := item.properties, ""
+		if item.write {
+			if properties != "" {
+				properties += ","
+			}
+			properties += `"request_id":{"type":"string","minLength":1,"maxLength":128}`
+			required = `,"required":["request_id"` + item.required + `]`
+		} else if item.required != "" {
+			required = `,"required":[` + item.required[1:] + `]`
+		}
+		tools = append(tools, Definition{Name: item.name, Description: item.description, InputSchema: json.RawMessage(`{"type":"object","properties":{` + properties + `},"additionalProperties":false` + required + `}`), Annotations: Annotations{ReadOnly: !item.write, Destructive: item.write, Idempotent: true, OpenWorld: item.external}, Meta: ToolMetadata{Toolset: "billing_usage"}})
+	}
+	return tools
+}

@@ -648,7 +648,7 @@ func TestWorkspaceHookGitHubTokenInheritance(t *testing.T) {
 	source := initRunnerSourceRepo(t)
 	// Cleanup preserves unpublished commits; publish the fixture to a local remote.
 	remote := filepath.Join(t.TempDir(), "remote.git")
-	runRunnerGit(t, source, "init", "--bare", remote)
+	runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
 	runRunnerGit(t, source, "remote", "add", "origin", remote)
 	runRunnerGit(t, source, "push", "-u", "origin", "main")
 	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {

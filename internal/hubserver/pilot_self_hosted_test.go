@@ -50,7 +50,7 @@ func TestPilotSelfHostedStaysFree(t *testing.T) {
 			t.Fatalf("hosted identity entitlement = %+v", entitlement)
 		}
 		checkout := f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_example"}})
-		if checkout.Code != http.StatusServiceUnavailable || !strings.Contains(checkout.Body.String(), "not enabled") {
+		if checkout.Code != http.StatusServiceUnavailable || !strings.Contains(checkout.Body.String(), "Subscription checkout is unavailable") {
 			t.Fatalf("checkout = %d: %s", checkout.Code, checkout.Body.String())
 		}
 		portal := f.form(t, "owner", "/organization/billing/portal", url.Values{})

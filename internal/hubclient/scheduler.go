@@ -23,6 +23,8 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	// LocalChecks are startup observations by local project, reused by the heartbeat owner.
+	LocalChecks        map[string]runnerauth.LocalChecks
 	GitHubDiscovery    func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
 	GitHubIntake       func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	Problems           func() []runnerauth.Problem
@@ -39,6 +41,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	localChecks        map[string]runnerauth.LocalChecks
 	githubDiscovery    func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
 	githubIntake       func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	problems           func() []runnerauth.Problem
@@ -83,6 +86,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		localChecks:     config.LocalChecks,
 		githubIntake:    config.GitHubIntake,
 		githubDiscovery: config.GitHubDiscovery,
 		problems:        config.Problems,

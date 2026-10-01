@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -175,10 +176,21 @@ func (s *Service) artifactReceipt(c echo.Context) error {
 }
 
 func (s *Service) artifactReferences(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT a.reference_json FROM artifact_references a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.revision=(SELECT max(b.revision) FROM artifact_references b WHERE b.organization_id=a.organization_id AND b.project_id=a.project_id AND b.artifact_id=a.artifact_id) ORDER BY a.artifact_id LIMIT 64", scope.organization, scope.project, c.Param("item"))
+	refs, err := s.readArtifactReferences(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, refs)
+}
+
+func (s *Service) readArtifactReferences(ctx context.Context, scope nativeScope, item string) ([]artifact.Reference, error) {
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.database.db.QueryContext(ctx, "SELECT a.reference_json FROM artifact_references a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.revision=(SELECT max(b.revision) FROM artifact_references b WHERE b.organization_id=a.organization_id AND b.project_id=a.project_id AND b.artifact_id=a.artifact_id) ORDER BY a.artifact_id LIMIT 64", scope.organization, scope.project, item)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	refs := []artifact.Reference{}
@@ -186,10 +198,10 @@ func (s *Service) artifactReferences(c echo.Context) error {
 		var raw []byte
 		var ref artifact.Reference
 		if err := rows.Scan(&raw); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		if err := json.Unmarshal(raw, &ref); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		if !s.config.now().Before(ref.ExpiresAt) {
 			ref.Availability = "expired"
@@ -197,9 +209,9 @@ func (s *Service) artifactReferences(c echo.Context) error {
 		refs = append(refs, ref)
 	}
 	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	return c.JSON(http.StatusOK, refs)
+	return refs, nil
 }
 
 func (s *Service) authorizeArtifactUpload(c echo.Context) error {

@@ -78,5 +78,5 @@ func definition(name string, description string, schema string) Definition {
 
 // Registry is the canonical protocol registry; deployments filter by application availability.
 func Registry() []Definition {
-	return append(append(append(Catalog(), CommandCatalog()...), WorkspaceCatalog()...), OperatorChatCatalog()...)
+	return append(append(append(append(Catalog(), WorkReadCatalog()...), CommandCatalog()...), WorkspaceCatalog()...), OperatorChatCatalog()...)
 }

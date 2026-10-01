@@ -56,13 +56,20 @@ func TestBranchPolicyProjectsApplicablePendingChecks(t *testing.T) {
 func TestHydrateMergingRulesetStatus(t *testing.T) {
 	for _, tt := range []struct {
 		name, statuses string
+		localStatus    string
+		configured     []string
 		classic        bool
 		wantMissing    bool
 	}{
-		{"missing", `[]`, false, true},
-		{"legacy status present", `[{"context":"Full CI","state":"success"}]`, false, false},
-		{"classic missing", `[]`, true, true},
-		{"classic present", `[{"context":"Full CI","state":"success"}]`, true, false},
+		{name: "missing", statuses: `[]`, wantMissing: true},
+		{name: "legacy status present", statuses: `[{"context":"Full CI","state":"success"}]`},
+		{name: "classic missing", statuses: `[]`, classic: true, wantMissing: true},
+		{name: "classic present", statuses: `[{"context":"Full CI","state":"success"}]`, classic: true},
+
+		{name: "missing owned native context", statuses: `[]`, localStatus: "Full CI", wantMissing: true},
+		{name: "missing owned configured context", statuses: `[]`, localStatus: "Full CI", configured: []string{"Full CI"}, wantMissing: true},
+		{name: "missing owned context with native-only policy", statuses: `[]`, localStatus: "Full CI", configured: []string{}, wantMissing: true},
+		{name: "different missing context", statuses: `[]`, localStatus: "local-gate", wantMissing: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rules, protection := `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Full CI"}]}}]`, `{}`
@@ -78,7 +85,7 @@ func TestHydrateMergingRulesetStatus(t *testing.T) {
 				{method: http.MethodGet, path: "/repos/example/repo/rules/branches/main?per_page=100&page=1", body: rules},
 				{method: http.MethodGet, path: "/repos/example/repo/branches/main/protection/required_status_checks", body: protection},
 			})
-			c := newGitHubTestConnector(t, server, Config{})
+			c := newGitHubTestConnector(t, server, Config{LocalStatus: tt.localStatus, RequiredStatusChecks: tt.configured})
 			issue := connector.Issue{ID: "issue-1", Identifier: "example/repo#1", State: "Merging", PRNumber: new(42), PRRepository: "example/repo"}
 			got, err := c.HydratePullRequest(t.Context(), issue)
 			if err != nil {
@@ -86,6 +93,14 @@ func TestHydrateMergingRulesetStatus(t *testing.T) {
 			}
 			if got.PullRequest == nil {
 				t.Fatal("missing PR")
+			}
+
+			wantCI := "success"
+			if tt.wantMissing && tt.localStatus != "Full CI" {
+				wantCI = "pending"
+			}
+			if got.PullRequest.CIStatus != wantCI {
+				t.Fatalf("CIStatus=%q, want %q", got.PullRequest.CIStatus, wantCI)
 			}
 			checks := got.PullRequest.RequiredCheckFailures
 			if (len(checks) > 0) != tt.wantMissing {
@@ -101,16 +116,18 @@ func TestHydrateMergingRulesetStatus(t *testing.T) {
 func TestCandidateMergingRulesetStatus(t *testing.T) {
 	for _, tt := range []struct {
 		name, state string
+		localStatus string
 		present     bool
 		wantMissing bool
 	}{
 		{name: "complete ProjectV2 observation", state: "Merging", wantMissing: true},
 		{name: "status already present", state: "Merging", present: true},
 		{name: "other lane", state: "Human Review"},
+		{name: "missing owned native context", state: "Merging", localStatus: "Full CI", wantMissing: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server := newGraphQLTestServer(t, nil)
-			c := newGitHubTestConnector(t, server, Config{})
+			c := newGitHubTestConnector(t, server, Config{LocalStatus: tt.localStatus})
 			c.cacheBranchMergePolicy("example/repo", BranchMergePolicy{Branch: "main", RequiredStatusChecks: []string{"Full CI"}})
 			pr := &pullRequestNode{Number: 42, State: "open", HeadSHA: "head", BaseRefName: "main", CI: pullRequestCI{State: "none"}}
 			if tt.present {
@@ -125,6 +142,9 @@ func TestCandidateMergingRulesetStatus(t *testing.T) {
 				}
 				if got.PullRequest == nil {
 					t.Fatal("missing PR")
+				}
+				if tt.localStatus != "" && got.PullRequest.CIStatus == "pending" {
+					t.Fatal("owned context reintroduced pending CI on candidate hydration")
 				}
 				checks := got.PullRequest.RequiredCheckFailures
 				if (len(checks) > 0) != tt.wantMissing {

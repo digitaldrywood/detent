@@ -1034,7 +1034,7 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 	}
 	var record conversationRecord
 	notify := false
-	value, err := s.executeNativeCommand(ctx, scope, nativeOperation(scope, "POST", "/conversations"), tracker.Mutation{IdempotencyKey: request.Key}, request, nativeCommandOptions{feature: "collaboration"}, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	value, err := s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/conversations"), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if err := service.authorizeWrite(ctx, tx, scope, fresh); err != nil {
 			return nil, err
 		}
@@ -1172,7 +1172,7 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 	}
 	var linked conversationRecord
 	notify := false
-	value, err := s.executeNativeCommand(ctx, scope, nativeOperation(scope, "POST", "/conversations/"+id+"/link"), tracker.Mutation{IdempotencyKey: request.Key}, request, nativeCommandOptions{feature: "collaboration"}, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	value, err := s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/conversations/"+id+"/link"), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		record, err := service.loadConversation(ctx, tx, scope, id)
 		if err != nil {
 			return nil, err

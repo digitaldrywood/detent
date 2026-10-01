@@ -101,15 +101,32 @@ func (s *Service) RetryResult(ctx context.Context, kind ActionKind, requestID st
 	}
 	current.mu.Lock()
 	defer current.mu.Unlock()
-	for _, previous := range current.actions {
+	for index, previous := range current.actions {
 		if previous.RequestID != requestID {
 			continue
 		}
 		if previous.Kind != kind || !bytes.Equal(previous.Arguments, arguments) {
 			return Action{}, false, operatortool.ErrInvalidArguments
 		}
-		if _, err := authorizeAction(ctx, *current.connection, previous); err != nil {
+		executionContext, err := authorizeAction(ctx, *current.connection, previous)
+		if err != nil {
 			return Action{}, false, err
+		}
+		// Purchases already approved by the operator resume only the existing
+		// application's durable checkout intent. Other failed effects retain
+		// their receipt: they have no provider key that permits a safe retry.
+		if previous.Kind == ActionKind(operatortool.BillingCheckout) && previous.Status == ActionFailed && (previous.Mutation.Confirmation == "approved" || previous.Mutation.Confirmation == "yolo") && s.actions != nil {
+			result, executeErr := s.actions.ExecuteAction(executionContext, previous)
+			outcome := "succeeded"
+			if executeErr != nil {
+				outcome = "failed"
+			}
+			s.auditAction(executionContext, previous, outcome)
+			_, err = s.resolveExecution(current, index, result, executeErr)
+			if err != nil {
+				return Action{}, true, err
+			}
+			previous = current.actions[index]
 		}
 		return cloneActions([]Action{previous})[0], true, nil
 	}
@@ -167,12 +184,16 @@ func RequiresConfirmation(action Action) bool {
 			return true
 		}
 		return request.Input.Command != nil || request.Input.RunOnWorktreeCreation != nil
+	case ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
+		return false
+	case ActionKind(operatortool.EditItem):
+		return action.Material
 	case ActionFileIssue:
-		return strings.EqualFold(action.State, "Done") || strings.EqualFold(action.State, "Cancelled")
+		return action.Material || strings.EqualFold(action.State, "Done") || strings.EqualFold(action.State, "Cancelled")
 	case ActionMoveItem:
 		ordinarySource := strings.EqualFold(action.CurrentState, "Backlog") || strings.EqualFold(action.CurrentState, "Todo")
 		ordinaryTarget := strings.EqualFold(action.TargetState, "Todo") || strings.EqualFold(action.TargetState, "Backlog")
-		return !ordinarySource || !ordinaryTarget
+		return action.Material || !ordinarySource || !ordinaryTarget
 	default:
 		return true
 	}

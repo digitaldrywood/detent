@@ -122,6 +122,7 @@ func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
 		mutateConfig func(*Config)
 		wantMerging  bool
 	}{
+		{name: "missing context now owned by Detent", recovery: mergeRequiredCheckEvaluationStep{missing: true, headSHA: "head-b", requiredChecks: []string{"Test"}}, mutateConfig: func(cfg *Config) { cfg.AutoPromote.Gate.LocalStatus = "Test" }, wantMerging: true},
 		{
 			name:        "check appears on current head",
 			recovery:    mergeRequiredCheckEvaluationStep{headSHA: "head-b", requiredChecks: []string{"Test"}},
@@ -274,7 +275,7 @@ func TestMergeWorkerCurrentHeadCIWaitReason(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			issue := connector.Issue{PullRequest: tt.pullRequest}
-			if got := mergeWorkerCurrentHeadCIWaitReason(issue); got != tt.want {
+			if got := mergeWorkerCurrentHeadCIWaitReason(issue, ""); got != tt.want {
 				t.Fatalf("mergeWorkerCurrentHeadCIWaitReason() = %q, want %q", got, tt.want)
 			}
 		})

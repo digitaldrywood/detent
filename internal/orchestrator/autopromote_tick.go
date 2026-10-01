@@ -1351,6 +1351,11 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, o.cfg.AutoPromote, now)
 		}
+		// An unproduced local status is worker-owned work, not a stale Todo PR.
+		// Preserve explicit Workpad blockers before leaving the work dispatchable.
+		if decision.Reason != AutoPromoteReasonWorkpadBlocker && issue.PullRequest.HasMissingLocalStatus(gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus) {
+			continue
+		}
 		targetState := staleTodoPullRequestTargetState(decision, o.cfg.AutoPromote)
 		if decision.Reason == AutoPromoteReasonWorkpadBlocker {
 			targetState = o.nonReviewDecisionTargetState(issue, targetState)
@@ -3410,14 +3415,14 @@ func autoPromoteFailedChecksFromPullRequest(pullRequest *connector.PullRequest) 
 	return uniqueStrings(checks)
 }
 
-func autoPromotePendingChecksFromPullRequest(pullRequest *connector.PullRequest) []string {
+func autoPromotePendingChecksFromPullRequest(pullRequest *connector.PullRequest, localStatus string) []string {
 	if pullRequest == nil {
 		return nil
 	}
 	checks := append([]string(nil), pullRequest.RunningChecks...)
 	checks = append(checks, pullRequestCheckNames(pullRequest.UnstartedChecks)...)
 	for _, check := range pullRequest.RequiredCheckFailures {
-		if !autoPromoteCheckPending(check) {
+		if check.IsMissingLocalStatus(localStatus) || !autoPromoteCheckPending(check) {
 			continue
 		}
 		checks = append(checks, check.Name)
@@ -3680,7 +3685,7 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 		if failedChecks := strings.Join(autoPromoteFailedChecksFromPullRequest(issue.PullRequest), ", "); failedChecks != "" {
 			attrs = append(attrs, "failed_checks", failedChecks)
 		}
-		if pendingChecks := strings.Join(autoPromotePendingChecksFromPullRequest(issue.PullRequest), ", "); pendingChecks != "" {
+		if pendingChecks := strings.Join(autoPromotePendingChecksFromPullRequest(issue.PullRequest, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus), ", "); pendingChecks != "" {
 			attrs = append(attrs, "pending_checks", pendingChecks)
 		}
 		if staleSuccessfulChecks := strings.Join(autoPromoteStaleSuccessfulChecks(issue.PullRequest), ", "); staleSuccessfulChecks != "" {

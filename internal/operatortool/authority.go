@@ -3,6 +3,7 @@ package operatortool
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -37,11 +38,12 @@ type Requirement struct {
 // Authority delegates permission decisions and read projection to the same
 // application services used by the dashboard. Neither transport defines roles.
 type Authority struct {
-	Identity Identity
-	Check    func(context.Context, Requirement) error
+	Identity  Identity
+	Check     func(context.Context, Requirement) error
+	Snapshot  func(context.Context, telemetry.Snapshot) (telemetry.Snapshot, error)
+	WorkReads WorkReader
 	// ApplicationContext attaches freshly resolved, adapter-private authority.
 	ApplicationContext func(context.Context) context.Context
-	Snapshot           func(context.Context, telemetry.Snapshot) (telemetry.Snapshot, error)
 }
 
 type Connection struct {
@@ -60,8 +62,7 @@ func WithConnection(ctx context.Context, connection Connection) context.Context 
 }
 
 func ConnectionIdentity(ctx context.Context) Identity {
-	connection, _ := ctx.Value(connectionKey{}).(Connection)
-	return connection.Identity
+	return CurrentConnection(ctx).Identity
 }
 
 // ProjectSnapshot applies the current application read boundary to an already
@@ -113,7 +114,8 @@ func NewAuthorizedExecutor(executor *Executor) *AuthorizedExecutor {
 }
 
 func (e *AuthorizedExecutor) ListTools(ctx context.Context) ([]Definition, error) {
-	if _, err := AuthorizeCurrent(ctx, Requirement{Scope: apikey.ScopeRead}); err != nil {
+	authorized, err := AuthorizeCurrent(ctx, Requirement{Scope: apikey.ScopeRead})
+	if err != nil {
 		return nil, err
 	}
 	definitions := make([]Definition, 0, len(Catalog()))
@@ -125,12 +127,41 @@ func (e *AuthorizedExecutor) ListTools(ctx context.Context) ([]Definition, error
 			definitions = append(definitions, definition)
 		}
 	}
+	authority, _ := authorized.Value(authorityKey{}).(Authority)
+	if e.executor.workReads != nil || authority.WorkReads != nil {
+		reader := e.executor.workReads
+		if authority.WorkReads != nil {
+			reader = authority.WorkReads
+		}
+		allowed := WorkReadCatalog()
+		if available, ok := reader.(interface {
+			WorkReadNames(context.Context) []string
+		}); ok {
+			names := available.WorkReadNames(authorized)
+			allowed = slices.DeleteFunc(allowed, func(d Definition) bool { return !slices.Contains(names, d.Name) })
+		}
+		definitions = append(definitions, allowed...)
+	}
 	return definitions, nil
 }
 
 func (e *AuthorizedExecutor) Execute(ctx context.Context, call Call) (Result, error) {
 	if _, ok := Lookup(call.Name); !ok {
 		return Result{}, ErrUnknownTool
+	}
+	if IsWorkRead(call.Name) {
+		request, err := DecodeWorkRead(call.Name, call.Arguments)
+		if err != nil {
+			return Result{}, err
+		}
+		ctx, err = AuthorizeCurrent(ctx, Requirement{Scope: apikey.ScopeRead, ProjectID: request.ProjectID})
+		if err != nil {
+			return Result{}, err
+		}
+		if e.executor == nil {
+			return Result{}, ErrReadUnavailable
+		}
+		return e.executor.readWork(ctx, call)
 	}
 	// Decode the bounded resource selector before reaching any read service. The
 	// tool's own typed decoder still validates which fields its schema permits.
@@ -155,7 +186,10 @@ func (e *AuthorizedExecutor) Execute(ctx context.Context, call Call) (Result, er
 
 // CurrentConnection returns trusted transport binding, never tool arguments.
 func CurrentConnection(ctx context.Context) Connection {
-	connection, _ := ctx.Value(connectionKey{}).(Connection)
+	connection, ok := ctx.Value(connectionKey{}).(Connection)
+	if !ok {
+		return Connection{}
+	}
 	return connection
 }
 

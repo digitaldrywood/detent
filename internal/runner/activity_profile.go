@@ -252,7 +252,11 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 		if command == "" {
 			command = activityInputCommand(u.Delta)
 		}
-		kind, evidence := classifyActivity(u.Tool, command)
+		activityCommand := command
+		if u.Tool == "commandExecution" && u.Delta != "" {
+			activityCommand = u.Delta
+		}
+		kind, evidence := classifyActivity(u.Tool, activityCommand)
 		span := workflowmetrics.ActivitySpan{ID: key, ParentID: parent, Kind: kind, Evidence: evidence, Fingerprint: activityHash(u.Tool + "\x00" + command), StartedAt: observation.at, Outcome: "running", Attribution: "unattributed"}
 		if kind == "waiting" {
 			span.WaitReason = evidence
@@ -263,13 +267,13 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 			span.HeadAttribution = "last_observed_workspace_snapshot"
 		}
 		for _, source := range sources {
-			if kind == "context_read" && activityReadsSource(command, source) {
+			if kind == "context_read" && activityReadsSource(activityCommand, source) {
 				span.Sources = append(span.Sources, source.ref)
 				span.Attribution = "observed_read_request"
 			}
-			if kind != "context_read" && command != "" && kind != "unclassified" && kind != "tool_execution" && strings.Contains(source.text, command) {
+			if kind != "context_read" && activityCommand != "" && kind != "unclassified" && kind != "tool_execution" && strings.Contains(source.text, activityCommand) {
 				ref := source.ref
-				ref.MatchedLine = 1 + strings.Count(source.text[:strings.Index(source.text, command)], "\n")
+				ref.MatchedLine = 1 + strings.Count(source.text[:strings.Index(source.text, activityCommand)], "\n")
 				span.Sources = append(span.Sources, ref)
 				span.Attribution = "inferred_text_match"
 			}
@@ -364,6 +368,15 @@ func classifyActivity(tool, command string) (string, string) {
 	kind, evidence := "", ""
 	for _, segment := range segments {
 		fields := strings.Fields(segment)
+		if len(fields) > 0 && filepath.Base(fields[0]) == "env" {
+			fields = fields[1:]
+			for len(fields) > 1 && fields[0] == "-u" {
+				fields = fields[2:]
+			}
+			if len(fields) > 0 && fields[0] == "--" {
+				fields = fields[1:]
+			}
+		}
 		for len(fields) > 0 && strings.Contains(fields[0], "=") {
 			fields = fields[1:]
 		}

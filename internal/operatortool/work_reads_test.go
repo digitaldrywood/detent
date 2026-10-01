@@ -1,0 +1,102 @@
+package operatortool
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestWorkReadArguments(t *testing.T) {
+	// Catch tools/call bypassing schema validation before any application read.
+	for _, test := range []struct {
+		name, tool, raw string
+		valid           bool
+	}{
+		{"list default", WorkList, `{"project_id":"project"}`, true},
+		{"search", WorkList, `{"project_id":"project","query":"needle","limit":2,"offset":3}`, true},
+		{"missing project", WorkList, `{}`, false},
+		{"foreign authority argument", WorkList, `{"project_id":"project","organization_id":"other"}`, false},
+		{"wrong detail fields", WorkItem, `{"project_id":"project","reference":"item","query":"ignored"}`, false},
+		{"detail", WorkItem, `{"project_id":"project","reference":"#1"}`, true},
+		{"empty detail", WorkItem, `{"project_id":"project","reference":" "}`, false},
+		{"zero limit", WorkList, `{"project_id":"project","limit":0}`, false},
+		{"too large limit", WorkList, `{"project_id":"project","limit":201}`, false},
+		{"negative offset", WorkList, `{"project_id":"project","offset":-1}`, false},
+		{"missing revision", WorkVersion, `{"project_id":"project","reference":"item"}`, false},
+		{"null revision", WorkVersion, `{"project_id":"project","reference":"item","revision":null}`, false},
+		{"version", WorkVersion, `{"project_id":"project","reference":"item","revision":1}`, true},
+		{"trailing payload", WorkList, `{"project_id":"project"}{}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := DecodeWorkRead(test.tool, json.RawMessage(test.raw))
+			if (err == nil) != test.valid {
+				t.Fatalf("decode=%v", err)
+			}
+		})
+	}
+	if _, err := DecodeWorkRead(WorkList, json.RawMessage(`{"project_id":"`+strings.Repeat("x", 257)+`"}`)); !errors.Is(err, ErrInvalidArguments) {
+		t.Fatal(err)
+	}
+	for _, definition := range WorkReadCatalog() {
+		if !definition.Annotations.ReadOnly || definition.Annotations.Destructive || !definition.Annotations.Idempotent || definition.Meta.Toolset != "board" {
+			t.Fatalf("unsafe read definition: %#v", definition)
+		}
+	}
+}
+
+type workReadProbe struct {
+	calls   int
+	failure error
+}
+
+func (p *workReadProbe) ReadWork(context.Context, string, WorkReadRequest) (Result, error) {
+	p.calls++
+	return Result{Content: json.RawMessage(`{"items":[]}`)}, p.failure
+}
+
+func TestWorkReadDirectAuthorityAndSafeFailure(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		project, org string
+		denied       bool
+		failure      error
+	}{
+		{name: "authorized empty", project: "project", org: "org"},
+		{name: "foreign project", project: "other", org: "org", denied: true},
+		{name: "foreign organization", project: "project", org: "other", denied: true},
+		{name: "provider detail opaque", project: "project", org: "org", failure: errors.New("secret provider URL and token")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := Identity{PrincipalID: "principal", OrganizationID: "org", CredentialID: "key"}
+			probe := &workReadProbe{failure: test.failure}
+			current := identity
+			current.OrganizationID = test.org
+			ctx := WithConnection(t.Context(), Connection{Identity: identity, Resolve: func(context.Context) (Authority, error) {
+				return Authority{Identity: current, Check: func(_ context.Context, r Requirement) error {
+					if r.ProjectID != "" && r.ProjectID != "project" {
+						return ErrAccessDenied
+					}
+					return nil
+				}, WorkReads: probe}, nil
+			}})
+			e := NewAuthorizedExecutor(NewExecutor(Dependencies{}))
+			_, err := e.Execute(ctx, Call{Name: WorkItem, Arguments: json.RawMessage(`{"project_id":"` + test.project + `","reference":"item"}`)})
+			switch {
+			case test.denied:
+				if !errors.Is(err, ErrAccessDenied) || probe.calls != 0 {
+					t.Fatalf("err=%v calls=%d", err, probe.calls)
+				}
+			case test.failure != nil:
+				if !errors.Is(err, ErrReadUnavailable) || strings.Contains(err.Error(), "secret") {
+					t.Fatal(err)
+				}
+			default:
+				if err != nil || probe.calls != 1 {
+					t.Fatalf("err=%v calls=%d", err, probe.calls)
+				}
+			}
+		})
+	}
+}

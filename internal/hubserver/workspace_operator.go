@@ -387,7 +387,7 @@ func (e workspaceOperatorExecutor) actionResult(action chat.Action) (operatortoo
 		Data       json.RawMessage   `json:"data,omitempty"`
 		URL        string            `json:"approval_url"`
 		ResultTool string            `json:"result_tool"`
-	}{action, action.ID, action.Status, action.ResultData, e.server.workspaceApprovalURL(action.ConnectionID), operatortool.ActionResult})
+	}{action, action.ID, action.Status, action.ResultData, e.server.billingApprovalURL(action.ConnectionID), operatortool.ActionResult})
 }
 func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	var request struct {
@@ -415,7 +415,7 @@ func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call op
 			ID   string              `json:"connection_id"`
 			Mode chat.ConnectionMode `json:"mode"`
 			URL  string              `json:"setup_url"`
-		}{id, c.Mode, e.server.workspaceApprovalURL(id)})
+		}{id, c.Mode, e.server.billingApprovalURL(id)})
 	}
 	action, ok := e.server.operatorChat.Action(id, request.ActionID)
 	if !ok {

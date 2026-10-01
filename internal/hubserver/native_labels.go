@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
 )
 
@@ -55,14 +56,7 @@ var labelPalette = []string{
 	"#b5607f", // magenta
 }
 
-type nativeLabel struct {
-	Name  string `json:"name"`
-	Color string `json:"color"`
-	// Count is how many of the project's work items carry the label. The
-	// picker orders suggestions by it, so a label one issue used once does
-	// not sit above the one the project actually runs on.
-	Count int `json:"count"`
-}
+type nativeLabel = tracker.NativeLabel
 
 type nativeLabelList struct {
 	Items []nativeLabel `json:"items"`

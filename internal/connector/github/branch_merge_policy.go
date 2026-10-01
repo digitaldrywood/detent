@@ -243,7 +243,7 @@ func (c *Connector) attachRequiredBranchChecks(ctx context.Context, issue *conne
 		}
 		seen[name] = true
 	}
-	enriched.CIStatus = combinedCIState(requiredStatusCheckState(enriched.RequiredCheckFailures), ciStatus)
+	enriched.CIStatus = combinedCIState(requiredStatusCheckState(enriched.RequiredCheckFailures, c.localStatus), ciStatus)
 	issue.PullRequest = &enriched
 	return nil
 }

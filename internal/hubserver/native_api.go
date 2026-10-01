@@ -285,25 +285,22 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 // reports. A replay answers with the same status as the first call, so a
 // created resource stays 201 on every retry of its key.
 func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
-	value, err := s.executeNativeCommand(c.Request().Context(), nativeRequestScope(c), c.Request().Method+" "+c.Request().URL.EscapedPath(), command, input, nativeCommandOptions{
-		feature: hostedMutationFeature(c), completion: hostedCompletionMutation(c, input), changeCheck: changeCheckRequest(c), item: c.Param("item"), workerEvent: strings.HasSuffix(c.Path(), "/events") || c.Path() == changeBase+"/:change/versions/:version/checks",
-	}, operation)
+	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Item: c.Param("item"), CheckPrincipal: changeCheckRequest(c), RequireLease: c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks", Completion: hostedCompletionMutation(c, input), Feature: hostedMutationFeature(c)}
+	result, err := s.executeNativeMutation(c.Request().Context(), nativeRequestScope(c), options, command, input, operation)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(status, value)
+	return c.JSONBlob(status, result)
 }
 
-// nativeCommandOptions preserves application feature/worker checks across adapters.
 type nativeCommandOptions struct {
-	feature                              string
-	completion, changeCheck, workerEvent bool
-	item                                 string
+	OperationID, Item, Feature               string
+	CheckPrincipal, RequireLease, Completion bool
 }
 
-// executeNativeCommand is the dashboard's transactional receipt contract. MCP
-// supplies an application operation identity, never an HTTP handler or proxy.
-func (s *Service) executeNativeCommand(ctx context.Context, scope nativeScope, operationID string, command tracker.Mutation, input any, options nativeCommandOptions, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (value json.RawMessage, resultErr error) {
+// executeNativeMutation owns the shared transaction, current native authority,
+// hosted allowances, audit history and durable business replay for all callers.
+func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -313,6 +310,7 @@ func (s *Service) executeNativeCommand(ctx context.Context, scope nativeScope, o
 	}
 	hash := sha256.Sum256(encoded)
 	requestHash := hex.EncodeToString(hash[:])
+	operationID := options.OperationID
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -325,7 +323,7 @@ func (s *Service) executeNativeCommand(ctx context.Context, scope nativeScope, o
 	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
 		return nil, err
 	}
-	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && options.changeCheck {
+	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && options.CheckPrincipal {
 		if err := s.requireHostedChangeCheckPrincipal(ctx, tx, scope); err != nil {
 			return nil, err
 		}
@@ -353,8 +351,8 @@ func (s *Service) executeNativeCommand(ctx context.Context, scope nativeScope, o
 	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 		return nil, err
 	}
-	if scope.credential.Scope == apiScopeWorker && options.item != "" && !options.workerEvent {
-		if err := requireNativeMutationLease(ctx, tx, scope, options.item, command, now); err != nil {
+	if scope.credential.Scope == apiScopeWorker && options.RequireLease {
+		if err := requireNativeMutationLease(ctx, tx, scope, options.Item, command, now); err != nil {
 			return nil, err
 		}
 	}
@@ -362,17 +360,17 @@ func (s *Service) executeNativeCommand(ctx context.Context, scope nativeScope, o
 	if err != nil {
 		return nil, err
 	}
-	completion := options.completion
+	completion := options.Completion
 	if !completion {
-		if err := s.database.requireHostedFeature(ctx, tx, options.feature, now); err != nil {
+		if err := s.database.requireHostedFeature(ctx, tx, options.Feature, now); err != nil {
 			return nil, err
 		}
 	}
-	applicationValue, err := operation(ctx, tx, scope, now)
+	value, err := operation(ctx, tx, scope, now)
 	if err != nil {
 		return nil, err
 	}
-	response, err = marshalNative(applicationValue)
+	response, err = marshalNative(value)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +385,6 @@ func (s *Service) executeNativeCommand(ctx context.Context, scope nativeScope, o
 	}
 	return json.RawMessage(response), nil
 }
-
 func (s *Service) requireCompatibilityResource(c echo.Context) error {
 	var query string
 	path := c.Path()

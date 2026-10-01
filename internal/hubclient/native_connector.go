@@ -175,10 +175,17 @@ func (c *NativeConnector) UpdateIssueState(ctx context.Context, id, state string
 	if err != nil {
 		return err
 	}
+	expected := tracker.ExpectedRevision(ctx)
+	if expected > 0 && expected != issue.Revision {
+		return errors.New("native issue revision is stale")
+	}
+	if expected <= 0 {
+		expected = issue.Revision
+	}
 	if issue.State == state {
 		return nil
 	}
-	_, err = c.client.Transition(ctx, issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision, State: state, Reason: "worker_progress"})
+	_, err = c.client.Transition(ctx, issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: "worker_progress"})
 	return err
 }
 

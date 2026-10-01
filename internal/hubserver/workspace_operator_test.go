@@ -403,7 +403,7 @@ func TestWorkspaceOperatorRunnerAuthority(t *testing.T) {
 			}
 			action := workspaceOperatorAction(t, result)
 			if deployment == "shared" {
-				if got := f.service.workspaceApprovalURL("runner-test"); got != "https://hub.example.test/organizations/org_security/chat/approval?connection_id=runner-test" {
+				if got := f.service.billingApprovalURL("runner-test"); got != "https://hub.example.test/organizations/org_security/chat/approval?connection_id=runner-test" {
 					t.Fatalf("shared approval URL=%s", got)
 				}
 				page := shared.serve(t, hostedSharedRequest{user: &owner, target: "/organizations/org_security/chat/approval?connection_id=runner-test"})
@@ -490,7 +490,13 @@ func TestWorkspaceOperatorBrowserApproval(t *testing.T) {
 	if !strings.Contains(page.Body.String(), "Confirm") || strings.Contains(page.Body.String(), "Compile <project>") {
 		t.Fatalf("preview not escaped: %s", page.Body.String())
 	}
-	match := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindStringSubmatch(page.Body.String())
+	var match []string
+	for _, form := range regexp.MustCompile(`(?s)<form\b[^>]*>.*?</form>`).FindAllString(page.Body.String(), -1) {
+		if strings.Contains(form, action.ID) {
+			match = regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindStringSubmatch(form)
+			break
+		}
+	}
 	if len(match) != 2 {
 		t.Fatal("missing decision form")
 	}

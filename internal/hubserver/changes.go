@@ -228,16 +228,23 @@ func changeRows[T any](ctx context.Context, query nativeQueryer, statement strin
 }
 
 func (s *Service) listChanges(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	if _, _, err := readNativeIssue(c.Request().Context(), s.database.db, scope, c.Param("item")); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	result, err := changeRows[tracker.ChangeRequest](c.Request().Context(), s.database.db, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
-WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, c.Param("item"))
+	result, err := s.readChanges(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) readChanges(ctx context.Context, scope nativeScope, item string) ([]tracker.ChangeRequest, error) {
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+		return nil, err
+	}
+	result, err := changeRows[tracker.ChangeRequest](ctx, s.database.db, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
+WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *Service) createChange(c echo.Context) error {

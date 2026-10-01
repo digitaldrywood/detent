@@ -323,6 +323,15 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 		t.Run(fmt.Sprintf("fallback=%t", fallback), func(t *testing.T) {
 			reads := map[string]int{}
 			phase := 0
+			statuses := []string{"blocked", "in_progress", "complete"}
+			commentUpdated := func() string { return fmt.Sprintf("2026-09-30T20:0%d:00Z", phase) }
+			commentBody := func() string {
+				action := "null"
+				if phase == 0 {
+					action = "Approve this work."
+				}
+				return fmt.Sprintf("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: %s\nblockers: []\nhuman_action: %s\n```", statuses[phase], action)
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodGet {
 					reads[r.URL.Path]++
@@ -342,7 +351,11 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 						}
 						json.NewEncoder(w).Encode(rows)
 					case strings.HasSuffix(r.URL.Path, "/comments"):
-						fmt.Fprintf(w, `[{"id":1,"node_id":"C1","body":"answer%d"}]`, phase)
+						body := fmt.Sprintf("answer%d", phase)
+						if strings.HasSuffix(r.URL.Path, "/issues/31/comments") {
+							body = commentBody()
+						}
+						json.NewEncoder(w).Encode([]any{map[string]any{"id": 1, "node_id": "C1", "body": body, "created_at": stamp, "updated_at": commentUpdated(), "author_association": "OWNER", "user": map[string]any{"login": "operator"}}})
 					case strings.HasSuffix(r.URL.Path, "/dependencies/blocked_by"), strings.HasSuffix(r.URL.Path, "/pulls"):
 						fmt.Fprint(w, `[]`)
 					default:
@@ -377,7 +390,11 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 						if phase == 1 {
 							dependencies = append(dependencies, map[string]any{"id": "D1", "number": 99, "state": "CLOSED", "repository": map[string]any{"nameWithOwner": repo}, "labels": map[string]any{"nodes": []any{}}})
 						}
-						data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": id, "body": "body", "updatedAt": stamp, "comments": map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": "C1", "body": fmt.Sprintf("answer%d", phase)}}}, "blockedBy": map[string]any{"nodes": dependencies}}
+						body := fmt.Sprintf("answer%d", phase)
+						if id == "I31" {
+							body = commentBody()
+						}
+						data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": id, "body": "body", "updatedAt": stamp, "comments": map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": "C1", "body": body, "createdAt": stamp, "updatedAt": commentUpdated(), "author": map[string]any{"login": "operator"}, "authorAssociation": "OWNER"}}}, "blockedBy": map[string]any{"nodes": dependencies}}
 					}
 				case strings.Contains(req.Query, "CandidatePullRequestReferences"), strings.Contains(req.Query, "LabelIssuePullRequestReferences"):
 					ids, ok := req.Variables["ids"].([]any)
@@ -422,17 +439,25 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 			if !c.CombinedRefreshEnabled() {
 				t.Fatal("label refresh is not combined")
 			}
-			for phase = range 2 {
+			for phase = range 3 {
 				result := c.FetchRefreshIssues(t.Context(), []string{"Todo", "Blocked"}, []string{"Todo", "Blocked", "Backlog"}, connector.IssueFilterHint{SchedulerStates: []string{"Blocked"}})
 				if result.CandidateError != nil || result.StatusError != nil || len(result.Candidates) != 31 || len(result.Statuses) != 51 {
 					t.Fatalf("refresh: %+v", result)
 				}
 				for _, issue := range result.Candidates {
-					if len(issue.Comments) != 1 || (!fallback && issue.Comments[0].Body != fmt.Sprintf("answer%d", phase)) || issue.DependencySource != connector.BlockedRefSourceNative {
+					if len(issue.Comments) != 1 || (!fallback && issue.ID != "I31" && issue.Comments[0].Body != fmt.Sprintf("answer%d", phase)) || issue.DependencySource != connector.BlockedRefSourceNative {
 						t.Fatalf("scheduler evidence: %+v", issue)
 					}
 				}
-				if !fallback && len(result.Candidates[0].BlockedBy) != phase {
+				issue := result.Candidates[30]
+				signal := issue.WorkpadSignal
+				if signal == nil || signal.Invalid != nil || signal.Status != statuses[phase] || signal.RecordedAt == nil || signal.RecordedAt.Format("2006-01-02T15:04:05Z") != commentUpdated() {
+					t.Fatalf("same-comment edit retained previous Workpad authority: %+v", signal)
+				}
+				if issue.Comments[0].ID != "C1" || !issue.Comments[0].AuthorAuthorized || issue.Comments[0].Body != commentBody() || (signal.HumanAction != "") != (phase == 0) {
+					t.Fatalf("same-comment human authority stale: %+v", issue)
+				}
+				if !fallback && len(result.Candidates[0].BlockedBy) != phase%2 {
 					t.Fatalf("native dependencies stale: %+v", result.Candidates[0].BlockedBy)
 				}
 				blocked := result.Candidates[30]
@@ -448,18 +473,18 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 					}
 				}
 			}
-			if reads["/repos/fixture/labels/issues"] != 6 {
+			if reads["/repos/fixture/labels/issues"] != 9 {
 				t.Fatalf("label lists repeated: %v", reads)
 			}
 			if !fallback {
-				if reads["pr-status"] != 2 {
+				if reads["pr-status"] != 3 {
 					t.Fatalf("overlapping PR status hydrated more than once: %v", reads)
 				}
-				if reads["batch"] != 4 {
-					t.Fatalf("batch reads=%d want4", reads["batch"])
+				if reads["batch"] != 6 {
+					t.Fatalf("batch reads=%d want6", reads["batch"])
 				}
 				for n := 1; n <= 31; n++ {
-					if reads[fmt.Sprintf("evidence:I%d", n)] != 2 {
+					if reads[fmt.Sprintf("evidence:I%d", n)] != 3 {
 						t.Fatalf("evidence repeated or stale: %v", reads)
 					}
 				}

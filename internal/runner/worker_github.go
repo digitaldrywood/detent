@@ -201,12 +201,20 @@ func (r *Runner) logWorkerGitHubPolicyError(issue connector.Issue, err error, at
 
 func (r *Runner) ProbeGitHubRESTBudget(ctx context.Context, issue connector.Issue) (telemetry.RESTBudget, bool, error) {
 	workflow, _, _, _ := r.runtimeSnapshot()
-	policy, err := r.workerGitHubPolicy(ctx, workflow.Config, issue.Identifier)
+	policy, err := newWorkerGitHubPolicy(ctx, workflow.Config, r.projectID, issue.Identifier, r.lookupEnv, nil, nil, r.logger)
 	if err != nil {
 		return telemetry.RESTBudget{}, true, err
 	}
 	if !policy.Enabled {
 		return telemetry.RESTBudget{}, false, nil
+	}
+	if policy.CredentialMode == workerGitHubCredentialShared {
+		policy, err = policy.validateSharedCredential()
+	} else {
+		policy, err = policy.classifyCredential(ctx)
+	}
+	if err != nil {
+		return telemetry.RESTBudget{}, true, err
 	}
 	budget, err := policy.probe(ctx)
 	if err != nil {
@@ -752,6 +760,10 @@ func (p workerGitHubPolicy) classifyCredential(ctx context.Context) (workerGitHu
 			p.CredentialMode = workerGitHubCredentialDistinct
 		}
 	}
+	return p.validateSharedCredential()
+}
+
+func (p workerGitHubPolicy) validateSharedCredential() (workerGitHubPolicy, error) {
 	if p.CredentialMode != workerGitHubCredentialShared {
 		return p, nil
 	}

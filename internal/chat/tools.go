@@ -38,7 +38,18 @@ func ActionSummary(action Action) string {
 		return fmt.Sprintf("File %q on %s", action.Title, action.ProjectID)
 	case "create_workspace", "delete_workspace", "create_conversation", "patch_conversation", "post_conversation_command", "link_conversation", "upload_conversation_attachment", "delete_conversation_attachment", "create_project_action", "patch_project_action", "delete_project_action", "create_project_action_run":
 		return fmt.Sprintf("%s on project %s (%s)", strings.ReplaceAll(string(action.Kind), "_", " "), action.ProjectID, actionLabel(action))
+	case ActionKind(operatortool.BillingCheckout):
+		return "Create subscription checkout for " + action.Identifier
+	case ActionKind(operatortool.BillingPortal):
+		return "Open billing portal for " + action.Identifier
+	case ActionKind(operatortool.BudgetOverrideSet):
+		return "Set budget override for " + action.ProjectID
+	case ActionKind(operatortool.BudgetOverrideClear):
+		return "Clear budget override for " + action.ProjectID
 	default:
+		if operatortool.IsWorkTool(string(action.Kind)) {
+			return fmt.Sprintf("%s on %s", strings.ReplaceAll(string(action.Kind), "_", " "), actionLabel(action))
+		}
 		return "Unknown operator action"
 	}
 }

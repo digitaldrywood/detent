@@ -199,17 +199,19 @@ func (o *Orchestrator) recoverBlockedIssues(
 			transitioned[issueID] = struct{}{}
 			continue
 		}
-		if park, ok := o.latestReworkBreakerPark(ctx, issue); normalizeState(issue.State) == normalizeState(blockedStatusState) && autoPromoteCfg.Enabled && ok {
-			if reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) ||
-				!reworkBreakerAutoUnparkReady(issue, park, o.cfg.TerminalStates) ||
-				!o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
+		if normalizeState(issue.State) == normalizeState(blockedStatusState) && autoPromoteCfg.Enabled {
+			if park, ok := o.latestReworkBreakerPark(ctx, issue); ok {
+				if reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) ||
+					!reworkBreakerAutoUnparkReady(issue, park, o.cfg.TerminalStates) ||
+					!o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
+					continue
+				}
+				if !o.applyReworkBreakerAutoUnpark(ctx, state, issue, park, autoPromoteCfg.PassState, now) {
+					continue
+				}
+				transitioned[issueID] = struct{}{}
 				continue
 			}
-			if !o.applyReworkBreakerAutoUnpark(ctx, state, issue, park, autoPromoteCfg.PassState, now) {
-				continue
-			}
-			transitioned[issueID] = struct{}{}
-			continue
 		}
 		if !recoveryCfg.Enabled || !stateIn(issue.State, recoveryCfg.SourceStates) {
 			continue

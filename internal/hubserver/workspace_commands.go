@@ -26,7 +26,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 		return nil, err
 	}
 	var created workspaceRecord
-	value, err := s.executeNativeCommand(ctx, scope, nativeOperation(scope, "POST", "/workspaces"), request.Mutation, request, nativeCommandOptions{feature: "collaboration"}, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	value, err := s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/workspaces"), Feature: "collaboration"}, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		record, err := service.openWorkspace(ctx, tx, scope, request, now)
 		if err != nil {
 			return nil, err
@@ -41,17 +41,17 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 }
 
 func (s *Service) commandCreateAction(ctx context.Context, scope nativeScope, request projectActionRequest) (json.RawMessage, error) {
-	return s.executeNativeCommand(ctx, scope, nativeOperation(scope, "POST", "/actions"), request.Mutation, request, nativeCommandOptions{feature: "collaboration"}, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/actions"), Feature: "collaboration"}, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.applyCreateProjectAction(ctx, tx, scope, request, now)
 	})
 }
 func (s *Service) commandPatchAction(ctx context.Context, scope nativeScope, id string, request projectActionPatch) (json.RawMessage, error) {
-	return s.executeNativeCommand(ctx, scope, nativeOperation(scope, "PATCH", "/actions/"+url.PathEscape(id)), request.Mutation, request, nativeCommandOptions{feature: "collaboration"}, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "PATCH", "/actions/"+url.PathEscape(id)), Feature: "collaboration"}, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.applyPatchProjectAction(ctx, tx, scope, id, request, now)
 	})
 }
 func (s *Service) commandRunAction(ctx context.Context, scope nativeScope, id string, request projectActionRunRequest) (json.RawMessage, error) {
-	return s.executeNativeCommand(ctx, scope, nativeOperation(scope, "POST", "/actions/"+url.PathEscape(id)+"/runs"), request.Mutation, request, nativeCommandOptions{feature: "collaboration"}, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/actions/"+url.PathEscape(id)+"/runs"), Feature: "collaboration"}, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.applyCreateProjectActionRun(ctx, tx, scope, id, request, now)
 	})
 }

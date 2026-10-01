@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -226,52 +227,67 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scop
 }
 
 func (s *Service) listNativeAttempts(c echo.Context) error {
-	if err := validateNativeQuery(c.QueryParams()); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	limit, cursor, key, err := s.nativePage(c)
+	ctx := c.Request().Context()
+	scope := nativeRequestScope(c)
+	params, err := nativeReadQuery(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item")); err != nil {
+	page, err := s.readAttempts(ctx, scope, c.Param("item"), params)
+	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, page)
+}
+
+func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
+	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/attempts"
+
+	if err := validateNativeQuery(params); err != nil {
+		return tracker.Page[tracker.NativeAttempt]{}, err
+	}
+	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
+	if err != nil {
+		return tracker.Page[tracker.NativeAttempt]{}, err
+	}
+
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	var after int64
 	if cursor.After != "" {
 		after, err = strconv.ParseInt(cursor.After, 10, 64)
 		if err != nil {
-			return s.nativeAPIError(c, nativeInvalid("Attempt cursor is invalid"))
+			return tracker.Page[tracker.NativeAttempt]{}, nativeInvalid("Attempt cursor is invalid")
 		}
 	}
 	rows, err := s.database.db.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
-WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token > ? ORDER BY a.fencing_token LIMIT ?`, scope.organization, scope.project, c.Param("item"), after, limit+1)
+WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token > ? ORDER BY a.fencing_token LIMIT ?`, scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	defer rows.Close()
 	page := tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{}}
 	for rows.Next() {
 		attempt, err := scanNativeAttempt(rows, s.config.now())
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return tracker.Page[tracker.NativeAttempt]{}, err
 		}
 		page.Items = append(page.Items, attempt)
 	}
 	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
+		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	if len(page.Items) > limit {
 		page.Items = page.Items[:limit]
 		cursor.After = strconv.FormatInt(int64(page.Items[len(page.Items)-1].FencingToken), 10)
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return tracker.Page[tracker.NativeAttempt]{}, err
 		}
 	}
-	return c.JSON(http.StatusOK, page)
+	return page, nil
 }
 
 func scanNativeAttempt(rows *sql.Rows, now time.Time) (tracker.NativeAttempt, error) {

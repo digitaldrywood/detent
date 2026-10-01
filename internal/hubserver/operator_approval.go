@@ -1,0 +1,149 @@
+package hubserver
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/web/templates"
+	"github.com/labstack/echo/v4"
+)
+
+func (s *Service) hostedOperatorBrowser(c echo.Context, next echo.HandlerFunc) error {
+	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
+		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+	}
+	if credential, _, err := s.hostedCredential(c); err != nil || credential.Hosted == nil {
+		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+	}
+	return s.operatorAuthority(next)(c)
+}
+
+func (s *Service) operatorFormCSRF(c echo.Context) string {
+	if s.hostedShared() {
+		return s.hostedSharedCSRF(c)
+	}
+	cookie, err := c.Cookie(hostedCookie)
+	if err != nil {
+		return ""
+	}
+	return hostedCSRF(cookie.Value)
+}
+
+// Reuse the authenticated dashboard session's form secret and the existing
+// approval conversation. Bind each decision to what this browser displayed.
+func (s *Service) billingDecisionToken(c echo.Context, id, actionID string) string {
+	conversation := s.operatorChat.Conversation(id)
+	var action chat.Action
+	if actionID != "" {
+		action, _ = s.operatorChat.Action(id, actionID)
+	}
+	raw, _ := json.Marshal(struct {
+		ID       string
+		Identity operatortool.Identity
+		Mode     chat.ConnectionMode
+		Action   chat.Action
+	}{id, operatortool.ConnectionIdentity(c.Request().Context()), conversation.Mode, action})
+	mac := hmac.New(sha256.New, []byte(s.operatorFormCSRF(c)))
+	_, _ = mac.Write(raw)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Service) hostedOperatorApproval(c echo.Context) error {
+	return s.hostedOperatorBrowser(c, func(c echo.Context) error {
+		return s.renderBillingApproval(c, strings.TrimSpace(c.QueryParam("connection_id")))
+	})
+}
+
+func (s *Service) renderBillingApproval(c echo.Context, id string) error {
+	if id == "" || len(id) > 256 {
+		return echo.NewHTTPError(http.StatusNotFound, "Connection is unavailable")
+	}
+	conversation := s.operatorChat.Conversation(id)
+	if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
+		return echo.NewHTTPError(http.StatusNotFound, "Connection is unavailable")
+	}
+	tokens := make(map[string]string, len(conversation.Actions))
+	visible := make([]chat.Action, 0, len(conversation.Actions))
+	for _, action := range conversation.Actions {
+		if err := s.authorizeHostedApprovalAction(c.Request().Context(), action, false); err != nil {
+			continue
+		}
+		visible = append(visible, action)
+		tokens[action.ID] = s.billingDecisionToken(c, id, action.ID)
+	}
+	conversation.Actions = visible
+	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
+	c.Response().Header().Set("Cache-Control", "no-store")
+	c.Response().Header().Set("Referrer-Policy", "same-origin")
+	return templates.ChatApproval(templates.ChatData{Conversation: conversation, FormToken: s.billingDecisionToken(c, id, ""), ActionTokens: tokens, ApprovalPath: s.hostedPath("/chat/approval"), CSRF: s.operatorFormCSRF(c)}).Render(c.Request().Context(), c.Response().Writer)
+}
+
+func (s *Service) hostedOperatorDecision(c echo.Context) error {
+	return s.hostedOperatorBrowser(c, func(c echo.Context) error {
+		c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
+		id, actionID := c.FormValue("connection_id"), c.FormValue("action_id")
+		if id == "" || len(id) > 256 || len(actionID) > 256 || !s.hostedCSRFValid(c) || !hmac.Equal([]byte(c.FormValue("form_token")), []byte(s.billingDecisionToken(c, id, actionID))) {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+		conversation := s.operatorChat.Conversation(id)
+		if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+		if actionID != "" {
+			action, ok := s.operatorChat.Action(id, actionID)
+			if !ok || s.authorizeHostedApprovalAction(c.Request().Context(), action, true) != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeWrite}); err != nil {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+		ctx := chat.WithOperatorApproval(c.Request().Context(), operatortool.ConnectionIdentity(c.Request().Context()))
+		var err error
+		switch c.FormValue("decision") {
+		case "confirm":
+			_, err = s.operatorChat.Confirm(ctx, id, actionID)
+		case "reject":
+			_, err = s.operatorChat.RejectConnectionAction(ctx, id, actionID)
+		case "mode":
+			err = s.operatorChat.SetConnectionMode(ctx, id, chat.ConnectionMode(c.FormValue("mode")))
+		default:
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid operator decision")
+		}
+		if err != nil {
+			return echo.NewHTTPError(http.StatusConflict, "Operator decision is unavailable; refresh the preview")
+		}
+		return c.Redirect(http.StatusSeeOther, s.hostedPath("/chat/approval")+"?connection_id="+id)
+	})
+}
+
+// Browser approval checks the operator's current grants as well as the original
+// connection's authority, which is resolved again by the shared action executor.
+func (s *Service) authorizeHostedApprovalAction(ctx context.Context, action chat.Action, write bool) error {
+	requirement := operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: action.ProjectID}
+	if write {
+		requirement.Scope = apikey.ScopeWrite
+	}
+	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+		var request workspaceToolRequest
+		if operatortool.DecodeArguments(action.Arguments, &request) != nil {
+			return operatortool.ErrAccessDenied
+		}
+		requirement = workspaceRequirement(string(action.Kind), request, write)
+		if action.Kind == "delete_project_action" && action.Status == chat.ActionSucceeded {
+			requirement.ResourceKind, requirement.ResourceID = "", ""
+		}
+	} else if action.Kind == chat.ActionKind(operatortool.BillingCheckout) || action.Kind == chat.ActionKind(operatortool.BillingPortal) {
+		_, err := s.operatorBillingCredential(ctx, "billing", write)
+		return err
+	}
+	_, err := operatortool.AuthorizeCurrent(ctx, requirement)
+	return err
+}
