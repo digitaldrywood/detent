@@ -272,6 +272,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 	for _, mode := range []string{"id-only", "inline", "fresh", "missing", "failure", "partial failure", "independent failure", "independent forbidden", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			paths := map[string]int{}
+			graphqlReads := 0
 			var requestMu sync.Mutex
 			independentFailure := mode == "independent failure" || mode == "independent forbidden"
 			closed := independentFailure
@@ -279,17 +280,22 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				requestMu.Lock()
 				defer requestMu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
-				if r.Method == http.MethodPost && r.URL.Path == "/" {
-					var request struct{ Query string }
+				if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
+					graphqlReads++
+					var request struct {
+						Query string `json:"query"`
+					}
 					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-						t.Error(err)
+						t.Errorf("decode authority query: %v", err)
 						w.WriteHeader(http.StatusBadRequest)
 						return
 					}
-					if !strings.Contains(request.Query, "query DetentGitHubCandidateHydration(") {
+					if !strings.HasPrefix(request.Query, "query DetentGitHubCandidateHydration(") {
 						t.Errorf("unexpected authority query %s", request.Query)
+						w.WriteHeader(http.StatusBadRequest)
+						return
 					}
-					fmt.Fprint(w, `{"errors":[{"message":"fixture requires REST scheduler evidence"}]}`)
+					fmt.Fprint(w, `{"errors":[{"message":"Cannot query field \"blockedBy\" on type \"Issue\"."}]}`)
 					return
 				}
 				paths[r.URL.Path]++
@@ -346,7 +352,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			if mode == "budget" {
 				cap = 2
 			}
-			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL, APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
+			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL + "/graphql", APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -370,8 +376,8 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						t.Fatalf("ID-only phase authority changed: %+v", evidence)
 					}
 				}
-				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 {
-					t.Fatalf("inline authority read remote: %v %v", tracker.fetchIdentifiers, paths)
+				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 || graphqlReads != 0 {
+					t.Fatalf("inline authority read remote: %v %v, GraphQL reads %d", tracker.fetchIdentifiers, paths, graphqlReads)
 				}
 				return
 			}
@@ -412,6 +418,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			}
 			requestMu.Lock()
 			requests := maps.Clone(paths)
+			queries := graphqlReads
 			requestMu.Unlock()
 			want := []string{"owner/repo#1", "owner/repo#2", "owner/other#1"}
 			if len(tracker.fetchIdentifiers) == 0 || fmt.Sprint(tracker.fetchIdentifiers[0]) != fmt.Sprint(want) {
@@ -422,6 +429,9 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				t.Fatalf("resolver calls = %v, requests = %v; failed cohort=%t", tracker.fetchIdentifiers, requests, failedCohort)
 			}
 			if mode == "fresh" {
+				if graphqlReads != 3 {
+					t.Fatalf("scheduler evidence reads = %d, want one per distinct issue", graphqlReads)
+				}
 				if len(requests) != 8 {
 					t.Fatalf("requests = %v, want 3 issues + 3 dependencies + 2 repository lists", requests)
 				}
@@ -473,8 +483,8 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						t.Fatalf("request cap changed: %v", requests)
 					}
 				}
-				if mode == "cancelled" && len(requests) != 0 {
-					t.Fatalf("cancelled phase read remote: %v", requests)
+				if mode == "cancelled" && (len(requests) != 0 || queries != 0) {
+					t.Fatalf("cancelled phase read remote: %v, GraphQL reads %d", requests, queries)
 				}
 			}
 		})

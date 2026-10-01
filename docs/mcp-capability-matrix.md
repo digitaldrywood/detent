@@ -887,6 +887,24 @@ Login.tsx navigation results
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [web/conversation/src/app/account/Login.tsx:66](../web/conversation/src/app/account/Login.tsx#L66), [web/conversation/src/app/account/Login.tsx:78](../web/conversation/src/app/account/Login.tsx#L78), [web/conversation/src/app/account/Login.tsx:75](../web/conversation/src/app/account/Login.tsx#L75)
+## frontend.web_conversation_src_app_settings_MCPSettings_tsx.navigation_results
+
+MCPSettings.tsx documentation links
+
+- Audience: local_ui; status: **excluded**; owner: digitaldrywood/detent#3335.
+- Decision: The three exact links open Cursor/Claude Code installation documentation and the parent MCP parity issue. They are local navigation presentation and do not read or mutate Detent application state.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
+- Application: web/conversation/src/app/settings/MCPSettings.tsx; static client installation documentation and parent parity issue links
+- Extraction: None for link presentation; producing application reads retain typed identifiers/URLs.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
+- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Availability: self_hosted / github,native / shared application read/command for this frontend source
+- Availability: hosted_dedicated / github,native / shared application read/command for this frontend source
+- Availability: hosted_shared / github,native / shared application read/command for this frontend source
+- Confirmation: read or ordinary non-destructive write → none
+
+Sources: [web/conversation/src/app/settings/MCPSettings.tsx:125](../web/conversation/src/app/settings/MCPSettings.tsx#L125), [web/conversation/src/app/settings/MCPSettings.tsx:124](../web/conversation/src/app/settings/MCPSettings.tsx#L124), [web/conversation/src/app/settings/MCPSettings.tsx:106](../web/conversation/src/app/settings/MCPSettings.tsx#L106)
 ## frontend.web_conversation_src_app_account_SpritesCard_tsx.navigation_results
 
 SpritesCard.tsx navigation results
@@ -3100,6 +3118,47 @@ Hosted billing checkout
 - Confirmation: material purchase, portal or budget change → operator
 
 Sources: [POST /api/v2/organizations/:organization/billing/checkout](../internal/hubserver/hosted_ui.go#L37), [POST /organization/billing/checkout](../internal/hubserver/hosted_ui.go#L34), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [web/conversation/src/app/account/api.ts:416](../web/conversation/src/app/account/api.ts#L416), [internal/web/templates/chat.templ:118](../internal/web/templates/chat.templ#L118)
+## hubserver.hosted_credit_checkout
+
+Purchase hosted AI credits
+
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
+- Decision: Credit purchases are distinct from implemented subscription checkout. Required operator MCP parity remains pending under #3345; this inventory does not expose a runtime tool.
+- Tool: `billing_usage.hosted_credit_checkout` — Bounded price identifier (1–256 bytes) and request_id (1–256 bytes); current organization and confirmation mode come from connection authority, never arguments. → Bounded credit checkout destination URL and purchase receipt; at most 256 KiB; opaque service-unavailable errors.
+- Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: s.hostedCreditCheckout; s.hostedBillingOwner, s.creditPack, s.ensureHostedCustomer, ai_credit_purchases and billing.CreditProvider.CreditCheckout
+- Extraction: Extract the credit checkout application command and durable purchase-key retry contract from Echo. HTTP and MCP must share current owner checks, configured pack validation and the same purchase intent; do not proxy the handler.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedBillingOwner(c); configured credit pack; billing credit provider and current organization purchase intent.
+- Coverage: TestDashboardCapabilityCoverage inventories the exact browser/API/frontend sites; TestAICreditPaymentConfirmation covers HTTP purchase replay and provider confirmation. MCP authority, approval and replay parity remains pending under #3345.
+- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: material purchase, portal or budget change → operator
+
+Sources: [POST /api/v2/organizations/:organization/billing/credits/checkout](../internal/hubserver/hosted_ui.go#L41), [POST /organization/billing/credits/checkout](../internal/hubserver/hosted_ui.go#L36), [internal/web/templates/hosted_billing.templ:93](../internal/web/templates/hosted_billing.templ#L93), [internal/web/templates/hosted_billing.templ:93](../internal/web/templates/hosted_billing.templ#L93), [web/conversation/src/app/account/api.ts:421](../web/conversation/src/app/account/api.ts#L421)
+## hubserver.hosted_credit_auto_fund
+
+Configure hosted AI credit auto-funding
+
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
+- Decision: Automatic credit funding settings are a separate operator command from subscription checkout. Required operator MCP parity remains pending under #3345; this inventory does not expose a runtime tool.
+- Tool: `billing_usage.hosted_credit_auto_fund` — Bounded enabled boolean, threshold_cents integer and price identifier (1–256 bytes), plus request_id (1–256 bytes) for the shared mutation receipt; current organization and confirmation mode come from connection authority. → Bounded organization credit auto-fund settings receipt with outcome and freshness; at most 256 KiB; opaque service-unavailable errors.
+- Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: s.hostedCreditAutoFund; s.hostedBillingOwner, s.creditPack, s.database.hostedBillingBinding, ai_credit_accounts and billing.CreditProvider.SavedCreditPaymentMethod
+- Extraction: Extract the auto-fund settings application command from Echo. HTTP and MCP must share current owner checks, pack/threshold/payment-method validation and organization-bound account updates; mutations reuse the shared audit/retry contract (#3338).
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedBillingOwner(c); AI credit mode and billing provider available; enabling requires a configured pack, a positive threshold smaller than the pack and a saved payment method.
+- Coverage: TestDashboardCapabilityCoverage inventories the exact browser/API/frontend sites; TestAICreditOwnerSettings and TestAICreditAutoFund cover HTTP owner settings and automatic charges. MCP authority, approval and replay parity remains pending under #3345.
+- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: enable or change automatic charges; YOLO suppresses confirmation only → operator
+- Confirmation: disable automatic charges → none
+
+Sources: [POST /organization/billing/credits/auto-fund](../internal/hubserver/hosted_ui.go#L37), [PUT /api/v2/organizations/:organization/billing/credits/auto-fund](../internal/hubserver/hosted_ui.go#L42), [internal/web/templates/hosted_billing.templ:104](../internal/web/templates/hosted_billing.templ#L104), [internal/web/templates/hosted_billing.templ:104](../internal/web/templates/hosted_billing.templ#L104), [web/conversation/src/app/account/api.ts:425](../web/conversation/src/app/account/api.ts#L425), [web/conversation/src/app/settings/CreditSettings.tsx:106](../web/conversation/src/app/settings/CreditSettings.tsx#L106), [web/conversation/src/app/settings/CreditSettings.tsx:104](../web/conversation/src/app/settings/CreditSettings.tsx#L104)
 ## hubserver.hosted_billing_export
 
 Hosted billing export
