@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -130,7 +132,11 @@ func TestRetentionCompletionClock(t *testing.T) {
 		name, state              string
 		closed, stage, closeTime bool
 		want                     time.Time
+		missing                  bool
+		readErr                  error
 	}{
+		{name: "missing identity", missing: true},
+		{name: "metadata read failed", readErr: errors.New("fresh issue metadata unavailable")},
 		{name: "done", state: "Done", stage: true, want: done},
 		{name: "cancelled", state: "Cancelled", stage: true, want: done},
 		{name: "closed lane", state: "Closed", stage: true, want: done},
@@ -143,24 +149,42 @@ func TestRetentionCompletionClock(t *testing.T) {
 		{name: "active", state: "In Progress", stage: true},
 		{name: "human review", state: "Human Review", stage: true},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			issue := connector.Issue{ID: "issue", Identifier: "repo#1", State: test.state, Closed: test.closed, UpdatedAt: &now}
-			if test.stage {
-				issue.StageUpdatedAt = &done
-			}
-			if test.closeTime {
-				issue.ClosedAt = &closed
-			}
-			reaper := &retentionTestReaper{}
-			o := &Orchestrator{cfg: Config{TerminalStates: normalizedStates([]string{"Done", "Cancelled", "Canceled", "Closed", "Duplicate", "Archived"})}, reaper: reaper, connector: memory.New(memory.Config{Issues: []connector.Issue{issue}}), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-			state := State{}
-			o.sweepRetention(t.Context(), &state, now)
-			if got := reaper.completed[issue.ID]; !got.Equal(test.want) {
-				t.Fatalf("completed=%v want=%v", got, test.want)
-			}
-			if len(state.WorkspaceRetention) != 1 || state.WorkspaceRetention[0].HookLogs.Count != 2 {
-				t.Fatalf("totals=%+v", state.WorkspaceRetention)
-			}
-		})
+		for _, useProbe := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/probe=%t", test.name, useProbe), func(t *testing.T) {
+				issue := connector.Issue{ID: "issue", Identifier: "repo#1", State: test.state, Closed: test.closed, UpdatedAt: &now}
+				if test.stage {
+					issue.StageUpdatedAt = &done
+				}
+				if test.closeTime {
+					issue.ClosedAt = &closed
+				}
+				reaper := &retentionTestReaper{}
+				full := &rateLimitConnector{issuesByID: []connector.Issue{issue}, fetchByIDErr: test.readErr}
+				if test.missing {
+					full.issuesByID = nil
+				}
+				var tracker connector.Connector = full
+				probe := &cleanupIDProbeConnector{rateLimitConnector: full}
+				if useProbe {
+					tracker = probe
+				}
+				o := &Orchestrator{cfg: Config{TerminalStates: normalizedStates([]string{"Done", "Cancelled", "Canceled", "Closed", "Duplicate", "Archived"})}, reaper: reaper, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+				state := State{}
+				o.sweepRetention(t.Context(), &state, now)
+				if useProbe {
+					if probe.probeCalls != 1 || full.fetchByIDCalls != 0 || !slices.Equal(probe.requestedIDs, []string{issue.ID}) {
+						t.Fatalf("probe=%d full=%d IDs=%v", probe.probeCalls, full.fetchByIDCalls, probe.requestedIDs)
+					}
+				} else if full.fetchByIDCalls != 1 {
+					t.Fatalf("fallback reads=%d, want 1", full.fetchByIDCalls)
+				}
+				if got := reaper.completed[issue.ID]; !got.Equal(test.want) {
+					t.Fatalf("completed=%v want=%v", got, test.want)
+				}
+				if len(state.WorkspaceRetention) != 1 || state.WorkspaceRetention[0].HookLogs.Count != 2 {
+					t.Fatalf("totals=%+v", state.WorkspaceRetention)
+				}
+			})
+		}
 	}
 }

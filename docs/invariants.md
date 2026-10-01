@@ -2208,9 +2208,14 @@ history scans during dispatch and lane observation.
 `TestIssueWorkflowTimelineIndexedIdentityUnion` covers aliases, overlap,
 complete history, ordering, and project isolation.
 
-Workspace cleanup probes issue IDs through the same fresh scalar state reader
-without loading discussion or dependency evidence. Dispatch and reconciliation
-retain complete evidence reads. The ID probe is an optional connector capability
+Workspace cleanup and retention completion checks share the existing optional
+issue-ID probe owner without loading discussion or dependency evidence. The
+retention callback keeps its 100-ID batches, closure/lane completion clocks,
+unknown-clock retention, and existing transition-time fallback. Active ownership,
+process checks, and the seven-day workspace lifetime remain unchanged. This
+consolidates cleanup reads under INV-3 without a new reader or cleanup path.
+Dispatch and reconciliation retain complete evidence reads. The ID probe is an
+optional connector capability
 because the existing state-list probe cannot select exact workspace identities;
 connectors without it retain their current reader. Fresh scalar identity,
 current lane, closure, and update time remain necessary before cleanup, while

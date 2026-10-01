@@ -159,18 +159,19 @@ func activeWorkspaceIssues(state *State, terminalStates []string) []connector.Is
 	return active
 }
 
+func (o *Orchestrator) fetchWorkspaceCleanupIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]connector.Issue, error) {
+	if prober, ok := o.connector.(connector.IssueStateIDProber); ok {
+		return prober.FetchIssueStateProbeByIDs(ctx, issueIDs)
+	}
+	return o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
+}
+
 func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, issueIDs []string, now time.Time) (bool, bool) {
 	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
 	timing.phase = "workspace_cleanup"
 	timing.step("fetch_cleanup_issue_ids")
 	defer func() { timing.finishStep(time.Now()) }()
-	var issues []connector.Issue
-	var err error
-	if prober, ok := o.connector.(connector.IssueStateIDProber); ok {
-		issues, err = prober.FetchIssueStateProbeByIDs(ctx, issueIDs)
-	} else {
-		issues, err = o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
-	}
+	issues, err := o.fetchWorkspaceCleanupIssueStatesByIDs(ctx, issueIDs)
 	if err != nil {
 		o.logger.Warn("fetch workspace cleanup issue IDs failed", slog.Any("error", err))
 		message := workspaceCleanupIssueIDsFetchFailedMessage(issueIDs, err)

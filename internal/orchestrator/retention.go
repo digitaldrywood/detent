@@ -31,7 +31,7 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 			}
 		}
 		for start := 0; start < len(ids); start += 100 {
-			issues, err := o.connector.FetchIssueStatesByIDs(ctx, ids[start:min(start+100, len(ids))])
+			issues, err := o.fetchWorkspaceCleanupIssueStatesByIDs(ctx, ids[start:min(start+100, len(ids))])
 			if err != nil {
 				return nil, err
 			}
