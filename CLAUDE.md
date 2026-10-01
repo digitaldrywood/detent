@@ -20,6 +20,7 @@
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
 - Before implementation, confirm dependencies listed in the issue are merged into `origin/develop`.
 - Keep changes scoped to the active issue.
+- Publish Workpad status through the project's existing tracker owner. For comment-based Workpads, update the authoritative `## Codex Workpad` comment, or post a new canonical comment when editing is unavailable. An issue-body or final-answer status does not supersede an existing canonical comment. Preserve native/local event ownership.
 - Run `make generate` before committing when templates, sqlc queries, or CSS inputs change.
 - Commit only when explicitly requested by the workflow or human, and use conventional commit messages.
 

@@ -1,6 +1,10 @@
 ## Blocked handoff
 
-One `## Codex Workpad`: plan, validation, one `detent-status` fence (`schema: 1`; `in_progress`, `blocked`, or `complete`). Prose is not a blocker.
+Current Workpad: plan, validation, one `detent-status` fence (`schema: 1`; `in_progress`, `blocked`, or `complete`). Prose is not a blocker.
+
+Comment projects: use the authoritative `## Codex Workpad` comment from current context. Edit when permitted; otherwise post a new comment with that heading/current status block. Body/final-only status cannot supersede it. Keep native/local writers.
+
+Verified same-head/test-input evidence can publish a receipt without reruns solely for handoff. Required verification, pending acceptance and human approvals remain.
 
 PR handoff: record gate and current-head checks. Expected skips allow handoff, not test credit; merge-group CI must pass.
 
