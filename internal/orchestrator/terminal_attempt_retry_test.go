@@ -486,6 +486,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		errorMessage     string
 		commitsAhead     int
 		remoteBranch     bool
+		joinedErr        error
 	}{
 		{
 			name: "open pull request on exact current head reconciles",
@@ -496,6 +497,30 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			wantPRNumber:    18,
 			commitsAhead:    1,
 			remoteBranch:    true,
+		},
+		{
+			name:      "recovery preserves joined workspace failure",
+			lookup:    &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
+			joinedErr: runpkg.ErrWorkspacePreparation,
+			wantRetry: true, commitsAhead: 1, remoteBranch: true,
+		},
+		{
+			name:      "recovery preserves joined checkpoint failure",
+			lookup:    &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
+			joinedErr: errors.New("checkpoint persistence failed"),
+			wantRetry: true, commitsAhead: 1, remoteBranch: true,
+		},
+		{
+			name:      "recovery preserves joined lease failure",
+			lookup:    &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
+			joinedErr: errors.New("native execution lease lost"),
+			wantRetry: true, commitsAhead: 1, remoteBranch: true,
+		},
+		{
+			name:      "recovery preserves joined session failure",
+			lookup:    &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
+			joinedErr: errors.New("session persistence failed"),
+			wantRetry: true, commitsAhead: 1, remoteBranch: true,
 		},
 		{
 			name: "no pull request opens draft",
@@ -679,9 +704,11 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				errorMessage = "HTTP 503: unavailable"
 			}
 			commandErr := &runpkg.DeliverableCommandError{
-				Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"` + branch + `"}`,
+				OperationClass: "pull_request", Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"` + branch + `"}`,
 				Status: "failed", Message: errorMessage,
 			}
+
+			runErr := errors.Join(&runpkg.DeliverableRecoveryError{Branch: branch, Err: commandErr}, tt.joinedErr)
 
 			o.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID: issue.ID,
@@ -692,7 +719,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 						DeliveryStateChecked: true, CommitsAhead: tt.commitsAhead, RemoteBranchExists: tt.remoteBranch,
 					},
 				},
-				Err:         &runpkg.DeliverableRecoveryError{Branch: branch, Err: commandErr},
+				Err:         runErr,
 				CompletedAt: now,
 			})
 
@@ -793,6 +820,11 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				}
 				return
 			}
+			if tt.joinedErr != nil {
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalFailure || !strings.Contains(attempts.completions[0].ErrorMessage, tt.joinedErr.Error()) || attempts.completions[0].ErrorClass == permissionWaitReason {
+					t.Fatalf("joined failure outcome = %#v", attempts.completions)
+				}
+			}
 			if tt.wantRetry {
 				if _, retrying := state.Retry[issue.ID]; !retrying {
 					t.Fatalf("Retry[%q] missing after machine-recoverable delivery failure", issue.ID)
@@ -867,7 +899,51 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 	event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
 	event.Result.PullRequestHeadPushed = true
 	event.Result.DiffStats = running.DiffStats
-	event.Err = &runpkg.DeliverableRecoveryError{Branch: branch, Err: errors.New("gh pr create failed")}
+	event.Err = &runpkg.DeliverableRecoveryError{Branch: branch, Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Operation: "gh pr create", Message: "gh pr create failed"}}
+	for _, test := range []struct {
+		name      string
+		joinedErr error
+		legacy    bool
+		wantPure  bool
+	}{
+		{name: "pure typed receipt", wantPure: true},
+		{name: "workspace join", joinedErr: runpkg.ErrWorkspacePreparation},
+		{name: "checkpoint join", joinedErr: errors.New("checkpoint persistence failed")},
+		{name: "lease join", joinedErr: errors.New("native execution lease lost")},
+		{name: "session join", joinedErr: errors.New("session persistence failed")},
+		{name: "legacy plain receipt", legacy: true},
+		{name: "legacy mixed receipt", joinedErr: runpkg.ErrWorkspacePreparation, legacy: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := event
+			input.Err = errors.Join(event.Err, test.joinedErr)
+			record := newDeferredCompletion(input, running, tracker.createErr, now)
+			if test.legacy {
+				record.DeliverableRecovery = &deferredDeliverableRecovery{Branch: branch, Cause: "gh pr create failed"}
+			}
+			data, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded deferredCompletion
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			replayed := decoded.completion()
+			if _, pure := runpkg.PullRequestDeliverableFailure(replayed.Err); pure != test.wantPure {
+				t.Fatalf("replayed pure delivery = %v, want %v", pure, test.wantPure)
+			}
+			if decoded.Error != input.Err.Error() {
+				t.Fatalf("stored full error = %q, want %q", decoded.Error, input.Err.Error())
+			}
+			if !test.wantPure && replayed.Err.Error() != input.Err.Error() {
+				t.Fatalf("replayed full error = %q, want %q", replayed.Err.Error(), input.Err.Error())
+			}
+			if !test.legacy && !test.wantPure && decoded.DeliverableRecovery != nil {
+				t.Fatal("mixed error acquired a typed recovery receipt")
+			}
+		})
+	}
 
 	orch.handleRunResult(t.Context(), &state, event)
 	if _, deferred := state.deferredCompletions[issue.ID]; !deferred {
@@ -897,6 +973,9 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 		t.Fatal("deliverable recovery completion deferral was not restored")
 	}
 	var restoredRecovery *runpkg.DeliverableRecoveryError
+	if _, pure := runpkg.PullRequestDeliverableFailure(record.completion().Err); !pure {
+		t.Fatal("restored completion lost pure typed delivery authority")
+	}
 	if !errors.As(record.completion().Err, &restoredRecovery) || restoredRecovery == nil || restoredRecovery.Branch != branch {
 		t.Fatalf("restored completion error = %#v, want deliverable recovery for %q", record.completion().Err, branch)
 	}

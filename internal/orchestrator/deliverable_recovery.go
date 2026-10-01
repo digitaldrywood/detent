@@ -307,9 +307,9 @@ func (o *Orchestrator) blockDeliverableRecoveryFailure(
 	event runpkg.Completion,
 	running Running,
 	lookup deliverableRecoveryLookupResult,
+	recoveryErr *runpkg.DeliverableRecoveryError,
 ) bool {
-	var recoveryErr *runpkg.DeliverableRecoveryError
-	if state == nil || !errors.As(event.Err, &recoveryErr) || recoveryErr == nil {
+	if state == nil || recoveryErr == nil {
 		return false
 	}
 	branch := lookup.Branch

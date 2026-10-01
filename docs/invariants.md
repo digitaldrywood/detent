@@ -845,6 +845,15 @@ reuses the final-outcome handler for native final-only human attention, includin
 non-completed producer outcomes with no Change Request. Existing human-owned
 settlement and tracker-write deferral preserve attempt identity, usage and claim
 settlement; no parser, reason code, recovery mechanism or configuration is added.
+The existing PR-delivery failure predicate validates every joined error leaf for
+both native human attention and delivery reconciliation. Mixed workspace,
+checkpoint, lease or session failures retain their original error authority;
+a nested delivery error cannot erase an unrelated failure or create a permission
+park. The existing deferred-delivery receipt stores one summarized typed cause
+only after that whole-error proof; replay validates the same predicate. Existing
+Cause/Error diagnostics remain. Legacy text-only receipts cannot prove purity,
+so replay preserves their full original error instead of creating human attention
+or successful reconciliation. No top-level schema or recovery owner is added.
 Historical Workpads, permission parks, allowance records and lanes are untouched.
 `TestHandleRunResultPermissionWait`, `TestNativeChangeRunCompletion` and
 `TestNativeLandingRunCompletion` cover canonical authority, nil-change human
