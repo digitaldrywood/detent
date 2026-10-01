@@ -1163,6 +1163,11 @@ than adding another recovery loop or reason code (#3064).
 `TestAttemptAllowanceLiveHead` and
 `TestAttemptTriageParkRecoversOnCleanGreenHead` cover the wait and recovery.
 
+The scheduled coverage repair (#3545) refreshes the reviewed digest for
+`updateIssueStateByIDWithMetadataMode` after #3560 rewrote `!(A && B)` as
+`!A || !B`. The equivalent delivery-time condition preserves reason sources
+and ledger ownership; no lane-transition vocabulary or mechanism changes.
+
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
 Unknown constants, including concatenations, fail. Existing dynamic forwarding
