@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector/memory"
@@ -39,15 +40,26 @@ func TestMachineIssueTool(t *testing.T) {
 		name, arguments                        string
 		reused, createFail, stateFail, success bool
 		states                                 int
+		cfg                                    Config
+		labels                                 []string
 	}{
-		{"create", `{"title":"Disk","body":"Evidence","fingerprint":"disk"}`, false, false, false, true, 1},
-		{"supplied provenance", "{\"title\":\"Disk\",\"body\":\"Evidence\\n\\n```detent-origin\\norigin_kind: audit\\ninstance_identity: supplied\\nsource_ref: supplied\\nfingerprint: other\\n```\",\"fingerprint\":\"disk\"}", false, false, false, true, 1},
-		{"reuse", `{"title":"Disk","body":"Evidence","fingerprint":"disk"}`, true, false, false, true, 0},
-		{"create failure", `{"title":"Disk","body":"Evidence","fingerprint":"disk"}`, false, true, false, false, 0},
-		{"state failure", `{"title":"Disk","body":"Evidence","fingerprint":"disk"}`, false, false, true, false, 1},
-		{"missing", `{}`, false, false, false, false, 0},
-		{"unknown field", `{"extra":1}`, false, false, false, false, 0},
-		{"trailing", `{} {}`, false, false, false, false, 0},
+		{name: "create", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk"}`, success: true, states: 1},
+		{name: "empty labels", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":[]}`, success: true, states: 1},
+		{name: "metadata", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":["bug","phase:design"]}`, success: true, states: 1, labels: []string{"bug", "phase:design"}},
+		{name: "default lanes", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":[" DETENT:BACKLOG ","detent:todo","detent:metadata","phase:design"]}`, success: true, states: 1, cfg: Config{LaneSignalStates: []string{"Todo"}}, labels: []string{"detent:metadata", "phase:design"}},
+		{name: "mapped custom lanes", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":[" Workflow:READY-FOR-BUILD ","workflow:todo","workflow:backlog","workflow:untriaged","workflow:metadata","detent:todo","bug"]}`, success: true, states: 1, cfg: Config{TrackerStatusLabelPrefix: " workflow: ", TrackerStateMap: map[string]string{" todo ": "Ready for Build", "Backlog": "Untriaged"}, LaneSignalStates: []string{"Todo"}}, labels: []string{"workflow:metadata", "detent:todo", "bug"}},
+		{name: "supplied provenance", arguments: "{\"title\":\"Disk\",\"body\":\"Evidence\\n\\n```detent-origin\\norigin_kind: audit\\ninstance_identity: supplied\\nsource_ref: supplied\\nfingerprint: other\\n```\",\"fingerprint\":\"disk\"}", success: true, states: 1},
+		{name: "reuse", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":["bug"]}`, reused: true, success: true, labels: []string{"bug"}},
+		{name: "create failure", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk"}`, createFail: true},
+		{name: "state failure", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk"}`, stateFail: true, states: 1},
+		{name: "missing", arguments: `{}`},
+		{name: "unknown field", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","extra":1}`},
+		{name: "trailing", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk"} {}`},
+		{name: "labels string", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":"bug"}`},
+		{name: "labels object", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":{}}`},
+		{name: "labels number", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":[1]}`},
+		{name: "labels null", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":null}`},
+		{name: "label null", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","labels":[null]}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -58,14 +70,20 @@ func TestMachineIssueTool(t *testing.T) {
 			if tt.stateFail {
 				tracker.stateErr = errors.New("state failed")
 			}
-			o := &Orchestrator{connector: tracker}
+			o := &Orchestrator{connector: tracker, cfg: tt.cfg}
 			request := RunRequest{WorkAttemptID: 5187}
 			o.attachMachineIssueTool(&request)
 			result, err := request.AgentToolHandler(t.Context(), runner.AgentToolCall{Name: "file_machine_issue", Arguments: json.RawMessage(tt.arguments)})
 			if err != nil || result.Success != tt.success || tracker.states != tt.states {
 				t.Fatalf("result = %+v, error = %v, states = %d", result, err, tracker.states)
 			}
+			if !tt.success && !tt.createFail && !tt.stateFail && tracker.draft.Title != "" {
+				t.Fatalf("malformed request published draft = %+v", tracker.draft)
+			}
 			if tt.success {
+				if !slices.Equal(tracker.draft.Labels, tt.labels) {
+					t.Fatalf("labels = %v, want %v", tracker.draft.Labels, tt.labels)
+				}
 				origin, ok := issueorigin.Parse(tracker.draft.Body)
 				if !ok || origin.Kind != "worker" || origin.Source != "5187" || origin.Instance == "" || origin.Fingerprint != "disk" {
 					t.Fatalf("origin = %+v", origin)

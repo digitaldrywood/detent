@@ -830,6 +830,18 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Machine-issue authoring (#3742) exposes optional metadata labels through the
+existing intake draft and connector label normalization. The tool omits lane
+labels projected from the configured tracker prefix, lane states and state map,
+including Backlog, while preserving unrelated metadata. This consolidates the
+authoring contract with existing configured status ownership; it adds no policy
+configuration, reader, recovery mechanism or lane writer. Source stamping and
+fingerprint coordination retain their existing owners. Open fingerprint reuse
+remains comment-only, without body, label or lane changes; only newly published
+issues receive the orchestrator's Backlog state write. The existing
+`TestMachineIssueTool` fixture covers metadata, omitted labels, configured/mapped
+lane filtering, malformed requests, provenance, reuse and publication failures.
+
 Admission candidate evaluations use the runner's existing current-clock fallback
 for each logical session start (#3729). The admission batch no longer overrides
 that clock. Run start, dependency observations, evaluation history and malformed
