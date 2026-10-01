@@ -612,6 +612,22 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Missing `gate.local_status` evidence is unproduced Detent-owned work (#3172).
+The connector shares the ownership predicate with current-head CI telemetry and
+merge missing-check accounting, removing that context from pending-CI suppression,
+missing-check streaks, parks, and park-recovery waits. Todo duplicate suppression
+and stale-PR routing also exclude heads with this worker-owned work, using the
+existing worker path and CI wait reason. Required-check evidence remains present
+until validation posts the status, so native queues and programmatic merges
+cannot bypass it. Other missing contexts and projects without a local status
+retain their behavior. `TestRequiredStatusCheckFailures`,
+`TestHydrateMergingRulesetStatus`, `TestReworkCurrentHeadCIDispatch`,
+`TestPostValidatedGateStatusOnlyForTheValidatedHead`, and
+`TestPersistentlyMissingRequiredCheckParkRecovery` cover the boundary.
+The existing missing-check mechanism remains for external required contexts that
+need a human configuration repair. No mechanism, reason, or configuration key
+is added.
+
 Provider transport overload remains instance-owned after a worker has started.
 Its completion no longer invokes the competing issue demotion/parking path;
 the existing provider retry keeps the current lane. Terminal failure counting
@@ -629,15 +645,19 @@ provider resumption eligibility remains independent of issue-failure accounting;
 the shared infrastructure attribution applies at the existing counting and
 issue-demotion callers, preserving resumability without charging or parking an
 issue for an instance interruption.
-`TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibility`
-asserts this lane preservation for both legacy metadata-less capacity attempts
-and attempts with durable GitHub REST wait metadata.
 Service-restart reconciliation uses the same existing source-lane restoration
 owner as pre-turn failures, carrying pushed-product evidence so completed work
 stays active. A recorded Rework source returns to Rework, legacy empty source
 returns to Todo, and neither path enters the issue failure limit, including a
 configured zero limit. `TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt`
 checks these existing restoration contracts.
+Legacy GitHub REST capacity attempts without durable wait metadata use that
+same source-lane restoration owner rather than the issue-failure demoter.
+Their existing pushed-product, unresolved-PR, and foreign-claim ownership
+checks remain authoritative. Durable capacity waits stay in their current lane.
+`TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibility`
+covers legacy Todo and Rework restoration, configured zero limits, pushed work,
+foreign claims, and durable wait preservation.
 
 Merged-completion ownership (#3529) resolves stale closed associations through
 existing native reference lookup and the existing merged-PR owner. Completion

@@ -959,7 +959,7 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 			TerminalState:      string(store.WorkAttemptTerminalAbandoned),
 			ErrorClass:         "service_restart",
 			CompletedAt:        timePointer(now.Add(-time.Minute)),
-			WorkerMetadataJSON: `{"work_product_pushed":true}`,
+			WorkerMetadataJSON: `{"dispatch_source_state":"Rework","work_product_pushed":true}`,
 		},
 		{
 			AttemptID:     1,
@@ -1245,11 +1245,27 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 	retryAt := resetAt.Add(backendCapacityResetJitter)
 	durableMetadata := `{"github_rest_wait":{"consumer":"shared_pool","credential_identity":"github-rest:worker","remaining":1009,"limit":5000,"reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + retryAt.Format(time.RFC3339) + `"}}`
 	tests := []struct {
-		name     string
-		metadata string
+		name         string
+		metadata     string
+		errorClass   string
+		foreignClaim bool
+		ownClaim     bool
+		unhydrated   bool
+		limit        *int
+		wantState    string
+		wantDemotion bool
 	}{
-		{name: "legacy metadata-less attempt"},
-		{name: "durable wait metadata", metadata: durableMetadata},
+		{name: "legacy metadata-less attempt", wantState: "Todo", wantDemotion: true},
+		{name: "legacy zero limit", limit: new(0), wantState: "Todo", wantDemotion: true},
+		{name: "legacy recorded Rework source", metadata: `{"dispatch_source_state":"Rework"}`, limit: new(0), wantState: "Rework", wantDemotion: true},
+		{name: "legacy pushed product", metadata: `{"dispatch_source_state":"Rework","work_product_pushed":true}`, limit: new(0), wantState: "In Progress"},
+		{name: "legacy foreign claim", foreignClaim: true, wantState: "In Progress"},
+		{name: "legacy unhydrated PR", unhydrated: true, wantState: "In Progress"},
+		{name: "service restart foreign claim", errorClass: "service_restart", foreignClaim: true, wantState: "In Progress"},
+		{name: "pre-turn foreign claim", errorClass: workAttemptErrorWorkspace, foreignClaim: true, wantState: "In Progress"},
+		{name: "service restart own claim", errorClass: "service_restart", ownClaim: true, wantState: "Todo", wantDemotion: true},
+		{name: "durable wait metadata", metadata: durableMetadata, wantState: "In Progress"},
+		{name: "durable wait zero limit", metadata: durableMetadata, limit: new(0), wantState: "In Progress"},
 	}
 
 	for _, tt := range tests {
@@ -1257,31 +1273,55 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 			t.Parallel()
 
 			issue := terminalRetryTestIssue(strings.ReplaceAll(tt.name, " ", "-"))
+			if tt.foreignClaim {
+				issue.Assignees = []string{"other-worker"}
+				issue.Fields["Lease"] = formatClaimTime(now.Add(-30 * time.Second))
+			}
+			if tt.ownClaim {
+				issue.Assignees = []string{"detent-worker"}
+				issue.Fields["Lease"] = formatClaimTime(now.Add(-30 * time.Second))
+			}
+			if tt.unhydrated {
+				issue.PullRequest = &connector.PullRequest{HydrationUnavailableReason: connector.PullRequestHydrationReasonRateLimited}
+			}
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			cfg := normalizeConfig(Config{
+				ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"},
+				Recovery: workflowconfig.Recovery{TerminalAttemptRetryLimit: tt.limit},
+				Claiming: ClaimingConfig{Enabled: tt.foreignClaim || tt.ownClaim, AssigneeLogin: "detent-worker", LeaseField: "Lease", LeaseTTL: time.Minute},
+			})
 			o := &Orchestrator{cfg: cfg, connector: tracker}
 			state := newState(cfg)
+			errorClass := tt.errorClass
+			if errorClass == "" {
+				errorClass = githubRESTCapacityError
+			}
 			state.WorkAttempts = []telemetry.WorkAttempt{{
 				AttemptID:          1,
 				IssueID:            issue.ID,
 				Identifier:         issue.Identifier,
 				Status:             string(store.WorkAttemptStatusTerminal),
 				TerminalState:      string(store.WorkAttemptTerminalCapacity),
-				ErrorClass:         githubRESTCapacityError,
+				ErrorClass:         errorClass,
 				CompletedAt:        timePointer(now.Add(-time.Minute)),
 				WorkerMetadataJSON: tt.metadata,
 			}}
 
 			transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{issue}, now)
 
-			if len(transitions) != 0 {
-				t.Fatalf("capacity interruption changed the issue lane: %#v", transitions)
+			if got := len(transitions) == 1; got != tt.wantDemotion {
+				t.Fatalf("demoted = %v, want %v: %#v", got, tt.wantDemotion, transitions)
 			}
-			if got := tracker.transitionStates(); len(got) != 0 {
+			if tt.wantDemotion && transitions[0].State != tt.wantState {
+				t.Fatalf("transition state = %q, want %q", transitions[0].State, tt.wantState)
+			}
+			if got := tracker.transitionStates(); tt.wantDemotion && !slices.Equal(got, []string{tt.wantState}) {
+				t.Fatalf("state transitions = %v, want [%s]", got, tt.wantState)
+			} else if !tt.wantDemotion && len(got) != 0 {
 				t.Fatalf("state transitions = %v, want none", got)
 			}
-			if len(state.Blocked) != 0 || tracker.issues[issue.ID].State != issue.State {
-				t.Fatalf("capacity interruption parked or moved issue: blocked=%+v state=%s", state.Blocked, tracker.issues[issue.ID].State)
+			if len(state.Blocked) != 0 || tracker.issues[issue.ID].State != tt.wantState {
+				t.Fatalf("capacity restoration entered issue failure park or wrong lane: blocked=%+v lane=%s", state.Blocked, tracker.issues[issue.ID].State)
 			}
 		})
 	}
