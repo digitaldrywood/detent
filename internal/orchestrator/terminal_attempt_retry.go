@@ -491,7 +491,11 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 		if !ok {
 			continue
 		}
-		if preTurnAttempt(attempt) || strings.TrimSpace(attempt.ErrorClass) == "service_restart" {
+		legacyRESTCapacity := strings.TrimSpace(attempt.ErrorClass) == githubRESTCapacityError && terminalAttemptRetryableFailure(attempt)
+		if preTurnAttempt(attempt) || strings.TrimSpace(attempt.ErrorClass) == "service_restart" || legacyRESTCapacity {
+			if terminalAttemptHasWorkProduct(issue, workAttemptHasPushedProduct(attempt)) || pullRequestHydrationBlocksProgress(issue.PullRequest) || o.terminalAttemptClaimBlocksDemotion(ctx, issue, now) {
+				continue
+			}
 			var metadata struct {
 				Source string `json:"dispatch_source_state"`
 			}

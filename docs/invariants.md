@@ -651,6 +651,13 @@ stays active. A recorded Rework source returns to Rework, legacy empty source
 returns to Todo, and neither path enters the issue failure limit, including a
 configured zero limit. `TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt`
 checks these existing restoration contracts.
+Legacy GitHub REST capacity attempts without durable wait metadata use that
+same source-lane restoration owner rather than the issue-failure demoter.
+Their existing pushed-product, unresolved-PR, and foreign-claim ownership
+checks remain authoritative. Durable capacity waits stay in their current lane.
+`TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibility`
+covers legacy Todo and Rework restoration, configured zero limits, pushed work,
+foreign claims, and durable wait preservation.
 
 Merged-completion ownership (#3529) resolves stale closed associations through
 existing native reference lookup and the existing merged-PR owner. Completion
