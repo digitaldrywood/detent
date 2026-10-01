@@ -1869,6 +1869,17 @@ merged path reuses that owner's existing reasons and ledger. No mechanism,
 reason, or lane writer is added. `TestRepositorySources` still rejects further
 edits until reviewed.
 
+The scheduled source-invariant repair (#3771) refreshes two reviewed digests.
+`applyOperatorMove` now returns an outcome for the existing dispatch refill path
+(#3736); its reason remains the operator-supplied reason or `operator_move`,
+written through the same lane ledger. `blockDeliverableRecoveryFailure` now
+receives the delivery error classified by its caller (#3763), consolidating
+whole-error ownership there instead of extracting a nested error again. Its
+reason still comes from `deliverableRecoveryParkReason`, using the existing
+delivery hold reasons and evidence. Neither change adds a mechanism, lane
+writer, or reason source. The source check continues to reject further edits
+until reviewed; the reason vocabulary and enforcement logic are unchanged.
+
 The scheduled coverage repair (#3545) refreshes the reviewed digest for
 `updateIssueStateByIDWithMetadataMode` after #3560 rewrote `!(A && B)` as
 `!A || !B`. The equivalent delivery-time condition preserves reason sources
