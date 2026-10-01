@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -277,6 +278,16 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestMu.Lock()
 				defer requestMu.Unlock()
+				if r.Method == http.MethodPost && r.URL.Path == "/" {
+					var request struct {
+						Query string `json:"query"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !strings.Contains(request.Query, "query DetentGitHubCandidateHydration(") {
+						t.Errorf("unexpected scheduler evidence query: %q, error %v", request.Query, err)
+					}
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				paths[r.URL.Path]++
 				w.Header().Set("Content-Type", "application/json")
 				if mode == "reserve" {
