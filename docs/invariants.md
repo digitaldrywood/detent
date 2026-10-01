@@ -572,6 +572,19 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+Cloud shared provider capacity aggregates reports only from runners with current,
+unrevoked authority, using the existing runner validity interval contract.
+Expired and revoked identities retain their historical reports but cannot clamp
+live concurrency or availability. Draining and offline runners with valid
+authority still contribute. Live, unexpired lease reservations remain counted
+once per lease and retain their pinned concurrency bounds until release or
+expiry, independently of reporting authority. Current same-account exhaustion,
+unknown availability, organization scope and account isolation remain
+conservative. `TestProviderPoolIsolation` covers these boundaries alongside the
+existing provider observation and concurrent-claim fixtures. This consolidates
+report authority under the existing runner owner (INV-3), without a cleanup,
+recovery path or new capacity mechanism; provider capacity remains instance-owned.
+
 SSH host loss uses the existing host-scoped instance-capacity retry without incrementing issue failure counts or draining healthy hosts. `TestSSHHostLossUsesInstanceRetry`, `TestSSHHostLossClearsResumeOnSpillover`, and `TestSSHLocalTargetIntegration` cover attribution and retry behavior (#3239).
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
@@ -849,6 +862,11 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Cloud provider report aggregation consolidates validity under the existing runner
+credential authority contract described in INV-2. Historical observations remain
+stored; the existing lease accounting owner retains live pinned reservations.
+No report cleanup, recovery loop, configuration or reason code is added.
 
 Workflow duration reports exclude `agent_activity` in their existing SQL owner
 before loading or converting the activity payloads that report aggregation does

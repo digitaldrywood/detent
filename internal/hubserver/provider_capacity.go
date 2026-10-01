@@ -86,16 +86,21 @@ func sharedProviderAccount(a, b providercapacity.Report) bool {
 
 func providerView(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, report providercapacity.Report, now time.Time) (providercapacity.View, error) {
 	view := providercapacity.View{Report: report, State: report.State(now), Reason: "Bounded concurrency available; quota is an observation, not transferable credit"}
-	rows, err := query.QueryContext(ctx, "SELECT provider_reports_json FROM runner_identities WHERE organization_id = ?", organization)
+	rows, err := query.QueryContext(ctx, `SELECT r.provider_reports_json, t.created_at, t.expires_at, t.revoked_at
+FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organization_id = ?`, organization)
 	if err != nil {
 		return view, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var raw string
+		var raw, created string
+		var expires, revoked sql.NullString
 		var reports []providercapacity.Report
-		if err := rows.Scan(&raw); err != nil {
+		if err := rows.Scan(&raw, &created, &expires, &revoked); err != nil {
 			return view, err
+		}
+		if revoked.Valid || !runnerTimeValid(now, created, expires.String) {
+			continue
 		}
 		if err := json.Unmarshal([]byte(raw), &reports); err != nil {
 			return view, err
