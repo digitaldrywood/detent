@@ -291,43 +291,93 @@ func TestAdmissionMalformedResultLifecycle(t *testing.T) {
 		OutputExcerpt:        `{"token":"<redacted>"}`,
 	}
 
+	db := backend.(*sqliteStore).db
+	read := func(errorFingerprint string) admissionmodel.MalformedResult {
+		t.Helper()
+		row := db.QueryRowContext(ctx, `
+SELECT project_id, issue_id, issue_identifier, issue_url, candidate_fingerprint,
+       prompt_fingerprint, proposal_fingerprint, error_fingerprint, error_class,
+       error_code, output_excerpt, attempt_count, status, first_seen_at, last_seen_at,
+       COALESCE(resolved_at, '')
+FROM backlog_admission_malformed_results
+WHERE project_id = ? AND proposal_fingerprint = ? AND error_fingerprint = ?`, record.ProjectID, record.ProposalFingerprint, errorFingerprint)
+		stored, err := scanAdmissionMalformedResult(row.Scan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stored
+	}
+	history := map[string]admissionmodel.MalformedResult{}
 	errorFingerprints := []string{
 		"error-fingerprint-1",
 		"error-fingerprint-2",
 		"error-fingerprint-3",
 		"error-fingerprint-4",
+		"error-fingerprint-1",
+		"error-fingerprint-2",
 	}
 	for attempt, errorFingerprint := range errorFingerprints {
 		record.ErrorFingerprint = errorFingerprint
 		record.OutputExcerpt = `{"variation":"` + errorFingerprint + `"}`
 		record.LastSeenAt = now.Add(time.Duration(attempt+1) * time.Minute)
-		stored, err := backend.RecordAdmissionMalformedResult(ctx, record, 4)
+		stored, err := backend.RecordAdmissionMalformedResult(ctx, record)
 		if err != nil {
 			t.Fatalf("RecordAdmissionMalformedResult() attempt %d error = %v", attempt+1, err)
 		}
-		wantStatus := admissionmodel.MalformedRetryable
-		if attempt == len(errorFingerprints)-1 {
-			wantStatus = admissionmodel.MalformedBlocked
+		firstSeenAt := record.LastSeenAt
+		if previous, found := history[errorFingerprint]; found {
+			firstSeenAt = previous.FirstSeenAt
 		}
-		if stored.AttemptCount != attempt+1 || stored.Status != wantStatus ||
-			stored.OutputExcerpt != record.OutputExcerpt {
+		if stored.AttemptCount != attempt+1 || stored.Status != admissionmodel.MalformedRetryable ||
+			stored.OutputExcerpt != record.OutputExcerpt || !stored.FirstSeenAt.Equal(firstSeenAt) ||
+			!stored.LastSeenAt.Equal(record.LastSeenAt) || !stored.ResolvedAt.IsZero() ||
+			stored.CandidateFingerprint != record.CandidateFingerprint || stored.PromptFingerprint != record.PromptFingerprint ||
+			stored.ProposalFingerprint != record.ProposalFingerprint || stored.ErrorFingerprint != errorFingerprint ||
+			stored.ErrorClass != record.ErrorClass || stored.ErrorCode != record.ErrorCode {
 			t.Fatalf("attempt %d stored = %#v", attempt+1, stored)
 		}
+		history[errorFingerprint] = stored
 	}
-
-	blocked, found, err := backend.BlockedAdmissionMalformedResult(ctx, "detent", record.ProposalFingerprint)
-	if err != nil || !found || blocked.AttemptCount != 4 || blocked.Status != admissionmodel.MalformedBlocked {
-		t.Fatalf("BlockedAdmissionMalformedResult() = %#v, %t, %v", blocked, found, err)
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM backlog_admission_malformed_results").Scan(&count); err != nil || count != len(history) {
+		t.Fatalf("deduplicated rows = %d, %v; want %d", count, err, len(history))
 	}
-	if err := backend.ResolveAdmissionMalformedResults(ctx, "detent", record.ProposalFingerprint, now.Add(5*time.Minute)); err != nil {
+	legacyFingerprint := "error-fingerprint-3"
+	if _, err := db.ExecContext(ctx, "UPDATE backlog_admission_malformed_results SET status = 'blocked' WHERE error_fingerprint = ?", legacyFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	legacy := history[legacyFingerprint]
+	legacy.Status = admissionmodel.MalformedBlocked
+	history[legacyFingerprint] = legacy
+	if got := read(legacyFingerprint); !reflect.DeepEqual(got, legacy) {
+		t.Fatalf("legacy blocked read = %#v, want %#v", got, legacy)
+	}
+	record.ErrorFingerprint = "error-fingerprint-4"
+	record.LastSeenAt = now.Add(7 * time.Minute)
+	stored, err := backend.RecordAdmissionMalformedResult(ctx, record)
+	if err != nil || stored.AttemptCount != 7 || stored.Status != admissionmodel.MalformedRetryable ||
+		!stored.FirstSeenAt.Equal(history[record.ErrorFingerprint].FirstSeenAt) || !stored.LastSeenAt.Equal(record.LastSeenAt) {
+		t.Fatalf("RecordAdmissionMalformedResult() with legacy history = %#v, %v", stored, err)
+	}
+	history[record.ErrorFingerprint] = stored
+	if got := read(legacyFingerprint); !reflect.DeepEqual(got, legacy) {
+		t.Fatalf("new observation rewrote legacy evidence: %#v", got)
+	}
+	resolvedAt := now.Add(8 * time.Minute)
+	if err := backend.ResolveAdmissionMalformedResults(ctx, "detent", record.ProposalFingerprint, resolvedAt); err != nil {
 		t.Fatalf("ResolveAdmissionMalformedResults() error = %v", err)
 	}
-	if blocked, found, err := backend.BlockedAdmissionMalformedResult(ctx, "detent", record.ProposalFingerprint); err != nil || found {
-		t.Fatalf("BlockedAdmissionMalformedResult() after resolve = %#v, %t, %v", blocked, found, err)
+	for fingerprint, previous := range history {
+		previous.Status = admissionmodel.MalformedResolved
+		previous.ResolvedAt = resolvedAt
+		if got := read(fingerprint); !reflect.DeepEqual(got, previous) {
+			t.Fatalf("resolved history = %#v, want %#v", got, previous)
+		}
 	}
-	record.LastSeenAt = now.Add(6 * time.Minute)
-	stored, err := backend.RecordAdmissionMalformedResult(ctx, record, 4)
-	if err != nil || stored.AttemptCount != 1 || stored.Status != admissionmodel.MalformedRetryable {
+	record.LastSeenAt = now.Add(9 * time.Minute)
+	stored, err = backend.RecordAdmissionMalformedResult(ctx, record)
+	if err != nil || stored.AttemptCount != 1 || stored.Status != admissionmodel.MalformedRetryable ||
+		!stored.FirstSeenAt.Equal(record.LastSeenAt) || !stored.LastSeenAt.Equal(record.LastSeenAt) || !stored.ResolvedAt.IsZero() {
 		t.Fatalf("RecordAdmissionMalformedResult() after resolve = %#v, %v", stored, err)
 	}
 }

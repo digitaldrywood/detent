@@ -158,7 +158,7 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 		"truncated=candidate_cap:8",
 		"issues=digitaldrywood/detent#1535",
 		"awaiting_decision=digitaldrywood/detent#1586(confidence=88%,age=2h0m0s,expires_in=166h0m0s)",
-		"blocked_malformed=digitaldrywood/detent#1600(class=schema,code=unknown_field,attempts=4,proposal_fingerprint=proposal-fingerprint,error_fingerprint=error-fingerprint,excerpt=\"{\\\"unexpected\\\":\\\"<redacted>\\\"}\")",
+		"historical blocked malformed output (no current admission veto)=digitaldrywood/detent#1600(class=schema,code=unknown_field,attempts=4,proposal_fingerprint=proposal-fingerprint,error_fingerprint=error-fingerprint,excerpt=\"{\\\"unexpected\\\":\\\"<redacted>\\\"}\")",
 		"origins=admission:1,routine:1,unknown:1",
 		"proposal_outcomes=accepted:1,expired:1",
 		"average_decision_seconds=accepted:60,expired:604800",
@@ -203,14 +203,15 @@ func TestDoctorAdmissionCadenceGuidance(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name               string
-		schedule           string
-		observed           int
-		withEligible       int
-		sourceCandidates   int
-		eligibleCandidates int
-		wantStatus         doctorStatus
-		wantText           string
+		name                string
+		schedule            string
+		observed            int
+		withEligible        int
+		sourceCandidates    int
+		eligibleCandidates  int
+		wantStatus          doctorStatus
+		wantText            string
+		historicalMalformed bool
 	}{
 		{
 			name:               "responsive cadence with candidates",
@@ -244,6 +245,17 @@ func TestDoctorAdmissionCadenceGuidance(t *testing.T) {
 			wantStatus:         doctorWarn,
 			wantText:           "candidates are accumulating between runs",
 		},
+		{
+			name:                "legacy blocked observations are historical",
+			schedule:            "*/15 * * * *",
+			observed:            4,
+			withEligible:        2,
+			sourceCandidates:    7,
+			eligibleCandidates:  5,
+			historicalMalformed: true,
+			wantStatus:          doctorOK,
+			wantText:            "historical blocked malformed output (no current admission veto)",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -262,6 +274,9 @@ func TestDoctorAdmissionCadenceGuidance(t *testing.T) {
 				AdmissionSessions:     3,
 				AverageSessionSeconds: 24,
 				AverageSessionTokens:  36000,
+			}
+			if tt.historicalMalformed {
+				diagnostic.MalformedBlocked = []doctorAdmissionMalformed{{Identifier: "DD-1", AttemptCount: 4}}
 			}
 			check := doctorAdmissionCheck("admission", diagnostic, "")
 			if check.Status != tt.wantStatus {

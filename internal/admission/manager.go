@@ -60,7 +60,6 @@ const (
 	maxRationaleSize                       = 16 * 1024
 	maxEffortRationaleSize                 = 2 * 1024
 	maxReceiptCriteria                     = 32
-	malformedAdmissionAttemptLimit         = 4
 	malformedAdmissionExcerptSize          = 512
 	admissionCandidateFingerprintVersion   = "admission-candidate-v1"
 	admissionPromptFingerprintVersion      = "admission-prompt-v2"
@@ -96,8 +95,7 @@ type Store interface {
 	RecordAdmissionRun(context.Context, admissionmodel.RunRecord) error
 	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
 	AdmissionCandidateHistory(context.Context, string) (map[string]admissionmodel.IssueRecord, error)
-	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult, int) (admissionmodel.MalformedResult, error)
-	BlockedAdmissionMalformedResult(context.Context, string, string) (admissionmodel.MalformedResult, bool, error)
+	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult) (admissionmodel.MalformedResult, error)
 	ResolveAdmissionMalformedResults(context.Context, string, string, time.Time) error
 }
 
@@ -480,7 +478,6 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		commentsRemaining,
 		startedAt,
 		settings.Config.MaxCandidatesPerRun,
-		&result,
 	)
 	if err != nil {
 		return result, err
@@ -564,7 +561,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 				return result, err
 			}
 			result.Malformed = append(result.Malformed, evidence)
-			result.Skipped[malformedSkipReason(evidence.Status)]++
+			result.Skipped["malformed_output_retryable"]++
 			continue
 		}
 		fingerprints := admissionEvaluationFingerprints(settings, candidate)
@@ -681,7 +678,7 @@ func (m *Manager) recordMalformedResult(
 		OutputExcerpt:        redactAdmissionOutput(failure.output),
 		LastSeenAt:           at,
 	}
-	stored, err := m.store.RecordAdmissionMalformedResult(ctx, record, malformedAdmissionAttemptLimit)
+	stored, err := m.store.RecordAdmissionMalformedResult(ctx, record)
 	if err != nil {
 		return admissionmodel.MalformedEvidence{}, err
 	}
@@ -703,13 +700,6 @@ func malformedEvidence(record admissionmodel.MalformedResult) admissionmodel.Mal
 		AttemptCount:         record.AttemptCount,
 		Status:               record.Status,
 	}
-}
-
-func malformedSkipReason(status admissionmodel.MalformedStatus) string {
-	if status == admissionmodel.MalformedBlocked {
-		return "malformed_output_blocked"
-	}
-	return "malformed_output_retryable"
 }
 
 func candidateReadLimit(maxCandidates int) int {
@@ -1110,7 +1100,6 @@ func (m *Manager) unproposedCandidates(
 	commentsRemaining int,
 	at time.Time,
 	candidateLimit int,
-	result *Result,
 ) ([]connector.Issue, int, int, error) {
 	if settings.dependencies == nil {
 		settings.dependencies = make(map[string]*runner.AdmissionDependencies)
@@ -1141,22 +1130,6 @@ func (m *Manager) unproposedCandidates(
 			}
 		}
 		if suppress {
-			continue
-		}
-		fingerprints := admissionEvaluationFingerprints(settings, candidate)
-		malformed, blocked, err := m.store.BlockedAdmissionMalformedResult(
-			ctx,
-			settings.ProjectID,
-			fingerprints.proposal,
-		)
-		if err != nil {
-			return nil, commentsRemaining, truncated, err
-		}
-		if blocked {
-			skipped["malformed_output_blocked"]++
-			if result != nil {
-				result.Malformed = append(result.Malformed, malformedEvidence(malformed))
-			}
 			continue
 		}
 		decline, found, err := m.store.AdmissionDecline(ctx, settings.ProjectID, candidate.ID, issueFingerprint(candidate))
