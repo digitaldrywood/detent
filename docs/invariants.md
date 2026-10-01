@@ -2568,7 +2568,10 @@ Rework candidates reuse the merge worker's current-head CI status and pending-ch
 view before acquiring capacity (#2639, operator-approved). Queued or running CI
 returns the existing `current_head_ci_wait` decision; the lane and retry attempt
 remain unchanged, with no new timer or reservation. Terminal CI or no PR retains
-normal eligibility. `TestReworkCurrentHeadCIDispatch` covers fresh and retry
+normal eligibility. Closed or merged PRs do not retain this CI wait; their
+historical pending statuses leave replacement work or merged reconciliation to
+the existing owner. Unknown PR state remains conservative, and open pending
+checks retain the wait. `TestReworkCurrentHeadCIDispatch` covers fresh and retry
 candidates, immediate dispatch of the next eligible candidate, and release after
 terminal CI. `TestReworkCurrentHeadCIConfiguredLane` preserves configured lane
 selection. This consolidates CI classification with the merge worker (INV-3).
