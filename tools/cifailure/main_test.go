@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,10 +91,13 @@ func (f *fakeGH) command(_ context.Context, input string, args ...string) ([]byt
 		}
 		return []byte(out.String()), nil
 	}
-	if len(args) == 2 && strings.HasSuffix(args[1], "/logs") {
+	if len(args) >= 2 && args[0] == "api" && strings.HasSuffix(args[len(args)-1], "/logs") {
 		var id int64
-		if _, err := fmt.Sscanf(args[1], "repos/digitaldrywood/detent/actions/jobs/%d/logs", &id); err != nil {
+		if _, err := fmt.Sscanf(args[len(args)-1], "repos/digitaldrywood/detent/actions/jobs/%d/logs", &id); err != nil {
 			return nil, err
+		}
+		if strings.Contains(f.logs[id], "\x1b") && !slices.Contains(args, "--allow-escape-sequences") {
+			return nil, errors.New("the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway")
 		}
 		return []byte(f.logs[id]), f.logErr
 	}
@@ -153,6 +157,7 @@ func TestReport(t *testing.T) {
 		wantComments int
 	}{
 		{"coverage and race consolidate", map[int64]string{1: fixture(t, "coverage"), 2: fixture(t, "race")}, false, nil, 1, 3},
+		{"ANSI coverage and race consolidate", map[int64]string{1: "\x1b[31m" + fixture(t, "coverage") + "\x1b[0m", 2: "\x1b[31m" + fixture(t, "race") + "\x1b[0m"}, false, nil, 1, 3},
 		{"repository-wide existing machine problem", map[int64]string{1: fixture(t, "coverage"), 2: fixture(t, "race")}, true, nil, 0, 4},
 		{"distinct tests stay separate", map[int64]string{1: "--- FAIL: TestOne (0s)\n--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s", 2: "--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s"}, false, nil, 2, 4},
 		{"distinct tools consolidate across jobs", map[int64]string{1: "internal/one.go:12:3: first diagnostic\ninternal/two.go:20:7: second diagnostic", 2: "internal/one.go:12:3: first diagnostic"}, false, nil, 2, 4},
@@ -216,8 +221,10 @@ func TestReport(t *testing.T) {
 				if !strings.Contains(all, "race-job") || !strings.Contains(all, "coverage-job") {
 					t.Fatal("affected job evidence was lost")
 				}
-				if tt.name == "coverage and race consolidate" && strings.Count(all, "skip_reason=already_running") != 4 {
-					t.Fatal("test diagnostics were lost from an occurrence")
+				if strings.HasSuffix(tt.name, "coverage and race consolidate") {
+					if strings.Count(all, "skip_reason=already_running") != 4 || strings.Contains(all, "Job logs could not be read") {
+						t.Fatal("test diagnostics were lost from an occurrence")
+					}
 				}
 			}
 		})
