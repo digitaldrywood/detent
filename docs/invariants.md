@@ -2238,6 +2238,17 @@ cohort and eligibility owner, without a previous-snapshot membership bound.
 `TestHubRefillRetainsNewClaims` and
 `TestEventAndTickDispatchEligibilityParity` cover these boundaries (#3219).
 
+Successful owned operator lane writes into configured active lanes (#3732),
+including native Backlog admission, trigger that existing refill once alongside
+its Running-shrink trigger. The transition comes from the current issue state
+already obtained before the strict write, carried privately to the actor;
+request FromState and public Blocked-cleanup results retain their semantics.
+Failed writes, no-op transitions, removals, inactive destinations and foreign
+tracker writes do not trigger admission refill. Fresh candidates still pass
+ordinary dispatch policy, capacity, draining and quiescence checks.
+`TestRunDispatchesOperatorMovedIssue` covers admission before an hour-long poll
+and the refusal controls without adding a timer, reader or dispatch owner.
+
 Native issue archive (#3267) preserves workflow state and all issue, comment,
 attempt, change, version, and audit records. Archive refuses live ownership
 using the existing lease lifecycle (expired or released attempts are interrupted), and archived issues are
