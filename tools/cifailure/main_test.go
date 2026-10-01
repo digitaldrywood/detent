@@ -162,6 +162,7 @@ func TestReport(t *testing.T) {
 		wantComments int
 	}{
 		{"coverage and race consolidate", map[int64]string{1: fixture(t, "coverage"), 2: fixture(t, "race")}, false, nil, 1, 3},
+		{"ANSI coverage and race consolidate", map[int64]string{1: "\x1b[31m" + fixture(t, "coverage") + "\x1b[0m", 2: "\x1b[31m" + fixture(t, "race") + "\x1b[0m"}, false, nil, 1, 3},
 		{"repository-wide existing machine problem", map[int64]string{1: fixture(t, "coverage"), 2: fixture(t, "race")}, true, nil, 0, 4},
 		{"distinct tests stay separate", map[int64]string{1: "--- FAIL: TestOne (0s)\n--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s", 2: "--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s"}, false, nil, 2, 4},
 		{"distinct tools consolidate across jobs", map[int64]string{1: "internal/one.go:12:3: first diagnostic\ninternal/two.go:20:7: second diagnostic", 2: "internal/one.go:12:3: first diagnostic"}, false, nil, 2, 4},
@@ -231,8 +232,10 @@ func TestReport(t *testing.T) {
 				if !strings.Contains(all, "race-job") || !strings.Contains(all, "coverage-job") {
 					t.Fatal("affected job evidence was lost")
 				}
-				if tt.name == "coverage and race consolidate" && strings.Count(all, "skip_reason=already_running") != 4 {
-					t.Fatal("test diagnostics were lost from an occurrence")
+				if strings.HasSuffix(tt.name, "coverage and race consolidate") {
+					if strings.Count(all, "skip_reason=already_running") != 4 || strings.Contains(all, "Job logs could not be read") {
+						t.Fatal("test diagnostics were lost from an occurrence")
+					}
 				}
 				if tt.name == "colored logs retain test identity" {
 					origin, _ := issueorigin.Parse(gh.created[0].Body)
