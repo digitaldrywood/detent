@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -271,14 +272,33 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 	for _, mode := range []string{"id-only", "inline", "fresh", "missing", "failure", "partial failure", "independent failure", "independent forbidden", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			paths := map[string]int{}
+			graphQLRequests := 0
 			var requestMu sync.Mutex
 			independentFailure := mode == "independent failure" || mode == "independent forbidden"
 			closed := independentFailure
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestMu.Lock()
 				defer requestMu.Unlock()
-				paths[r.URL.Path]++
 				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
+					var request struct {
+						Query string
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Error(err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					if !strings.HasPrefix(request.Query, "query DetentGitHubCandidateHydration(") || !strings.Contains(request.Query, "blockedBy(") {
+						t.Errorf("unexpected authority query %s", request.Query)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					graphQLRequests++
+					fmt.Fprint(w, `{"errors":[{"message":"Field 'blockedBy' doesn't exist on type 'Issue'"}]}`)
+					return
+				}
+				paths[r.URL.Path]++
 				if mode == "reserve" {
 					w.Header().Set("X-RateLimit-Limit", "5000")
 					w.Header().Set("X-RateLimit-Remaining", "1")
@@ -332,7 +352,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			if mode == "budget" {
 				cap = 2
 			}
-			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL, APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
+			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL + "/graphql", APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -356,8 +376,8 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						t.Fatalf("ID-only phase authority changed: %+v", evidence)
 					}
 				}
-				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 {
-					t.Fatalf("inline authority read remote: %v %v", tracker.fetchIdentifiers, paths)
+				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 || graphQLRequests != 0 {
+					t.Fatalf("inline authority read remote: %v %v, GraphQL requests %d", tracker.fetchIdentifiers, paths, graphQLRequests)
 				}
 				return
 			}
@@ -398,6 +418,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			}
 			requestMu.Lock()
 			requests := maps.Clone(paths)
+			graphqlCount := graphQLRequests
 			requestMu.Unlock()
 			want := []string{"owner/repo#1", "owner/repo#2", "owner/other#1"}
 			if len(tracker.fetchIdentifiers) == 0 || fmt.Sprint(tracker.fetchIdentifiers[0]) != fmt.Sprint(want) {
@@ -408,6 +429,9 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				t.Fatalf("resolver calls = %v, requests = %v; failed cohort=%t", tracker.fetchIdentifiers, requests, failedCohort)
 			}
 			if mode == "fresh" {
+				if graphqlCount != 3 {
+					t.Fatalf("GraphQL requests = %d, want 3 scheduler hydration fallbacks", graphqlCount)
+				}
 				if len(requests) != 8 {
 					t.Fatalf("requests = %v, want 3 issues + 3 dependencies + 2 repository lists", requests)
 				}
@@ -458,9 +482,12 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 					if total != cap {
 						t.Fatalf("request cap changed: %v", requests)
 					}
+					if graphqlCount != 1 {
+						t.Fatalf("GraphQL requests = %d, want 1 scheduler hydration fallback", graphqlCount)
+					}
 				}
-				if mode == "cancelled" && len(requests) != 0 {
-					t.Fatalf("cancelled phase read remote: %v", requests)
+				if mode == "cancelled" && (len(requests) != 0 || graphqlCount != 0) {
+					t.Fatalf("cancelled phase read remote: %v, GraphQL requests %d", requests, graphqlCount)
 				}
 			}
 		})
