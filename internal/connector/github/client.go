@@ -181,7 +181,8 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	queryType = graphQLQueryType(queryType, query)
 	lookup := graphQLLookup(query)
 	trackerRead := graphQLTrackerRead(queryType, query)
-	token, err := c.tokenSource.Token(ctx)
+	attribution := c.restScope(ctx).Attribution("graphql", fixedGraphQLTimingPurpose(queryType))
+	token, err := c.resolveRequestToken(ctx, attribution)
 	if err != nil {
 		return fmt.Errorf("resolve github token: %w", err)
 	}
@@ -224,7 +225,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		"live_connections", c.LiveConnections(),
 	)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err, finishHTTP := timedHTTPAttempt(attribution, c.httpClient, req, false, true)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, ctxErr)
@@ -232,7 +233,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
-		if err := drainAndClose(resp.Body); err != nil {
+		if err := finishHTTP.Close(); err != nil {
 			c.logger.DebugContext(ctx, "github graphql response body drain failed", "operation", operation, "error", err)
 		}
 	}()
@@ -246,6 +247,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	)
 
 	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
 		return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
@@ -323,7 +325,8 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	if maxBytes <= 0 {
 		return "", false, 0, errors.New("maximum response bytes must be positive")
 	}
-	token, err := c.tokenSource.Token(ctx)
+	attribution := c.restScope(ctx).Attribution(restEndpointFamily(http.MethodGet, path), "")
+	token, err := c.resolveRequestToken(ctx, attribution)
 	if err != nil {
 		return "", false, 0, fmt.Errorf("resolve github token: %w", err)
 	}
@@ -357,8 +360,7 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	family := restEndpointFamily(http.MethodGet, path)
 	trackerRead := restTrackerRead(http.MethodGet, family)
 	c.logRESTRequest(ctx, "github rest text request", http.MethodGet, path, family, false)
-	resp, err := c.httpClient.Do(req)
-	c.recordRESTScopeOutcome(ctx, http.MethodGet, path, resp, err)
+	resp, err, finishHTTP := timedHTTPAttempt(attribution, c.httpClient, req, true, false)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), ctxErr)
@@ -366,13 +368,14 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
+		if err := finishHTTP.Close(); err != nil {
 			c.logger.DebugContext(ctx, "github rest text response body close failed", "path", path, "endpoint_family", family, "error", err)
 		}
 	}()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
 	if err != nil {
+		finishHTTP.BodyConsumed(err)
 		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
 	connector.ReportProgress(ctx)
@@ -380,6 +383,7 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, http.MethodGet, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
 	c.logRESTResponse(ctx, "github rest text response", http.MethodGet, path, family, resp.StatusCode)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		finishHTTP.BodyConsumed(nil)
 		responseErr := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		c.logRESTStatusError(ctx, http.MethodGet, path, family, resp.StatusCode, responseErr)
 		if c.refreshAfterAuthFailure(ctx, responseErr, allowTokenRefresh) {
@@ -392,10 +396,12 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	if truncated && countSize {
 		rest, err := io.Copy(io.Discard, resp.Body)
 		if err != nil {
+			finishHTTP.BodyConsumed(err)
 			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: count response: %w", ErrTransient, err))
 		}
 		size += int(rest)
 	}
+	finishHTTP.BodyConsumed(nil)
 	if truncated {
 		raw = raw[:maxBytes]
 	}
@@ -407,7 +413,8 @@ func (c *Client) restProbe(ctx context.Context, method string, path string, body
 }
 
 func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, path string, body any, allowTokenRefresh bool) (restProbeResult, error) {
-	token, err := c.tokenSource.Token(ctx)
+	attribution := c.restScope(ctx).Attribution(restEndpointFamily(method, path), "")
+	token, err := c.resolveRequestToken(ctx, attribution)
 	if err != nil {
 		return restProbeResult{}, fmt.Errorf("resolve github token: %w", err)
 	}
@@ -446,8 +453,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	family := restEndpointFamily(method, path)
 	trackerRead := restTrackerRead(method, family)
 	c.logRESTRequest(ctx, "github rest probe request", method, path, family, body != nil)
-	resp, err := c.httpClient.Do(req)
-	c.recordRESTScopeOutcome(ctx, method, path, resp, err)
+	resp, err, finishHTTP := timedHTTPAttempt(attribution, c.httpClient, req, true, true)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
@@ -455,12 +461,13 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 		return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
-		if err := drainAndClose(resp.Body); err != nil {
+		if err := finishHTTP.Close(); err != nil {
 			c.logger.DebugContext(ctx, "github rest probe response body drain failed", "method", method, "path", path, "endpoint_family", family, "error", err)
 		}
 	}()
 
 	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
 		return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
@@ -490,7 +497,8 @@ func (c *Client) rest(ctx context.Context, method string, path string, body any,
 }
 
 func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path string, body any, out any, allowTokenRefresh bool) (http.Header, error) {
-	token, err := c.tokenSource.Token(ctx)
+	attribution := c.restScope(ctx).Attribution(restEndpointFamily(method, path), "")
+	token, err := c.resolveRequestToken(ctx, attribution)
 	if err != nil {
 		return nil, fmt.Errorf("resolve github token: %w", err)
 	}
@@ -555,8 +563,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	family := restEndpointFamily(method, path)
 	trackerRead := restTrackerRead(method, family)
 	c.logRESTRequest(ctx, "github rest request", method, path, family, body != nil)
-	resp, err := c.httpClient.Do(req)
-	c.recordRESTScopeOutcome(ctx, method, path, resp, err)
+	resp, err, finishHTTP := timedHTTPAttempt(attribution, c.httpClient, req, true, true)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
@@ -564,13 +571,14 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
-		if err := drainAndClose(resp.Body); err != nil {
+		if err := finishHTTP.Close(); err != nil {
 			c.logger.DebugContext(ctx, "github rest response body drain failed", "method", method, "path", path, "endpoint_family", family, "error", err)
 		}
 	}()
 
 	c.logRESTResponse(ctx, "github rest response", method, path, family, resp.StatusCode)
 	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
 		return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
@@ -632,10 +640,6 @@ func (c *Client) restScope(ctx context.Context) *connector.RESTScope {
 		return scope
 	}
 	return c.unscopedRESTScope
-}
-
-func (c *Client) recordRESTScopeOutcome(ctx context.Context, method, path string, response *http.Response, requestErr error) {
-	c.restScope(ctx).Record(restEndpointFamily(method, path), classifyRESTScopeOutcome(response, requestErr))
 }
 
 func classifyRESTScopeOutcome(response *http.Response, requestErr error) string {

@@ -839,6 +839,38 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+GitHub usage timing (#3767) extends the existing `RESTScope` owner, mutex,
+fixed stage/step/family/outcome aggregation and single aggregate log event.
+GraphQL timing adds only allowlisted existing query purposes, with unknown
+purposes grouped as `graphql`; no URL, query, variable, body, header, credential,
+or per-request row is retained. REST request/deferred/refused counts and GraphQL
+quota query/cost accounting keep their meanings. HTTP attempts are measured
+independently of quota points, including transport, body and close failures;
+refusal before `Do` produces no HTTP observation. Attribution is captured at
+request entry, before token resolution, and survives later scope stage changes.
+Counts and timing aggregates drain together under the existing owner, including
+timing-only outside-refresh cohorts. Completed observations carry attempt count,
+timed count, elapsed sum and maximum in nanoseconds; absent observations remain
+unknown and do not establish complete coverage of uninstrumented work.
+
+`http_transport` measures `Do` through response-body consumption plus the existing
+deferred drain/close duration, excluding intervening decoding and auth-retry work.
+It includes any connection-pool wait, DNS/TLS and server time inside `Do`, without
+separately measuring those components or claiming pure network time.
+`token_resolution_inclusive` measures the existing request-entry `Token` call,
+including locking, fallback and nested installation-token HTTP. Cached token
+retrieval is timed as token resolution and creates no HTTP attempt. Concurrent
+HTTP sums can exceed stage wall elapsed, and token elapsed can contain HTTP
+elapsed. These overlapping/inclusive sums are work measurements, never wall,
+critical-path, busy-wall, savings, percentage attribution, or values to add as
+disjoint time. Existing refresh timing remains the wall owner; actor queue,
+local and uninstrumented work remain unknown without subtraction. No profiler,
+queue owner, timer, recovery mechanism, storage table or configuration is added.
+Existing scope, request/error/auth, quota, conditional, privacy, installation-token
+and pooled-client fixtures cover attribution, overlap, coverage and no extra calls.
+See [GitHub usage timing and privacy](diagnosis.md#github-usage-timing-and-privacy)
+for coverage and the integration/release owner's pending runtime acceptance.
+
 Permission completion consolidation (#3758) removes the competing global
 final-message permission invocation. Only the existing native completion owner
 reuses the final-outcome handler for native final-only human attention, including

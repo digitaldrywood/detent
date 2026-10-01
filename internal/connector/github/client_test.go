@@ -65,18 +65,23 @@ func TestClientGraphQLSendsBearerRequest(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
 	var got struct {
 		Viewer struct {
 			Login string `json:"login"`
 		} `json:"viewer"`
 	}
-	err = client.GraphQL(context.Background(), "query Viewer($id: ID!) { viewer { login } }", map[string]any{"id": "PVT_1"}, &got)
+	err = client.GraphQL(ctx, "query Viewer($id: ID!) { viewer { login } }", map[string]any{"id": "PVT_1"}, &got)
 	if err != nil {
 		t.Fatalf("GraphQL() error = %v", err)
 	}
 	if got.Viewer.Login != "octocat" {
 		t.Fatalf("viewer.login = %q, want octocat", got.Viewer.Login)
 	}
+
+	assertScopeTiming(t, scope, "http_transport", "graphql", "200", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "graphql", "200", 1)
 
 	payload := <-requests
 	if payload["query"] == "" {
@@ -699,6 +704,14 @@ func TestClientReportsResponseProgress(t *testing.T) {
 				return err
 			},
 		},
+		{name: "REST text", run: func(ctx context.Context, client *Client) error {
+			_, _, err := client.RESTText(ctx, "/user", "text/plain", 1)
+			return err
+		}},
+		{name: "REST text size", run: func(ctx context.Context, client *Client) error {
+			_, _, _, err := client.RESTTextWithSize(ctx, "/user", "text/plain", 1)
+			return err
+		}},
 	}
 
 	for _, tt := range tests {
@@ -725,7 +738,8 @@ func TestClientReportsResponseProgress(t *testing.T) {
 			}
 
 			calls := 0
-			ctx := connector.WithProgressReporter(context.Background(), func() {
+			scope := &connector.RESTScope{Name: "refresh"}
+			ctx := connector.WithProgressReporter(connector.WithRESTScope(t.Context(), scope), func() {
 				calls++
 			})
 			if err := tt.run(ctx, client); err != nil {
@@ -734,6 +748,12 @@ func TestClientReportsResponseProgress(t *testing.T) {
 			if calls != 1 {
 				t.Fatalf("progress reports = %d, want 1", calls)
 			}
+			family := restEndpointFamily(http.MethodGet, "/user")
+			if tt.name == "GraphQL" {
+				family = "graphql"
+			}
+			assertScopeTiming(t, scope, "http_transport", family, "200", 1)
+			assertScopeTiming(t, scope, "token_resolution_inclusive", family, "200", 1)
 		})
 	}
 }
@@ -824,7 +844,16 @@ func TestClientGraphQLClassifiesFailures(t *testing.T) {
 				t.Fatalf("NewClient() error = %v", err)
 			}
 
-			err = client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil)
+			scope := &connector.RESTScope{Name: "refresh"}
+			err = client.GraphQL(connector.WithRESTScope(t.Context(), scope), "query { viewer { login } }", nil, nil)
+			httpOutcome := classifyRESTScopeOutcome(&http.Response{StatusCode: tt.statusCode, Header: http.Header{}}, nil)
+			if tt.want == ErrRateLimited && tt.statusCode != http.StatusOK {
+				httpOutcome = "429"
+			}
+			assertScopeTiming(t, scope, "http_transport", "graphql", httpOutcome, 1)
+			if len(scope.Counts()) != 0 {
+				t.Fatalf("GraphQL affected REST count: %#v", scope.Counts())
+			}
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("GraphQL() error = %v, want %v", err, tt.want)
 			}
@@ -883,17 +912,26 @@ func TestClientGraphQLRefreshesTokenAfterAuthFailure(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
 	var got struct {
 		Viewer struct {
 			Login string `json:"login"`
 		} `json:"viewer"`
 	}
-	if err := client.GraphQL(context.Background(), "query { viewer { login } }", nil, &got); err != nil {
+	if err := client.GraphQL(ctx, "query { viewer { login } }", nil, &got); err != nil {
 		t.Fatalf("GraphQL() error = %v", err)
 	}
 	if got.Viewer.Login != "octocat" {
 		t.Fatalf("Viewer.Login = %q, want octocat", got.Viewer.Login)
 	}
+	assertScopeTiming(t, scope, "http_transport", "graphql", "error", 1)
+	assertScopeTiming(t, scope, "http_transport", "graphql", "200", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "graphql", "200", 2)
+	if len(scope.Counts()) != 0 {
+		t.Fatalf("retry REST counts = %#v", scope.Counts())
+	}
+
 	if source.refreshes.Load() != 1 {
 		t.Fatalf("RefreshToken() calls = %d, want 1", source.refreshes.Load())
 	}
@@ -946,15 +984,24 @@ func TestClientRESTRefreshesTokenAfterAuthFailure(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
 	var got struct {
 		OK bool `json:"ok"`
 	}
-	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, &got); err != nil {
+	if err := client.REST(ctx, http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, &got); err != nil {
 		t.Fatalf("REST() error = %v", err)
 	}
 	if !got.OK {
 		t.Fatal("REST() response OK = false, want true")
 	}
+	assertScopeTiming(t, scope, "http_transport", "repository issues", "error", 1)
+	assertScopeTiming(t, scope, "http_transport", "repository issues", "200", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "repository issues", "200", 2)
+	if len(scope.Counts()) != 2 {
+		t.Fatalf("retry REST counts = %#v", scope.Counts())
+	}
+
 	if source.refreshes.Load() != 1 {
 		t.Fatalf("RefreshToken() calls = %d, want 1", source.refreshes.Load())
 	}
@@ -1672,15 +1719,24 @@ func TestClientRESTStopsEndpointFamilyFanoutBelowReserve(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/statuses", nil, nil); err != nil {
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
+	if err := client.REST(ctx, http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/statuses", nil, nil); err != nil {
 		t.Fatalf("REST() first commit statuses error = %v", err)
 	}
-	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/def/statuses", nil, nil)
+	err = client.REST(ctx, http.MethodGet, "/repos/digitaldrywood/detent/commits/def/statuses", nil, nil)
 	if !errors.Is(err, ErrRESTBudgetReserved) {
 		t.Fatalf("REST() reserve fanout error = %v, want ErrRESTBudgetReserved", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("REST calls = %d, want reserve to stop second request", calls.Load())
+	}
+
+	assertScopeTiming(t, scope, "http_transport", "commit statuses", "200", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "commit statuses", "200", 2)
+	counts := scope.Counts()
+	if len(counts) != 2 || counts[1].Outcome != "reserve-refused" || counts[1].Count != 1 {
+		t.Fatalf("reserve outcomes changed: %#v", counts)
 	}
 
 	usage := client.FlushRESTRateLimitUsage()
@@ -2422,14 +2478,33 @@ func TestClientGraphQLAggregatesRateLimitCostsByQueryType(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	if err := client.GraphQLWithType(context.Background(), "candidate_issues", "query { rateLimit { cost } }", nil, nil); err != nil {
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
+	if err := client.GraphQLWithType(ctx, "candidate_issues", "query { rateLimit { cost } }", nil, nil); err != nil {
 		t.Fatalf("first GraphQLWithType() error = %v", err)
 	}
-	if err := client.GraphQLWithType(context.Background(), "candidate_issues", "query { rateLimit { cost } }", nil, nil); err != nil {
+	if err := client.GraphQLWithType(ctx, "candidate_issues", "query { rateLimit { cost } }", nil, nil); err != nil {
 		t.Fatalf("second GraphQLWithType() error = %v", err)
 	}
-	if err := client.GraphQLWithType(context.Background(), "running_states", "query { rateLimit { cost } }", nil, nil); err != nil {
+	if err := client.GraphQLWithType(ctx, "running_states", "query { rateLimit { cost } }", nil, nil); err != nil {
 		t.Fatalf("third GraphQLWithType() error = %v", err)
+	}
+
+	if len(scope.Counts()) != 0 {
+		t.Fatalf("GraphQL counted as REST: %#v", scope.Counts())
+	}
+	timings := scope.Timings()
+	if len(timings) != 4 {
+		t.Fatalf("purpose coverage: %#v", timings)
+	}
+	for _, item := range timings {
+		want := int64(1)
+		if item.QueryPurpose == graphQLQueryCandidateIssues {
+			want = 2
+		}
+		if item.AttemptCount != want || item.TimedCount != want {
+			t.Fatalf("timing count: %#v", item)
+		}
 	}
 
 	usage := client.FlushGraphQLRateLimitUsage()

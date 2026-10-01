@@ -83,14 +83,25 @@ func TestInstallationTokenSourceMintsAndCachesToken(t *testing.T) {
 
 	scope := &connector.RESTScope{Name: "refresh"}
 	ctx := connector.WithRESTScope(context.Background(), scope)
+	client := &Client{tokenSource: source}
+	attribution := scope.Attribution("graphql", graphQLQueryAuthenticate)
 	for range 2 {
-		token, err := source.Token(ctx)
+		token, err := client.resolveRequestToken(ctx, attribution)
 		if err != nil {
 			t.Fatalf("Token() error = %v", err)
 		}
 		if token != "installation-token" {
 			t.Fatalf("Token() = %q, want installation-token", token)
 		}
+	}
+
+	installTiming := assertScopeTiming(t, scope, "http_transport", "app installation tokens", "200", 1)
+	tokenTiming := assertScopeTiming(t, scope, "token_resolution_inclusive", "graphql", "200", 2)
+	if tokenTiming.ElapsedSumNS < installTiming.ElapsedSumNS {
+		t.Fatalf("token timing excludes nested installation HTTP: token=%#v installation=%#v", tokenTiming, installTiming)
+	}
+	if len(scope.Timings()) != 2 {
+		t.Fatalf("cached token manufactured HTTP: %#v", scope.Timings())
 	}
 
 	if got := atomic.LoadInt64(&requests); got != 1 {
