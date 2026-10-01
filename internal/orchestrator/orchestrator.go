@@ -920,10 +920,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			o.startDrain(&state, request.at)
+			o.publishState(&state)
 			request.reply <- struct{}{}
+			continue
 		case request := <-o.forceRequests:
 			state.syncWorkerProgress()
-			request.reply <- o.forceQuit(request.ctx, &state, request.at)
+			err := o.forceQuit(request.ctx, &state, request.at)
+			o.publishState(&state)
+			request.reply <- err
+			continue
 		case request := <-o.recoveryRequests:
 			state.syncWorkerProgress()
 			before := len(state.Running)

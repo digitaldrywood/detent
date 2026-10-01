@@ -941,8 +941,11 @@ independent, with live runtime ownership, persisted worker heartbeat and validat
 progress observable outside the fence. Full publication stores runtime ownership
 before the full snapshot and initial readiness, so a newly observed full snapshot
 cannot be overlaid with older runtime ownership. Reads do not advance tracker
-freshness, complete an unfinished refresh or establish dispatch eligibility. Existing
-publication, operator-move, queued-completion, defensive-copy, worker-progress,
+freshness, complete an unfinished refresh or establish dispatch eligibility.
+Drain and ForceQuit handlers publish their completed state before acknowledging
+the caller, so an immediate State read observes draining and force-quit ownership
+cleanup. The existing shutdown regressions assert this ordering (#3801).
+Existing publication, operator-move, queued-completion, defensive-copy, worker-progress,
 startup and promotion-read fixtures cover these boundaries. No new cache,
 timeout, configuration, guard, lane writer or recovery mechanism is added.
 
