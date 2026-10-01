@@ -195,6 +195,12 @@ type ConcurrencyStore interface {
 	ConcurrencyReport(context.Context, ConcurrencyQuery) (ConcurrencyReport, error)
 }
 
+// SchedulerDecisionBatchStore records one observation's per-issue evidence in a
+// single transaction. IDs correspond to input order; failure commits no rows.
+type SchedulerDecisionBatchStore interface {
+	RecordSchedulerDecisions(context.Context, []SchedulerDecision) ([]int64, error)
+}
+
 type IssueSchedulerDecisionStore interface {
 	ListIssueSchedulerDecisions(context.Context, IssueSchedulerDecisionQuery) ([]SchedulerDecision, error)
 }

@@ -556,11 +556,13 @@ func (o *Orchestrator) workAttemptLeaseExpiresAt(now time.Time) time.Time {
 }
 
 func (o *Orchestrator) recordSchedulerDecision(ctx context.Context, state *State, now time.Time, decision dispatchPlanDecision, result string, reason string) {
+	record := o.schedulerDecisionRecord(state, now, decision, result, reason)
+	o.recordSchedulerDecisions(ctx, state, []store.SchedulerDecision{record}, false)
+}
+
+func (o *Orchestrator) schedulerDecisionRecord(state *State, now time.Time, decision dispatchPlanDecision, result, reason string) store.SchedulerDecision {
 	if o == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
+		return store.SchedulerDecision{}
 	}
 	if now.IsZero() {
 		now = time.Now()
@@ -615,18 +617,44 @@ func (o *Orchestrator) recordSchedulerDecision(ctx context.Context, state *State
 	if len(metadata) > 0 {
 		record.MetadataJSON = marshalWorkAttemptJSON(metadata)
 	}
-	snapshot := telemetrySchedulerDecision(record)
-	if o.workAttempts != nil {
-		id, err := o.workAttempts.RecordSchedulerDecision(ctx, record)
-		if err != nil {
-			if o.logger != nil {
-				o.logger.Warn("record scheduler decision failed", "issue_id", decision.Issue.ID, "reason", reason, "error", err)
-			}
-		} else {
-			snapshot.ID = id
-		}
+	return record
+}
+
+func (o *Orchestrator) recordSchedulerDecisions(ctx context.Context, state *State, records []store.SchedulerDecision, batch bool) {
+	if o == nil || len(records) == 0 {
+		return
 	}
-	appendSchedulerDecisionSnapshot(state, snapshot)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if writer, ok := o.workAttempts.(store.SchedulerDecisionBatchStore); batch && ok {
+		ids, err := writer.RecordSchedulerDecisions(ctx, records)
+		if err != nil && o.logger != nil {
+			o.logger.Warn("record scheduler evidence failed", "count", len(records), "error", err)
+		}
+		for i, record := range records {
+			snapshot := telemetrySchedulerDecision(record)
+			if err == nil && i < len(ids) {
+				snapshot.ID = ids[i]
+			}
+			appendSchedulerDecisionSnapshot(state, snapshot)
+		}
+		return
+	}
+	for _, record := range records {
+		snapshot := telemetrySchedulerDecision(record)
+		if o.workAttempts != nil {
+			id, err := o.workAttempts.RecordSchedulerDecision(ctx, record)
+			if err != nil {
+				if o.logger != nil {
+					o.logger.Warn("record scheduler decision failed", "issue_id", record.IssueID, "reason", record.Reason, "error", err)
+				}
+			} else {
+				snapshot.ID = id
+			}
+		}
+		appendSchedulerDecisionSnapshot(state, snapshot)
+	}
 }
 
 func (o *Orchestrator) recordRecoveredWorkAttempt(state *State, attempt store.WorkAttempt, now time.Time) {

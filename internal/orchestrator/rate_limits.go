@@ -587,3 +587,23 @@ func (o *Orchestrator) projectRefreshInterval(state *State, now time.Time, base 
 	}
 	return interval
 }
+
+// A refresh flushes before dispatch for current capacity authority and after
+// maintenance for complete operation counts. Both belong to the same budget.
+func mergeRefreshRESTUsage(tail, prior *telemetry.RESTUsage) {
+	if tail == nil || prior == nil {
+		return
+	}
+	tail.TotalRequests += prior.TotalRequests
+	tail.ConditionalRequests += prior.ConditionalRequests
+	tail.NotModifiedRequests += prior.NotModifiedRequests
+	tail.BillableRequests += prior.BillableRequests
+	tail.RateLimited = tail.RateLimited || prior.RateLimited
+	tail.ReserveHeld = tail.ReserveHeld || prior.ReserveHeld
+	tail.FanoutDeferred = tail.FanoutDeferred || prior.FanoutDeferred
+	tail.Contributors = append(prior.Contributors, tail.Contributors...)
+	tail.Divergences = append(prior.Divergences, tail.Divergences...)
+	if tail.BackoffUntil == nil || (prior.BackoffUntil != nil && prior.BackoffUntil.After(*tail.BackoffUntil)) {
+		tail.BackoffUntil = prior.BackoffUntil
+	}
+}

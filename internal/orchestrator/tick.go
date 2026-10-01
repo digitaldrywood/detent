@@ -96,13 +96,15 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if o.trackerAvailabilityPaused(ctx, state, now) && o.scheduling == nil {
 		return
 	}
-	// Give the existing dependency scan first use of the read budget every other
-	// refresh. Configured authorization requires the fresh filtered batch first.
+	// Preserve one rotating dependency priority read every other refresh. The
+	// full blocked scan runs after dispatch; configured authorization still
+	// requires the freshly filtered batch before any priority recovery.
 	earlyDependencyUnblock := state.dependencyUnblockEarly
 	state.dependencyUnblockEarly = !earlyDependencyUnblock
 	var earlyUnblocked map[string]struct{}
+	var priorityDependencyIssue string
 	if earlyDependencyUnblock && !o.cfg.Authorization.Configured() {
-		earlyUnblocked = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(state.BoardIssues, previous.blockedStatusIssues), now)
+		earlyUnblocked, priorityDependencyIssue = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(state.BoardIssues, previous.blockedStatusIssues), now)
 	}
 	if !o.retryDeferredCompletions(ctx, state, now) && o.scheduling == nil {
 		return
@@ -145,7 +147,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	fetched = o.filterAuthorizedTickIssues(ctx, state, fetched, &previous, now)
 	trackerCandidates := cloneIssues(fetched.candidates)
 	if earlyDependencyUnblock && o.cfg.Authorization.Configured() {
-		earlyUnblocked = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
+		earlyUnblocked, priorityDependencyIssue = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	}
 	fetched = filterReconciledTickIssues(state, fetched, earlyUnblocked)
 	timing.step("observe_lanes")
@@ -207,12 +209,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.reconcileClosedCompletedIssueStatuses(ctx, state, transitions.issues, now),
 	)
 	if fetched.statusOK {
-		timing.step("operator_return_retired_parks")
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
-		)
+		// Capacity recovery can establish an instance outage from tracker
+		// evidence, and blocker promotion can affect current dependencies.
+		// Preserve both admission authorities before dispatch.
 		timing.step("recover_backend_capacity_blocked_issues")
 		fetched = filterReconciledTickIssues(
 			state,
@@ -225,14 +224,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
 		)
-		if !earlyDependencyUnblock {
-			timing.step("operator_clear_closed_dependencies")
-			fetched = filterReconciledTickIssues(
-				state,
-				fetched,
-				o.operatorClearClosedDependencies(ctx, state, fetched.status, now),
-			)
-		}
 		timing.step("review_plan_issues")
 		fetched = filterReconciledTickIssues(
 			state,
@@ -314,6 +305,51 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	restRateLimitsCaptured = true
 	timing.next("dispatch")
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now, timing)
+	// Blocked-lane maintenance cannot make an active candidate eligible in this
+	// dispatch pass. Keep its existing owners and alternating recovery priority,
+	// but let unrelated approved work start before provider/history fanout.
+	timing.next("blocked_maintenance")
+	if fetched.statusOK {
+		timing.step("operator_return_retired_parks")
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
+			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
+		)
+		timing.step("operator_clear_closed_dependencies")
+		dependencyIssues := fetched.status
+		if priorityDependencyIssue != "" {
+			dependencyIssues = filterReconciledIssues(dependencyIssues, map[string]struct{}{priorityDependencyIssue: {}})
+		}
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
+			o.operatorClearClosedDependencies(ctx, state, dependencyIssues, now),
+		)
+	}
+	o.trackTickBlockedStatuses(ctx, state, fetched, transitions, previous, now, timing)
+	timing.step("release_missing_retries")
+	o.dispatchPlanner().releaseMissingDueRetries(state, fetched.candidates, dueRetriesByIssue(state, now), dispatchPlanHooks{
+		preserveMissingDueRetry: func(retry Retry) bool { return o.preserveMissingDueRetry(state, retry) },
+	})
+	if _, ok := o.connector.(connector.RESTRateLimitUsageReporter); ok {
+		tail := o.captureConnectorRESTRateLimits(state, now)
+		if tail.HasSummary {
+			if tail.Usage == nil {
+				// A bucket-only observation has no new request counts. Retain
+				// this refresh's pre-dispatch usage, never a previous refresh's.
+				tail.Usage = restCycle.Usage
+				state.RateLimits.RESTUsage = tail.Usage
+			} else {
+				mergeRefreshRESTUsage(tail.Usage, restCycle.Usage)
+			}
+			if state.RateLimits.GitHubREST != nil && tail.Usage != nil {
+				state.RateLimits.GitHubREST.Cost = tail.Usage.BillableRequests
+			}
+			o.logRESTRateLimitCycle(tail)
+			o.syncGitHubRESTCapacityOutage(state, now)
+		}
+	}
 	timing.next("publish")
 	refreshOK := refreshSucceeded(state)
 	if refreshOK {
@@ -1126,6 +1162,17 @@ func (o *Orchestrator) dispatchTickIssues(
 	planner.pruneInactiveIssueBudgetRefusals(state, fetched.candidates)
 	o.pruneBudgetRefusals(ctx, state, now)
 	planner.trackBlockedCandidates(state, issues, now)
+	// Preserve fresh Blocked observations and clear stale project-status holds
+	// for the candidates themselves before admission. Unrelated blocked cards
+	// do not participate in this dispatch decision.
+	timing.step("track_candidate_blocked_statuses")
+	o.trackCandidateBlockedStatusIssues(ctx, state, replaceMatchingIssueSnapshots(issues, fetched.status), now)
+	timing.step("dispatch_ready_issues")
+	maintenanceIssues := issuesInStates(fetched.status, []string{blockedStatusState})
+	o.dispatchReadyIssues(ctx, state, issues, now, maintenanceIssues...)
+}
+
+func (o *Orchestrator) trackTickBlockedStatuses(ctx context.Context, state *State, fetched tickFetchedIssues, transitions tickTransitionRefresh, previous tickPreviousState, now time.Time, timing *refreshTiming) {
 	candidateBlockedStatusIssues := issuesInStates(fetched.candidates, []string{blockedStatusState})
 	if fetched.statusOK {
 		timing.step("track_blocked_statuses")
@@ -1135,12 +1182,7 @@ func (o *Orchestrator) dispatchTickIssues(
 			currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, previous.blockedStatusIssues)
 		}
 		o.trackBlockedStatusIssues(ctx, state, currentBlockedStatusIssues, now)
-	} else {
-		timing.step("track_candidate_blocked_statuses")
-		o.trackCandidateBlockedStatusIssues(ctx, state, fetched.candidates, now)
 	}
-	timing.step("dispatch_ready_issues")
-	o.dispatchReadyIssues(ctx, state, issues, now)
 }
 
 // Compare identities from this successful tracker read with the published board,
@@ -1163,15 +1205,16 @@ func candidatesMissingFromBoard(candidates, board []connector.Issue) int {
 	return len(missing)
 }
 
-func (o *Orchestrator) earlyDependencyUnblock(ctx context.Context, state *State, issues []connector.Issue, now time.Time) map[string]struct{} {
+func (o *Orchestrator) earlyDependencyUnblock(ctx context.Context, state *State, issues []connector.Issue, now time.Time) (map[string]struct{}, string) {
 	if !o.cfg.DependencyAutoUnblock.Enabled || state.Draining || o.dispatchQuiesced() {
-		return nil
+		return nil, ""
 	}
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	issues = dependencyAutoUnblockOrder(issues, cfg.SourceStates, state.dependencyUnblockCursor)
 	if len(issues) == 0 {
-		return nil
+		return nil, ""
 	}
+	issues = issues[:1]
 	for i, issue := range issues {
 		issues[i] = connector.Issue{ID: issue.ID, Identifier: issue.Identifier, State: issue.State}
 	}
@@ -1179,5 +1222,5 @@ func (o *Orchestrator) earlyDependencyUnblock(ctx context.Context, state *State,
 	// Advance even if the first identity cannot fit inside the cap. The late
 	// scan never changes this cursor, so it cannot undo priority progress.
 	state.dependencyUnblockCursor = issues[0].ID
-	return transitioned
+	return transitioned, issues[0].ID
 }
