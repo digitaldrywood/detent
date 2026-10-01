@@ -1,16 +1,16 @@
 # Evidence-backed workflow decisions
 
-Evidence-backed completion of already-merged work needs no prior authorization or human reply. Fetch the tracked branch, name the merging PR and merge commit, run `git merge-base --is-ancestor <merge-commit> <tracked-head>` successfully, and verify every acceptance criterion. State the completion decision plainly in this Workpad. Report `status: complete` with the current attempt identity and these `fields`:
+Evidence-backed completion of already-merged work needs no prior authorization or human reply. Fetch the merging PR's integration branch, name the merging PR and merge commit, run `git merge-base --is-ancestor <merge-commit> <integration-head>` successfully, and verify every acceptance criterion. Record that same integration branch and head in the receipt; its branch must match the merging PR's base, not the current workspace branch. State the completion decision plainly in this Workpad. Report `status: complete` with the current attempt identity and these `fields`:
 
 - `completion_kind: operational`
 - `completion_merged_pr`: merging PR URL
 - `completion_merge_commit`: full merge commit SHA
-- `completion_branch`: tracked branch ref (for example `origin/main`)
-- `completion_branch_head`: full verified branch-head SHA
+- `completion_branch`: fetched integration branch ref matching the merging PR's base (for example `origin/main`)
+- `completion_branch_head`: full integration-head SHA used in the ancestry command
 - `completion_ancestry: verified`: only after the ancestry command exits 0
 - `completion_evidence`: acceptance criteria, commands, results, and ancestry command/exit status
 
-The orchestrator records this evidence and closes the issue; workers never close it or write lane state. If evidence cannot be produced, finish independent investigation and record the specific missing human input as a Workpad `human_action` with `status: blocked`; do not claim completion. Other no-PR operational work still requires pre-dispatch issue-body `detent-completion` authorization (`schema: 1`, `completion_kind: operational`) and concrete `completion_evidence`. Otherwise the PR gate applies.
+The orchestrator records this evidence and closes the issue; workers never close it or write lane state. Pending acceptance owned by a scheduled pipeline remains pending; merged code and focused diagnostics do not establish that the scheduled checks passed. If evidence cannot be produced, finish independent investigation and record the specific missing human input as a Workpad `human_action` with `status: blocked`; do not claim completion. Other no-PR operational work still requires pre-dispatch issue-body `detent-completion` authorization (`schema: 1`, `completion_kind: operational`) and concrete `completion_evidence`. Otherwise the PR gate applies.
 
 ## Incident and existing linked-PR completion
 
