@@ -2398,6 +2398,7 @@ func defaultConnectorFactoryWithRefresh(cfg workflowconfig.Config, refreshGitHub
 		StateMap:                    trackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 trackerPriorityMap(cfg.Tracker.PriorityMap),
 		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
+		LocalStatus:                 cfg.Gate.LocalStatus,
 		Publication:                 cfg.Tracker.Publication,
 	})
 }

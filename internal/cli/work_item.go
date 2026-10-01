@@ -194,6 +194,7 @@ func workItemConnectorFromWorkflow(ctx context.Context, cfg workflowconfig.Confi
 		StateMap:                    githubLocalTrackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 githubLocalTrackerPriorityMap(cfg.Tracker.PriorityMap),
 		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
+		LocalStatus:                 cfg.Gate.LocalStatus,
 	})
 	if err != nil {
 		return nil, err

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -200,7 +201,7 @@ func (o *Orchestrator) recoverMergeReservations(state *State, attempts []store.W
 		}
 		state.mergeReservations[reservation.IssueID] = reservation
 		state.Retry[issue.ID] = Retry{Issue: cloneIssue(issue), Attempt: attempt.AttemptNumber,
-			DueAt: now, WorkerHost: attempt.WorkerHost, Error: mergeWorkerCurrentHeadCIWaitReason(issue),
+			DueAt: now, WorkerHost: attempt.WorkerHost, Error: mergeWorkerCurrentHeadCIWaitReason(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus),
 			Wait: RetryWait{Kind: retryWaitCurrentHeadCI, StartedAt: reservation.StartedAt}}
 		state.MergeTimings[issue.ID] = MergeTiming{CIWaitStartedAt: reservation.StartedAt, CIWaitActiveAt: attempt.CompletedAt, CIWaitHeadSHA: reservation.HeadSHA}
 		if o.logger != nil {
