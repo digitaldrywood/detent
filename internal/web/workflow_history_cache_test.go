@@ -19,6 +19,8 @@ type workflowHistoryTestStore struct {
 	store.Store
 	revision      atomic.Int64
 	reports       atomic.Int64
+	cycles        atomic.Int64
+	cycleError    bool
 	evidence      atomic.Int64
 	revisionError bool
 	reportError   bool
@@ -46,6 +48,18 @@ func (s *workflowHistoryTestStore) WorkflowMetricsReport(_ context.Context, q st
 	return store.WorkflowMetricsReport{Lanes: []store.WorkflowPhaseMetric{{ProjectID: q.ProjectID, PhaseName: "In Progress", Count: 1, AverageSeconds: s.revision.Load()}}}, nil
 }
 
+func (s *workflowHistoryTestStore) CycleTimeReport(context.Context) (store.CycleTimeReport, error) {
+	s.cycles.Add(1)
+	if s.cycleError {
+		return store.CycleTimeReport{}, errors.New("cycle report unavailable")
+	}
+	return store.CycleTimeReport{
+		AverageSeconds: s.revision.Load() + 42,
+		Issues:         []store.CycleTimeIssue{{Key: "completed", DurationSeconds: 60, Sessions: 2}},
+		Buckets:        []store.CycleTimeBucket{{Label: "short", Count: 1}},
+	}, nil
+}
+
 func TestWorkflowHistoryCacheCadence(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
@@ -70,6 +84,7 @@ func TestWorkflowHistoryCacheCadence(t *testing.T) {
 			now := base
 			server := &Server{store: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: func() time.Time { return now }}
 			snapshot := telemetry.Snapshot{Seq: 1, GeneratedAt: base}
+			firstCycle, _ := server.snapshotCycleTime(t.Context(), snapshot.GeneratedAt)
 			first := server.snapshotWorkflowMetrics(t.Context(), snapshot)
 			if !first.Available {
 				t.Fatal("history unavailable")
@@ -82,12 +97,23 @@ func TestWorkflowHistoryCacheCadence(t *testing.T) {
 			if tt.changed {
 				backend.revision.Add(1)
 			}
+			cycle, _ := server.snapshotCycleTime(t.Context(), snapshot.GeneratedAt)
 			got := server.snapshotWorkflowMetrics(t.Context(), snapshot)
 			if backend.reports.Load() != tt.want {
 				t.Fatalf("reports = %d, want %d", backend.reports.Load(), tt.want)
 			}
 			if backend.evidence.Load() != tt.want/6 {
 				t.Fatalf("evidence queries = %d", backend.evidence.Load())
+			}
+			wantCycles := tt.want / 6
+			if tt.project != "" {
+				wantCycles = 1
+			}
+			if backend.cycles.Load() != wantCycles {
+				t.Fatalf("cycle reports = %d, want %d", backend.cycles.Load(), wantCycles)
+			}
+			if !firstCycle.Available || !cycle.Available || firstCycle.AverageSeconds != 42 || cycle.AverageSeconds != backend.revision.Load()+42 || len(cycle.Issues) != 1 || cycle.Issues[0].DurationSeconds != 60 || cycle.Issues[0].Sessions != 2 || len(cycle.Buckets) != 1 || cycle.Buckets[0].Count != 1 {
+				t.Fatalf("cycle projection changed: first=%+v current=%+v", firstCycle, cycle)
 			}
 			if got.ActiveBottleneck.IssueID != "live" || got.ActiveBottleneck.Seconds != 42 {
 				t.Fatalf("stale operational evidence: %#v", got.ActiveBottleneck)
@@ -126,14 +152,14 @@ func TestWorkflowHistoryConcurrentClients(t *testing.T) {
 		synctest.Wait()
 		close(release)
 		wg.Wait()
-		if backend.reports.Load() != 6 || backend.evidence.Load() != 1 {
-			t.Fatalf("queries: reports=%d evidence=%d", backend.reports.Load(), backend.evidence.Load())
+		if backend.reports.Load() != 6 || backend.evidence.Load() != 1 || backend.cycles.Load() != 1 {
+			t.Fatalf("queries: reports=%d evidence=%d cycles=%d", backend.reports.Load(), backend.evidence.Load(), backend.cycles.Load())
 		}
 	})
 }
 
 func TestWorkflowHistoryCacheFailureAndConcurrentMutation(t *testing.T) {
-	for _, mode := range []string{"report failure", "revision failure", "mutation during load", "canceled load"} {
+	for _, mode := range []string{"report failure", "cycle failure", "revision failure", "mutation during load", "canceled load"} {
 		t.Run(mode, func(t *testing.T) {
 			backend := &workflowHistoryTestStore{}
 			server := &Server{store: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
@@ -143,6 +169,8 @@ func TestWorkflowHistoryCacheFailureAndConcurrentMutation(t *testing.T) {
 			switch mode {
 			case "report failure":
 				backend.reportError = true
+			case "cycle failure":
+				backend.cycleError = true
 			case "revision failure":
 				backend.revisionError = true
 			case "mutation during load":
@@ -150,9 +178,13 @@ func TestWorkflowHistoryCacheFailureAndConcurrentMutation(t *testing.T) {
 			case "canceled load":
 				backend.onReport = cancel
 			}
-			server.snapshotWorkflowMetrics(ctx, snapshot)
+			first := server.workflowHistory.get(ctx, backend, "", snapshot.GeneratedAt, server.now, server.loadWorkflowHistory)
+			if mode == "cycle failure" && (!first.metrics.Available || first.cycleTime.Available || first.cycleTime.DegradedReason != "cycle-time query failed") {
+				t.Fatalf("cycle failure changed independent reports: %+v", first)
+			}
 			before := backend.reports.Load()
 			backend.reportError = false
+			backend.cycleError = false
 			backend.revisionError = false
 			backend.onReport = nil
 			if !server.snapshotWorkflowMetrics(t.Context(), snapshot).Available {

@@ -14,6 +14,7 @@ const maxWorkflowHistoryScopes = 16
 
 type workflowHistoryEntry struct {
 	metrics    telemetry.WorkflowMetrics
+	cycleTime  telemetry.CycleTimeReport
 	revision   int64
 	observedAt time.Time
 	loadedAt   time.Time
@@ -25,27 +26,27 @@ type workflowHistoryCache struct {
 	loading chan struct{}
 }
 
-func (c *workflowHistoryCache) get(ctx context.Context, backend store.Store, projectID string, observedAt time.Time, clock func() time.Time, load func(context.Context, string, time.Time) telemetry.WorkflowMetrics) telemetry.WorkflowMetrics {
+func (c *workflowHistoryCache) get(ctx context.Context, backend store.Store, projectID string, observedAt time.Time, clock func() time.Time, load func(context.Context, string, time.Time) workflowHistoryEntry) workflowHistoryEntry {
 	if clock == nil {
 		clock = time.Now
 	}
 	for {
 		revision, err := workflowHistoryRevision(ctx, backend)
 		if err != nil {
-			return telemetry.WorkflowMetrics{DegradedReason: "workflow history revision query failed"}
+			return workflowHistoryEntry{metrics: telemetry.WorkflowMetrics{DegradedReason: "workflow history revision query failed"}, cycleTime: telemetry.CycleTimeReport{DegradedReason: "workflow history revision query failed"}}
 		}
 		now := clock()
 		c.mu.Lock()
 		entry, ok := c.entries[projectID]
 		if ok && entry.revision == revision && workflowHistoryFresh(entry.loadedAt, now) && workflowHistoryFresh(entry.observedAt, observedAt) {
 			c.mu.Unlock()
-			return entry.metrics
+			return entry
 		}
 		if loading := c.loading; loading != nil {
 			c.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return telemetry.WorkflowMetrics{DegradedReason: "workflow history query canceled"}
+				return workflowHistoryEntry{metrics: telemetry.WorkflowMetrics{DegradedReason: "workflow history query canceled"}, cycleTime: telemetry.CycleTimeReport{DegradedReason: "workflow history query canceled"}}
 			case <-loading:
 				continue
 			}
@@ -53,10 +54,10 @@ func (c *workflowHistoryCache) get(ctx context.Context, backend store.Store, pro
 		c.loading = make(chan struct{})
 		c.mu.Unlock()
 
-		metrics := load(ctx, projectID, observedAt)
+		entry = load(ctx, projectID, observedAt)
 		finalRevision, revisionErr := workflowHistoryRevision(ctx, backend)
 		c.mu.Lock()
-		if metrics.Available && ctx.Err() == nil && revisionErr == nil && revision == finalRevision {
+		if entry.metrics.Available && (projectID != "" || entry.cycleTime.Available) && ctx.Err() == nil && revisionErr == nil && revision == finalRevision {
 			if c.entries == nil {
 				c.entries = make(map[string]workflowHistoryEntry)
 			}
@@ -70,12 +71,13 @@ func (c *workflowHistoryCache) get(ctx context.Context, backend store.Store, pro
 				}
 				delete(c.entries, oldestProject)
 			}
-			c.entries[projectID] = workflowHistoryEntry{metrics: metrics, revision: revision, observedAt: observedAt, loadedAt: now}
+			entry.revision, entry.observedAt, entry.loadedAt = revision, observedAt, now
+			c.entries[projectID] = entry
 		}
 		close(c.loading)
 		c.loading = nil
 		c.mu.Unlock()
-		return metrics
+		return entry
 	}
 }
 

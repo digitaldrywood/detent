@@ -3,22 +3,30 @@ package web
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func (s *Server) snapshotCycleTime(ctx context.Context) (telemetry.CycleTimeReport, bool) {
+func (s *Server) snapshotCycleTime(ctx context.Context, observedAt time.Time) (telemetry.CycleTimeReport, bool) {
 	if s.store == nil {
 		return telemetry.CycleTimeReport{}, false
 	}
 
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	return s.workflowHistory.get(ctx, s.store, "", observedAt, s.now, s.loadWorkflowHistory).cycleTime, true
+}
+
+func (s *Server) loadCycleTime(ctx context.Context) telemetry.CycleTimeReport {
 	report, err := s.store.CycleTimeReport(ctx)
 	if err != nil {
 		s.logger.Warn("cycle time report failed", slog.Any("error", err))
-		return telemetry.CycleTimeReport{DegradedReason: "cycle-time query failed"}, true
+		return telemetry.CycleTimeReport{DegradedReason: "cycle-time query failed"}
 	}
-	return cycleTimeReportFromStore(report), true
+	return cycleTimeReportFromStore(report)
 }
 
 func cycleTimeReportFromStore(report store.CycleTimeReport) telemetry.CycleTimeReport {
