@@ -602,7 +602,7 @@ func (m *Manager) evaluateCandidate(
 	settings Settings,
 	candidate connector.Issue,
 ) (AgentEvaluation, *malformedEvaluation, string, error) {
-	collector := &proposalCollector{}
+	collector := &proposalCollector{settings: settings, candidate: candidate}
 	runResult, err := settings.Runner.Run(ctx, runner.RunRequest{
 		Issue:            admissionIssue(settings.ProjectID),
 		Mode:             runner.RunModeRoutine,
@@ -633,6 +633,9 @@ func (m *Manager) evaluateCandidate(
 	if len(evaluations) == 0 && proposalErr == nil {
 		raw = []byte(runResult.Output)
 		evaluations, proposalErr = parseEvaluations(runResult.Output)
+		if proposalErr == nil && len(evaluations) == 1 {
+			evaluations[0], proposalErr = validateCandidateEvaluation(settings, candidate, evaluations[0])
+		}
 	}
 	if proposalErr != nil {
 		class, code := classifyMalformedEvaluation(proposalErr)
@@ -645,15 +648,7 @@ func (m *Manager) evaluateCandidate(
 			output:     raw,
 		}, "", nil
 	}
-	evaluation, err := validateCandidateEvaluation(settings, candidate, evaluations[0])
-	if err != nil {
-		return AgentEvaluation{}, &malformedEvaluation{
-			errorClass: "schema",
-			errorCode:  "invalid_evaluation",
-			output:     raw,
-		}, "", nil
-	}
-	return evaluation, nil, "", nil
+	return evaluations[0], nil, "", nil
 }
 
 func (m *Manager) recordMalformedResult(
@@ -1627,27 +1622,27 @@ func validateCandidateEvaluation(
 ) (AgentEvaluation, error) {
 	issueID := strings.TrimSpace(evaluation.IssueID)
 	if issueID != strings.TrimSpace(candidate.ID) {
-		return AgentEvaluation{}, fmt.Errorf("%w: evaluation references unknown candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: issue_id must identify the supplied candidate", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	evaluation.IssueID = issueID
 	evaluation.Disposition = strings.TrimSpace(evaluation.Disposition)
 	if evaluation.Disposition != admissionDispositionProposed && evaluation.Disposition != admissionDispositionDeclined {
-		return AgentEvaluation{}, fmt.Errorf("%w: invalid disposition for candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: disposition must be proposed or declined", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	if err := validateAdmissionConfidence(evaluation.Confidence); err != nil {
-		return AgentEvaluation{}, fmt.Errorf("%w: invalid confidence for candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: confidence must be a number between 0 and 1", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	if evaluation.Disposition == admissionDispositionDeclined {
 		findings, matched, err := validateEvaluationFindings(evaluation.Findings, settings.Criteria)
 		if err != nil || matched || strings.TrimSpace(evaluation.RecommendedEffort) != "" || strings.TrimSpace(evaluation.EffortRationale) != "" {
-			return AgentEvaluation{}, fmt.Errorf("%w: invalid decline for candidate %q", ErrInvalidOutput, issueID)
+			return AgentEvaluation{}, fmt.Errorf("%w: %w: decline requires complete unmatched findings and no effort", ErrInvalidOutput, ErrInvalidProposal)
 		}
 		evaluation.Findings = findings
 		return evaluation, nil
 	}
 	findings, err := validateFindings(evaluation.Findings, settings.Criteria)
 	if err != nil {
-		return AgentEvaluation{}, fmt.Errorf("%w: invalid proposal for candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: findings must cover each configured dimension once with a verbatim quote and rationale, including at least one match", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	evaluation.Findings = findings
 	evaluation.RecommendedEffort, evaluation.EffortRationale, err = validateRecommendedEffort(
@@ -1657,7 +1652,7 @@ func validateCandidateEvaluation(
 		settings.Config.RequireEffort,
 	)
 	if err != nil {
-		return AgentEvaluation{}, fmt.Errorf("%w: invalid effort for candidate %q", ErrInvalidOutput, issueID)
+		return AgentEvaluation{}, fmt.Errorf("%w: %w: effort and rationale must satisfy the configured rubric", ErrInvalidOutput, ErrInvalidProposal)
 	}
 	return evaluation, nil
 }
@@ -2376,6 +2371,9 @@ func stableAdmissionFingerprint(parts ...string) string {
 }
 
 func classifyMalformedEvaluation(err error) (string, string) {
+	if errors.Is(err, ErrInvalidProposal) {
+		return "schema", "invalid_evaluation"
+	}
 	var syntaxError *json.SyntaxError
 	if errors.As(err, &syntaxError) || errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(err.Error(), "unexpected EOF") {
 		return "parse", "invalid_json"
@@ -2580,6 +2578,8 @@ func proposalTool(requireEffort bool) runner.AgentTool {
 }
 
 type proposalCollector struct {
+	settings    Settings
+	candidate   connector.Issue
 	mu          sync.Mutex
 	evaluations []AgentEvaluation
 	raw         []byte
@@ -2590,18 +2590,26 @@ func (c *proposalCollector) handle(_ context.Context, call runner.AgentToolCall)
 	if call.Name != ProposalToolName {
 		return runner.AgentToolResult{Content: "unsupported tool", Success: false}, nil
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.raw = appendAdmissionRaw(c.raw, call.Arguments)
 	var evaluation AgentEvaluation
 	if err := decodeStrictJSON(call.Arguments, &evaluation); err != nil {
-		c.mu.Lock()
-		c.raw = appendAdmissionRaw(c.raw, call.Arguments)
-		c.err = errors.Join(c.err, fmt.Errorf("%w: %w", ErrInvalidOutput, err))
-		c.mu.Unlock()
-		return runner.AgentToolResult{Content: "invalid evaluation", Success: false}, nil
+		c.err = fmt.Errorf("%w: %w", ErrInvalidOutput, err)
+		class, code := classifyMalformedEvaluation(c.err)
+		return runner.AgentToolResult{Content: "invalid evaluation JSON: " + class + "/" + code, Success: false}, nil
 	}
-	c.mu.Lock()
-	c.raw = appendAdmissionRaw(c.raw, call.Arguments)
+	var err error
+	evaluation, err = validateCandidateEvaluation(c.settings, c.candidate, evaluation)
+	if err != nil {
+		c.err = err
+		return runner.AgentToolResult{Content: err.Error(), Success: false}, nil
+	}
+	c.err = nil
 	c.evaluations = append(c.evaluations, evaluation)
-	c.mu.Unlock()
+	if len(c.evaluations) != 1 {
+		return runner.AgentToolResult{Content: "exactly one accepted evaluation is required per candidate", Success: false}, nil
+	}
 	return runner.AgentToolResult{Content: "evaluation received", Success: true}, nil
 }
 
