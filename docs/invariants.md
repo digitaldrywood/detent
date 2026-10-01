@@ -2198,6 +2198,9 @@ Legacy triage publication remains idempotent and preserves operator lane changes
 `TestUnfinishedSessionsRetainConfiguredDispatch`,
 `TestRetiredAttemptTriageParkRestoresPriorLane`, and the existing implement
 progress and terminal retry matrices cover the retirement and retained controls.
+The invariant manifest requires the configured-dispatch and retired-park tests
+instead of the renamed or deleted lifetime-cap tests (#3833), preserving
+behavioral enforcement without restoring the retired mechanism.
 `TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`,
 `TestAttemptAllowancePreservesOperatorCompletionLane`, and
 `TestAttemptAllowanceTriageFallbackCompletion` preserve in-flight compatibility.
