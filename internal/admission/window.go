@@ -61,7 +61,21 @@ func (m *Manager) orderCandidateWindow(ctx context.Context, settings Settings, c
 			return issue.Closed || connector.NonExecutableReason(issue) != "" ||
 				(!containsFold(settings.DispatchStates, issue.State) && !strings.EqualFold(strings.TrimSpace(issue.State), "Blocked"))
 		})
-		dispatchpriority.AnnotateUnblockerCounts(out, dependents, settings.Config.Sources.States, settings.TerminalStates, true)
+		ranking := slices.Clone(out)
+		for index, candidate := range ranking {
+			if evidence := settings.dependencies[candidate.ID]; evidence != nil {
+				ranking[index].BlockedBy = nil
+				for _, ref := range evidence.References {
+					if !ref.Ready || ref.Error != "" {
+						ranking[index].BlockedBy = append(ranking[index].BlockedBy, connector.BlockedRef{Identifier: ref.Identifier})
+					}
+				}
+			}
+		}
+		dispatchpriority.AnnotateUnblockerCounts(ranking, dependents, settings.Config.Sources.States, settings.TerminalStates, true)
+		for index := range out {
+			out[index].UnblockerCount = ranking[index].UnblockerCount
+		}
 	}
 	sortCandidates(out, settings)
 	sort.SliceStable(out, func(i, j int) bool {

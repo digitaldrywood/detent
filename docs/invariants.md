@@ -1877,6 +1877,12 @@ criteria, confidence, author, effort and dependency checks remain authoritative;
 failed criteria or low confidence cannot overflow the human proposal queue.
 Prerequisite preference shares the existing dispatcher annotation and published
 owner evidence instead of another graph reader or promotion mechanism (#3519).
+Admission prerequisite ranking consumes the same fresh dependency readiness
+evidence as its criteria checks. The existing dispatcher annotation receives a
+ranking-only projection; unresolved, failed, or unverified human prerequisites
+remain nonterminal. Only the resulting unblocker counts return to the original
+candidate, preserving dependency identities, provenance, fingerprints and final
+revalidation without another read or ranking mechanism.
 
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
