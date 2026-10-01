@@ -3382,6 +3382,21 @@ func TestUsageReportAggregates(t *testing.T) {
 		},
 	}
 
+	// These cases catch filtering after aggregation, leaking totals or treating
+	// an empty authorized project set as an unrestricted query.
+	tests = append(tests,
+		struct {
+			name  string
+			query UsageReportQuery
+			want  []UsageReportRow
+		}{name: "no authorized projects", query: UsageReportQuery{By: UsageReportByDay, ProjectIDs: []string{}}, want: []UsageReportRow{}},
+		struct {
+			name  string
+			query UsageReportQuery
+			want  []UsageReportRow
+		}{name: "filtered project totals", query: UsageReportQuery{By: UsageReportByDay, ProjectIDs: []string{"pyroapex"}}, want: []UsageReportRow{{Key: "2026-06-02", InputTokens: 5, OutputTokens: 2, TotalTokens: 7, RuntimeSeconds: 3, Events: 1}}},
+	)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

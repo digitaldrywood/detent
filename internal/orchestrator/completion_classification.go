@@ -18,15 +18,22 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, 
 	if strings.TrimSpace(finalState) != FinalStateCompleted || decision.DependencyDeferral {
 		return decision
 	}
-	if decision.CompletionKind == workpad.CompletionOperational {
-		signal, _ := autoPromoteIssueWorkpadSignal(decision.Issue)
-		if operationalCompletionAttributed(signal) && !workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) {
+	signal, _ := autoPromoteIssueWorkpadSignal(decision.Issue)
+	mergedReceipt := workpad.MergedCompletionEvidence(signal)
+	if decision.CompletionKind == workpad.CompletionOperational || decision.Reason == implementMergedCompletionReason && mergedReceipt {
+		// Resolving a merged receipt must not bypass the attribution checks
+		// applied to ordinary operational delivery, or complete on assertion alone.
+		if operationalCompletionAttributed(signal) && !workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) ||
+			mergedReceipt && !pullRequestMerged(decision.Issue.PullRequest) {
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = implementProgressOutcomeNoProgress
 			decision.ProgressKinds = nil
 			decision.CompletionKind = ""
+			return decision
 		}
-		return decision
+		if decision.CompletionKind == workpad.CompletionOperational {
+			return decision
+		}
 	}
 	if completionWorkpadUnfinished(decision.Issue) {
 		decision.WorkpadStatus = workpad.StatusInProgress

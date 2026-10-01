@@ -5540,8 +5540,9 @@ WITH usage_report_rows AS (
     runtime_seconds,
     compute_usd
   FROM usage_events
-  WHERE (?2 IS NULL OR event_day >= ?2)
-    AND (?3 IS NULL OR event_day <= ?3)
+  WHERE (?2 IS NULL OR project_id IN (SELECT value FROM json_each(?2)))
+    AND (?3 IS NULL OR event_day >= ?3)
+    AND (?4 IS NULL OR event_day <= ?4)
 )
 SELECT
   CAST(usage_report_rows.group_key AS TEXT) AS group_key,
@@ -5562,9 +5563,10 @@ ORDER BY usage_report_rows.group_key, usage_report_rows.model
 `
 
 type UsageReportRowsParams struct {
-	BucketBy interface{} `json:"bucket_by"`
-	FromDay  interface{} `json:"from_day"`
-	ToDay    interface{} `json:"to_day"`
+	BucketBy       interface{} `json:"bucket_by"`
+	ProjectIdsJson interface{} `json:"project_ids_json"`
+	FromDay        interface{} `json:"from_day"`
+	ToDay          interface{} `json:"to_day"`
 }
 
 type UsageReportRowsRow struct {
@@ -5583,7 +5585,12 @@ type UsageReportRowsRow struct {
 }
 
 func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams) ([]UsageReportRowsRow, error) {
-	rows, err := q.db.QueryContext(ctx, usageReportRows, arg.BucketBy, arg.FromDay, arg.ToDay)
+	rows, err := q.db.QueryContext(ctx, usageReportRows,
+		arg.BucketBy,
+		arg.ProjectIdsJson,
+		arg.FromDay,
+		arg.ToDay,
+	)
 	if err != nil {
 		return nil, err
 	}

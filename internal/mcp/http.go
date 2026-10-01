@@ -364,7 +364,7 @@ type httpProtocolSession struct {
 	connectionID string
 	modern       bool
 	principal    operatortool.Identity
-	lifetime     context.Context
+	lifetime     context.Context //nolint:containedctx // The protocol session owns cancellation across POSTs and handler shutdown.
 	done         <-chan struct{}
 	cancel       context.CancelFunc
 	protocol     *session
@@ -673,8 +673,8 @@ func newHTTPSessionID() (string, error) {
 }
 
 type httpSessionContext struct {
-	context.Context
-	done <-chan struct{}
+	context.Context //nolint:containedctx // Implement Context by preserving request values with the protocol session's cancellation lifetime.
+	done            <-chan struct{}
 }
 
 func (c httpSessionContext) Deadline() (time.Time, bool) {
@@ -711,7 +711,11 @@ func (h *HTTPHandler) serveModern(writer http.ResponseWriter, req *http.Request,
 	current := operatortool.CurrentConnection(req.Context())
 	applicationID := current.ID
 	if applicationID == "" {
-		raw, _ := json.Marshal(principal)
+		raw, err := json.Marshal(principal)
+		if err != nil {
+			writeHTTPTransportError(writer, http.StatusInternalServerError, "MCP connection could not be identified")
+			return
+		}
 		digest := sha256.Sum256(raw)
 		applicationID = "mcp-" + base64.RawURLEncoding.EncodeToString(digest[:])
 	}

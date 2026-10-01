@@ -40,14 +40,29 @@ func TestHostedAdministrationAuthority(t *testing.T) {
 				t.Fatalf("entry=%d %s", response.Code, response.Body)
 			}
 			e := f.service.administration
-			if err := e.OpenConnection(ctx); err != nil {
+			dispatch := hostedOperatorExecutor{f.service}
+			if err := dispatch.OpenConnection(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := e.Execute(ctx, operatortool.Call{Name: operatortool.MembershipList, Arguments: json.RawMessage(`{}`)}); err != nil {
+			definitions, err := dispatch.ListTools(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			names := make(map[string]bool)
+			for _, definition := range definitions {
+				if names[definition.Name] {
+					t.Fatalf("duplicate tool %s", definition.Name)
+				}
+				names[definition.Name] = true
+			}
+			if !names[operatortool.MembershipList] || names[operatortool.InvitationSend] != (role == "owner" || role == "admin") {
+				t.Fatalf("administration discovery for %s: %v", role, names)
+			}
+			if _, err := dispatch.Execute(ctx, operatortool.Call{Name: operatortool.MembershipList, Arguments: json.RawMessage(`{}`)}); err != nil {
 				t.Fatal(err)
 			}
 			input := operatoradmin.Input{MemberID: "membership_" + member.identity.Subject, Role: "viewer"}
-			err := e.App.Authorize(ctx, operatortool.MemberRole, input, "")
+			err = e.App.Authorize(ctx, operatortool.MemberRole, input, "")
 			if (err == nil) != (role == "owner" || role == "admin") {
 				t.Fatalf("%s role change=%v", role, err)
 			}
@@ -58,7 +73,7 @@ func TestHostedAdministrationAuthority(t *testing.T) {
 				t.Fatal("foreign member authorized")
 			}
 			call := operatortool.Call{Name: operatortool.InvitationSend, Arguments: json.RawMessage(`{"request_id":"invite-once","email":"new@example.test","role":"member"}`)}
-			result, err := e.Execute(ctx, call)
+			result, err := dispatch.Execute(ctx, call)
 			if role == "member" || role == "viewer" {
 				if !errors.Is(err, operatortool.ErrAccessDenied) {
 					t.Fatalf("ordinary role direct call=%v", err)
@@ -77,11 +92,17 @@ func TestHostedAdministrationAuthority(t *testing.T) {
 			if _, err := e.Chat.Confirm(ctx, "test", reply.Action.ID); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("model approval=%v", err)
 			}
+			if response := f.request(t, u, http.MethodGet, "/chat/approval?connection_id="+operatortool.CurrentConnection(ctx).ID, nil); response.Code != http.StatusOK {
+				t.Fatalf("browser approval=%d %s", response.Code, response.Body)
+			}
 			human := chat.WithOperatorApproval(t.Context(), operatortool.ConnectionIdentity(ctx))
 			if _, err := e.Chat.Confirm(human, "test", reply.Action.ID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := e.Execute(ctx, call); err != nil {
+			if _, err := dispatch.Execute(ctx, operatortool.Call{Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + reply.Action.ID + `"}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := dispatch.Execute(ctx, call); err != nil {
 				t.Fatal(err)
 			}
 			var count int
@@ -89,7 +110,7 @@ func TestHostedAdministrationAuthority(t *testing.T) {
 				t.Fatalf("invite retries=%d %v", count, err)
 			}
 			operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", u.identity.Subject)
-			if _, err := e.Execute(ctx, call); !errors.Is(err, operatortool.ErrAccessDenied) {
+			if _, err := dispatch.Execute(ctx, call); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("cached retry after downgrade=%v", err)
 			}
 		})
@@ -105,11 +126,12 @@ func TestNativeCredentialAdministration(t *testing.T) {
 	}, f.service.operatorAuthority)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/administration-test", testHubAdminToken, nil), http.StatusOK)
 	e := f.service.administration
-	if err := e.OpenConnection(ctx); err != nil {
+	dispatch := hostedOperatorExecutor{f.service}
+	if err := dispatch.OpenConnection(ctx); err != nil {
 		t.Fatal(err)
 	}
 	args, _ := json.Marshal(operatoradmin.Input{RequestID: "native-key", Name: "native scoped key", Scopes: []string{"write"}, ProjectIDs: []string{string(f.project.ID)}})
-	if _, err := e.Execute(ctx, operatortool.Call{Name: operatortool.CredentialCreate, Arguments: args}); !errors.Is(err, operatoradmin.ErrUnavailable) {
+	if _, err := dispatch.Execute(ctx, operatortool.Call{Name: operatortool.CredentialCreate, Arguments: args}); !errors.Is(err, operatoradmin.ErrUnavailable) {
 		t.Fatalf("missing browser approver=%v", err)
 	}
 	// The existing native API still uses the extracted application commands.
@@ -132,7 +154,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 	if err := f.service.revokeAPITokenFor(t.Context(), token.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Execute(ctx, operatortool.Call{Name: operatortool.OrganizationSession, Arguments: json.RawMessage(`{}`)}); !errors.Is(err, operatortool.ErrAccessDenied) {
+	if _, err := dispatch.Execute(ctx, operatortool.Call{Name: operatortool.OrganizationSession, Arguments: json.RawMessage(`{}`)}); !errors.Is(err, operatortool.ErrAccessDenied) {
 		t.Fatalf("revoked token read=%v", err)
 	}
 }
@@ -182,7 +204,8 @@ func TestDedicatedAdministrationSetup(t *testing.T) {
 				t.Fatalf("account entry=%d %s", response.Code, response.Body)
 			}
 			e := f.service.administration
-			if err := e.OpenConnection(ctx); err != nil {
+			dispatch := hostedOperatorExecutor{f.service}
+			if err := dispatch.OpenConnection(ctx); err != nil {
 				t.Fatal(err)
 			}
 			call := operatortool.Call{Name: operatortool.OrganizationCreate, Arguments: json.RawMessage(`{"request_id":"setup","name":"Existing reserved organization"}`)}
@@ -192,7 +215,7 @@ func TestDedicatedAdministrationSetup(t *testing.T) {
 			if scenario == "invited account" || scenario == "wrong invitation recipient" || scenario == "withdrawn invitation" {
 				call = operatortool.Call{Name: operatortool.InvitationAccept, Arguments: json.RawMessage(`{"request_id":"join","invitation_id":"invitation_1"}`)}
 			}
-			result, err := e.Execute(ctx, call)
+			result, err := dispatch.Execute(ctx, call)
 			if scenario == "ordinary account" || scenario == "ordinary support denial" || scenario == "wrong invitation recipient" || scenario == "withdrawn invitation" {
 				if !errors.Is(err, operatortool.ErrAccessDenied) {
 					t.Fatalf("account privilege expanded=%v", err)
@@ -211,11 +234,14 @@ func TestDedicatedAdministrationSetup(t *testing.T) {
 			if reply.Action.Status != chat.ActionPending {
 				t.Fatal("setup bypassed operator approval")
 			}
+			if response := f.request(t, u, http.MethodGet, "/chat/approval?connection_id="+operatortool.CurrentConnection(ctx).ID, nil); response.Code != http.StatusOK {
+				t.Fatalf("browser approval=%d %s", response.Code, response.Body)
+			}
 			human := chat.WithOperatorApproval(t.Context(), operatortool.ConnectionIdentity(ctx))
 			if _, err := e.Chat.Confirm(human, "setup", reply.Action.ID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := e.Execute(ctx, call); err != nil {
+			if _, err := dispatch.Execute(ctx, call); err != nil {
 				t.Fatal(err)
 			}
 			if scenario == "invited account" {

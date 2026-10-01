@@ -137,6 +137,7 @@ func operatorScopedSnapshot(snapshot telemetry.Snapshot, projects []string) tele
 		out.Queue = append(out.Queue, project.Queue...)
 		out.Blocked = append(out.Blocked, project.Blocked...)
 		out.Completed = append(out.Completed, project.Completed...)
+		out.Shipped = append(out.Shipped, project.Shipped...)
 		out.TrackerUnavailable = append(out.TrackerUnavailable, project.TrackerUnavailable...)
 		out.ForgeUnavailable = append(out.ForgeUnavailable, project.ForgeUnavailable...)
 		out.FailureBreakers = append(out.FailureBreakers, project.FailureBreakers...)

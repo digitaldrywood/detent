@@ -189,9 +189,11 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return createNativeIssueTx(ctx, tx, scope, request, now)
-	})
+	result, err := s.createNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
 }
 
 func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
@@ -377,48 +379,11 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, _, err := readNativeIssue(ctx, tx, scope, c.Param("item"))
-		if err != nil {
-			return nil, err
-		}
-		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
-			return nil, err
-		}
-		fields := []string{}
-		if request.Title != nil {
-			issue.Title = *request.Title
-			fields = append(fields, "title")
-		}
-		if request.Body != nil {
-			issue.Body = *request.Body
-			fields = append(fields, "body")
-		}
-		if request.Labels != nil {
-			if err := requireUnreservedLabels(ctx, *request.Labels); err != nil {
-				return nil, err
-			}
-			issue.Labels = *request.Labels
-			fields = append(fields, "labels")
-		}
-		if request.Assignees != nil {
-			issue.Assignees = *request.Assignees
-			fields = append(fields, "assignees")
-		}
-		// A present patch either sets the level or clears it; an absent one
-		// leaves whatever the issue has (tracker.PriorityPatch).
-		if request.Priority.Present() {
-			issue.Priority = request.Priority.Level()
-			fields = append(fields, "priority")
-		}
-		if len(fields) == 0 {
-			return nil, nativeInvalid("At least one field must be supplied")
-		}
-		if err := validateNativeContent(issue.Title, issue.Body, issue.Labels, issue.Assignees, issue.Priority); err != nil {
-			return nil, err
-		}
-		return persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: fields}, now)
-	})
+	result, err := s.updateNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
 }
 
 func (s *Service) transitionNativeIssue(c echo.Context) error {
@@ -464,50 +429,9 @@ func (s *Service) changeNativeDependency(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, dependentID, err := readNativeIssue(ctx, tx, scope, c.Param("item"))
-		if err != nil {
-			return nil, err
-		}
-		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
-			return nil, err
-		}
-		if request.Operation != "add" && request.Operation != "remove" {
-			return nil, nativeInvalid("Dependency operation must be add or remove")
-		}
-		var blockerID tracker.WorkItemID
-		var blockerProject tracker.ProjectID
-		err = tx.QueryRowContext(ctx, `SELECT i.id, i.project_id FROM issues i WHERE i.organization_id = ? AND i.native_id = ?
-AND (? = 1 OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = ? AND g.organization_id = i.organization_id AND g.project_id = i.project_id))`, scope.organization, request.RelatedWorkItemID, scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly, scope.credential.ID).Scan(&blockerID, &blockerProject)
-		if err != nil {
-			return nil, err
-		}
-		if blockerID == dependentID {
-			return nil, nativeInvalid("Dependencies cannot form a cycle")
-		}
-		if request.Operation == "add" {
-			var cycle int
-			err := tx.QueryRowContext(ctx, `WITH RECURSIVE reachable(id) AS (SELECT dependent_issue_id FROM issue_dependencies WHERE blocker_issue_id = ? UNION SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id = r.id) SELECT count(*) FROM reachable WHERE id = ?`, dependentID, blockerID).Scan(&cycle)
-			if err != nil {
-				return nil, err
-			}
-			if cycle != 0 {
-				return nil, nativeInvalid("Dependencies cannot form a cycle")
-			}
-			_, err = tx.ExecContext(ctx, "INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at) VALUES (?, ?, 'native', ?, ?) ON CONFLICT DO NOTHING", blockerID, dependentID, formatHubTime(now), formatHubTime(now))
-			if err != nil {
-				return nil, err
-			}
-			if !slices.Contains(issue.Dependencies, request.RelatedWorkItemID) {
-				issue.Dependencies = append(issue.Dependencies, request.RelatedWorkItemID)
-				slices.Sort(issue.Dependencies)
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, "DELETE FROM issue_dependencies WHERE blocker_issue_id = ? AND dependent_issue_id = ?", blockerID, dependentID); err != nil {
-				return nil, err
-			}
-			issue.Dependencies = slices.DeleteFunc(issue.Dependencies, func(id tracker.NativeWorkItemID) bool { return id == request.RelatedWorkItemID })
-		}
-		return persistNativeIssue(ctx, tx, scope, issue, "dependency.changed", tracker.CollaborationData{RelatedWorkItemID: request.RelatedWorkItemID, Operation: request.Operation}, now)
-	})
+	result, err := s.changeNativeDependencyCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
 }

@@ -198,10 +198,28 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	if err := s.hostedAudit(ctx, credential.Hosted, "billing_viewed", c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	report, err := s.hostedBillingReport(ctx)
+	view, err := s.readBillingView(ctx)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing information is temporarily unavailable"})
 	}
+
+	return c.JSON(http.StatusOK, view)
+}
+
+func (s *Service) hostedPriceLabel(price HostedBillingPrice) string {
+	plan, err := readHostedPlan(context.Background(), s.database.db, price.Plan)
+	if err != nil || plan.MonthlyUSDCents == nil {
+		return price.Label
+	}
+	return plan.Name + " · " + hostedPlanPrice(plan.MonthlyUSDCents)
+}
+
+func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error) {
+	report, err := s.hostedBillingReport(ctx)
+	if err != nil {
+		return hostedBillingView{}, err
+	}
+
 	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
 	if cfg := s.config.Hosted.Billing; cfg != nil {
 		for _, price := range cfg.Prices {
@@ -220,13 +238,5 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	if view.Audit == nil {
 		view.Audit = []templates.HostedBillingAudit{}
 	}
-	return c.JSON(http.StatusOK, view)
-}
-
-func (s *Service) hostedPriceLabel(price HostedBillingPrice) string {
-	plan, err := readHostedPlan(context.Background(), s.database.db, price.Plan)
-	if err != nil || plan.MonthlyUSDCents == nil {
-		return price.Label
-	}
-	return plan.Name + " · " + hostedPlanPrice(plan.MonthlyUSDCents)
+	return view, nil
 }

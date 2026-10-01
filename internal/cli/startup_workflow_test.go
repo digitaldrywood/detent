@@ -216,7 +216,7 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 				manager.Wait()
 			})
 			pending, ok := manager.Registry().Pending("invalid")
-			if !ok || !pending.RetryStopped || !strings.Contains(pending.LastError, badPath) || !strings.Contains(pending.LastError, tt.wantError) {
+			if !ok || !pending.RetryStopped || !strings.Contains(pending.LastError, strconv.Quote(badPath)) || !strings.Contains(pending.LastError, tt.wantError) {
 				t.Fatalf("invalid project health = %+v, found = %v", pending, ok)
 			}
 			if healthy, ok := manager.Registry().Get("healthy"); !ok || !healthy.Running() {

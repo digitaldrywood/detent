@@ -583,17 +583,9 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		pilotStatus(t, "MCP initialized notification", alpha.owner.request(http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers), http.StatusAccepted)
 		listed := alpha.owner.request(http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`), headers)
 		pilotStatus(t, "MCP list", listed, http.StatusOK)
-		var catalog struct {
-			Result struct {
-				Tools []struct {
-					Name string `json:"name"`
-				} `json:"tools"`
-			} `json:"result"`
-		}
-		pilotDecode(t, listed, &catalog)
-		for _, tool := range catalog.Result.Tools {
-			if tool.Name != "connection_info" && tool.Name != "action_result" {
-				t.Fatalf("absent daemon services advertised: %s", listed.body)
+		for _, name := range []string{"board_state", "fleet_health", "telemetry_usage", "recent_activity", "explain_item"} {
+			if strings.Contains(listed.body, `"name":"`+name+`"`) {
+				t.Fatalf("absent daemon service advertised: %s", listed.body)
 			}
 		}
 		call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"board_state","arguments":{"project_id":"foreign"}}}`

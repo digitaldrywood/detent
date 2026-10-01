@@ -121,7 +121,7 @@ func TestPiLifecycleProcess(t *testing.T) {
 	if err != nil {
 		os.Exit(5)
 	}
-	child := exec.Command(os.Args[0], "-test.run=^TestPiLifecycleProcess$")
+	child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestPiLifecycleProcess$")
 	scratch := os.Getenv("TMPDIR")
 	if scratch == "" {
 		os.Exit(6)

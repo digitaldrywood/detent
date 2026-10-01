@@ -22,6 +22,8 @@ var errOperatorCommandUnavailable = errors.New("operator command is unavailable"
 type dashboardOperatorExecutor struct{ server *Server }
 
 type operatorActionResult struct {
+	Revision       int64                `json:"revision,omitempty"`
+	CommentID      string               `json:"comment_id,omitempty"`
 	CorrelationID  string               `json:"correlation_id"`
 	ActionID       string               `json:"action_id"`
 	ConnectionID   string               `json:"connection_id"`
@@ -52,6 +54,9 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 		return nil, err
 	}
 	for _, definition := range operatortool.CommandCatalog() {
+		if definition.Meta.Toolset == "billing_usage" && definition.Name != operatortool.BudgetOverrideSet && definition.Name != operatortool.BudgetOverrideClear && definition.Name != operatortool.UsageReport && definition.Name != operatortool.IssueExplanation {
+			continue
+		}
 		if definition.Annotations.ReadOnly {
 			definitions = append(definitions, definition)
 		} else if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err == nil {
@@ -86,6 +91,17 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		}
 	}
 	switch call.Name {
+	case operatortool.UsageReport:
+		return s.operatorUsageReport(ctx, call.Arguments)
+	case operatortool.IssueExplanation:
+		var request struct {
+			ProjectID string `json:"project_id"`
+			Reference string `json:"reference"`
+		}
+		if operatortool.DecodeArguments(call.Arguments, &request) != nil || strings.TrimSpace(request.ProjectID) == "" || len(request.ProjectID) > 256 || strings.TrimSpace(request.Reference) == "" || len(request.Reference) > 256 {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		return operatortool.NewAuthorizedExecutor(s.operatorTools).Execute(ctx, operatortool.Call{Name: operatortool.ExplainItem, Arguments: call.Arguments})
 	case operatortool.ConnectionInfo:
 		if err := operatortool.DecodeArguments(call.Arguments, &struct{}{}); err != nil {
 			return operatortool.Result{}, err
@@ -127,9 +143,15 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 			return operatortool.Result{}, err
 		}
 		return s.operatorActionResult(action)
-	case operatortool.MoveItem, operatortool.SetPriority, operatortool.StopRun, operatortool.FileIssue:
+	case operatortool.MoveItem, operatortool.SetPriority, operatortool.StopRun, operatortool.FileIssue, operatortool.BudgetOverrideSet, operatortool.BudgetOverrideClear:
 		return s.executeOperatorMutation(ctx, call)
 	default:
+		if operatortool.IsWorkTool(call.Name) {
+			if call.Name == operatortool.ListComments || call.Name == operatortool.WorkflowTimeline {
+				return s.executeWorkRead(ctx, call)
+			}
+			return s.executeOperatorMutation(ctx, call)
+		}
 		return operatortool.NewAuthorizedExecutor(s.operatorTools).Execute(ctx, call)
 	}
 }
@@ -147,6 +169,18 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 	if err != nil {
 		return operatortool.Result{}, err
 	}
+	if call.Name == operatortool.FileIssue || call.Name == operatortool.StopRun {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(arguments, &fields) != nil {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		if raw, ok := fields["priority"]; ok {
+			var rank int
+			if json.Unmarshal(raw, &rank) != nil || rank < 1 || rank > 4 {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
+		}
+	}
 	m.ProjectID = projectID
 	m, err = m.Bind(requestID, arguments)
 	if err != nil {
@@ -157,7 +191,15 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 		outcome = "denied"
 		return operatortool.Result{}, err
 	}
+	if operatortool.IsWorkTool(call.Name) {
+		if _, err := operatortool.DecodeWorkArguments(call.Name, arguments); err != nil {
+			return operatortool.Result{}, err
+		}
+	}
 	if previous, found, err := s.chat.RetryResult(ctx, chatpkg.ActionKind(call.Name), requestID, arguments); err != nil {
+		if (call.Name == operatortool.BudgetOverrideSet || call.Name == operatortool.BudgetOverrideClear) && errors.Is(err, operatortool.ErrInvalidArguments) {
+			return operatortool.Result{}, mutation.ErrConflict
+		}
 		return operatortool.Result{}, err
 	} else if found {
 		outcome = "replayed"
@@ -216,13 +258,19 @@ func operatorActionArguments(raw json.RawMessage) (string, json.RawMessage, stri
 	for key, raw := range fields {
 		if key == "priority" {
 			var rank int
-			if json.Unmarshal(raw, &rank) == nil && (rank < 1 || rank > 4) {
+			if json.Unmarshal(raw, &rank) == nil && (rank < 0 || rank > 4) {
 				return "", nil, "", operatortool.ErrInvalidArguments
 			}
 		}
 		limit := 256
-		if key == "description" {
+		if key == "description" || key == "body" {
 			limit = 32768
+		}
+		if key == "evidence" {
+			limit = 4096
+		}
+		if key == "cursor" {
+			limit = 2048
 		}
 		if key == "reason" {
 			limit = 1120
@@ -254,6 +302,8 @@ func (s *Server) operatorActionProposal(ctx context.Context, name string, argume
 	var result chatpkg.ToolResult
 	var err error
 	switch name {
+	case operatortool.BudgetOverrideSet, operatortool.BudgetOverrideClear:
+		return s.budgetActionProposal(ctx, name, arguments)
 	case operatortool.MoveItem:
 		result, err = s.chatMoveProposal(ctx, arguments)
 	case operatortool.SetPriority:
@@ -263,6 +313,9 @@ func (s *Server) operatorActionProposal(ctx context.Context, name string, argume
 	case operatortool.FileIssue:
 		result, err = s.chatFileIssueProposal(ctx, arguments)
 	default:
+		if operatortool.IsWorkTool(name) {
+			return s.workActionProposal(ctx, name, arguments)
+		}
 		return chatpkg.Action{}, operatortool.ErrUnknownTool
 	}
 	if err != nil || result.Proposal == nil {
@@ -303,7 +356,7 @@ func (s *Server) operatorApprovalURL(id string) string {
 }
 
 func (s *Server) operatorActionResult(action chatpkg.Action) (operatortool.Result, error) {
-	return operatorResult(operatorActionResult{action.Mutation.CorrelationID, action.ID, action.ConnectionID, action.OrganizationID, action.ProjectID, action.IssueID, action.Identifier, action.ResourceURL, action.Client, action.Kind, action.Arguments, action, action.Status, s.operatorApprovalURL(action.ConnectionID), operatortool.ActionResult})
+	return operatorResult(operatorActionResult{action.Revision, action.CommentID, action.Mutation.CorrelationID, action.ID, action.ConnectionID, action.OrganizationID, action.ProjectID, action.IssueID, action.Identifier, action.ResourceURL, action.Client, action.Kind, action.Arguments, action, action.Status, s.operatorApprovalURL(action.ConnectionID), operatortool.ActionResult})
 }
 
 func operatorResult(value any) (operatortool.Result, error) {
@@ -330,6 +383,8 @@ func (s *Server) operatorMutationReplay(ctx context.Context, m mutation.Metadata
 		return operatortool.Result{}, true, mutation.ErrUncertain
 	}
 	result, err := operatorResult(struct {
+		Revision      int64     `json:"revision,omitempty"`
+		CommentID     string    `json:"comment_id,omitempty"`
 		CorrelationID string    `json:"correlation_id"`
 		CompletedAt   time.Time `json:"completed_at"`
 		Mode          string    `json:"mode"`
@@ -339,7 +394,7 @@ func (s *Server) operatorMutationReplay(ctx context.Context, m mutation.Metadata
 		ResourceID    string    `json:"resource_id,omitempty"`
 		Identifier    string    `json:"identifier,omitempty"`
 		URL           string    `json:"url,omitempty"`
-	}{receipt.CorrelationID, receipt.CompletedAt, receipt.Mode, receipt.Confirmation, receipt.Outcome, receipt.ProjectID, receipt.ResourceID, receipt.Identifier, receipt.URL})
+	}{receipt.Revision, receipt.CommentID, receipt.CorrelationID, receipt.CompletedAt, receipt.Mode, receipt.Confirmation, receipt.Outcome, receipt.ProjectID, receipt.ResourceID, receipt.Identifier, receipt.URL})
 	return result, true, err
 }
 

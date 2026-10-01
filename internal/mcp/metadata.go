@@ -89,7 +89,10 @@ func (s *session) writeVersionResult(id json.RawMessage, version string, result 
 		return s.writeError(id, codeInternalError, "Internal error", nil)
 	}
 	object["resultType"] = json.RawMessage(`"complete"`)
-	info, _ := json.Marshal(map[string]any{"io.modelcontextprotocol/serverInfo": s.serverInfo()})
+	info, err := json.Marshal(map[string]any{"io.modelcontextprotocol/serverInfo": s.serverInfo()})
+	if err != nil {
+		return s.writeError(id, codeInternalError, "Internal error", nil)
+	}
 	object["_meta"] = info
 	return s.writeResult(id, object)
 }

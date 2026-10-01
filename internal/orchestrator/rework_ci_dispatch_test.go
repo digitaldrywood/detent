@@ -6,16 +6,25 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 func TestReworkCurrentHeadCIDispatch(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name string
-		pr   *connector.PullRequest
-		wait bool
+		name        string
+		lane        string
+		localStatus string
+		pr          *connector.PullRequest
+		wait        bool
 	}{
 		{name: "no PR"},
+		{name: "Rework missing owned status", localStatus: "local-gate", pr: &connector.PullRequest{State: "OPEN", CIStatus: "success", RequiredCheckFailures: []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}}}},
+		{name: "Todo missing owned status", lane: "Todo", localStatus: "local-gate", pr: &connector.PullRequest{State: "OPEN", CIStatus: "success", RequiredCheckFailures: []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}}}},
+		{name: "Merging missing owned status", lane: "Merging", localStatus: "local-gate", pr: &connector.PullRequest{State: "OPEN", MergeableState: "blocked", CIStatus: "success", Number: 42, HeadSHA: "head", RequiredCheckFailures: []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}}}},
+		{name: "missing external status still waits", localStatus: "local-gate", pr: &connector.PullRequest{State: "OPEN", CIStatus: "pending", RequiredCheckFailures: []connector.PullRequestCheck{{Name: "Verify", Status: "missing", Conclusion: "missing"}}}, wait: true},
+		{name: "missing status without ownership still waits", pr: &connector.PullRequest{State: "OPEN", CIStatus: "pending", RequiredCheckFailures: []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}}}, wait: true},
+		{name: "missing local with running external check", localStatus: "local-gate", pr: &connector.PullRequest{State: "OPEN", CIStatus: "pending", RunningChecks: []string{"Verify"}, RequiredCheckFailures: []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}}}, wait: true},
 		{name: "no checks", pr: &connector.PullRequest{State: "OPEN"}},
 		{name: "pending", pr: &connector.PullRequest{State: "OPEN", CIStatus: "pending"}, wait: true},
 		{name: "queued", pr: &connector.PullRequest{State: "OPEN", CIStatus: "queued"}, wait: true},
@@ -33,18 +42,34 @@ func TestReworkCurrentHeadCIDispatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			for _, retry := range []bool{false, true} {
-				cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Rework", "Todo"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Rework", "Todo"}})
+				cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Rework", "Todo", "Merging"}, AutoPromote: AutoPromoteConfig{Gate: gate.Config{LocalStatus: tt.localStatus}}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Rework", "Todo"}})
 				now := time.Now()
 				state := newState(cfg)
-				issue := dispatchTestIssue("rework", "Rework")
+				lane := tt.lane
+				if lane == "" {
+					lane = "Rework"
+				}
+				issue := dispatchTestIssue("rework", lane)
 				issue.PullRequest = tt.pr
 				next := dispatchTestIssue("next", "Todo")
 				if retry {
 					state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2, DueAt: now}
 				}
+
+				if lane == "Todo" {
+					tracker := &autoPromoteTickConnector{}
+					orch := &Orchestrator{cfg: cfg, connector: tracker}
+					if moved := orch.reconcileStaleLinkedPullRequestIssues(t.Context(), &state, []connector.Issue{issue}, now); len(moved) != 0 || len(tracker.updates) != 0 {
+						t.Fatal("unproduced local status incorrectly treated as stale Todo work")
+					}
+				}
 				var reason string
 				planner := newDispatchPlanner(cfg)
-				plan := planner.plan(&state, []connector.Issue{issue, next}, now, dispatchPlanHooks{decision: func(d dispatchPlanDecision) {
+				candidates := []connector.Issue{issue, next}
+				if tt.lane != "" {
+					candidates = []connector.Issue{issue}
+				}
+				plan := planner.plan(&state, candidates, now, dispatchPlanHooks{decision: func(d dispatchPlanDecision) {
 					if d.Issue.ID == issue.ID {
 						reason = d.SkipReason
 					}
@@ -54,7 +79,21 @@ func TestReworkCurrentHeadCIDispatch(t *testing.T) {
 					want = next.ID
 				}
 				if !slices.Equal(plan.DispatchOrder(), []string{want}) {
-					t.Fatalf("retry=%v dispatch order=%v, want %s", retry, plan.DispatchOrder(), want)
+					t.Fatalf("retry=%v dispatch order=%v, want %s (reason=%s)", retry, plan.DispatchOrder(), want, reason)
+				}
+				if !tt.wait && reason == dispatchSkipCurrentHeadCIWait {
+					t.Fatalf("retry=%v unexpectedly waited on CI", retry)
+				}
+				if lane == "Merging" {
+					if missing := mergeWorkerMissingRequiredChecks(issue, tt.localStatus); len(missing) != 0 {
+						t.Fatalf("owned status entered missing-check streak: %v", missing)
+					}
+					if mergeWorkerProgrammaticMergeWaiting(issue) {
+						t.Fatal("owned status entered merge CI wait")
+					}
+					if mergeWorkerProgrammaticMergeReady(issue, cfg) {
+						t.Fatal("unproduced local gate allowed merge before validation")
+					}
 				}
 				if tt.wait && reason != dispatchSkipCurrentHeadCIWait {
 					t.Fatalf("retry=%v reason=%q", retry, reason)

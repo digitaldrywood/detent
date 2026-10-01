@@ -1,31 +1,18 @@
 package web
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/budget"
-	"github.com/digitaldrywood/detent/internal/project"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func (s *Server) apiBudgetOverrideSet(c echo.Context) error {
 	projectID := strings.TrimSpace(c.Param("project_id"))
-	trackedProject, ok := s.registry.Get(project.ID(projectID))
-	if !ok {
-		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
-	}
-	writer, ok := s.store.(budget.OverrideWriter)
-	if !ok {
-		return echo.NewHTTPError(http.StatusServiceUnavailable, "Runtime store does not support budget overrides")
-	}
 	dayCap, err := optionalPositiveFormFloat(c, "per_day_max_usd")
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
@@ -34,28 +21,7 @@ func (s *Server) apiBudgetOverrideSet(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
-	duration, err := time.ParseDuration(strings.TrimSpace(c.FormValue("duration")))
-	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "duration must be a valid duration such as 4h")
-	}
-	cfg := trackedProject.Workflow().Config.Budget
-	_, err = budget.SetOverride(c.Request().Context(), writer, budget.Config{
-		Enabled:        cfg.Enabled,
-		ProjectID:      projectID,
-		PerDayMaxUSD:   cfg.PerDayMaxUSD,
-		PerIssueMaxUSD: cfg.PerIssueMaxUSD,
-		Overrides:      writer,
-	}, budget.OverrideLimits{
-		MaxDuration:   time.Duration(cfg.OverrideMaxDurationSeconds) * time.Second,
-		MaxMultiplier: cfg.OverrideMaxMultiplier,
-	}, budget.OverrideRequest{
-		ProjectID:      projectID,
-		PerDayMaxUSD:   dayCap.Value,
-		PerIssueMaxUSD: issueCap.Value,
-		Duration:       duration,
-		Reason:         c.FormValue("reason"),
-		Now:            time.Now().UTC(),
-	})
+	_, err = s.setProjectBudget(c.Request().Context(), operatorBudgetRequest{ProjectID: projectID, PerDayMaxUSD: dayCap.Value, PerIssueMaxUSD: issueCap.Value, Duration: strings.TrimSpace(c.FormValue("duration")), Reason: c.FormValue("reason")})
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
@@ -64,11 +30,7 @@ func (s *Server) apiBudgetOverrideSet(c echo.Context) error {
 
 func (s *Server) apiBudgetOverrideClear(c echo.Context) error {
 	projectID := strings.TrimSpace(c.Param("project_id"))
-	writer, ok := s.store.(budget.OverrideWriter)
-	if !ok {
-		return echo.NewHTTPError(http.StatusServiceUnavailable, "Runtime store does not support budget overrides")
-	}
-	if err := writer.ClearBudgetOverride(c.Request().Context(), projectID); err != nil && !errors.Is(err, store.ErrNotFound) {
+	if err := s.clearProjectBudget(c.Request().Context(), projectID); err != nil {
 		return err
 	}
 	return s.renderProjectBudgetPanel(c, projectID)

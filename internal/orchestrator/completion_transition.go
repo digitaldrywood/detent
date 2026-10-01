@@ -48,6 +48,16 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 		if completed.CompletionKind == workpad.CompletionOperational && !operationalCompletionEvidenceCurrent(completed.Issue, issue) {
 			continue
 		}
+		if pullRequestMerged(issue.PullRequest) {
+			// Merged delivery belongs to the existing merged-PR owner. An open-PR
+			// review transition would otherwise schedule a continuation here.
+			if completed.successfulAttemptPersisted && completed.FinalState == FinalStateCompleted {
+				if _, transitioned := o.reconcileStaleLinkedPullRequestIssues(ctx, state, []connector.Issue{issue}, now)[issueID]; transitioned {
+					result.transitioned[issueID] = struct{}{}
+				}
+			}
+			continue
+		}
 		if gate.Effective(cfg.Gate).Validator.Enabled &&
 			strings.TrimSpace(completed.GateWaitReason) == completedReworkGateWaitReason {
 			if hydrated, attempted := validatorHeadHydration[issueID]; attempted {

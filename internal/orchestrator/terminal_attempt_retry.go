@@ -491,14 +491,18 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 		if !ok {
 			continue
 		}
-		if preTurnAttempt(attempt) {
+		legacyRESTCapacity := strings.TrimSpace(attempt.ErrorClass) == githubRESTCapacityError && terminalAttemptRetryableFailure(attempt)
+		if preTurnAttempt(attempt) || strings.TrimSpace(attempt.ErrorClass) == "service_restart" || legacyRESTCapacity {
+			if terminalAttemptHasWorkProduct(issue, workAttemptHasPushedProduct(attempt)) || pullRequestHydrationBlocksProgress(issue.PullRequest) || o.terminalAttemptClaimBlocksDemotion(ctx, issue, now) {
+				continue
+			}
 			var metadata struct {
 				Source string `json:"dispatch_source_state"`
 			}
 			if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) != nil {
 				metadata.Source = ""
 			}
-			if updated, changed := o.restorePreTurnIssue(ctx, state, Running{Issue: issue, DispatchSourceState: metadata.Source}, now); changed {
+			if updated, changed := o.restorePreTurnIssue(ctx, state, Running{Issue: issue, DispatchSourceState: metadata.Source, WorkProductPushed: workAttemptHasPushedProduct(attempt)}, now); changed {
 				transitions = append(transitions, updated)
 			}
 			continue

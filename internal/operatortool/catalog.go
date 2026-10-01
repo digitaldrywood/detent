@@ -64,7 +64,7 @@ func Catalog() []Definition {
 }
 
 func Lookup(name string) (Definition, bool) {
-	for _, definition := range append(append(Catalog(), CommandCatalog()...), AdministrationCatalog()...) {
+	for _, definition := range append(append(Catalog(), WorkReadCatalog()...), append(CommandCatalog(), AdministrationCatalog()...)...) {
 		if definition.Name == name {
 			return definition, true
 		}
