@@ -173,6 +173,11 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 	if err := authorizeHuman(ctx, current.connection.Identity.OrganizationID); err != nil {
 		return err
 	}
+	browser, ok := ctx.Value(humanApprovalKey{}).(operatortool.Identity)
+	if !ok || current.connection.Identity.SessionID != "" && browser.PrincipalID != current.connection.Identity.PrincipalID {
+		return operatortool.ErrAccessDenied
+	}
+
 	if _, err := operatortool.AuthorizeCurrent(operatortool.WithConnection(ctx, *current.connection), operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return err
 	}
@@ -187,6 +192,29 @@ func RequiresConfirmation(action Action) bool {
 		return required
 	}
 	switch action.Kind {
+	case ActionSetPriority, "create_workspace", "create_conversation", "patch_conversation", "upload_conversation_attachment":
+		return false
+	case "post_conversation_command":
+		var request struct {
+			Input struct {
+				Kind string `json:"kind"`
+			} `json:"input"`
+		}
+		if json.Unmarshal(action.Arguments, &request) != nil {
+			return true
+		}
+		return request.Input.Kind != "message" && request.Input.Kind != "answer"
+	case "create_project_action", "patch_project_action":
+		var request struct {
+			Input struct {
+				Command               *string `json:"command"`
+				RunOnWorktreeCreation *bool   `json:"run_on_worktree_creation"`
+			} `json:"input"`
+		}
+		if json.Unmarshal(action.Arguments, &request) != nil {
+			return true
+		}
+		return request.Input.Command != nil || request.Input.RunOnWorktreeCreation != nil
 	case ActionKind(operatortool.CreateChange), ActionKind(operatortool.DiscussChange), ActionKind(operatortool.ViewChangeFile), ActionKind(operatortool.ArtifactAccess):
 		return false
 	case ActionKind(operatortool.ReviewChange):
@@ -197,7 +225,7 @@ func RequiresConfirmation(action Action) bool {
 		return args.Decision != "commented"
 	case ActionKind(operatortool.OrganizationSwitch):
 		return false
-	case ActionKind(operatortool.BudgetOverrideClear), ActionSetPriority, ActionKind(operatortool.Refresh), ActionKind(operatortool.AcknowledgeWarnings), ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
+	case ActionKind(operatortool.BudgetOverrideClear), ActionKind(operatortool.Refresh), ActionKind(operatortool.AcknowledgeWarnings), ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
 		return false
 	case ActionKind(operatortool.EditItem):
 		return action.Material

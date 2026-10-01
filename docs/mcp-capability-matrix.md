@@ -2069,19 +2069,19 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Create conversation
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.create_conversation` — Bounded createConversationRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.create_conversation` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"title":{"type":"string","maxLength":800},"first_message":{"type":"object","properties":{"text":{"type":"string","maxLength":16000}},"required":["text"],"additionalProperties":false}},"required":[],"additionalProperties":false}},"required":["request_id","project_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.createConversation; s.requireLinkAvailable
-- Extraction: Extract hubserver.createConversation application inputs/results and validation from Echo; reuse s.requireLinkAvailable. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireLinkAvailable(ctx, tx, *record); err != nil
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations](../internal/hubserver/conversation_api.go#L37), [web/conversation/src/runtime/rpc/http.ts:425](../web/conversation/src/runtime/rpc/http.ts#L425)
@@ -2229,19 +2229,19 @@ Sources: [POST /api/v2/organizations/:organization/projects](../internal/hubserv
 
 Create project action
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.create_project_action` — Bounded createProjectActionRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createProjectActionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.create_project_action` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"name":{"type":"string","maxLength":200},"command":{"type":"string","maxLength":4096},"keybinding":{"type":"string","maxLength":128},"icon":{"type":"string","maxLength":128},"preview_url":{"type":"string","maxLength":2048},"open_preview":{"type":"boolean"},"run_on_worktree_creation":{"type":"boolean"}},"required":["name","command"],"additionalProperties":false}},"required":["request_id","project_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.createProjectAction; s.nativeMutationStatus
-- Extraction: Extract hubserver.createProjectAction application inputs/results and validation from Echo; reuse s.nativeMutationStatus. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/actions](../internal/hubserver/native_api.go#L170), [web/conversation/src/app/work/lib/workHttp.ts:698](../web/conversation/src/app/work/lib/workHttp.ts#L698), [web/conversation/src/components/ProjectScriptsControl.tsx:303](../web/conversation/src/components/ProjectScriptsControl.tsx#L303)
@@ -2249,19 +2249,19 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/actions](..
 
 Create project action run
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.create_project_action_run` — Bounded createProjectActionRunRequest: organization, project, action; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createProjectActionRunResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.create_project_action_run` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"action_id":{"type":"string","minLength":1,"maxLength":256},"workspace_id":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1,"maximum":9007199254740991}},"required":["request_id","project_id","action_id","workspace_id","expected_revision"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.createProjectActionRun; s.nativeMutationStatus, s.requireWorkspaces, service.queueActionRun
-- Extraction: Extract hubserver.createProjectActionRun application inputs/results and validation from Echo; reuse s.nativeMutationStatus, s.requireWorkspaces, service.queueActionRun. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireWorkspaces()
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/actions/:action/runs](../internal/hubserver/native_api.go#L174), [web/conversation/src/app/work/lib/workHttp.ts:718](../web/conversation/src/app/work/lib/workHttp.ts#L718)
@@ -2289,19 +2289,19 @@ Sources: [POST /api/v2/organizations/:organization/runner-enrollments](../intern
 
 Create workspace
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.create_workspace` — Bounded createWorkspaceRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createWorkspaceResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.create_workspace` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"work_item_id":{"type":"string","minLength":1,"maxLength":256},"attempt_id":{"type":"string","minLength":1,"maxLength":256},"ref":{"type":"string","maxLength":512},"runner_id":{"type":"string","minLength":1,"maxLength":256},"requires":{"type":"array","items":{"type":"string","enum":["terminal","exec","files","diff","preview"]},"maxItems":5}},"required":[],"additionalProperties":false}},"required":["request_id","project_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.createWorkspace; s.nativeMutationStatus, s.requireWorkspaces, service.committed, service.openWorkspace
-- Extraction: Extract hubserver.createWorkspace application inputs/results and validation from Echo; reuse s.nativeMutationStatus, s.requireWorkspaces, service.committed, service.openWorkspace. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireWorkspaces()
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces](../internal/hubserver/native_api.go#L157), [web/conversation/src/app/work/lib/workHttp.ts:676](../web/conversation/src/app/work/lib/workHttp.ts#L676)
@@ -2330,19 +2330,19 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/integration
 
 Delete conversation attachment
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.delete_conversation_attachment` — Bounded deleteConversationAttachmentRequest: organization, project, conversation, attachment; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → deleteConversationAttachmentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.delete_conversation_attachment` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256},"attachment_id":{"type":"string","minLength":1,"maxLength":256}},"required":["request_id","project_id","conversation_id","attachment_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.deleteConversationAttachment; service.loadConversation, service.requireActorAuthority, service.store.deleteAttachment, service.store.readAttachment, service.transact
-- Extraction: Extract hubserver.deleteConversationAttachment application inputs/results and validation from Echo; reuse service.loadConversation, service.requireActorAuthority, service.store.deleteAttachment, service.store.readAttachment, service.transact. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
 
 Sources: [DELETE /api/v2/organizations/:organization/projects/:project/conversations/:conversation/attachments/:attachment](../internal/hubserver/conversation_api.go#L52), [web/conversation/src/runtime/rpc/http.ts:496](../web/conversation/src/runtime/rpc/http.ts#L496)
@@ -2350,19 +2350,19 @@ Sources: [DELETE /api/v2/organizations/:organization/projects/:project/conversat
 
 Delete project action
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.delete_project_action` — Bounded deleteProjectActionRequest: organization, project, action; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → deleteProjectActionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.delete_project_action` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"action_id":{"type":"string","minLength":1,"maxLength":256}},"required":["request_id","project_id","action_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.deleteProjectAction; s.hubTransact, s.recheckHostedMutation
-- Extraction: Extract hubserver.deleteProjectAction application inputs/results and validation from Echo; reuse s.hubTransact, s.recheckHostedMutation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
 
 Sources: [DELETE /api/v2/organizations/:organization/projects/:project/actions/:action](../internal/hubserver/native_api.go#L172), [web/conversation/src/app/work/lib/workHttp.ts:715](../web/conversation/src/app/work/lib/workHttp.ts#L715)
@@ -2370,19 +2370,19 @@ Sources: [DELETE /api/v2/organizations/:organization/projects/:project/actions/:
 
 Delete workspace
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.delete_workspace` — Bounded deleteWorkspaceRequest: organization, project, workspace; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → deleteWorkspaceResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.delete_workspace` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"workspace_id":{"type":"string","minLength":1,"maxLength":256}},"required":["request_id","project_id","workspace_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.deleteWorkspace; s.hubTransact, s.recheckHostedMutation, s.requireWorkspaces, service.committed, service.endWorkspace, service.readWorkspaceForActor
-- Extraction: Extract hubserver.deleteWorkspace application inputs/results and validation from Echo; reuse s.hubTransact, s.recheckHostedMutation, s.requireWorkspaces, service.committed, service.endWorkspace, service.readWorkspaceForActor. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireWorkspaces()
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
 
 Sources: [DELETE /api/v2/organizations/:organization/projects/:project/workspaces/:workspace](../internal/hubserver/native_api.go#L160), [web/conversation/src/app/work/lib/workHttp.ts:686](../web/conversation/src/app/work/lib/workHttp.ts#L686)
@@ -2490,19 +2490,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/change-revie
 
 Get conversation
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.get_conversation` — Bounded getConversationRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.get_conversation` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256}},"required":["project_id","conversation_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getConversation; service.loadConversation, service.store.listMessages, service.store.listSnapshotQuestions, service.transact
-- Extraction: Extract hubserver.getConversation application inputs/results and validation from Echo; reuse service.loadConversation, service.store.listMessages, service.store.listSnapshotQuestions, service.transact. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation](../internal/hubserver/conversation_api.go#L40), [web/conversation/src/runtime/rpc/http.ts:408](../web/conversation/src/runtime/rpc/http.ts#L408)
@@ -2510,18 +2510,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/conversation
 
 Get conversation attachment
 
-- Audience: worker; status: **excluded**; owner: digitaldrywood/detent#3346.
-- Decision: Worker-only attachment-byte endpoint registered with requireConversationScope(apiScopeWorker); operator upload/delete and typed attachment references remain separate.
-- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.get_conversation_attachment` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256},"attachment_id":{"type":"string","minLength":1,"maxLength":256},"offset":{"type":"integer","minimum":0,"maximum":2147483647},"length":{"type":"integer","minimum":1,"maximum":32768}},"required":["project_id","conversation_id","attachment_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role worker; credential worker conversation scope; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getConversationAttachment; service.loadConversation, service.store.readAttachment, service.store.readAttachmentContent
-- Extraction: Extract hubserver.getConversationAttachment application inputs/results and validation from Echo; reuse service.loadConversation, service.store.readAttachment, service.store.readAttachmentContent. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation/attachments/:attachment](../internal/hubserver/conversation_api.go#L51)
@@ -2689,19 +2690,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/onboarding](
 
 Get project action run
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.get_project_action_run` — Bounded getProjectActionRunRequest: organization, project, action, run; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getProjectActionRunResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.get_project_action_run` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"action_id":{"type":"string","minLength":1,"maxLength":256},"run_id":{"type":"string","minLength":1,"maxLength":256}},"required":["project_id","action_id","run_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getProjectActionRun; s.readActionRunForRequest
-- Extraction: Extract hubserver.getProjectActionRun application inputs/results and validation from Echo; reuse s.readActionRunForRequest. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:action/runs/:run](../internal/hubserver/native_api.go#L175), [web/conversation/src/app/work/lib/workHttp.ts:725](../web/conversation/src/app/work/lib/workHttp.ts#L725)
@@ -2709,19 +2710,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:act
 
 Get project action run output
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.get_project_action_run_output` — Bounded getProjectActionRunOutputRequest: organization, project, action, run; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getProjectActionRunOutputResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.get_project_action_run_output` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"action_id":{"type":"string","minLength":1,"maxLength":256},"run_id":{"type":"string","minLength":1,"maxLength":256},"offset":{"type":"integer","minimum":0,"maximum":2147483647},"length":{"type":"integer","minimum":1,"maximum":32768}},"required":["project_id","action_id","run_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getProjectActionRunOutput; s.readActionRunForRequest
-- Extraction: Extract hubserver.getProjectActionRunOutput application inputs/results and validation from Echo; reuse s.readActionRunForRequest. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:action/runs/:run/output](../internal/hubserver/native_api.go#L176)
@@ -2848,19 +2849,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 Get workspace
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.get_workspace` — Bounded getWorkspaceRequest: organization, project, workspace; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getWorkspaceResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.get_workspace` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"workspace_id":{"type":"string","minLength":1,"maxLength":256}},"required":["project_id","workspace_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.getWorkspace; s.requireWorkspaces, service.presentWorkspace, service.readWorkspaceForActor
-- Extraction: Extract hubserver.getWorkspace application inputs/results and validation from Echo; reuse s.requireWorkspaces, service.presentWorkspace, service.readWorkspaceForActor. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireWorkspaces()
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace](../internal/hubserver/native_api.go#L159), [web/conversation/src/app/work/lib/workHttp.ts:674](../web/conversation/src/app/work/lib/workHttp.ts#L674)
@@ -2868,19 +2869,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:
 
 Get workspace terminal recording
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.get_workspace_terminal_recording` — Bounded getWorkspaceTerminalRecordingRequest: organization, project, workspace, recording; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getWorkspaceTerminalRecordingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.get_workspace_terminal_recording` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"workspace_id":{"type":"string","minLength":1,"maxLength":256},"recording_id":{"type":"string","minLength":1,"maxLength":256},"offset":{"type":"integer","minimum":0,"maximum":2147483647},"length":{"type":"integer","minimum":1,"maximum":32768}},"required":["project_id","workspace_id","recording_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership recording creator or owner/admin; user-isolation recordings owners only; workspace belongs to project.
-- Application: s.getWorkspaceTerminalRecording; s.requireWorkspaces, service.readWorkspaceForActor
-- Extraction: Extract hubserver.getWorkspaceTerminalRecording application inputs/results and validation from Echo; reuse s.requireWorkspaces, service.readWorkspaceForActor. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireWorkspaces()
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/terminal-recordings/:recording](../internal/hubserver/native_api.go#L183)
@@ -3454,19 +3455,19 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Link conversation
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.link_conversation` — Bounded linkConversationRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → linkConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.link_conversation` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"share_history":{"type":"boolean"},"issue":{"type":"object","properties":{"title":{"type":"string","maxLength":256},"description":{"type":"string","maxLength":32768},"state":{"type":"string","maxLength":256},"labels":{"type":"array","items":{"type":"string","maxLength":256},"maxItems":64},"priority":{"type":"integer","minimum":0,"maximum":3}},"required":["title"],"additionalProperties":false},"next":{"type":"object","properties":{"state":{"type":"string","maxLength":256},"priority":{"type":"integer","minimum":0,"maximum":3},"dispatch":{"type":"string","enum":["now","later"]}},"required":[],"additionalProperties":false}},"required":["share_history","issue"],"additionalProperties":false}},"required":["request_id","project_id","conversation_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.linkConversation; s.nativeMutation, service.appendMessage, service.authorizeWrite, service.committed, service.coordinator.Hold, service.loadConversation, service.queryMessages, service.store.readConversation, service.store.recordAudience, service.updateExecution, service.updateMessage
-- Extraction: Extract hubserver.linkConversation application inputs/results and validation from Echo; reuse s.nativeMutation, service.appendMessage, service.authorizeWrite, service.committed, service.coordinator.Hold, service.loadConversation, service.queryMessages, service.store.readConversation, service.store.recordAudience, service.updateExecution, service.updateMessage. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/link](../internal/hubserver/conversation_api.go#L44), [web/conversation/src/runtime/rpc/http.ts:445](../web/conversation/src/runtime/rpc/http.ts#L445)
@@ -3494,19 +3495,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 List conversation messages
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.list_conversation_messages` — Bounded listConversationMessagesRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listConversationMessagesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.list_conversation_messages` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256},"before":{"type":"integer","minimum":0,"maximum":9007199254740991},"limit":{"type":"integer","minimum":1,"maximum":200}},"required":["project_id","conversation_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.listConversationMessages; s.conversations.loadConversation, s.conversations.store.listMessages
-- Extraction: Extract hubserver.listConversationMessages application inputs/results and validation from Echo; reuse s.conversations.loadConversation, s.conversations.store.listMessages. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation/messages](../internal/hubserver/conversation_api.go#L41), [web/conversation/src/runtime/rpc/http.ts:416](../web/conversation/src/runtime/rpc/http.ts#L416), [web/conversation/src/components/chat/MessagesTimeline.tsx:1542](../web/conversation/src/components/chat/MessagesTimeline.tsx#L1542), [web/conversation/src/components/chat/MessagesTimeline.tsx:3514](../web/conversation/src/components/chat/MessagesTimeline.tsx#L3514)
@@ -3674,19 +3675,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/labels](../i
 
 List organization conversations
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.list_organization_conversations` — Bounded listOrganizationConversationsRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listOrganizationConversationsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.list_organization_conversations` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"cursor":{"type":"string","maxLength":1024},"query":{"type":"string","maxLength":256},"settled":{"type":"boolean"},"limit":{"type":"integer","minimum":1,"maximum":200}},"required":[],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.listOrganizationConversations; s.listConversationsPage, s.readableConversationProjects
-- Extraction: Extract hubserver.listOrganizationConversations application inputs/results and validation from Echo; reuse s.listConversationsPage, s.readableConversationProjects. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
-- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/conversations](../internal/hubserver/conversation_api.go#L39), [web/conversation/src/runtime/rpc/http.ts:386](../web/conversation/src/runtime/rpc/http.ts#L386)
@@ -3694,19 +3695,19 @@ Sources: [GET /api/v2/organizations/:organization/conversations](../internal/hub
 
 List project action runs
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.list_project_action_runs` — Bounded listProjectActionRunsRequest: organization, project, action; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listProjectActionRunsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.list_project_action_runs` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"action_id":{"type":"string","minLength":1,"maxLength":256},"limit":{"type":"integer","minimum":1,"maximum":200}},"required":["project_id","action_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.listProjectActionRuns; handler-owned application validation/read/command
-- Extraction: Extract hubserver.listProjectActionRuns application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:action/runs](../internal/hubserver/native_api.go#L173), [web/conversation/src/app/work/lib/workHttp.ts:731](../web/conversation/src/app/work/lib/workHttp.ts#L731)
@@ -3714,19 +3715,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:act
 
 List project actions
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.list_project_actions` — Bounded listProjectActionsRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listProjectActionsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.list_project_actions` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256}},"required":["project_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.listProjectActions; handler-owned application validation/read/command
-- Extraction: Extract hubserver.listProjectActions application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/actions](../internal/hubserver/native_api.go#L169), [web/conversation/src/app/work/lib/workHttp.ts:696](../web/conversation/src/app/work/lib/workHttp.ts#L696)
@@ -3734,19 +3735,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/actions](../
 
 List project conversations
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.list_project_conversations` — Bounded listProjectConversationsRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listProjectConversationsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.list_project_conversations` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"cursor":{"type":"string","maxLength":1024},"query":{"type":"string","maxLength":256},"settled":{"type":"boolean"},"limit":{"type":"integer","minimum":1,"maximum":200}},"required":["project_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.listProjectConversations; s.listConversationsPage
-- Extraction: Extract hubserver.listProjectConversations application inputs/results and validation from Echo; reuse s.listConversationsPage. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations](../internal/hubserver/conversation_api.go#L38), [web/conversation/src/runtime/rpc/http.ts:397](../web/conversation/src/runtime/rpc/http.ts#L397)
@@ -3794,19 +3795,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 List work item references
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.list_work_item_references` — Bounded listWorkItemReferencesRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listWorkItemReferencesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.list_work_item_references` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"work_item_id":{"type":"string","minLength":1,"maxLength":256}},"required":["project_id","work_item_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.listWorkItemReferences; handler-owned application validation/read/command
-- Extraction: Extract hubserver.listWorkItemReferences application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/references](../internal/hubserver/conversation_api.go#L46)
@@ -3834,19 +3835,19 @@ Sources: [GET /api/v1/work-items](../internal/hubserver/api_http.go#L63)
 
 List workspace terminal recordings
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.list_workspace_terminal_recordings` — Bounded listWorkspaceTerminalRecordingsRequest: organization, project, workspace; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listWorkspaceTerminalRecordingsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.list_workspace_terminal_recordings` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"workspace_id":{"type":"string","minLength":1,"maxLength":256},"limit":{"type":"integer","minimum":1,"maximum":200}},"required":["project_id","workspace_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership recording creator or owner/admin; user-isolation recordings owners only; workspace belongs to project.
-- Application: s.listWorkspaceTerminalRecordings; s.requireWorkspaces, service.readWorkspaceForActor
-- Extraction: Extract hubserver.listWorkspaceTerminalRecordings application inputs/results and validation from Echo; reuse s.requireWorkspaces, service.readWorkspaceForActor. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireWorkspaces()
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/terminal-recordings](../internal/hubserver/native_api.go#L182)
@@ -3854,19 +3855,19 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:
 
 List workspaces
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.list_workspaces` — Bounded listWorkspacesRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listWorkspacesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.list_workspaces` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"work_item_id":{"type":"string","minLength":1,"maxLength":256},"state":{"type":"string","maxLength":256},"limit":{"type":"integer","minimum":1,"maximum":200}},"required":["project_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.listWorkspaces; s.requireWorkspaces, service.presentWorkspace
-- Extraction: Extract hubserver.listWorkspaces application inputs/results and validation from Echo; reuse s.requireWorkspaces, service.presentWorkspace. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireWorkspaces()
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces](../internal/hubserver/native_api.go#L158), [web/conversation/src/app/work/lib/workHttp.ts:665](../web/conversation/src/app/work/lib/workHttp.ts#L665), [web/conversation/src/app/adapters/workspaces.ts:289](../web/conversation/src/app/adapters/workspaces.ts#L289)
@@ -3914,13 +3915,13 @@ Sources: [Any /api/v2/organizations/:organization/mcp](../internal/hubserver/ope
 Mint workspace relay ticket
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3346.
-- Decision: Exact authenticated transport entry for existing governed application services. No MCP raw HTTP/relay/tool-forwarding proxy; meaningful typed application operations and the five existing read tools are separate rows.
+- Decision: Browser transport entry only; no raw relay ticket or worker proxy is exposed. workspace_terminal returns an authorized unsupported_transport result with workspace capabilities and terminal-recording alternatives. Configured actions and bounded output provide the meaningful headless execution operations.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.mintWorkspaceRelayTicket; s.hubTransact, s.relayPrincipalFor, s.requireRelayOrigin, s.requireWorkspaces, service.readWorkspaceForActor
 - Extraction: No raw transport command extraction; share authorization with the typed payload operations.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireRelayOrigin(c); err != nil; s.requireWorkspaces()
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority; existing workspace relay/terminal authority regressions.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -3992,13 +3993,13 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/policy/obse
 Open workspace relay
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3346.
-- Decision: Exact authenticated transport entry for existing governed application services. No MCP raw HTTP/relay/tool-forwarding proxy; meaningful typed application operations and the five existing read tools are separate rows.
+- Decision: Browser transport entry only; no raw relay ticket or worker proxy is exposed. workspace_terminal returns an authorized unsupported_transport result with workspace capabilities and terminal-recording alternatives. Configured actions and bounded output provide the meaningful headless execution operations.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.openWorkspaceRelay; s.hubTransact, s.relayActor, s.relayPrincipalFor, s.requireRelayOrigin, s.requireWorkspaces, service.readWorkspaceForActor, service.servePerson
 - Extraction: No raw transport command extraction; share authorization with the typed payload operations.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireRelayOrigin(c); err != nil; s.requireWorkspaces()
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority; existing workspace relay/terminal authority regressions.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -4049,19 +4050,19 @@ Sources: [GET /api/v1/outbox/health](../internal/hubserver/api_http.go#L76)
 
 Patch conversation
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.patch_conversation` — Bounded patchConversationRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → patchConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.patch_conversation` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"title":{"type":"string","maxLength":800},"preferences":{"type":"object","properties":{"model":{"type":"string","maxLength":256},"reasoning_effort":{"type":"string","maxLength":256},"access":{"type":"string","maxLength":256}},"required":[],"additionalProperties":false}},"required":[],"additionalProperties":false}},"required":["request_id","project_id","conversation_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.patchConversation; s.conversationDefaultModel, s.conversationModelChoices, s.conversations.writeAgentOverride, s.hasLunaCoordinator, s.saveConversationChange
-- Extraction: Extract hubserver.patchConversation application inputs/results and validation from Echo; reuse s.conversationDefaultModel, s.conversationModelChoices, s.conversations.writeAgentOverride, s.hasLunaCoordinator, s.saveConversationChange. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: ordinary non-destructive edit → none
 - Confirmation: arguments remove data, alter access or create material external effects → operator
 
@@ -4070,19 +4071,19 @@ Sources: [PATCH /api/v2/organizations/:organization/projects/:project/conversati
 
 Patch project action
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.patch_project_action` — Bounded patchProjectActionRequest: organization, project, action; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → patchProjectActionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.patch_project_action` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"action_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"expected_revision":{"type":"integer","minimum":1,"maximum":9007199254740991},"name":{"type":"string","maxLength":200},"command":{"type":"string","maxLength":4096},"keybinding":{"type":"string","maxLength":128},"icon":{"type":"string","maxLength":128},"preview_url":{"type":"string","maxLength":2048},"open_preview":{"type":"boolean"},"run_on_worktree_creation":{"type":"boolean"}},"required":["expected_revision"],"additionalProperties":false}},"required":["request_id","project_id","action_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.patchProjectAction; s.nativeMutation
-- Extraction: Extract hubserver.patchProjectAction application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: ordinary non-destructive edit → none
 - Confirmation: arguments remove data, alter access or create material external effects → operator
 
@@ -4110,19 +4111,19 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/attempts/:a
 
 Post conversation command
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.post_conversation_command` — Bounded postConversationCommandRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → postConversationCommandResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.post_conversation_command` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["message","answer","interrupt","retry","continue","cancel"]},"text":{"type":"string","maxLength":16000},"attachments":{"type":"array","items":{"type":"string","minLength":1,"maxLength":256},"maxItems":10},"question_id":{"type":"string","minLength":1,"maxLength":256},"answers":{"type":"object","maxProperties":32,"additionalProperties":{"type":"array","items":{"type":"string","maxLength":4000},"maxItems":32}},"message_id":{"type":"string","minLength":1,"maxLength":256},"expected":{"type":"object","properties":{"attempt_id":{"type":"string","maxLength":256},"turn_id":{"type":"string","maxLength":256}},"required":[],"additionalProperties":false}},"required":["kind"],"additionalProperties":false}},"required":["request_id","project_id","conversation_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.postConversationCommand; service.acceptCommand, service.authorizeWrite, service.committed, service.loadConversation, service.logStaleExecution, service.recordReceipt, service.requireActorAuthority, service.store.reserveCommand, service.transact
-- Extraction: Extract hubserver.postConversationCommand application inputs/results and validation from Echo; reuse service.acceptCommand, service.authorizeWrite, service.committed, service.loadConversation, service.logStaleExecution, service.recordReceipt, service.requireActorAuthority, service.store.reserveCommand, service.transact. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/commands](../internal/hubserver/conversation_api.go#L43), [web/conversation/src/app/App.tsx:1224](../web/conversation/src/app/App.tsx#L1224), [web/conversation/src/app/App.tsx:558](../web/conversation/src/app/App.tsx#L558), [web/conversation/src/app/App.tsx:1241](../web/conversation/src/app/App.tsx#L1241), [web/conversation/src/app/components/Composer.tsx:394](../web/conversation/src/app/components/Composer.tsx#L394), [web/conversation/src/app/components/Composer.tsx:640](../web/conversation/src/app/components/Composer.tsx#L640), [web/conversation/src/app/components/Composer.tsx:390](../web/conversation/src/app/components/Composer.tsx#L390), [web/conversation/src/app/components/Composer.tsx:396](../web/conversation/src/app/components/Composer.tsx#L396), [web/conversation/src/app/work/components/IssueComposer.tsx:66](../web/conversation/src/app/work/components/IssueComposer.tsx#L66), [web/conversation/src/components/GitActionsControl.tsx:410](../web/conversation/src/components/GitActionsControl.tsx#L410), [web/conversation/src/components/GitActionsControl.tsx:410](../web/conversation/src/components/GitActionsControl.tsx#L410), [web/conversation/src/components/chat/AssistantCitationChip.tsx:158](../web/conversation/src/components/chat/AssistantCitationChip.tsx#L158), [web/conversation/src/runtime/rpc/http.ts:436](../web/conversation/src/runtime/rpc/http.ts#L436)
@@ -4908,19 +4909,19 @@ Sources: [GET /static/*](../internal/hubserver/hosted_ui.go#L22)
 
 Stream conversation events
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.stream_conversation_events` — Bounded streamConversationEventsRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → streamConversationEventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Authorized typed unsupported_transport result includes workspace capabilities/state or conversation snapshot/cursor and polling alternatives. Interactive browser relay/SSE is not a raw MCP transport; no shell input, filesystem path, relay ticket or worker proxy is accepted.
+- Tool: `conversations_workspaces.stream_conversation_events` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256}},"required":["project_id","conversation_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.streamConversationEvents; s.reauthorizeConversationStream, service.broker.subscribe, service.loadConversation
-- Extraction: Extract hubserver.streamConversationEvents application inputs/results and validation from Echo; reuse s.reauthorizeConversationStream, service.broker.subscribe, service.loadConversation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation/events](../internal/hubserver/conversation_api.go#L42), [web/conversation/src/runtime/rpc/sse.ts:150](../web/conversation/src/runtime/rpc/sse.ts#L150)
@@ -5130,19 +5131,19 @@ Sources: [PUT /api/v2/organizations/:organization/runners/:runner/routing](../in
 
 Upload conversation attachment
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.upload_conversation_attachment` — Bounded uploadConversationAttachmentRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → uploadConversationAttachmentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Tool: `conversations_workspaces.upload_conversation_attachment` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"name":{"type":"string","maxLength":256},"mime":{"type":"string","maxLength":128},"content_base64":{"type":"string","maxLength":44000}},"required":["name","content_base64"],"additionalProperties":false}},"required":["request_id","project_id","conversation_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.uploadConversationAttachment; s.database.checkHostedGrowth, s.database.hostedConsumption, service.authorizeWrite, service.loadConversation, service.requireActorAuthority, service.sameAttachmentUpload, service.store.insertAttachment, service.store.readAttachmentByRef, service.transact
-- Extraction: Extract hubserver.uploadConversationAttachment application inputs/results and validation from Echo; reuse s.database.checkHostedGrowth, s.database.hostedConsumption, service.authorizeWrite, service.loadConversation, service.requireActorAuthority, service.sameAttachmentUpload, service.store.insertAttachment, service.store.readAttachmentByRef, service.transact. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
-- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/attachments](../internal/hubserver/conversation_api.go#L47), [web/conversation/src/runtime/rpc/http.ts:486](../web/conversation/src/runtime/rpc/http.ts#L486)
@@ -5328,12 +5329,12 @@ Sources: [GET /api/v1/board/card/core](../internal/web/server.go#L551), [interna
 
 Api board conversation
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
+- Decision: Explicit ownership correction after inspecting apiBoardConversation: tracker/PR comments, not native workspace conversation history. Remains pending for #3341 and parent #3259 acceptance.
 - Tool: `conversations_workspaces.api_board_conversation` — Bounded apiBoardConversationRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBoardConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiBoardConversation; s.boardCardDashboardData, s.hydrateKanbanIssueConversation, s.hydrateKanbanPRConversation, s.kanbanConversationShellData
-- Extraction: Extract web.apiBoardConversation application inputs/results and validation from Echo; reuse s.boardCardDashboardData, s.hydrateKanbanIssueConversation, s.hydrateKanbanPRConversation, s.kanbanConversationShellData. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: The issue/PR comment panel reads existing tracker and forge comments through hydrateKanbanIssueConversation/hydrateKanbanPRConversation. Its meaningful comment read belongs to the comments child #3341; workspace conversation commands do not own tracker comment reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
 - Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
@@ -5343,7 +5344,7 @@ Api board conversation
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/conversation](../internal/web/server.go#L553), [internal/web/templates/comments.templ:86](../internal/web/templates/comments.templ#L86), [internal/web/templates/comments.templ:67](../internal/web/templates/comments.templ#L67), [internal/web/templates/comments.templ:18](../internal/web/templates/comments.templ#L18), [internal/web/templates/comments.templ:153](../internal/web/templates/comments.templ#L153), [internal/web/templates/comments.templ:177](../internal/web/templates/comments.templ#L177), [internal/web/templates/comments.templ:137](../internal/web/templates/comments.templ#L137)
+Sources: [GET /api/v1/board/conversation](../internal/web/server.go#L548), [internal/web/templates/comments.templ:86](../internal/web/templates/comments.templ#L86), [internal/web/templates/comments.templ:67](../internal/web/templates/comments.templ#L67), [internal/web/templates/comments.templ:18](../internal/web/templates/comments.templ#L18), [internal/web/templates/comments.templ:153](../internal/web/templates/comments.templ#L153), [internal/web/templates/comments.templ:177](../internal/web/templates/comments.templ#L177), [internal/web/templates/comments.templ:137](../internal/web/templates/comments.templ#L137)
 ## web.api_board_receipt
 
 Api board receipt
@@ -5508,42 +5509,42 @@ Sources: [POST /api/v1/chat/actions/:action_id/confirm](../internal/web/server.g
 
 Api chat message
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.api_chat_message` — Bounded apiChatMessageRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiChatMessageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: The configured daemon chat provider and connection history are exposed directly. Only read tools are offered to a nested provider turn; use named MCP command tools for operator actions and the existing browser approval surface. Browser cookie/session IDs and approval decisions are not tool arguments.
+- Tool: `conversations_workspaces.post_operator_chat` — {"project_id":"bounded authorized identifier","request_id":"1..128 bytes","message":"1..8192 bytes"} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role local operator (dashboard authentication when configured); credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiChatMessage; s.chat.Conversation, s.chat.Send, s.chatContext
-- Extraction: Extract web.apiChatMessage application inputs/results and validation from Echo; reuse s.chat.Conversation, s.chat.Send, s.chatContext. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/chat/messages](../internal/web/server.go#L560), [internal/web/templates/chat.templ:36](../internal/web/templates/chat.templ#L36), [internal/web/templates/chat.templ:34](../internal/web/templates/chat.templ#L34)
+Sources: [POST /api/v1/chat/messages](../internal/web/server.go#L555), [internal/web/templates/chat.templ:35](../internal/web/templates/chat.templ#L35), [internal/web/templates/chat.templ:33](../internal/web/templates/chat.templ#L33)
 ## web.api_chat_panel
 
 Api chat panel
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `conversations_workspaces.api_chat_panel` — Bounded apiChatPanelRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiChatPanelResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: The configured daemon chat provider and connection history are exposed directly. Only read tools are offered to a nested provider turn; use named MCP command tools for operator actions and the existing browser approval surface. Browser cookie/session IDs and approval decisions are not tool arguments.
+- Tool: `conversations_workspaces.get_operator_chat` — {"limit":"optional integer 1..200"} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiChatPanel; s.chat.Conversation
-- Extraction: Extract web.apiChatPanel application inputs/results and validation from Echo; reuse s.chat.Conversation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/chat](../internal/web/server.go#L559), [internal/web/templates/shell.templ:259](../internal/web/templates/shell.templ#L259)
+Sources: [GET /api/v1/chat](../internal/web/server.go#L554), [internal/web/templates/shell.templ:259](../internal/web/templates/shell.templ#L259)
 ## web.api_chat_reject
 
 Api chat reject
@@ -7162,15 +7163,15 @@ Sources: [POST /fleet/runners/:runner](../internal/web/server.go#L507)
 
 Read a workspace file through the existing relay file channel
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
-- Decision: Pending parity: return meaningful structured navigation/application results for these explicit browser sites; never scrape HTML or proxy arbitrary HTTP.
-- Tool: `conversations_workspaces.workspace_file_read` — project_id, workspace_id, confined relative path (1–4096 bytes), bounded offset/length; no shell command; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → Typed file metadata/content chunk with workspace identity, byte bounds and freshness; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
-- Application: workspace relay file channel read/list/stat and workspacesession file validation; FilesSurface uses relay.read
-- Extraction: Extract bounded typed workspace file reads from the existing file-channel dispatch; preserve path confinement and runner-grant/ownership authorization. No arbitrary shell or raw relay forwarding.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Authorized typed unsupported_transport result includes workspace capabilities/state or conversation snapshot/cursor and polling alternatives. Interactive browser relay/SSE is not a raw MCP transport; no shell input, filesystem path, relay ticket or worker proxy is accepted.
+- Tool: `conversations_workspaces.workspace_file_read` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"workspace_id":{"type":"string","minLength":1,"maxLength":256}},"required":["project_id","workspace_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
+- Authority: role authenticated operator; credential current connection authority; project current project read and runner grants; existing workspace actor ownership checks; ownership current organization; resolve identifiers within the authorized project.
+- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared application read/command for this frontend source
 - Availability: hosted_dedicated / github,native / shared application read/command for this frontend source
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source

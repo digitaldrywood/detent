@@ -53,7 +53,10 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 	if err != nil {
 		return nil, err
 	}
-	for _, definition := range append(operatortool.CommandCatalog(), operatortool.ChangeCatalog()...) {
+	for _, definition := range append(append(operatortool.CommandCatalog(), operatortool.OperatorChatCatalog()...), operatortool.ChangeCatalog()...) {
+		if definition.Name == "post_operator_chat" && !e.server.chat.HasProvider() {
+			continue
+		}
 		if _, fleet := operatortool.FleetDefinition(definition.Name); fleet {
 			if s := e.server; !dashboardFleetTool(definition.Name) || !s.fleetToolAvailable(definition.Name) {
 				continue
@@ -156,6 +159,8 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		return s.executeOperatorMutation(ctx, call)
 	}
 	switch call.Name {
+	case "get_operator_chat", "post_operator_chat":
+		return s.operatorChatTool(ctx, call)
 	case operatortool.UsageReport:
 		return s.operatorUsageReport(ctx, call.Arguments)
 	case operatortool.IssueExplanation:

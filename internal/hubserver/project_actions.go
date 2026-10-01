@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -68,7 +69,8 @@ type projectActionPatch struct {
 // projectActionRunRequest is the body of POST {nativeBase}/actions/:action/runs.
 type projectActionRunRequest struct {
 	tracker.Mutation
-	WorkspaceID string `json:"workspace_id"`
+	WorkspaceID            string           `json:"workspace_id"`
+	ExpectedActionRevision tracker.Revision `json:"expected_action_revision,omitempty"`
 }
 
 // projectActionRunList is the run listing shape.
@@ -116,16 +118,11 @@ func (s *Service) listProjectActions(c echo.Context) error {
 	if err := validateNativeQuery(c.QueryParams()); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	scope := nativeRequestScope(c)
-	records, err := readProjectActions(c.Request().Context(), s.database.db, scope.organization, scope.project)
+	value, err := s.readActions(c.Request().Context(), nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	response := projectActionList{Items: make([]workspacesession.Action, 0, len(records))}
-	for _, record := range records {
-		response.Items = append(response.Items, record.resource())
-	}
-	return c.JSON(http.StatusOK, response)
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // createProjectAction implements POST {nativeBase}/actions.
@@ -134,52 +131,11 @@ func (s *Service) createProjectAction(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutationStatus(c, http.StatusCreated, request.Mutation, request,
-		func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			record := actionRecord{
-				ID: newNativeID("action"), OrganizationID: scope.organization, ProjectID: scope.project,
-				OpenPreview: request.OpenPreview, RunOnWorktreeCreation: request.RunOnWorktreeCreation,
-				CreatedBy: scope.actor().PrincipalID, Revision: 1, CreatedAt: now, UpdatedAt: now,
-			}
-			var err error
-			if record.Name, err = workspacesession.NormalizeActionName(request.Name); err != nil {
-				return nil, nativeInvalid(err.Error())
-			}
-			if record.Command, err = workspacesession.NormalizeActionCommand(request.Command); err != nil {
-				return nil, nativeInvalid(err.Error())
-			}
-			if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(request.Keybinding); err != nil {
-				return nil, nativeInvalid(err.Error())
-			}
-			if record.Icon, err = workspacesession.NormalizeActionIcon(request.Icon); err != nil {
-				return nil, nativeInvalid(err.Error())
-			}
-			if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(request.PreviewURL); err != nil {
-				return nil, nativeInvalid(err.Error())
-			}
-			count, err := countProjectActions(ctx, tx, scope)
-			if err != nil {
-				return nil, err
-			}
-			if count >= workspacesession.MaxActionsPerProject {
-				return nil, nativeInvalid("A project may hold at most " +
-					strconv.Itoa(workspacesession.MaxActionsPerProject) + " actions")
-			}
-			// The chord is checked here as well as by the migration's partial
-			// unique index. The check is what produces an answer the author
-			// can act on -- it names the action holding the chord -- and the
-			// index is the backstop that keeps two concurrent creates from
-			// both passing it.
-			if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
-				return nil, err
-			} else if found {
-				return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
-			}
-			if err := insertProjectAction(ctx, tx, record); err != nil {
-				return nil, err
-			}
-			return record.resource(), nil
-		})
+	value, err := s.commandCreateAction(c.Request().Context(), nativeRequestScope(c), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusCreated, value)
 }
 
 // patchProjectAction implements PATCH {nativeBase}/actions/:action.
@@ -188,78 +144,17 @@ func (s *Service) patchProjectAction(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request,
-		func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			record, err := readProjectAction(ctx, tx, scope, c.Param("action"))
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil, nativeNotFound()
-			}
-			if err != nil {
-				return nil, err
-			}
-			if request.ExpectedRevision <= 0 {
-				return nil, nativeInvalid("Expected revision must be positive")
-			}
-			if record.Revision != int64(request.ExpectedRevision) {
-				return nil, nativeConflict(tracker.Revision(record.Revision))
-			}
-			if request.Name != nil {
-				if record.Name, err = workspacesession.NormalizeActionName(*request.Name); err != nil {
-					return nil, nativeInvalid(err.Error())
-				}
-			}
-			if request.Command != nil {
-				if record.Command, err = workspacesession.NormalizeActionCommand(*request.Command); err != nil {
-					return nil, nativeInvalid(err.Error())
-				}
-			}
-			if request.Keybinding != nil {
-				if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(*request.Keybinding); err != nil {
-					return nil, nativeInvalid(err.Error())
-				}
-			}
-			if request.Icon != nil {
-				if record.Icon, err = workspacesession.NormalizeActionIcon(*request.Icon); err != nil {
-					return nil, nativeInvalid(err.Error())
-				}
-			}
-			if request.PreviewURL != nil {
-				if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(*request.PreviewURL); err != nil {
-					return nil, nativeInvalid(err.Error())
-				}
-			}
-			if request.OpenPreview != nil {
-				record.OpenPreview = *request.OpenPreview
-			}
-			if request.RunOnWorktreeCreation != nil {
-				record.RunOnWorktreeCreation = *request.RunOnWorktreeCreation
-			}
-			if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
-				return nil, err
-			} else if found {
-				return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
-			}
-			expected := record.Revision
-			record.Revision++
-			record.UpdatedAt = now
-			if err := updateProjectActionRow(ctx, tx, record, expected); err != nil {
-				return nil, err
-			}
-			return record.resource(), nil
-		})
+	value, err := s.commandPatchAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // deleteProjectAction implements DELETE {nativeBase}/actions/:action. Its runs
 // go with it, which the migration declares with ON DELETE CASCADE.
 func (s *Service) deleteProjectAction(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	err := s.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
-			return err
-		}
-		return deleteProjectActionRow(ctx, tx, scope, c.Param("action"))
-	})
+	_, err := s.commandDeleteAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -274,18 +169,11 @@ func (s *Service) createProjectActionRun(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	service, err := s.requireWorkspaces()
+	value, err := s.commandRunAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return s.nativeMutationStatus(c, http.StatusAccepted, request.Mutation, request,
-		func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			run, err := service.queueActionRun(ctx, tx, scope, c.Param("action"), request, now)
-			if err != nil {
-				return nil, err
-			}
-			return projectActionRunReceipt{RunID: run.ID}, nil
-		})
+	return c.JSONBlob(http.StatusAccepted, value)
 }
 
 // queueActionRun validates the request and writes the queued row.
@@ -296,6 +184,9 @@ func (w *workspaceService) queueActionRun(ctx context.Context, tx *sql.Tx, scope
 	}
 	if err != nil {
 		return actionRunRecord{}, err
+	}
+	if request.ExpectedActionRevision != 0 && int64(request.ExpectedActionRevision) != action.Revision {
+		return actionRunRecord{}, nativeConflict(tracker.Revision(action.Revision))
 	}
 	workspace, err := w.readWorkspaceForActor(ctx, tx, scope, strings.TrimSpace(request.WorkspaceID))
 	if err != nil {
@@ -348,24 +239,11 @@ func (s *Service) listProjectActionRuns(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid("Page limit is invalid"))
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	action, err := readProjectAction(ctx, s.database.db, scope, c.Param("action"))
-	if errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
+	value, err := s.readActionRuns(c.Request().Context(), nativeRequestScope(c), c.Param("action"), limit)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	records, err := readProjectActionRuns(ctx, s.database.db, scope, action.ID, limit)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	response := projectActionRunList{Items: make([]workspacesession.Run, 0, len(records))}
-	for _, record := range records {
-		response.Items = append(response.Items, record.resource())
-	}
-	return c.JSON(http.StatusOK, response)
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // getProjectActionRun implements GET {nativeBase}/actions/:action/runs/:run.
@@ -398,22 +276,7 @@ func (s *Service) readActionRunForRequest(c echo.Context) (actionRunRecord, erro
 	if err := validateNativeQuery(c.QueryParams()); err != nil {
 		return actionRunRecord{}, err
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	if _, err := readProjectAction(ctx, s.database.db, scope, c.Param("action")); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return actionRunRecord{}, nativeNotFound()
-		}
-		return actionRunRecord{}, err
-	}
-	run, err := readProjectActionRun(ctx, s.database.db, scope, c.Param("action"), c.Param("run"))
-	if errors.Is(err, sql.ErrNoRows) {
-		return actionRunRecord{}, nativeNotFound()
-	}
-	if err != nil {
-		return actionRunRecord{}, err
-	}
-	return run, nil
+	return s.readActionRun(c.Request().Context(), nativeRequestScope(c), c.Param("action"), c.Param("run"))
 }
 
 // sweepActionRuns fails every run left queued or running on a workspace that
@@ -573,6 +436,172 @@ func applyActionRunStatus(ctx context.Context, tx *sql.Tx, run actionRunRecord, 
 	run.OutputArtifact = actionRunOutputPath(run)
 	if err := updateProjectActionRunRow(ctx, tx, run, expected); err != nil {
 		return run, err
+	}
+	return run, nil
+}
+
+func (s *Service) applyCreateProjectAction(ctx context.Context, tx *sql.Tx, scope nativeScope, request projectActionRequest, now time.Time) (any, error) {
+	record := actionRecord{
+		ID: newNativeID("action"), OrganizationID: scope.organization, ProjectID: scope.project,
+		OpenPreview: request.OpenPreview, RunOnWorktreeCreation: request.RunOnWorktreeCreation,
+		CreatedBy: scope.actor().PrincipalID, Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	var err error
+	if record.Name, err = workspacesession.NormalizeActionName(request.Name); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	if record.Command, err = workspacesession.NormalizeActionCommand(request.Command); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(request.Keybinding); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	if record.Icon, err = workspacesession.NormalizeActionIcon(request.Icon); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(request.PreviewURL); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	count, err := countProjectActions(ctx, tx, scope)
+	if err != nil {
+		return nil, err
+	}
+	if count >= workspacesession.MaxActionsPerProject {
+		return nil, nativeInvalid("A project may hold at most " +
+			strconv.Itoa(workspacesession.MaxActionsPerProject) + " actions")
+	}
+	// The chord is checked here as well as by the migration's partial
+	// unique index. The check is what produces an answer the author
+	// can act on -- it names the action holding the chord -- and the
+	// index is the backstop that keeps two concurrent creates from
+	// both passing it.
+	if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
+		return nil, err
+	} else if found {
+		return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
+	}
+	if err := insertProjectAction(ctx, tx, record); err != nil {
+		return nil, err
+	}
+	return record.resource(), nil
+}
+
+func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope nativeScope, actionID string, request projectActionPatch, now time.Time) (any, error) {
+	record, err := readProjectAction(ctx, tx, scope, actionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nativeNotFound()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if request.ExpectedRevision <= 0 {
+		return nil, nativeInvalid("Expected revision must be positive")
+	}
+	if record.Revision != int64(request.ExpectedRevision) {
+		return nil, nativeConflict(tracker.Revision(record.Revision))
+	}
+	if request.Name != nil {
+		if record.Name, err = workspacesession.NormalizeActionName(*request.Name); err != nil {
+			return nil, nativeInvalid(err.Error())
+		}
+	}
+	if request.Command != nil {
+		if record.Command, err = workspacesession.NormalizeActionCommand(*request.Command); err != nil {
+			return nil, nativeInvalid(err.Error())
+		}
+	}
+	if request.Keybinding != nil {
+		if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(*request.Keybinding); err != nil {
+			return nil, nativeInvalid(err.Error())
+		}
+	}
+	if request.Icon != nil {
+		if record.Icon, err = workspacesession.NormalizeActionIcon(*request.Icon); err != nil {
+			return nil, nativeInvalid(err.Error())
+		}
+	}
+	if request.PreviewURL != nil {
+		if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(*request.PreviewURL); err != nil {
+			return nil, nativeInvalid(err.Error())
+		}
+	}
+	if request.OpenPreview != nil {
+		record.OpenPreview = *request.OpenPreview
+	}
+	if request.RunOnWorktreeCreation != nil {
+		record.RunOnWorktreeCreation = *request.RunOnWorktreeCreation
+	}
+	if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
+		return nil, err
+	} else if found {
+		return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
+	}
+	expected := record.Revision
+	record.Revision++
+	record.UpdatedAt = now
+	if err := updateProjectActionRow(ctx, tx, record, expected); err != nil {
+		return nil, err
+	}
+	return record.resource(), nil
+}
+
+func (s *Service) applyCreateProjectActionRun(ctx context.Context, tx *sql.Tx, scope nativeScope, actionID string, request projectActionRunRequest, now time.Time) (any, error) {
+	service, err := s.requireWorkspaces()
+	if err != nil {
+		return nil, err
+	}
+
+	run, err := service.queueActionRun(ctx, tx, scope, actionID, request, now)
+	if err != nil {
+		return nil, err
+	}
+	return projectActionRunReceipt{RunID: run.ID}, nil
+}
+
+func (s *Service) readActions(ctx context.Context, scope nativeScope) (json.RawMessage, error) {
+	records, err := readProjectActions(ctx, s.database.db, scope.organization, scope.project)
+	if err != nil {
+		return nil, err
+	}
+	response := projectActionList{Items: make([]workspacesession.Action, 0, len(records))}
+	for _, record := range records {
+		response.Items = append(response.Items, record.resource())
+	}
+	return json.Marshal(response)
+}
+
+func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionID string, limit int) (json.RawMessage, error) {
+	action, err := readProjectAction(ctx, s.database.db, scope, actionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nativeNotFound()
+	}
+	if err != nil {
+		return nil, err
+	}
+	records, err := readProjectActionRuns(ctx, s.database.db, scope, action.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	response := projectActionRunList{Items: make([]workspacesession.Run, 0, len(records))}
+	for _, record := range records {
+		response.Items = append(response.Items, record.resource())
+	}
+	return json.Marshal(response)
+}
+
+func (s *Service) readActionRun(ctx context.Context, scope nativeScope, actionID, runID string) (actionRunRecord, error) {
+	if _, err := readProjectAction(ctx, s.database.db, scope, actionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return actionRunRecord{}, nativeNotFound()
+		}
+		return actionRunRecord{}, err
+	}
+	run, err := readProjectActionRun(ctx, s.database.db, scope, actionID, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return actionRunRecord{}, nativeNotFound()
+	}
+	if err != nil {
+		return actionRunRecord{}, err
 	}
 	return run, nil
 }

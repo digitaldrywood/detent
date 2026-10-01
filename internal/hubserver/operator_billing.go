@@ -72,6 +72,15 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 			definitions = append(definitions, definition)
 		}
 	}
+	workspaceTools, err := (workspaceOperatorExecutor{server: e.service}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, definition := range workspaceTools {
+		if definition.Name != operatortool.ActionResult && definition.Name != operatortool.ConnectionInfo {
+			definitions = append(definitions, definition)
+		}
+	}
 	changes, err := (hubOperatorExecutor{service: e.service}).ListTools(ctx)
 	if err != nil {
 		return nil, err
@@ -141,6 +150,9 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	if _, err := operatortool.WorkspaceDefinition(call.Name); err == nil {
+		return (workspaceOperatorExecutor{server: e.service}).Execute(ctx, call)
+	}
 	if definition, ok := operatortool.Lookup(call.Name); ok && definition.Meta.Toolset == "projects" {
 		return (hubProjectExecutor{e.service}).Execute(ctx, call)
 	}
@@ -156,6 +168,9 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		}
 		if operatortool.DecodeArguments(call.Arguments, &request) == nil {
 			if action, ok := e.service.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok {
+				if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+					return (workspaceOperatorExecutor{server: e.service}).Execute(ctx, call)
+				}
 				if definition, known := operatortool.Lookup(string(action.Kind)); known && definition.Meta.Toolset == "projects" {
 					return (hubProjectExecutor{e.service}).connectionRead(ctx, call)
 				}
@@ -409,6 +424,9 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Action) (execution chat.ActionExecution, err error) {
+	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+		return (workspaceOperatorExecutor{server: e.service}).ExecuteAction(ctx, action)
+	}
 	if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" {
 		return (hubProjectExecutor{e.service}).ExecuteAction(ctx, action)
 	}
@@ -458,6 +476,10 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 }
 
 func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Action, outcome string) {
+	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+		(workspaceOperatorExecutor{server: e.service}).AuditAction(ctx, action, outcome)
+		return
+	}
 	if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" {
 		(hubProjectExecutor{e.service}).AuditAction(ctx, action, outcome)
 		return

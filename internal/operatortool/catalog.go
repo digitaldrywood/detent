@@ -64,7 +64,7 @@ func Catalog() []Definition {
 }
 
 func Lookup(name string) (Definition, bool) {
-	for _, definition := range AllDefinitions() {
+	for _, definition := range Registry() {
 		if definition.Name == name {
 			return definition, true
 		}
@@ -76,6 +76,11 @@ func definition(name string, description string, schema string) Definition {
 	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: toolset(name)}
 }
 
-func AllDefinitions() []Definition {
-	return append(append(append(append(append(Catalog(), WorkReadCatalog()...), CommandCatalog()...), ProjectCatalog()...), ChangeCatalog()...), AdministrationCatalog()...)
+// Registry is the canonical protocol registry; deployments filter by application availability.
+func Registry() []Definition {
+	definitions := append(Catalog(), WorkReadCatalog()...)
+	for _, catalog := range [][]Definition{CommandCatalog(), ProjectCatalog(), WorkspaceCatalog(), OperatorChatCatalog(), ChangeCatalog(), AdministrationCatalog()} {
+		definitions = append(definitions, catalog...)
+	}
+	return definitions
 }

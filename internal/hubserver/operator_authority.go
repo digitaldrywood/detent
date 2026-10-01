@@ -162,6 +162,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 	return operatortool.Authority{Account: account, Identity: operatorIdentity(credential, organization), WorkReads: operatorWorkReads{service: s, scope: scope}, Changes: hubChangeApplication{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
 		// Commands consume the freshly resolved originating credential, even when
 		// the context initially came from a different approving browser.
+		ctx = context.WithValue(ctx, operatorScopeKey{}, scope)
 		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return credential, nil })
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
 		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
@@ -194,10 +195,6 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 			if requirement.ResourceKind == "plan" && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 				return operatortool.ErrAccessDenied
 			}
-		} else if requirement.ResourceID != "" || requirement.ResourceKind != "" {
-			// Resource-specific commands must use their application's ownership
-			// check; this initial read adapter never grants an unknown resource.
-			return operatortool.ErrAccessDenied
 		}
 		checkScope := scope
 		if requirement.ProjectID != "" {
@@ -220,12 +217,21 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 					return err
 				}
 				defer tx.Rollback()
-				return s.recheckHostedMutation(ctx, tx, checkScope)
+				if err := s.recheckHostedMutation(ctx, tx, checkScope); err != nil {
+					return err
+				}
+				if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
+					return nil
+				}
+				return s.checkOperatorResource(ctx, tx, checkScope, requirement)
 			}
 			if requirement.Scope == apikey.ScopeAdmin && credential.Scope != apiScopeAdmin {
 				return operatortool.ErrAccessDenied
 			}
 		}
-		return nil
+		if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
+			return nil
+		}
+		return s.checkOperatorResource(ctx, s.database.db, checkScope, requirement)
 	}}, nil
 }

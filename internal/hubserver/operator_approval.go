@@ -164,6 +164,18 @@ func (s *Service) authorizeOperatorPreview(ctx context.Context, action chatpkg.A
 		_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID})
 		return err
 	}
+	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+		var request workspaceToolRequest
+		if operatortool.DecodeArguments(action.Arguments, &request) != nil {
+			return operatortool.ErrAccessDenied
+		}
+		requirement := workspaceRequirement(string(action.Kind), request, true)
+		if action.Kind == "delete_project_action" && action.Status == chatpkg.ActionSucceeded {
+			requirement.ResourceKind, requirement.ResourceID = "", ""
+		}
+		_, err := operatortool.AuthorizeCurrent(ctx, requirement)
+		return err
+	}
 	if hubFleetTool(string(action.Kind)) {
 		_, err := operatortool.AuthorizeCurrent(ctx, hubFleetRequirement(string(action.Kind)))
 		return err

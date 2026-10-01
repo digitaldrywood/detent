@@ -9471,7 +9471,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -9492,24 +9492,24 @@
           "class": "none"
         }
       ],
-      "application": "s.createConversation; s.requireLinkAvailable",
-      "extraction": "Extract hubserver.createConversation application inputs/results and validation from Echo; reuse s.requireLinkAvailable. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "create_conversation",
-        "arguments": "Bounded createConversationRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "createConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\",\"maxLength\":800},\"first_message\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"maxLength\":16000}},\"required\":[\"text\"],\"additionalProperties\":false}},\"required\":[],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"input\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
           "destructive": false,
-          "idempotent": false,
-          "openWorld": false
+          "idempotent": true,
+          "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.create_hosted_organization",
@@ -10322,7 +10322,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -10342,24 +10342,24 @@
           "class": "none"
         }
       ],
-      "application": "s.createProjectAction; s.nativeMutationStatus",
-      "extraction": "Extract hubserver.createProjectAction application inputs/results and validation from Echo; reuse s.nativeMutationStatus. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "create_project_action",
-        "arguments": "Bounded createProjectActionRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "createProjectActionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"maxLength\":200},\"command\":{\"type\":\"string\",\"maxLength\":4096},\"keybinding\":{\"type\":\"string\",\"maxLength\":128},\"icon\":{\"type\":\"string\",\"maxLength\":128},\"preview_url\":{\"type\":\"string\",\"maxLength\":2048},\"open_preview\":{\"type\":\"boolean\"},\"run_on_worktree_creation\":{\"type\":\"boolean\"}},\"required\":[\"name\",\"command\"],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"input\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
-          "destructive": false,
-          "idempotent": false,
+          "destructive": true,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.create_project_action_run",
@@ -10413,7 +10413,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -10434,24 +10434,24 @@
           "class": "none"
         }
       ],
-      "application": "s.createProjectActionRun; s.nativeMutationStatus, s.requireWorkspaces, service.queueActionRun",
-      "extraction": "Extract hubserver.createProjectActionRun application inputs/results and validation from Echo; reuse s.nativeMutationStatus, s.requireWorkspaces, service.queueActionRun. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "create_project_action_run",
-        "arguments": "Bounded createProjectActionRunRequest: organization, project, action; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "createProjectActionRunResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"action_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"workspace_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991}},\"required\":[\"request_id\",\"project_id\",\"action_id\",\"workspace_id\",\"expected_revision\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
-          "destructive": false,
-          "idempotent": false,
+          "destructive": true,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.create_runner_enrollment",
@@ -10622,7 +10622,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -10643,24 +10643,24 @@
           "class": "none"
         }
       ],
-      "application": "s.createWorkspace; s.nativeMutationStatus, s.requireWorkspaces, service.committed, service.openWorkspace",
-      "extraction": "Extract hubserver.createWorkspace application inputs/results and validation from Echo; reuse s.nativeMutationStatus, s.requireWorkspaces, service.committed, service.openWorkspace. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "create_workspace",
-        "arguments": "Bounded createWorkspaceRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "createWorkspaceResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"work_item_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"attempt_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"ref\":{\"type\":\"string\",\"maxLength\":512},\"runner_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"requires\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"enum\":[\"terminal\",\"exec\",\"files\",\"diff\",\"preview\"]},\"maxItems\":5}},\"required\":[],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"input\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
           "destructive": false,
-          "idempotent": false,
-          "openWorld": false
+          "idempotent": true,
+          "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.cutover_project",
@@ -10804,7 +10804,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -10824,24 +10824,24 @@
           "class": "operator"
         }
       ],
-      "application": "s.deleteConversationAttachment; service.loadConversation, service.requireActorAuthority, service.store.deleteAttachment, service.store.readAttachment, service.transact",
-      "extraction": "Extract hubserver.deleteConversationAttachment application inputs/results and validation from Echo; reuse service.loadConversation, service.requireActorAuthority, service.store.deleteAttachment, service.store.readAttachment, service.transact. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "delete_conversation_attachment",
-        "arguments": "Bounded deleteConversationAttachmentRequest: organization, project, conversation, attachment; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "deleteConversationAttachmentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"conversation_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"attachment_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"request_id\",\"project_id\",\"conversation_id\",\"attachment_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
-          "idempotent": false,
-          "openWorld": false
+          "idempotent": true,
+          "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.delete_project_action",
@@ -10895,7 +10895,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -10915,24 +10915,24 @@
           "class": "operator"
         }
       ],
-      "application": "s.deleteProjectAction; s.hubTransact, s.recheckHostedMutation",
-      "extraction": "Extract hubserver.deleteProjectAction application inputs/results and validation from Echo; reuse s.hubTransact, s.recheckHostedMutation. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "delete_project_action",
-        "arguments": "Bounded deleteProjectActionRequest: organization, project, action; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "deleteProjectActionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"action_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"request_id\",\"project_id\",\"action_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.delete_workspace",
@@ -10986,7 +10986,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -11007,24 +11007,24 @@
           "class": "operator"
         }
       ],
-      "application": "s.deleteWorkspace; s.hubTransact, s.recheckHostedMutation, s.requireWorkspaces, service.committed, service.endWorkspace, service.readWorkspaceForActor",
-      "extraction": "Extract hubserver.deleteWorkspace application inputs/results and validation from Echo; reuse s.hubTransact, s.recheckHostedMutation, s.requireWorkspaces, service.committed, service.endWorkspace, service.readWorkspaceForActor. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "delete_workspace",
-        "arguments": "Bounded deleteWorkspaceRequest: organization, project, workspace; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "deleteWorkspaceResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"workspace_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"request_id\",\"project_id\",\"workspace_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
-          "idempotent": false,
-          "openWorld": false
+          "idempotent": true,
+          "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.discuss_change",
@@ -11537,7 +11537,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -11557,13 +11557,13 @@
           "class": "none"
         }
       ],
-      "application": "s.getConversation; service.loadConversation, service.store.listMessages, service.store.listSnapshotQuestions, service.transact",
-      "extraction": "Extract hubserver.getConversation application inputs/results and validation from Echo; reuse service.loadConversation, service.store.listMessages, service.store.listSnapshotQuestions, service.transact. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "get_conversation",
-        "arguments": "Bounded getConversationRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "getConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"conversation_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"project_id\",\"conversation_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -11572,14 +11572,14 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.get_conversation_attachment",
       "summary": "Get conversation attachment",
-      "audience": "worker",
+      "audience": "operator",
       "sources": [
         {
           "source": "internal/hubserver/conversation_api.go",
@@ -11621,7 +11621,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -11639,18 +11639,24 @@
           "class": "none"
         }
       ],
-      "application": "s.getConversationAttachment; service.loadConversation, service.store.readAttachment, service.store.readAttachmentContent",
-      "extraction": "Extract hubserver.getConversationAttachment application inputs/results and validation from Echo; reuse service.loadConversation, service.store.readAttachment, service.store.readAttachmentContent. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
-        "set": "",
-        "name": "",
-        "arguments": "",
-        "result": ""
+        "set": "conversations_workspaces",
+        "name": "get_conversation_attachment",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"conversation_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"attachment_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"offset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":2147483647},\"length\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":32768}},\"required\":[\"project_id\",\"conversation_id\",\"attachment_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Worker-only attachment-byte endpoint registered with requireConversationScope(apiScopeWorker); operator upload/delete and typed attachment references remain separate."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.get_cutover_receipt",
@@ -12436,7 +12442,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -12456,24 +12462,24 @@
           "class": "none"
         }
       ],
-      "application": "s.getProjectActionRun; s.readActionRunForRequest",
-      "extraction": "Extract hubserver.getProjectActionRun application inputs/results and validation from Echo; reuse s.readActionRunForRequest. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "get_project_action_run",
-        "arguments": "Bounded getProjectActionRunRequest: organization, project, action, run; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "getProjectActionRunResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"action_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"project_id\",\"action_id\",\"run_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.get_project_action_run_output",
@@ -12520,7 +12526,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -12540,24 +12546,24 @@
           "class": "none"
         }
       ],
-      "application": "s.getProjectActionRunOutput; s.readActionRunForRequest",
-      "extraction": "Extract hubserver.getProjectActionRunOutput application inputs/results and validation from Echo; reuse s.readActionRunForRequest. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "get_project_action_run_output",
-        "arguments": "Bounded getProjectActionRunOutputRequest: organization, project, action, run; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "getProjectActionRunOutputResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"action_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"offset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":2147483647},\"length\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":32768}},\"required\":[\"project_id\",\"action_id\",\"run_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.get_project_integration",
@@ -13173,7 +13179,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -13194,13 +13200,13 @@
           "class": "none"
         }
       ],
-      "application": "s.getWorkspace; s.requireWorkspaces, service.presentWorkspace, service.readWorkspaceForActor",
-      "extraction": "Extract hubserver.getWorkspace application inputs/results and validation from Echo; reuse s.requireWorkspaces, service.presentWorkspace, service.readWorkspaceForActor. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "get_workspace",
-        "arguments": "Bounded getWorkspaceRequest: organization, project, workspace; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "getWorkspaceResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"workspace_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"project_id\",\"workspace_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -13209,9 +13215,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.get_workspace_terminal_recording",
@@ -13258,7 +13264,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -13279,13 +13285,13 @@
           "class": "none"
         }
       ],
-      "application": "s.getWorkspaceTerminalRecording; s.requireWorkspaces, service.readWorkspaceForActor",
-      "extraction": "Extract hubserver.getWorkspaceTerminalRecording application inputs/results and validation from Echo; reuse s.requireWorkspaces, service.readWorkspaceForActor. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "get_workspace_terminal_recording",
-        "arguments": "Bounded getWorkspaceTerminalRecordingRequest: organization, project, workspace, recording; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "getWorkspaceTerminalRecordingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"workspace_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"recording_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"offset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":2147483647},\"length\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":32768}},\"required\":[\"project_id\",\"workspace_id\",\"recording_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -13294,9 +13300,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.github_request_counts",
@@ -16023,7 +16029,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -16043,24 +16049,24 @@
           "class": "none"
         }
       ],
-      "application": "s.linkConversation; s.nativeMutation, service.appendMessage, service.authorizeWrite, service.committed, service.coordinator.Hold, service.loadConversation, service.queryMessages, service.store.readConversation, service.store.recordAudience, service.updateExecution, service.updateMessage",
-      "extraction": "Extract hubserver.linkConversation application inputs/results and validation from Echo; reuse s.nativeMutation, service.appendMessage, service.authorizeWrite, service.committed, service.coordinator.Hold, service.loadConversation, service.queryMessages, service.store.readConversation, service.store.recordAudience, service.updateExecution, service.updateMessage. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "link_conversation",
-        "arguments": "Bounded linkConversationRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "linkConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"conversation_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"share_history\":{\"type\":\"boolean\"},\"issue\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\",\"maxLength\":256},\"description\":{\"type\":\"string\",\"maxLength\":32768},\"state\":{\"type\":\"string\",\"maxLength\":256},\"labels\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"maxLength\":256},\"maxItems\":64},\"priority\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3}},\"required\":[\"title\"],\"additionalProperties\":false},\"next\":{\"type\":\"object\",\"properties\":{\"state\":{\"type\":\"string\",\"maxLength\":256},\"priority\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":3},\"dispatch\":{\"type\":\"string\",\"enum\":[\"now\",\"later\"]}},\"required\":[],\"additionalProperties\":false}},\"required\":[\"share_history\",\"issue\"],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"conversation_id\",\"input\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
-          "destructive": false,
-          "idempotent": false,
-          "openWorld": false
+          "destructive": true,
+          "idempotent": true,
+          "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.list_changes",
@@ -16227,7 +16233,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -16247,13 +16253,13 @@
           "class": "none"
         }
       ],
-      "application": "s.listConversationMessages; s.conversations.loadConversation, s.conversations.store.listMessages",
-      "extraction": "Extract hubserver.listConversationMessages application inputs/results and validation from Echo; reuse s.conversations.loadConversation, s.conversations.store.listMessages. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "list_conversation_messages",
-        "arguments": "Bounded listConversationMessagesRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "listConversationMessagesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"conversation_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"before\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":9007199254740991},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200}},\"required\":[\"project_id\",\"conversation_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -16262,9 +16268,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.list_git_hub_import_records",
@@ -17121,7 +17127,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -17141,24 +17147,24 @@
           "class": "none"
         }
       ],
-      "application": "s.listOrganizationConversations; s.listConversationsPage, s.readableConversationProjects",
-      "extraction": "Extract hubserver.listOrganizationConversations application inputs/results and validation from Echo; reuse s.listConversationsPage, s.readableConversationProjects. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "list_organization_conversations",
-        "arguments": "Bounded listOrganizationConversationsRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "listOrganizationConversationsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"cursor\":{\"type\":\"string\",\"maxLength\":1024},\"query\":{\"type\":\"string\",\"maxLength\":256},\"settled\":{\"type\":\"boolean\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200}},\"required\":[],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.list_project_action_runs",
@@ -17212,7 +17218,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -17232,24 +17238,24 @@
           "class": "none"
         }
       ],
-      "application": "s.listProjectActionRuns; handler-owned application validation/read/command",
-      "extraction": "Extract hubserver.listProjectActionRuns application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "list_project_action_runs",
-        "arguments": "Bounded listProjectActionRunsRequest: organization, project, action; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "listProjectActionRunsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"action_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200}},\"required\":[\"project_id\",\"action_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.list_project_actions",
@@ -17303,7 +17309,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -17323,24 +17329,24 @@
           "class": "none"
         }
       ],
-      "application": "s.listProjectActions; handler-owned application validation/read/command",
-      "extraction": "Extract hubserver.listProjectActions application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "list_project_actions",
-        "arguments": "Bounded listProjectActionsRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "listProjectActionsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"project_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.list_project_conversations",
@@ -17394,7 +17400,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -17414,13 +17420,13 @@
           "class": "none"
         }
       ],
-      "application": "s.listProjectConversations; s.listConversationsPage",
-      "extraction": "Extract hubserver.listProjectConversations application inputs/results and validation from Echo; reuse s.listConversationsPage. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "list_project_conversations",
-        "arguments": "Bounded listProjectConversationsRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "listProjectConversationsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"cursor\":{\"type\":\"string\",\"maxLength\":1024},\"query\":{\"type\":\"string\",\"maxLength\":256},\"settled\":{\"type\":\"boolean\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200}},\"required\":[\"project_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -17429,9 +17435,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.list_runner_routing",
@@ -17678,7 +17684,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -17698,13 +17704,13 @@
           "class": "none"
         }
       ],
-      "application": "s.listWorkItemReferences; handler-owned application validation/read/command",
-      "extraction": "Extract hubserver.listWorkItemReferences application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "list_work_item_references",
-        "arguments": "Bounded listWorkItemReferencesRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "listWorkItemReferencesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"work_item_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"project_id\",\"work_item_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -17713,9 +17719,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.list_work_items",
@@ -17852,7 +17858,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -17873,13 +17879,13 @@
           "class": "none"
         }
       ],
-      "application": "s.listWorkspaceTerminalRecordings; s.requireWorkspaces, service.readWorkspaceForActor",
-      "extraction": "Extract hubserver.listWorkspaceTerminalRecordings application inputs/results and validation from Echo; reuse s.requireWorkspaces, service.readWorkspaceForActor. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "list_workspace_terminal_recordings",
-        "arguments": "Bounded listWorkspaceTerminalRecordingsRequest: organization, project, workspace; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "listWorkspaceTerminalRecordingsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"workspace_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200}},\"required\":[\"project_id\",\"workspace_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -17888,9 +17894,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.list_workspaces",
@@ -17951,7 +17957,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -17972,13 +17978,13 @@
           "class": "none"
         }
       ],
-      "application": "s.listWorkspaces; s.requireWorkspaces, service.presentWorkspace",
-      "extraction": "Extract hubserver.listWorkspaces application inputs/results and validation from Echo; reuse s.requireWorkspaces, service.presentWorkspace. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "list_workspaces",
-        "arguments": "Bounded listWorkspacesRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "listWorkspacesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"work_item_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"state\":{\"type\":\"string\",\"maxLength\":256},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200}},\"required\":[\"project_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -17987,9 +17993,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.logout_hosted",
@@ -18306,8 +18312,8 @@
       },
       "owner": "digitaldrywood/detent#3346",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact authenticated transport entry for existing governed application services. No MCP raw HTTP/relay/tool-forwarding proxy; meaningful typed application operations and the five existing read tools are separate rows."
+      "coverage": "TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority; existing workspace relay/terminal authority regressions.",
+      "decision": "Browser transport entry only; no raw relay ticket or worker proxy is exposed. workspace_terminal returns an authorized unsupported_transport result with workspace capabilities and terminal-recording alternatives. Configured actions and bounded output provide the meaningful headless execution operations."
     },
     {
       "id": "hubserver.native_capabilities",
@@ -18645,8 +18651,8 @@
       },
       "owner": "digitaldrywood/detent#3346",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact authenticated transport entry for existing governed application services. No MCP raw HTTP/relay/tool-forwarding proxy; meaningful typed application operations and the five existing read tools are separate rows."
+      "coverage": "TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority; existing workspace relay/terminal authority regressions.",
+      "decision": "Browser transport entry only; no raw relay ticket or worker proxy is exposed. workspace_terminal returns an authorized unsupported_transport result with workspace capabilities and terminal-recording alternatives. Configured actions and bounded output provide the meaningful headless execution operations."
     },
     {
       "id": "hubserver.open_workspace_worker_relay",
@@ -18874,7 +18880,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -18898,24 +18904,24 @@
           "class": "operator"
         }
       ],
-      "application": "s.patchConversation; s.conversationDefaultModel, s.conversationModelChoices, s.conversations.writeAgentOverride, s.hasLunaCoordinator, s.saveConversationChange",
-      "extraction": "Extract hubserver.patchConversation application inputs/results and validation from Echo; reuse s.conversationDefaultModel, s.conversationModelChoices, s.conversations.writeAgentOverride, s.hasLunaCoordinator, s.saveConversationChange. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "patch_conversation",
-        "arguments": "Bounded patchConversationRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "patchConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"conversation_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\",\"maxLength\":800},\"preferences\":{\"type\":\"object\",\"properties\":{\"model\":{\"type\":\"string\",\"maxLength\":256},\"reasoning_effort\":{\"type\":\"string\",\"maxLength\":256},\"access\":{\"type\":\"string\",\"maxLength\":256}},\"required\":[],\"additionalProperties\":false}},\"required\":[],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"conversation_id\",\"input\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
-          "destructive": true,
-          "idempotent": false,
-          "openWorld": false
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.patch_project_action",
@@ -18983,7 +18989,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -19007,24 +19013,24 @@
           "class": "operator"
         }
       ],
-      "application": "s.patchProjectAction; s.nativeMutation",
-      "extraction": "Extract hubserver.patchProjectAction application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "patch_project_action",
-        "arguments": "Bounded patchProjectActionRequest: organization, project, action; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "patchProjectActionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"action_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991},\"name\":{\"type\":\"string\",\"maxLength\":200},\"command\":{\"type\":\"string\",\"maxLength\":4096},\"keybinding\":{\"type\":\"string\",\"maxLength\":128},\"icon\":{\"type\":\"string\",\"maxLength\":128},\"preview_url\":{\"type\":\"string\",\"maxLength\":2048},\"open_preview\":{\"type\":\"boolean\"},\"run_on_worktree_creation\":{\"type\":\"boolean\"}},\"required\":[\"expected_revision\"],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"action_id\",\"input\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.post_attempt_diff",
@@ -19231,7 +19237,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -19251,24 +19257,24 @@
           "class": "none"
         }
       ],
-      "application": "s.postConversationCommand; service.acceptCommand, service.authorizeWrite, service.committed, service.loadConversation, service.logStaleExecution, service.recordReceipt, service.requireActorAuthority, service.store.reserveCommand, service.transact",
-      "extraction": "Extract hubserver.postConversationCommand application inputs/results and validation from Echo; reuse service.acceptCommand, service.authorizeWrite, service.committed, service.loadConversation, service.logStaleExecution, service.recordReceipt, service.requireActorAuthority, service.store.reserveCommand, service.transact. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "post_conversation_command",
-        "arguments": "Bounded postConversationCommandRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "postConversationCommandResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"conversation_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"message\",\"answer\",\"interrupt\",\"retry\",\"continue\",\"cancel\"]},\"text\":{\"type\":\"string\",\"maxLength\":16000},\"attachments\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"maxItems\":10},\"question_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"answers\":{\"type\":\"object\",\"maxProperties\":32,\"additionalProperties\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"maxLength\":4000},\"maxItems\":32}},\"message_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"expected\":{\"type\":\"object\",\"properties\":{\"attempt_id\":{\"type\":\"string\",\"maxLength\":256},\"turn_id\":{\"type\":\"string\",\"maxLength\":256}},\"required\":[],\"additionalProperties\":false}},\"required\":[\"kind\"],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"conversation_id\",\"input\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
-          "destructive": false,
-          "idempotent": false,
-          "openWorld": false
+          "destructive": true,
+          "idempotent": true,
+          "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.preview_provider_candidates",
@@ -22786,7 +22792,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -22806,13 +22812,13 @@
           "class": "none"
         }
       ],
-      "application": "s.streamConversationEvents; s.reauthorizeConversationStream, service.broker.subscribe, service.loadConversation",
-      "extraction": "Extract hubserver.streamConversationEvents application inputs/results and validation from Echo; reuse s.reauthorizeConversationStream, service.broker.subscribe, service.loadConversation. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "stream_conversation_events",
-        "arguments": "Bounded streamConversationEventsRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "streamConversationEventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"conversation_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"project_id\",\"conversation_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -22821,9 +22827,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Authorized typed unsupported_transport result includes workspace capabilities/state or conversation snapshot/cursor and polling alternatives. Interactive browser relay/SSE is not a raw MCP transport; no shell input, filesystem path, relay ticket or worker proxy is accepted."
     },
     {
       "id": "hubserver.submit_change_check",
@@ -23812,7 +23818,7 @@
             "native"
           ],
           "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
         }
       ],
       "authority": {
@@ -23832,24 +23838,24 @@
           "class": "none"
         }
       ],
-      "application": "s.uploadConversationAttachment; s.database.checkHostedGrowth, s.database.hostedConsumption, service.authorizeWrite, service.loadConversation, service.requireActorAuthority, service.sameAttachmentUpload, service.store.insertAttachment, service.store.readAttachmentByRef, service.transact",
-      "extraction": "Extract hubserver.uploadConversationAttachment application inputs/results and validation from Echo; reuse s.database.checkHostedGrowth, s.database.hostedConsumption, service.authorizeWrite, service.loadConversation, service.requireActorAuthority, service.sameAttachmentUpload, service.store.insertAttachment, service.store.readAttachmentByRef, service.transact. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "upload_conversation_attachment",
-        "arguments": "Bounded uploadConversationAttachmentRequest: organization, project, conversation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "uploadConversationAttachmentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"conversation_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"maxLength\":256},\"mime\":{\"type\":\"string\",\"maxLength\":128},\"content_base64\":{\"type\":\"string\",\"maxLength\":44000}},\"required\":[\"name\",\"content_base64\"],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"conversation_id\",\"input\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
           "destructive": false,
-          "idempotent": false,
-          "openWorld": false
+          "idempotent": true,
+          "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner."
     },
     {
       "id": "hubserver.validate_runner_lease",
@@ -24730,7 +24736,7 @@
           "kind": "route",
           "definition": "s.echo.GET(\"/api/v1/board/conversation\", s.apiBoardConversation, apiDashboardReadAuth, apiReadScope) [route=\"/api/v1/board/conversation\"]",
           "occurrence": 1,
-          "line": 553,
+          "line": 548,
           "method": "GET",
           "path": "\"/api/v1/board/conversation\"",
           "handler": "s.apiBoardConversation",
@@ -24834,7 +24840,7 @@
         }
       ],
       "application": "s.apiBoardConversation; s.boardCardDashboardData, s.hydrateKanbanIssueConversation, s.hydrateKanbanPRConversation, s.kanbanConversationShellData",
-      "extraction": "Extract web.apiBoardConversation application inputs/results and validation from Echo; reuse s.boardCardDashboardData, s.hydrateKanbanIssueConversation, s.hydrateKanbanPRConversation, s.kanbanConversationShellData. The HTTP handler and MCP must delegate to this same application operation.",
+      "extraction": "The issue/PR comment panel reads existing tracker and forge comments through hydrateKanbanIssueConversation/hydrateKanbanPRConversation. Its meaningful comment read belongs to the comments child #3341; workspace conversation commands do not own tracker comment reads.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "api_board_conversation",
@@ -24847,10 +24853,10 @@
           "openWorld": true
         }
       },
-      "owner": "digitaldrywood/detent#3346",
+      "owner": "digitaldrywood/detent#3341",
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "decision": "Explicit ownership correction after inspecting apiBoardConversation: tracker/PR comments, not native workspace conversation history. Remains pending for #3341 and parent #3259 acceptance."
     },
     {
       "id": "web.api_board_receipt",
@@ -25703,7 +25709,7 @@
           "kind": "route",
           "definition": "s.echo.POST(\"/api/v1/chat/messages\", s.apiChatMessage, apiDashboardMutateAuth, apiWriteScope) [route=\"/api/v1/chat/messages\"]",
           "occurrence": 1,
-          "line": 560,
+          "line": 555,
           "method": "POST",
           "path": "\"/api/v1/chat/messages\"",
           "handler": "s.apiChatMessage",
@@ -25714,14 +25720,14 @@
           "kind": "attribute",
           "definition": "hx-post=\"/api/v1/chat/messages\"",
           "occurrence": 1,
-          "line": 36
+          "line": 35
         },
         {
           "source": "internal/web/templates/chat.templ",
           "kind": "form",
           "definition": "<form class=\"flex flex-none items-end gap-2 border-t border-line p-3\" hx-post=\"/api/v1/chat/messages\" hx-target=\"#chat-panel-body\" hx-swap=\"innerHTML\" hx-disabled-elt=\"find button, find textarea\" hx-on::after-request=\"if(event.detail.successful) this.reset()\" >",
           "occurrence": 1,
-          "line": 34
+          "line": 33
         }
       ],
       "availability": [
@@ -25778,24 +25784,24 @@
           "class": "none"
         }
       ],
-      "application": "s.apiChatMessage; s.chat.Conversation, s.chat.Send, s.chatContext",
-      "extraction": "Extract web.apiChatMessage application inputs/results and validation from Echo; reuse s.chat.Conversation, s.chat.Send, s.chatContext. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
-        "name": "api_chat_message",
-        "arguments": "Bounded apiChatMessageRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "apiChatMessageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "name": "post_operator_chat",
+        "arguments": "{\"project_id\":\"bounded authorized identifier\",\"request_id\":\"1..128 bytes\",\"message\":\"1..8192 bytes\"}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
           "destructive": false,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "The configured daemon chat provider and connection history are exposed directly. Only read tools are offered to a nested provider turn; use named MCP command tools for operator actions and the existing browser approval surface. Browser cookie/session IDs and approval decisions are not tool arguments."
     },
     {
       "id": "web.api_chat_panel",
@@ -25807,7 +25813,7 @@
           "kind": "route",
           "definition": "s.echo.GET(\"/api/v1/chat\", s.apiChatPanel, apiDashboardReadAuth, apiReadScope) [route=\"/api/v1/chat\"]",
           "occurrence": 1,
-          "line": 559,
+          "line": 554,
           "method": "GET",
           "path": "\"/api/v1/chat\"",
           "handler": "s.apiChatPanel",
@@ -25875,24 +25881,24 @@
           "class": "none"
         }
       ],
-      "application": "s.apiChatPanel; s.chat.Conversation",
-      "extraction": "Extract web.apiChatPanel application inputs/results and validation from Echo; reuse s.chat.Conversation. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
-        "name": "api_chat_panel",
-        "arguments": "Bounded apiChatPanelRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "apiChatPanelResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "name": "get_operator_chat",
+        "arguments": "{\"limit\":\"optional integer 1..200\"}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "The configured daemon chat provider and connection history are exposed directly. Only read tools are offered to a nested provider turn; use named MCP command tools for operator actions and the existing browser approval surface. Browser cookie/session IDs and approval decisions are not tool arguments."
     },
     {
       "id": "web.api_chat_reject",
@@ -34432,7 +34438,7 @@
       "authority": {
         "role": "authenticated operator",
         "credential_scope": "current connection authority",
-        "project_grant": "resource project read/write grant where scoped",
+        "project_grant": "current project read and runner grants; existing workspace actor ownership checks",
         "ownership": "current organization; resolve identifiers within the authorized project"
       },
       "preconditions": [
@@ -34446,24 +34452,24 @@
           "class": "none"
         }
       ],
-      "application": "workspace relay file channel read/list/stat and workspacesession file validation; FilesSurface uses relay.read",
-      "extraction": "Extract bounded typed workspace file reads from the existing file-channel dispatch; preserve path confinement and runner-grant/ownership authorization. No arbitrary shell or raw relay forwarding.",
+      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
+      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "workspace_file_read",
-        "arguments": "project_id, workspace_id, confined relative path (1\u20134096 bytes), bounded offset/length; no shell command; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "Typed file metadata/content chunk with workspace identity, byte bounds and freshness; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"workspace_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"project_id\",\"workspace_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Pending parity: return meaningful structured navigation/application results for these explicit browser sites; never scrape HTML or proxy arbitrary HTTP."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
+      "decision": "Authorized typed unsupported_transport result includes workspace capabilities/state or conversation snapshot/cursor and polling alternatives. Interactive browser relay/SSE is not a raw MCP transport; no shell input, filesystem path, relay ticket or worker proxy is accepted."
     },
     {
       "id": "administration.transport_and_approval",

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -337,7 +338,7 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 	runGit(t, source, "add", ".detent/notes.md", ".detent/tmp/tracked")
 	runGit(t, source, "commit", "-m", "tracked documentation and scratch fixture")
 	excludePath := filepath.Join(source, ".git", "info", "exclude")
-	exclude := "# operator exclusions without a final newline\n*.operator-local"
+	exclude := "# operator exclusions without a final newline\n*.operator-local\n.detent/worker-tmp"
 	writeFileDiffFile(t, source, ".git/info/exclude", exclude)
 	before, err := os.Stat(excludePath)
 	if err != nil {
@@ -362,6 +363,11 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 		writeFileDiffFile(t, path, "secret.operator-local", "ignored\n")
 		for _, document := range []string{".detent/notes.md", ".detent/lessons.md"} {
 			writeFileDiffFile(t, path, document, "human knowledge\n")
+		}
+		if i == 1 && runtime.GOOS != "windows" {
+			if err := os.Symlink(t.TempDir(), filepath.Join(path, ".detent", "worker-tmp")); err != nil {
+				t.Fatal(err)
+			}
 		}
 		for _, runtime := range []string{".detent/tmp/tracked", ".detent/tmp/nested/scratch", ".detent/worker-tmp/attempt/scratch"} {
 			writeFileDiffFile(t, path, runtime, "runtime\n")

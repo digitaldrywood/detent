@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -77,38 +78,11 @@ func (s *Service) createWorkspace(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	service, err := s.requireWorkspaces()
+	value, err := s.commandCreateWorkspace(c.Request().Context(), nativeRequestScope(c), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	requires, err := workspacesession.NormalizeRequires(request.Requires)
-	if err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
-	}
-	request.Requires = relayedRequires(requires)
-	if len(request.Ref) > maxWorkspaceRefBytes {
-		return s.nativeAPIError(c, nativeInvalid("ref is too long"))
-	}
-	if request.WorkItemID == "" && request.AttemptID == "" {
-		return s.nativeAPIError(c, nativeInvalid("A work item or an attempt is required"))
-	}
-	if request.AttemptID != "" && !validNativeID(request.AttemptID, "attempt") {
-		return s.nativeAPIError(c, nativeInvalid("attempt_id must be a typed attempt identifier"))
-	}
-	var created workspaceRecord
-	err = s.nativeMutationStatus(c, http.StatusCreated, request.Mutation, request,
-		func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			record, err := service.openWorkspace(ctx, tx, scope, request, now)
-			if err != nil {
-				return nil, err
-			}
-			created = record
-			return record.resource(), nil
-		})
-	if created.ID != "" {
-		service.committed(c.Request().Context(), created)
-	}
-	return err
+	return c.JSONBlob(http.StatusCreated, value)
 }
 
 // openWorkspace validates the request, applies the limits and creates the
@@ -275,91 +249,32 @@ WHERE id = ? AND organization_id = ? AND project_id = ?`, attemptID, scope.organ
 
 // listWorkspaces implements GET {nativeBase}/workspaces.
 func (s *Service) listWorkspaces(c echo.Context) error {
-	service, err := s.requireWorkspaces()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
 	if err := validateNativeQuery(c.QueryParams(), "work_item", "state"); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	state := strings.TrimSpace(c.QueryParam("state"))
-	if state != "" && !workspacesession.ValidState(state) {
-		return s.nativeAPIError(c, nativeInvalid("state names no workspace state"))
-	}
-	item := strings.TrimSpace(c.QueryParam("work_item"))
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	if item != "" {
-		if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	records, err := listWorkspaceRows(ctx, s.database.db, scope, item, state, workspaceListLimit)
+	value, err := s.readWorkspaces(c.Request().Context(), nativeRequestScope(c), c.QueryParam("work_item"), c.QueryParam("state"), workspaceListLimit)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	response := workspaceListResponse{Workspaces: make([]workspacesession.Session, 0, len(records))}
-	for _, record := range records {
-		if item == "" {
-			// The listing follows the issue's read rule one row at a time, so
-			// a reader who can see some of a project's issues sees exactly
-			// the workspaces on those.
-			if _, _, err := readNativeIssue(ctx, s.database.db, scope, record.SubjectWorkItemID); err != nil {
-				if isNativeNotFound(err) {
-					continue
-				}
-				return s.nativeAPIError(c, err)
-			}
-		}
-		response.Workspaces = append(response.Workspaces, service.presentWorkspace(ctx, scope, record))
-	}
-	return c.JSON(http.StatusOK, response)
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // getWorkspace implements GET {nativeBase}/workspaces/:workspace.
 func (s *Service) getWorkspace(c echo.Context) error {
-	service, err := s.requireWorkspaces()
+	value, err := s.readWorkspace(c.Request().Context(), nativeRequestScope(c), c.Param("workspace"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	record, err := service.readWorkspaceForActor(ctx, s.database.db, scope, c.Param("workspace"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, service.presentWorkspace(ctx, scope, record))
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // deleteWorkspace implements DELETE {nativeBase}/workspaces/:workspace. It
 // closes the workspace; closing one never deletes the attempt's artifacts.
 func (s *Service) deleteWorkspace(c echo.Context) error {
-	service, err := s.requireWorkspaces()
+	_, err := s.commandCloseWorkspace(c.Request().Context(), nativeRequestScope(c), c.Param("workspace"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	var closed workspaceRecord
-	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
-			return err
-		}
-		record, err := service.readWorkspaceForActor(ctx, tx, scope, c.Param("workspace"))
-		if err != nil {
-			return err
-		}
-		if workspacesession.Terminal(record.State) {
-			closed = record
-			return nil
-		}
-		closed, err = service.endWorkspace(ctx, tx, record, workspacesession.StateClosed, workspacesession.ReasonClosedByActor, now)
-		return err
-	})
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	service.committed(ctx, closed)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -392,4 +307,99 @@ func (w *workspaceService) presentWorkspace(ctx context.Context, scope nativeSco
 // audience on its own.
 func workspaceAuditReadable(scope nativeScope, _ workspaceRecord) bool {
 	return scope.credential.HostedRole == "owner" || scope.credential.HostedRole == "admin"
+}
+
+func normalizeWorkspaceRequest(request workspaceRequest) (workspaceRequest, error) {
+	requires, err := workspacesession.NormalizeRequires(request.Requires)
+	if err != nil {
+		return workspaceRequest{}, nativeInvalid(err.Error())
+	}
+	request.Requires = relayedRequires(requires)
+	if len(request.Ref) > maxWorkspaceRefBytes {
+		return workspaceRequest{}, nativeInvalid("ref is too long")
+	}
+	if request.WorkItemID == "" && request.AttemptID == "" {
+		return workspaceRequest{}, nativeInvalid("A work item or an attempt is required")
+	}
+	if request.AttemptID != "" && !validNativeID(request.AttemptID, "attempt") {
+		return workspaceRequest{}, nativeInvalid("attempt_id must be a typed attempt identifier")
+	}
+	return request, nil
+}
+
+func (s *Service) commandCloseWorkspace(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+	service, err := s.requireWorkspaces()
+	if err != nil {
+		return nil, err
+	}
+	var closed workspaceRecord
+	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+			return err
+		}
+		record, err := service.readWorkspaceForActor(ctx, tx, scope, id)
+		if err != nil {
+			return err
+		}
+		if workspacesession.Terminal(record.State) {
+			closed = record
+			return nil
+		}
+		closed, err = service.endWorkspace(ctx, tx, record, workspacesession.StateClosed, workspacesession.ReasonClosedByActor, now)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	service.committed(ctx, closed)
+	return json.RawMessage(`{"deleted":true}`), nil
+}
+
+func (s *Service) readWorkspaces(ctx context.Context, scope nativeScope, item, state string, limit int) (json.RawMessage, error) {
+	service, err := s.requireWorkspaces()
+	if err != nil {
+		return nil, err
+	}
+	state = strings.TrimSpace(state)
+	if state != "" && !workspacesession.ValidState(state) {
+		return nil, nativeInvalid("state names no workspace state")
+	}
+	item = strings.TrimSpace(item)
+	if item != "" {
+		if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+			return nil, err
+		}
+	}
+	records, err := listWorkspaceRows(ctx, s.database.db, scope, item, state, limit)
+	if err != nil {
+		return nil, err
+	}
+	response := workspaceListResponse{Workspaces: make([]workspacesession.Session, 0, len(records))}
+	for _, record := range records {
+		if item == "" {
+			// The listing follows the issue's read rule one row at a time, so
+			// a reader who can see some of a project's issues sees exactly
+			// the workspaces on those.
+			if _, _, err := readNativeIssue(ctx, s.database.db, scope, record.SubjectWorkItemID); err != nil {
+				if isNativeNotFound(err) {
+					continue
+				}
+				return nil, err
+			}
+		}
+		response.Workspaces = append(response.Workspaces, service.presentWorkspace(ctx, scope, record))
+	}
+	return json.Marshal(response)
+}
+
+func (s *Service) readWorkspace(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+	service, err := s.requireWorkspaces()
+	if err != nil {
+		return nil, err
+	}
+	record, err := service.readWorkspaceForActor(ctx, s.database.db, scope, id)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(service.presentWorkspace(ctx, scope, record))
 }
