@@ -187,6 +187,26 @@ func candidateEvidenceCanPage(node githubIssueNode) bool {
 	return node.Comments.PageInfo.HasNextPage || node.BlockedBy.PageInfo.HasNextPage
 }
 
+func (c *Connector) hydrateIssueStatesWithEvidence(ctx context.Context, issues []connector.Issue) error {
+	nodes := make([]githubIssueNode, 0, len(issues))
+	for _, issue := range issues {
+		nodes = append(nodes, githubIssueNode{ID: issue.ID})
+	}
+	evidence := c.candidateEvidence(ctx, nodes, true)
+	for index, issue := range issues {
+		if node, ok := evidence[issue.ID]; ok {
+			hydrated, err := c.applySchedulerEvidence(issue, node)
+			if err != nil {
+				return err
+			}
+			issues[index] = hydrated
+		} else if err := c.hydrateIssueBlockedByRefs(ctx, &issues[index]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *Connector) hydrateCandidateWithEvidence(ctx context.Context, issue connector.Issue, states []string, evidence map[string]githubIssueNode) (connector.Issue, error) {
 	node, ok := evidence[issue.ID]
 	issues := []connector.Issue{issue}
@@ -216,6 +236,7 @@ func (c *Connector) applySchedulerEvidence(issue connector.Issue, node githubIss
 	issue.UpdatedAt = parseGitHubTime(node.UpdatedAt)
 	issue.ModelOverride = parseModelOverride(node.Body)
 	issue.Comments = connectorIssueComments(node.Comments.Nodes)
+	issue.CommentsComplete = true
 	issue.CommentCount = node.Comments.TotalCount
 	issue.WorkpadSignal = parseWorkpadSignal(node)
 	if reason := parseBlockerReason(node); reason != "" {

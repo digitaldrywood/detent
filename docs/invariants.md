@@ -1225,6 +1225,19 @@ issue timestamps with changed comments, lane actors and incomplete evidence.
 `TestLabelRefreshSelectorsExcludeUnownedEvidence` covers all selector predicates
 in complete and fallback readers, including off-selector human dependencies.
 
+Full ID and prerequisite-identifier state reads (#3761) reuse that same complete
+scheduler evidence owner within each read operation, after fresh REST metadata.
+Incomplete, invalid or unavailable aliases retain the existing REST hydration
+and its read errors; unread native relations are never authoritative empties.
+ID batches remain bounded to 25 aliases, and identifier reads retain their
+per-issue ordering. No evidence survives the read operation or crosses the
+planner's hydration/evaluation/mutation boundary. Accepted complete comments set
+`CommentsComplete`; the final recorded-blocker canonical-comment reread and
+independent claim/merge validation still own freshness before mutation.
+`TestLabelRefreshSharesFreshSchedulerEvidence` also covers full-state request
+counts, preserved REST metadata/order, edited canonical human holds, pagination,
+conservative fallback and lightweight probes.
+
 Workspace Git-read failures no longer apply a second admission brake to
 unrelated merge workers (#3487). The affected operation retains its existing
 forge retry and backoff; ordinary preparation owns its actual remote reads,
