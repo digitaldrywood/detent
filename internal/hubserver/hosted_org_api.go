@@ -419,7 +419,7 @@ func (s *Service) revokeHostedMemberJSON(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot remove organization members")
 	}
 	if err := s.removeHostedMemberFor(c.Request().Context(), credential, c.Param("member")); err != nil {
-		return s.hostedJSONError(c, http.StatusForbidden, "This member could not be removed")
+		return s.hostedJSONError(c, http.StatusForbidden, "This member could not be removed; the organization must retain an owner")
 	}
 	return c.NoContent(http.StatusNoContent)
 }
