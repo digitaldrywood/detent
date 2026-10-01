@@ -32,6 +32,21 @@ writes tracker lanes, creates confirmations or adds a protection mechanism.
 `TestHostedOperatorCurrentAuthority` and `TestProtocolWorkReadParity` exercise
 the application boundary and both transports, including direct-call denial.
 
+Billing/usage MCP parity (#3345) delegates checkout/portal, plan and usage reads,
+exports, and daemon budget overrides to the dashboard application operations.
+Organization billing remains owner-only without support impersonation; plan
+reads require owner/admin, while usage totals include only current project grants.
+Platform entitlement administration and publisher artifact allowance callbacks
+remain separate authority boundaries and are never organization tools. Material
+actions use the existing exact browser approval conversation; YOLO changes only
+confirmation. Approved checkout retries resume the existing durable purchase
+intent/provider key, including after response loss; uncertain portal effects keep
+their existing receipt. No billing ledger, recovery loop or tracker writer is
+introduced. `TestHostedBillingMCP`, `TestBillingCommandResponseLoss`,
+`TestMCPDaemonBilling`, `TestHostedOperatorCurrentAuthority`,
+`TestUsageReportAggregates`, `TestHostedArtifactAllowanceBoundary`, and
+`TestPlatformComplimentaryPlansThroughTenantHub` cover these boundaries.
+
 Work-item MCP parity (#3341) reuses the dashboard work creation, discussion,
 priority, native collaboration, park acknowledgement and security-disposition
 commands. Native edits keep expected revisions and workflow authority; connection
@@ -645,6 +660,17 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
+existing optional feature negotiation. The `runner_local_checks` capability
+permits `local_checks`; older Hubs receive the original heartbeat without that
+field. Startup observations remain scoped to their project; missing or unsupported
+diagnostic authority remains absent, and current-Hub validation and admission
+requirements remain unchanged. Registration uses the same negotiated heartbeat
+encoder. `TestNativeOptionalReportsNegotiateHubSupport`,
+`TestRunnerSetupHeartbeatOwnership`, and `TestOnboardingRunnerLocalChecks` cover
+strict older/current schemas, failed/missing evidence, routing identity, and the
+single startup heartbeat owner. No compatibility retry loop or gate is added.
 
 Rework-breaker recovery reads its historical park only for a current Blocked
 issue with automatic promotion enabled. Current-cause recovery remains the

@@ -653,7 +653,8 @@ WITH usage_report_rows AS (
     runtime_seconds,
     compute_usd
   FROM usage_events
-  WHERE (sqlc.narg(from_day) IS NULL OR event_day >= sqlc.narg(from_day))
+  WHERE (sqlc.narg(project_ids_json) IS NULL OR project_id IN (SELECT value FROM json_each(sqlc.narg(project_ids_json))))
+    AND (sqlc.narg(from_day) IS NULL OR event_day >= sqlc.narg(from_day))
     AND (sqlc.narg(to_day) IS NULL OR event_day <= sqlc.narg(to_day))
 )
 SELECT

@@ -998,9 +998,11 @@ const (
 )
 
 type UsageReportQuery struct {
-	By   UsageReportGroup
-	From time.Time
-	To   time.Time
+	// Nil preserves the application-wide report; a non-nil empty slice selects no projects.
+	ProjectIDs []string
+	By         UsageReportGroup
+	From       time.Time
+	To         time.Time
 }
 
 type UsageReport struct {

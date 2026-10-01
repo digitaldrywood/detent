@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -693,10 +694,19 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 		return UsageReport{}, errors.New("from date must be on or before to date")
 	}
 
+	var projects sql.NullString
+	if query.ProjectIDs != nil {
+		encoded, err := json.Marshal(query.ProjectIDs)
+		if err != nil {
+			return UsageReport{}, err
+		}
+		projects = sql.NullString{String: string(encoded), Valid: true}
+	}
 	rows, err := s.queries.UsageReportRows(ctx, sqlc.UsageReportRowsParams{
-		BucketBy: string(group),
-		FromDay:  nullString(from),
-		ToDay:    nullString(to),
+		ProjectIdsJson: projects,
+		BucketBy:       string(group),
+		FromDay:        nullString(from),
+		ToDay:          nullString(to),
 	})
 	if err != nil {
 		return UsageReport{}, fmt.Errorf("reading usage report: %w", err)

@@ -235,43 +235,11 @@ func (s *Service) hostedUsageReport(c echo.Context) error {
 		return s.usageCredentialError(c, err)
 	}
 	ctx := c.Request().Context()
-	window, err := usageRangeWindow(c.QueryParam("range"), s.config.now())
+	report, err := s.readHostedUsage(ctx, credential, c.QueryParam("range"), c.QueryParam("project"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	projects, err := s.usageReadableProjects(ctx, credential)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if requested := strings.TrimSpace(c.QueryParam("project")); requested != "" {
-		if !slices.Contains(projects, requested) {
-			// A project the member cannot read is indistinguishable from one
-			// that does not exist.
-			return s.nativeAPIError(c, nativeNotFound())
-		}
-		projects = []string{requested}
-	}
-	rows, err := s.usageRows(ctx, window, projects)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	limits, err := s.usageLimits(ctx)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	capacity, err := s.usageRunnerCapacity(ctx)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	chatRows, err := s.chatUsageRows(ctx, window, projects)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	report := buildUsageReport(window, append(rows, chatRows...), limits, capacity, s.usagePrices())
-	report.Chat, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, window, projects)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
+
 	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -622,4 +590,45 @@ func usageRank(leftCost, rightCost float64, leftID, rightID string) int {
 	default:
 		return strings.Compare(leftID, rightID)
 	}
+}
+
+func (s *Service) readHostedUsage(ctx context.Context, credential apiCredential, rangeName, project string) (usageReport, error) {
+	window, err := usageRangeWindow(rangeName, s.config.now())
+	if err != nil {
+		return usageReport{}, err
+	}
+	projects, err := s.usageReadableProjects(ctx, credential)
+	if err != nil {
+		return usageReport{}, err
+	}
+	if requested := strings.TrimSpace(project); requested != "" {
+		if !slices.Contains(projects, requested) {
+			// A project the member cannot read is indistinguishable from one
+			// that does not exist.
+			return usageReport{}, nativeNotFound()
+		}
+		projects = []string{requested}
+	}
+	rows, err := s.usageRows(ctx, window, projects)
+	if err != nil {
+		return usageReport{}, err
+	}
+	limits, err := s.usageLimits(ctx)
+	if err != nil {
+		return usageReport{}, err
+	}
+	capacity, err := s.usageRunnerCapacity(ctx)
+	if err != nil {
+		return usageReport{}, err
+	}
+	chatRows, err := s.chatUsageRows(ctx, window, projects)
+	if err != nil {
+		return usageReport{}, err
+	}
+	report := buildUsageReport(window, append(rows, chatRows...), limits, capacity, s.usagePrices())
+	report.Chat, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, window, projects)
+	if err != nil {
+		return usageReport{}, err
+	}
+	return report, nil
 }

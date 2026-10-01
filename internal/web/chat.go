@@ -443,6 +443,8 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 	var result string
 	var err error
 	switch action.Kind {
+	case chatpkg.ActionKind(operatortool.BudgetOverrideSet), chatpkg.ActionKind(operatortool.BudgetOverrideClear):
+		err = s.executeBudgetAction(ctx, action)
 	case chatpkg.ActionMoveItem:
 		result, err = s.executeChatMove(ctx, action)
 	case chatpkg.ActionSetPriority:
