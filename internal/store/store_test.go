@@ -975,6 +975,27 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 		t.Fatalf("RecordSchedulerDecision() error = %v", err)
 	}
 
+	t.Run("atomic scheduler batch", func(t *testing.T) {
+		writer := backend.(SchedulerDecisionBatchStore)
+		valid := SchedulerDecision{ProjectID: "batch", IssueID: "one", Result: SchedulerDecisionResultSkipped, Reason: "authorization_selector_declined", DecisionAt: base, MetadataJSON: `{"authorization_decision":{"matched":false}}`}
+		for _, last := range []SchedulerDecision{{}, {ProjectID: "batch", IssueID: "two", DecisionAt: base}} {
+			ids, err := writer.RecordSchedulerDecisions(ctx, []SchedulerDecision{valid, last})
+			rows, readErr := backend.ListRecentSchedulerDecisions(ctx, SchedulerDecisionQuery{ProjectID: "batch"})
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if last.ProjectID == "" {
+				if err == nil || len(ids) != 0 || len(rows) != 0 {
+					t.Fatalf("failed batch persisted evidence: %v %v %v", ids, err, rows)
+				}
+			} else {
+				if err != nil || len(ids) != 2 || len(rows) != 2 || ids[0] >= ids[1] || rows[1].MetadataJSON != valid.MetadataJSON {
+					t.Fatalf("batch lost ordered per-issue evidence: %v %v %v", ids, err, rows)
+				}
+			}
+		}
+	})
+
 	active, err := backend.ListActiveWorkAttempts(ctx, WorkAttemptQuery{ProjectID: "detent"})
 	if err != nil {
 		t.Fatalf("ListActiveWorkAttempts() error = %v", err)

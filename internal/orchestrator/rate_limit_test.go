@@ -428,8 +428,8 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.flushRESTUsageCalls != 1 {
-		t.Fatalf("FlushRESTRateLimitUsage() calls = %d, want 1", tracker.flushRESTUsageCalls)
+	if tracker.flushRESTUsageCalls != 2 {
+		t.Fatalf("FlushRESTRateLimitUsage() calls = %d, want pre-dispatch and post-maintenance observations", tracker.flushRESTUsageCalls)
 	}
 	if state.RateLimits == nil || state.RateLimits.GitHubREST == nil || state.RateLimits.RESTUsage == nil {
 		t.Fatalf("RateLimits = %#v, want GitHub REST bucket and usage summary", state.RateLimits)
@@ -460,6 +460,23 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	}
 	if state.PollInterval != time.Minute {
 		t.Fatalf("PollInterval = %s, want explicit REST backoff 1m", state.PollInterval)
+	}
+
+	// A second usage flush must include maintenance without double-counting the
+	// pre-dispatch sample or reusing a previous refresh's usage when it is empty.
+	for _, before := range []int64{0, 2} {
+		t.Run(fmt.Sprintf("maintenance_after_%d_requests", before), func(t *testing.T) {
+			tracker := &rateLimitConnector{
+				restUsage:     connector.RESTRateLimitUsage{TotalRequests: before, BillableRequests: before},
+				restTailUsage: connector.RESTRateLimitUsage{HasRateLimit: true, RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4800, Resource: "core"}, TotalRequests: 3, BillableRequests: 3},
+			}
+			state := newState(cfg)
+			state.RateLimits = &telemetry.RateLimits{RESTUsage: &telemetry.RESTUsage{TotalRequests: 99, BillableRequests: 99}}
+			newRateLimitTestOrchestrator(cfg, tracker).tick(t.Context(), &state, now)
+			if got := state.RateLimits.RESTUsage; got.TotalRequests != before+3 || got.BillableRequests != before+3 || state.RateLimits.GitHubREST.Cost != before+3 {
+				t.Fatalf("maintenance usage=%+v bucket=%+v", got, state.RateLimits.GitHubREST)
+			}
+		})
 	}
 }
 
@@ -1968,6 +1985,7 @@ type rateLimitConnector struct {
 	hasRateLimit            bool
 	usage                   connector.GraphQLRateLimitUsage
 	restUsage               connector.RESTRateLimitUsage
+	restTailUsage           connector.RESTRateLimitUsage
 	restStatus              connector.RESTRateLimitUsage
 	restProbeRateLimits     []connector.RESTRateLimit
 	restProbeErrs           []error
@@ -2117,7 +2135,12 @@ func (c *rateLimitConnector) FlushGraphQLRateLimitUsage() connector.GraphQLRateL
 
 func (c *rateLimitConnector) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	c.flushRESTUsageCalls++
-	return c.restUsage
+	usage := c.restUsage
+	c.restUsage = connector.RESTRateLimitUsage{}
+	if c.flushRESTUsageCalls == 2 {
+		usage = c.restTailUsage
+	}
+	return usage
 }
 
 func (c *rateLimitConnector) RESTRateLimitStatus() connector.RESTRateLimitUsage {

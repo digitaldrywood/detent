@@ -152,7 +152,7 @@ func normalizeWorkerHosts(hosts []string) []string {
 	return normalized
 }
 
-func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
+func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time, maintenanceIssues ...connector.Issue) {
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
 	if state.Draining || o.dispatchQuiesced() {
@@ -234,7 +234,11 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return o.pollMergeWorkerCurrentHeadCI(ctx, state, issue, retry, now)
 		},
 		preserveMissingDueRetry: func(retry Retry) bool {
-			return o.preserveMissingDueRetry(state, retry)
+			// The tick's existing blocked maintenance still needs retry ownership
+			// to distinguish started work from new work. Its missing-retry cleanup
+			// runs after maintenance; refill and other callers clean up here.
+			return slices.ContainsFunc(maintenanceIssues, func(issue connector.Issue) bool { return issue.ID == retry.Issue.ID }) ||
+				o.preserveMissingDueRetry(state, retry)
 		},
 		decision: func(decision dispatchPlanDecision) {
 			decisions = append(decisions, decision)

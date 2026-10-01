@@ -1,12 +1,15 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"math/rand/v2"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -187,4 +190,27 @@ func TestIssueWorkflowTimelineIndexedIdentityUnion(t *testing.T) {
 			t.Fatalf("complete history truncated/duplicated: %d", len(actual))
 		}
 	}
+
+	// Identify connection admission, rather than SQL or network time, as a
+	// reproducible deadline boundary while the single connection serves a writer.
+	t.Run("connection occupied by maintenance", func(t *testing.T) {
+		conn, err := writer.db.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		before := writer.db.Stats().WaitCount
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			start := time.Now()
+			_, err := backend.IssueWorkflowTimeline(ctx, IssueIdentity{ProjectID: "project-a", IssueID: "issue-1"})
+			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 5*time.Second {
+				t.Fatalf("connection wait: duration=%s error=%v", time.Since(start), err)
+			}
+		})
+		if got := writer.db.Stats().WaitCount - before; got != 1 {
+			t.Fatalf("connection waits=%d, want one query denied admission", got)
+		}
+	})
 }

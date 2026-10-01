@@ -438,6 +438,30 @@ func (s *sqliteStore) RecordSchedulerDecision(ctx context.Context, attrs Schedul
 	return decision.ID, nil
 }
 
+func (s *sqliteStore) RecordSchedulerDecisions(ctx context.Context, decisions []SchedulerDecision) ([]int64, error) {
+	if len(decisions) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("starting scheduler evidence transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	writer := &sqliteStore{queries: s.queries.WithTx(tx)}
+	ids := make([]int64, 0, len(decisions))
+	for _, decision := range decisions {
+		id, err := writer.RecordSchedulerDecision(ctx, decision)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing scheduler evidence: %w", err)
+	}
+	return ids, nil
+}
+
 func (s *sqliteStore) ListRecentSchedulerDecisions(ctx context.Context, query SchedulerDecisionQuery) ([]SchedulerDecision, error) {
 	limit := query.Limit
 	if limit <= 0 {
