@@ -252,7 +252,8 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 		if command == "" {
 			command = activityInputCommand(u.Delta)
 		}
-		kind, evidence := classifyActivity(u.Tool, command)
+		activityCommand := activityShellCommand(command)
+		kind, evidence := classifyActivity(u.Tool, activityCommand)
 		span := workflowmetrics.ActivitySpan{ID: key, ParentID: parent, Kind: kind, Evidence: evidence, Fingerprint: activityHash(u.Tool + "\x00" + command), StartedAt: observation.at, Outcome: "running", Attribution: "unattributed"}
 		if kind == "waiting" {
 			span.WaitReason = evidence
@@ -263,13 +264,13 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 			span.HeadAttribution = "last_observed_workspace_snapshot"
 		}
 		for _, source := range sources {
-			if kind == "context_read" && activityReadsSource(command, source) {
+			if kind == "context_read" && activityReadsSource(activityCommand, source) {
 				span.Sources = append(span.Sources, source.ref)
 				span.Attribution = "observed_read_request"
 			}
-			if kind != "context_read" && command != "" && kind != "unclassified" && kind != "tool_execution" && strings.Contains(source.text, command) {
+			if kind != "context_read" && activityCommand != "" && kind != "unclassified" && kind != "tool_execution" && strings.Contains(source.text, activityCommand) {
 				ref := source.ref
-				ref.MatchedLine = 1 + strings.Count(source.text[:strings.Index(source.text, command)], "\n")
+				ref.MatchedLine = 1 + strings.Count(source.text[:strings.Index(source.text, activityCommand)], "\n")
 				span.Sources = append(span.Sources, ref)
 				span.Attribution = "inferred_text_match"
 			}
@@ -364,6 +365,15 @@ func classifyActivity(tool, command string) (string, string) {
 	kind, evidence := "", ""
 	for _, segment := range segments {
 		fields := strings.Fields(segment)
+		if len(fields) > 0 && filepath.Base(fields[0]) == "env" {
+			fields = fields[1:]
+			for len(fields) > 1 && fields[0] == "-u" {
+				fields = fields[2:]
+			}
+			if len(fields) > 0 && fields[0] == "--" {
+				fields = fields[1:]
+			}
+		}
 		for len(fields) > 0 && strings.Contains(fields[0], "=") {
 			fields = fields[1:]
 		}
@@ -435,6 +445,66 @@ func classifyActivity(tool, command string) (string, string) {
 		return "unclassified", "tool_lifecycle"
 	}
 	return kind, evidence
+}
+
+func activityShellCommand(command string) string {
+	launcher, rest, ok := strings.Cut(strings.TrimSpace(command), " ")
+	if !ok {
+		return command
+	}
+	switch filepath.Base(launcher) {
+	case "sh", "bash", "zsh", "dash", "ksh":
+	default:
+		return command
+	}
+	option, script, ok := strings.Cut(strings.TrimSpace(rest), " ")
+	if !ok || (option != "-c" && option != "-lc") {
+		return command
+	}
+	var result strings.Builder
+	quote := byte(0)
+	script = strings.TrimSpace(script)
+	result.Grow(len(script))
+	for index := 0; index < len(script); index++ {
+		value := script[index]
+		if quote == '\'' {
+			if value == '\'' {
+				quote = 0
+			} else {
+				result.WriteByte(value)
+			}
+			continue
+		}
+		if value == quote && quote != 0 {
+			quote = 0
+			continue
+		}
+		if value == '\\' {
+			index++
+			if index == len(script) {
+				return command
+			}
+			if quote == '"' && !strings.ContainsRune("\\\"$`\n", rune(script[index])) {
+				result.WriteByte('\\')
+			}
+			if script[index] != '\n' {
+				result.WriteByte(script[index])
+			}
+			continue
+		}
+		if quote == 0 && (value == '\'' || value == '"') {
+			quote = value
+			continue
+		}
+		if strings.ContainsRune("$`", rune(value)) || (quote == 0 && strings.ContainsRune(" \t\r\n;&|<>()*?[]~", rune(value))) {
+			return command
+		}
+		result.WriteByte(value)
+	}
+	if quote != 0 || result.Len() == 0 {
+		return command
+	}
+	return result.String()
 }
 
 // Only known JSON command fields are decoded. Free-form code and arbitrary
