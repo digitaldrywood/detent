@@ -358,6 +358,10 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		if issue.PullRequest == nil || pullRequestHydrationUnavailableReason(issue.PullRequest) != "" || issue.PullRequest.HydrationDegradedReason != "" {
 			return errors.New("triage pull request evidence unavailable")
 		}
+		issue.Comments = comments
+		if resolved, ok := o.resolveMergedCompletionPullRequest(ctx, issue); ok {
+			issue = resolved
+		}
 		if autoPromotePullRequestMerged(issue.PullRequest) {
 			if !metadata.PreserveLane {
 				o.reconcileStaleLinkedPullRequestIssues(ctx, state, []connector.Issue{issue}, now)

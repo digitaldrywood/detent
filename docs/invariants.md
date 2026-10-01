@@ -1835,6 +1835,13 @@ publication pending. A merge discovered during hydration uses the existing merge
 lifecycle; missing or running audit and validator stages leave publication pending
 while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
 no new lane reason, allowance reset, or recovery mechanism is introduced.
+The same fresh publication owner resolves an already-merged operational receipt
+against current forge references before applying that merged lifecycle, including
+a different merging PR from a closed draft. Its freshly read canonical comments
+remain authoritative through PR hydration. The existing fixture covers corrected
+receipts, wrong integration branches, missing references, current human action
+and preserved lanes. An invalid receipt remains unverified; this does not repair
+its ancestry assertion or erase historical failed attempts.
 Ready In Progress PRs also enter the existing repair evaluation before worker
 completion (#2976). Unresolved review threads and failing CI reuse the existing
 Rework decisions and audit comments, including during the final running attempt.
