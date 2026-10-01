@@ -145,6 +145,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantCurrentHead:  "new-head",
 			wantHydrations:   1,
 			wantRetry:        true,
+			wantConsecutive:  1,
 		},
 		{
 			name:             "unchanged signature and clean diff records no progress",
@@ -158,6 +159,43 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantPreviousHead: "same-head",
 			wantCurrentHead:  "same-head",
 			wantHydrations:   1,
+			wantRetry:        true,
+			wantConsecutive:  1,
+		},
+		{
+			name:          "configured signature limit stops unchanged attempts",
+			runningIssue:  implementProgressIssue("same-head", "Test"),
+			hydratedIssue: implementProgressIssue("same-head", "Test"),
+			history: []store.WorkAttempt{
+				implementProgressHistoryAttempt(2, signature, store.WorkAttemptTerminalNoProgress),
+				implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalNoProgress),
+			},
+			diffStats:        DiffStats{Status: "clean"},
+			noProgressLimit:  3,
+			wantTerminal:     store.WorkAttemptTerminalNoProgress,
+			wantReason:       "unchanged_signature_clean_diff",
+			wantPreviousHead: "same-head",
+			wantCurrentHead:  "same-head",
+			wantHydrations:   1,
+			wantConsecutive:  3,
+			wantBlocked:      true,
+			wantBlockReason:  noProgressLimitReason,
+		},
+		{
+			name:          "disabled signature limit retains unchanged classification",
+			runningIssue:  implementProgressIssue("same-head", "Test"),
+			hydratedIssue: implementProgressIssue("same-head", "Test"),
+			history: []store.WorkAttempt{
+				implementProgressHistoryAttempt(2, signature, store.WorkAttemptTerminalNoProgress),
+				implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalNoProgress),
+			},
+			diffStats:        DiffStats{Status: "clean"},
+			wantTerminal:     store.WorkAttemptTerminalNoProgress,
+			wantReason:       "unchanged_signature_clean_diff",
+			wantPreviousHead: "same-head",
+			wantCurrentHead:  "same-head",
+			wantHydrations:   1,
+			wantConsecutive:  3,
 			wantRetry:        true,
 		},
 		{
@@ -185,6 +223,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantBlocked:      true,
 			wantBlockReason:  strandedUnpushedWorkReason,
 			wantComment:      "commits_not_in_pull_request: \"abc123 fix: preserve work\"",
+			wantConsecutive:  3,
 		},
 		{
 			name:          "untracked file with matching pull request head is not stranded",
@@ -225,6 +264,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantBlocked:     true,
 			wantBlockReason: strandedUnpushedWorkReason,
 			wantComment:     "tracked_paths: \"tracked.go\"",
+			wantConsecutive: 1,
 		},
 		{
 			name:            "missing workspace head defers unpushed classification",
@@ -256,6 +296,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "completed_clean_diff_without_pull_request",
 			wantRetry:       true,
+			wantConsecutive: 1,
 		},
 		{
 			name:               "merged receipt without native evidence cannot complete",
@@ -278,6 +319,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: strings.Replace(mergedCompletionWorkpadBody(), "completion_ancestry: verified", "completion_ancestry: unknown", 1),
+			wantConsecutive:    1,
 		},
 		{
 			name: "preauthorized operational completion is deliverable progress",
@@ -360,6 +402,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
+			wantConsecutive:    1,
 		},
 		{
 			name:               "undeclared operational assertion remains no progress",
@@ -371,6 +414,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: operationalCompletionWorkpadBody("Backfill completed and verified."),
+			wantConsecutive:    1,
 		},
 		{
 			name:              "first dependency deferral releases claim without tripping loop",
@@ -421,6 +465,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRejectedRef:   "fabricated-ref",
 			wantLogContains:   "fabricated-ref",
 			wantRetry:         true,
+			wantConsecutive:   1,
 		},
 		{
 			name:              "unresolvable blocker ref counts as no progress",
@@ -433,6 +478,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRejectedRef:   "digitaldrywood/detent#9999",
 			wantLogContains:   "digitaldrywood/detent#9999",
 			wantRetry:         true,
+			wantConsecutive:   1,
 		},
 		{
 			name:              "already terminal blocker does not defer empty attempt",
@@ -444,9 +490,10 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			workpadBlockerRef: "digitaldrywood/detent#134",
 			resolvedBlockers:  []connector.Issue{{ID: "blocker-134", Identifier: "digitaldrywood/detent#134", State: "Done"}},
 			wantRetry:         true,
+			wantConsecutive:   1,
 		},
 		{
-			name:         "legacy telemetry replay fails open without dispatch start evidence",
+			name:         "legacy no-product history respects configured limit",
 			runningIssue: implementProgressIssueWithoutPR(),
 			history: []store.WorkAttempt{
 				implementProgressLegacyNoPRHistoryAttempt(2),
@@ -456,7 +503,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			noProgressLimit: 3,
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "completed_clean_diff_without_pull_request",
-			wantRetry:       true,
+			wantBlocked:     true,
+			wantBlockReason: noProgressLimitReason,
+			wantConsecutive: 3,
 		},
 		{
 			name:         "unpushed arithmetic without linked pull request defers",
@@ -509,6 +558,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "baseline prose", nil),
 			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "expanded prose without a machine artifact", nil),
+			wantConsecutive:    2,
 		},
 		{
 			name:               "mixed diff and audit field records both progress kinds",

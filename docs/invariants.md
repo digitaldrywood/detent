@@ -374,24 +374,16 @@ readiness. Attempt identity prevents stale-claim replay; tracker evidence provid
 the independent corroboration. The dispatch fingerprint and mergeability baseline
 persist with the attempt across restart, including merge-mode conflict repairs
 in In Progress and ordinary implementation repairs in Rework (#2929, #3547);
-a changed head SHA alone is not implementation. No-progress
-outcomes consume the existing issue attempt allowance, including merge-mode
-conflict repairs dispatched in active lanes. Completed successful sessions
-without a recorded error do not consume the allowance, including missing PR
-associations and successful conflict repairs; a subsequent completion-gate wait
-is not a failed delivery. Merging-lane runs,
-legacy merge-mode rows without a lane, and historical merge-routing receipts
-remain excluded (`TestAttemptAllowanceExcludesMergeRouting` and
-`TestAttemptAllowanceDispatchAndRestart`, #2933). No-progress outcomes
-cannot enter Human Review or `awaiting_gate`, and reach the existing triage and
-Blocked handoff when the allowance is exhausted (#2922). Draft PRs remain
-ineligible for review and the tick never marks them ready.
+a changed head SHA alone is not implementation. No-progress outcomes retain
+classification under the existing configured signature limits and cannot enter
+Human Review or `awaiting_gate` as successful work. Historical lifetime session
+counts no longer override current completion and dispatch evidence. Draft PRs
+remain ineligible for review and the tick never marks them ready.
 `TestReworkLivePullRequestPromotion`, `TestReworkLiveDraftPromotion`,
-`TestUnfinishedCompletionClassification`,
-`TestCompletionRebaseProgress`, `TestUnfinishedSessionsExhaustAttemptAllowance`,
-and `TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
-appended prose, durable allowance accounting, and ready-PR controls. This
-consolidates existing completion evidence without adding a mechanism.
+`TestUnfinishedCompletionClassification`, `TestCompletionRebaseProgress`,
+`TestUnfinishedSessionsRetainConfiguredDispatch`, and
+`TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
+appended prose, current signature classification, and ready-PR controls.
 
 A persisted successful completion with a complete Workpad and ready PR remains
 owned by the existing active-lane gate until the matching head is eligible for
@@ -487,13 +479,13 @@ unchanged and new heads, drafts, dashboard and observed moves, and repair dispat
 
 Human Review is entered only when the project explicitly sets `review.human: true`
 and a review outcome or gate requires it. With `review.human: false`, the
-orchestrator routes review holds, attempt-allowance exhaustion, gate timeouts,
+orchestrator routes review holds, legacy triage publication, gate timeouts,
 and draft PRs to Blocked with their existing reasons. A legacy
 `requires-human-review` label and a configured `optout_label` are review holds,
 not permission to enter Human Review. New projects default to false. This
 consolidates review routing under the project setting (#3211). Allowance triage
-notes and `attempt_allowance_exhausted` remain intact; operator moves out of
-Blocked still reset the allowance and auto-promote decision memory (#2880).
+notes and historical `attempt_allowance_exhausted` receipts remain readable;
+operator moves still clear auto-promote decision memory.
 The dependency auto-unblock sweep retains these non-review decisions in Blocked
 even when an unconsumed body or native dependency is already Done; both reasons
 reuse the existing sticky-reason policy.
@@ -637,9 +629,9 @@ is zero.
 `TestValidatorDiffFetchFailureUsesInstancePath`, and
 `TestValidatorRetryDeadlineSurvivesReloadWithOneMaxAttempt` cover this boundary.
 
-`TestAttemptAllowanceCountsIssueJourney` excludes successful reports whose stored
-blocker evidence includes an instance owner from the issue session allowance.
-Other ownership, absent evidence, and malformed metadata do not grant that exclusion.
+Terminal failure accounting excludes successful reports whose stored blocker
+evidence includes an instance owner. Other ownership, absent evidence, and
+malformed metadata do not grant that exclusion.
 
 **Why:** Backend startup, protocol, and workspace-hook failures previously parked
 innocent issues and left the operator to return them to work.
@@ -689,7 +681,7 @@ and `TestCheckedMergeUnderForgeCondition` cover these boundaries (#3067).
 `TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
 completion handlers to triage workspace, startup, transport, protocol, and capacity
 failures. These failures publish no triage comment and do not consume the triage
-pass; recovered admission uses the same durable allowance. The shared Codex
+pass; recovered admission uses normal configured dispatch. The shared Codex
 capacity classifier also sends typed in-turn transport/JSON-RPC failures through
 that existing instance wait; model-parameter rejection and operator cancellation
 retain their prior classification. `TestClassifyCapacityErrorTransportAndProtocol`
@@ -947,7 +939,7 @@ or successful reconciliation. The same receipt retains the worker's typed forge
 scope/class separately from tracker-fence availability, reusing existing forge
 wait metadata. Replay restores that wrapper after its inner error and retains
 summarized approval-denial evidence, so existing credential/forge owners keep
-instance failures out of human holds and issue allowance. The same optional
+instance failures out of human holds and issue failure accounting. The same optional
 metadata is present and empty when the current encoder observed no forge wrapper.
 Absent or malformed metadata retains the full original error, including v35
 typed-delivery receipts that cannot prove outer availability. Missing authority
@@ -1116,13 +1108,13 @@ This removes a duplicate comment reader without retaining evidence across runs.
 Final workspace diagnostics (#3658) use the existing workspace-preparation
 failure class even after a coding turn has finished. The existing runner error
 classifier also recognizes the strictly anchored legacy final-diffstat Git
-intent-to-add diagnostic receipt. Infrastructure allowance attribution reuses
+intent-to-add diagnostic receipt. Infrastructure terminal attribution reuses
 that classifier only for persisted generic runner errors; genuine worker Git
 failures remain chargeable. Existing allowance recovery returns corrected
 historical holds to their prior lane while retaining human and dependency holds.
 This consolidates failure ownership without a reset, reason code or recovery path.
-`TestRunnerWorkAttemptErrorClass`, `TestAttemptAllowanceExternalWaits`,
-`TestAttemptTriageParkRechecksFailedAllowance` and the runner final-diff fixture
+`TestRunnerWorkAttemptErrorClass`, `TestAttemptAllowanceTriageInfrastructureFailure`,
+`TestRetiredAttemptTriageParkRestoresPriorLane` and the runner final-diff fixture
 cover typed diagnostics, legacy receipts, genuine failures and prior-lane recovery.
 
 Workspace intent-to-add (#3653) uses ordinary Git ignore handling in the existing
@@ -1233,7 +1225,7 @@ Provider transport overload remains instance-owned after a worker has started.
 Its completion no longer invokes the competing issue demotion/parking path;
 the existing provider retry keeps the current lane. Terminal failure counting
 and classification share the existing infrastructure attribution used by the
-failed-session allowance. Infrastructure interruptions neither count as issue
+terminal retry owner. Infrastructure interruptions neither count as issue
 failures nor reset earlier genuine failures. The existing terminal-limit
 recovery owner evaluates that same cause before applying its cooldown, so a
 historical instance-only park returns to its durable prior lane without manual
@@ -1516,7 +1508,7 @@ reserve. This removes a self-protection path that converted a transient probe
 timeout into a project-wide dispatch outage.
 
 Generic issue no-progress outcomes do not become a shared project failure class
-(#3489). Existing issue progress, retry, allowance, and workpad paths own those
+(#3489). Existing issue progress, retry, and workpad paths own those
 outcomes; unrelated unpushed work and external evidence waits cannot pause the
 whole project. Concrete backend, startup, deliverable, and durable error classes
 retain the configured project failure policy. Terminal attempt outcomes remain
@@ -1689,10 +1681,8 @@ routing without adding a retry mechanism or exception flag.
 `TestDispatchModeMergingFastPathFlag`,
 `TestMergeFallbackRoutesBoundedOutcomesToRework`, and
 `TestMergeFallbackResolvedHeadHandoff` cover this consolidation; no prompt, mode,
-reason code, or recovery mechanism is added. Repair runs retain the existing
-code-session allowance and triage boundary, covered by
-`TestAttemptAllowanceDispatchAndRestart`; head progress does not replenish the
-sessions-without-merge allowance. Draft PRs retain implementation routing so their
+reason code, or recovery mechanism is added. Repair runs retain existing
+configured progress and budget controls. Draft PRs retain implementation routing so their
 author can finish. Repairs share the existing merge duration bound and treat
 unstarted CI like implementation runs (waiting only after push or in waiting_ci).
 The dispatch, CI parity, and duration regressions cover these boundaries (#2845).
@@ -1718,7 +1708,6 @@ transition on the first report (#2779). The repeated-report threshold is removed
 live blocker evaluation already suppresses the next dispatch, so a second
 completion cannot be required. `TestFirstHumanBlockerCompletionReachesBlocked`
 replays that conflict with and without a PR and preserves human-owned recovery.
-Automated Blocked transitions do not renew the attempt allowance.
 
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
@@ -1850,8 +1839,8 @@ checks three unchanged passes and a later genuine return move. Failed observatio
 preserve the prior cached entry and provenance without falling back to stale
 runtime snapshots; the next refresh retries the board observation.
 
-Human Review conflict routing preserves durable `operator_move` and
-`attempt_allowance_exhausted` lane entries (#2814). This narrows the existing
+Human Review conflict routing preserves durable `operator_move` lane entries.
+Historical lifetime-allowance arrivals no longer veto ordinary conflict repair. This narrows the existing
 Rework route rather than introducing a park mechanism; ordinary arrivals still
 route conflicts to Rework, and ready PRs can still promote. Repeated ticks and
 reopened history are covered by `TestTickAutoPromoteHumanReviewIssuesConflictParks`.
@@ -1890,31 +1879,18 @@ current-head pass is required before promotion to Merging. `TestReworkLivePullRe
 `TestReworkLiveDraftPromotion`, and `TestReworkLiveSecurityAudit` cover this
 consolidation; no new transition reason or recovery loop is introduced.
 
-Allowance triage retains its single durable result while current-head CI is
-queued or running and no required check is missing. It does not publish the
-stall note or park the issue for that Detent-owned wait. The existing Blocked
-sweep also reconciles historical `attempt_allowance_exhausted` parks from the
-recorded failed-session outcomes: when the original allowance trigger no longer
-holds, the issue returns to its durable prior In Progress or Rework lane after
-live dependency and human-hold checks. Unknown prior lanes and real exhausted
-failures remain held. `TestAttemptTriageParkRechecksFailedAllowance` covers these
-boundaries with durable attempts and lane records. A current exhausted allowance
-cause retains that recovery owner even when older recorded
-blocker evidence has cleared. Sparse authored operational completion claims
-do not erase failed-session history; verified completion and actual merge
-boundaries keep their existing owners. This removes the competing historical
-blocker release and completion-claim accounting shortcut under INV-3 (#3571).
-The same SQLite regression covers sparse and closed-draft observations,
-exhausted outcomes, and corrected failed-session counts. A newer authorized
-Workpad clearing a human request does not reset an exhausted failed-session
-allowance; the existing operator lane move remains its explicit reset. This
-ownership applies only to the current allowance cause, preserving the prior
-order for other recorded blocker causes. Recovery does not synthesize an
-exhausted-allowance receipt for an unavailable dependency, database, or PR read.
-Promotion's existing accepted non-merged operational receipt can avoid another
-history read; an authored merged-source claim still uses durable failed-session
-and actual merge accounting, including when its declared branch is mismatched.
-An exhausted issue with a recorded PR head still uses the same promotion gate:
+Legacy active triage retains its single durable result while current-head CI is
+queued or running and no required check is missing. It does not publish a stall
+note or park an issue for that Detent-owned wait. Existing blocked recovery
+retires historical lifetime-allowance parks to their recorded prior In Progress
+or Rework lane behind live human, dependency and uncertainty checks.
+`TestRetiredAttemptTriageParkRestoresPriorLane` preserves these boundaries with
+real SQLite attempt and lane history. Returning to an active lane does not
+accept sparse authored operational claims or closed drafts; verified completion
+and actual merge evidence keep their existing owners. Recovery does not
+synthesize a new allowance receipt for unavailable dependencies, database or PR
+reads, and does not reset historical records.
+A historical triage park with a recorded PR head still uses the same promotion gate:
 a clean, green unchanged or
 newer head returns to Merging for
 the exact-head audit. Recovery evaluates audit eligibility once through the
@@ -2200,83 +2176,39 @@ due retries, and queued grants wait while evidence holds or is unverifiable;
 cleared predicates release dispatch without a new park or recovery loop. Native
 relations and current body declarations share authority for issue-state dependencies.
 
-Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
-attempt accounting into one fixed allowance: three code/rework sessions started
-since the last merged PR or operator lane move (#2692, #2729). The
-durable attempt log owns the count, with the window derived from existing lane
-history. Human-origin moves, and moves not initiated by the Detent instance,
-reset the window regardless of source or destination lane, including Merging or
-Blocked to Rework; Detent-instance moves and same-lane observations do not. Sessions
-started at the operator-move timestamp count in the renewed window because lane
-observation precedes dispatch in the same tick; merge boundaries remain exclusive. New commits,
-new PR heads, CI signatures, ordinary lane changes, and acknowledgements alone
-do not reset it. The existing triage comment receives a timestamped reset line
-when comment updates are supported; publication failure does not undo the move. Instance-attributed startup, transport, workspace and restart failures
-are excluded, as are successful reports with any instance-owned entry in recorded
-blocker evidence (#2813); other owners or evidence key presence alone do not suffice.
-Merge-worker attempts are excluded, including generic agent records with merge
-run-mode metadata and historical receipts routing the current head to Rework
-(#2907); those routing decisions are not implementation sessions.
-Previously recorded question-ending waits and sessions with a live structured
-human blocker are also excluded (#2789). Conflicted PR sessions count toward the
-allowance because conflict resolution is worker-owned Rework (#2807); a conflict
-does not override a genuine human-wait exclusion. The existing
-start record retains external-wait evidence through completion and restart;
-completion metadata can also record a wait observed at completion. This narrows
-the existing allowance rather than adding another brake or recovery path.
-Exclusions never synthesize operator moves or reset other chargeable sessions.
-Historical question receipts remain recognizable. Attempts already stamped
-with external-wait evidence remain excluded because the stored flag does not
-record its cause; the conflict correction bounds future sessions only. `TestAttemptAllowanceExternalWaits`,
-`TestAttemptAllowanceExternalEvidencePersistence`,
-`TestAttemptAllowanceExternalWaitRestart`, and
-`TestAttemptAllowanceDispatchAndRestart` cover exclusions and unchanged failure
-exhaustion. Immutable PR merge times and merge observations in the durable lane timeline
-reset prior work; subsequent activity on a merged PR is not a reset.
+The hardcoded lifetime ceiling of three implementation/rework sessions is retired.
+Dispatch and automatic promotion use their existing current-head, acceptance,
+gate, human, dependency, budget and ownership controls instead of reading all
+historical sessions and replacing the fourth worker with triage. The existing
+configured no-progress owner retains its evaluated signature and consecutive
+count; a duplicate dispatch-loop reset no longer erases that decision. Terminal
+no-product retries retain their configured limit (default three), and instance
+failures remain instance-attributed. There is no replacement global ceiling.
+With no-progress disabled (the default zero) and optional budgets disabled,
+progressing or pushed-product retries may continue under those project policies.
 
-The fourth code dispatch becomes one read-only triage turn using the existing
-code/rework role. Its durable attempt identity prevents another triage turn after
-restart, excluding instance-attributed failures. Triage uses the shared native
-reservation-aware selection and execution-start contract, plus metered budget
-admission and in-turn projection enforcement. The runner has no mutation tools,
-no resume state, no writable worktree,
-and no workspace or publication hooks. It returns one fixed-format explanation;
-the orchestrator persists that result, publishes one issue comment, and moves the
-issue to Human Review with `attempt_allowance_exhausted`. Publication checks the
-existing attempt marker before retrying; interrupted triage yields an explicit
-incomplete-diagnosis note, never another worker turn. Automatic promotion also
-honors exhaustion and existing running-worker ownership. Triage retains an
-operator lane change observed at completion, including across publication retries.
-Historical reason strings and progress records remain readable.
-`TestImplementProgressBlockComment` preserves historical clean-workspace and
-fingerprint-only evidence formatting without restoring dispatch-loop producers.
-Triage resolves the same selected session duration and token limits as workers,
-while retaining its single-turn, two-minute upper bound.
-`TestRunnerSelectedSessionLimits` covers inherited and level-specific limits,
-duration expiry, token usage, and configuration changes during triage.
+Historical `attempt_allowance_exhausted` receipts and active read-only triage
+attempts remain readable. Existing blocked-cause reconciliation returns retired
+allowance parks to their recorded In Progress or Rework lane only after current
+human, dependency and uncertain-evidence guards permit recovery. It does not
+reset history, infer acceptance, manufacture Todo work, or bypass PR/validator
+checks. Other recorded prior lanes retain the existing ready-PR recovery owner.
+Legacy triage publication remains idempotent and preserves operator lane changes.
+`TestDispatchRetainsConfiguredModeAfterPriorSessions`,
+`TestUnfinishedSessionsRetainConfiguredDispatch`,
+`TestRetiredAttemptTriageParkRestoresPriorLane`, and the existing implement
+progress and terminal retry matrices cover the retirement and retained controls.
+`TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`,
+`TestAttemptAllowancePreservesOperatorCompletionLane`, and
+`TestAttemptAllowanceTriageFallbackCompletion` preserve in-flight compatibility.
 
-This is the issue-authorized replacement reason and consolidation, not an
-additional breaker, configuration key, or recovery loop. Non-PR artifact and
-explicit operational completion workflows retain their own deliverable rules.
-Already-merged completion no longer requires pre-dispatch authorization (#2778):
-the worker records the merging PR, commit, tracked branch/head, successful ancestry
-check, and acceptance evidence. Existing operational completion and current-attempt
-checks persist and publish this evidence before Done; incomplete evidence retains
-the PR gate. `TestMergedCompletionEvidence` and
-`TestTransitionAlreadyMergedCompletion` cover this consolidation.
-`TestAttemptAllowanceCountsIssueJourney`, `TestAttemptAllowanceDispatchAndRestart`,
-`TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`, and
-`TestRunnerTriageIsReadOnly`, `TestAttemptAllowanceMergeTimeAndRunningOwnership`,
-`TestAttemptAllowancePreservesOperatorCompletionLane`,
-`TestAttemptAllowanceOperatorMove`, `TestAllowanceOperatorMoveBoundary`,
-`TestAllowanceResetAnnotation`, and
-`TestPullRequestMergeTimeSurvivesLaterActivity` enforce the allowance and restricted publication
-contract. `TestRunnerTriageNativeAdmission` and `TestRunnerTriageBudget` verify
-reservation identity, capacity loss, issue/daily budget refusal, and metered
-projection enforcement without launching an unauthorized backend turn.
-`TestRunnerTriageReportsTurnStart` preserves observed primary-turn evidence before
-usage arrives; `TestAttemptAllowanceTriageFallbackCompletion` keeps budget refusal,
-invalid output, tool refusal, and interrupted turns to one fallback comment.
+Non-PR artifact and explicit operational completion workflows retain their own
+deliverable rules. Already-merged completion does not require pre-dispatch
+authorization: the worker records the merging PR, commit, tracked branch/head,
+successful ancestry check, and acceptance evidence. Existing operational
+completion and current-attempt checks persist and publish this evidence before
+Done; incomplete evidence retains the PR gate. `TestMergedCompletionEvidence`
+and `TestTransitionAlreadyMergedCompletion` cover that contract.
 
 Scheduled routine occurrences advance from their durable `scheduled_for` identity
 regardless of success or failure. A selected occurrence whose existing ownership

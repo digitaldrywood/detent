@@ -409,7 +409,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 				running.DiffStats = event.Result.DiffStats
 			}
 			progress = o.evaluateImplementCompletionProgress(ctx, running, event.Result.FinalState, event.Result.PullRequestUpdated)
-			progress = o.evaluateDispatchLoopProgress(ctx, running, progress)
 			running.Issue = progress.Issue
 			progressMetadata = implementCompletionProgressMetadata(progress)
 		}
@@ -635,7 +634,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		releaseProjectFailureBreakerCanary(state, event.IssueID)
 		return
 	}
-	progress = o.evaluateDispatchLoopProgress(ctx, running, progress)
 	progress, gateWaitReason := completedReworkGateWaitProgress(running, progress, o.cfg, finalState)
 	running.Issue = progress.Issue
 	completionEvidence := progress.WorkspaceDiffStats

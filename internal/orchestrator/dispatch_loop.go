@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -41,7 +40,6 @@ type dispatchLoopFingerprint struct {
 type dispatchLoopStartRecord struct {
 	PRDiffFingerprint      string                  `json:"pr_diff_fingerprint,omitempty"`
 	PRMergeableState       string                  `json:"pr_mergeable_state,omitempty"`
-	AllowanceExternalWait  bool                    `json:"allowance_external_wait,omitempty"`
 	Fingerprint            dispatchLoopFingerprint `json:"fingerprint"`
 	Captured               bool                    `json:"captured"`
 	Persisted              bool                    `json:"persisted"`
@@ -49,12 +47,6 @@ type dispatchLoopStartRecord struct {
 	PullRequestAvailable   bool                    `json:"pull_request_available"`
 	WorkspaceDiffAvailable bool                    `json:"workspace_diff_available"`
 	WorkspaceHeadAvailable bool                    `json:"workspace_head_available"`
-}
-
-// Historical progress evidence remains readable; enforcement belongs solely to
-// the issue allowance at dispatch, not completion fingerprints.
-func (o *Orchestrator) evaluateDispatchLoopProgress(_ context.Context, _ Running, decision implementCompletionProgressDecision) implementCompletionProgressDecision {
-	return resetDispatchLoopDecision(decision)
 }
 
 func operatorAcknowledgesRecoveryPark(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata) bool {
@@ -112,15 +104,6 @@ func laterDispatchLoopTime(current, candidate time.Time) time.Time {
 	return current
 }
 
-func resetDispatchLoopDecision(decision implementCompletionProgressDecision) implementCompletionProgressDecision {
-	decision.ConsecutiveNoProgress = 0
-	if decision.BlockReason == noProgressLimitReason {
-		decision.Block = false
-		decision.BlockReason = ""
-	}
-	return decision
-}
-
 func newDispatchLoopStartRecord(issue connector.Issue, mode string) dispatchLoopStartRecord {
 	if strings.TrimSpace(mode) != RunModeImplement && (strings.TrimSpace(mode) != runpkg.RunModeMerge || mergeWorkerIssue(issue)) {
 		return dispatchLoopStartRecord{}
@@ -128,10 +111,9 @@ func newDispatchLoopStartRecord(issue connector.Issue, mode string) dispatchLoop
 	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))
 	lane := normalizeState(issue.State)
 	return dispatchLoopStartRecord{
-		Fingerprint:           dispatchLoopFingerprintFromValues(lane, signature, implementProgressDiffStats{}),
-		AllowanceExternalWait: allowanceExternalWait(issue),
-		LaneAvailable:         lane != "",
-		PullRequestAvailable:  dispatchLoopPullRequestEvidenceAvailable(workAttemptPRNumber(issue), signature, ""),
+		Fingerprint:          dispatchLoopFingerprintFromValues(lane, signature, implementProgressDiffStats{}),
+		LaneAvailable:        lane != "",
+		PullRequestAvailable: dispatchLoopPullRequestEvidenceAvailable(workAttemptPRNumber(issue), signature, ""),
 	}
 }
 

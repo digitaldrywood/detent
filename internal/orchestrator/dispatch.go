@@ -659,54 +659,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: err.Error()}
 		}
 	}
-	var allowance attemptAllowance
-	var triageContext string
-	if (runMode == runpkg.RunModeImplement || (runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue))) && o.cfg.DeliverableKind != "artifact" {
-		var err error
-		allowance, err = o.issueAttemptAllowance(ctx, issue)
-		if err != nil {
-			return dispatchIssueOutcome{reason: "attempt_history_lookup_failed", waitReason: err.Error()}
-		}
-		if allowance.exhausted() {
-			if allowance.Triage != nil {
-				if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil {
-					return dispatchIssueOutcome{reason: attemptAllowanceExhaustedReason, waitReason: err.Error()}
-				}
-				return dispatchIssueOutcome{reason: attemptAllowanceExhaustedReason}
-			}
-			if hydrator, ok := o.connector.(connector.PullRequestHydrator); ok {
-				var err error
-				issue, err = hydrator.HydratePullRequest(ctx, issue)
-				if err != nil {
-					return dispatchIssueOutcome{reason: "pull_request_hydration_unavailable", waitReason: err.Error()}
-				}
-			}
-			// A merge observed during hydration replenishes the allowance.
-			allowance, err = o.issueAttemptAllowance(ctx, issue)
-			if err != nil {
-				return dispatchIssueOutcome{reason: "attempt_history_lookup_failed", waitReason: err.Error()}
-			}
-			if allowance.exhausted() {
-				var hydrated bool
-				issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
-				if !hydrated {
-					return dispatchIssueOutcome{reason: "pull_request_hydration_unavailable"}
-				}
-				if reader, ok := o.connector.(connector.IssueCommentReader); ok {
-					issue.Comments, err = reader.FetchIssueComments(ctx, issue)
-					if err != nil {
-						return dispatchIssueOutcome{reason: "tracker_unavailable", waitReason: err.Error()}
-					}
-				}
-				triageContext, err = attemptTriageContext(issue, allowance)
-				if err != nil {
-					return dispatchIssueOutcome{reason: "attempt_history_lookup_failed", waitReason: err.Error()}
-				}
-				runMode = runpkg.RunModeTriage
-			}
-
-		}
-	}
 	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}
 	capacityScope, capacityProbeKey, capacityPaused := o.backendCapacityDispatch(state, capacityRequest, now)
 	if o.scheduling == nil && !githubLookupBackoffAllowsDispatch(state, capacityProbeKey) {
@@ -1067,9 +1019,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		MergeRefreshHeadSHA: reservation.RefreshHeadSHA,
 		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
 	}
-	if runMode == runpkg.RunModeTriage {
-		request.TriageContext = triageContext
-	} else {
+	if runMode != runpkg.RunModeTriage {
 		o.attachMachineIssueTool(&request)
 	}
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
