@@ -55,7 +55,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			state.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
 			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 
-			orch.handleRunResult(t.Context(), &state, completionDeferralEvent(issue, attemptID, now))
+			orch.handleQueuedRunResults(t.Context(), &state, completionDeferralEvent(issue, attemptID, now))
 			if tt.retired {
 				if len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(state.Running) != 0 || len(state.Claimed) != 0 {
 					t.Fatal("obsolete native completion retained live state")

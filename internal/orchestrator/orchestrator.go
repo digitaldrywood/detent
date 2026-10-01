@@ -907,16 +907,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case result := <-o.runResults:
 			state.syncWorkerProgress()
 			o.startCompletion(&state)
-			before := len(state.Running)
-			_, operatorStopped := o.pendingStops[result.IssueID]
-			o.handleRunResult(ctx, &state, result)
-			if len(state.Running) < before {
-				if operatorStopped {
-					o.refillProjectSlotsExcluding(ctx, &state, o.clockNow(), result.IssueID)
-				} else {
-					o.refillProjectSlots(ctx, &state, o.clockNow())
-				}
-			}
+			o.handleQueuedRunResults(ctx, &state, result)
 			o.publishState(&state)
 			o.completionState.Store(nil)
 			continue

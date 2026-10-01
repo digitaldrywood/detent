@@ -75,6 +75,32 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	}
 }
 
+func (o *Orchestrator) handleQueuedRunResults(ctx context.Context, state *State, event runpkg.Completion) {
+	queued := len(o.runResults)
+	refill := false
+	var excludedIssueIDs []string
+	for {
+		state.syncWorkerProgress()
+		before := len(state.Running)
+		_, operatorStopped := o.pendingStops[event.IssueID]
+		o.handleRunResult(ctx, state, event)
+		if len(state.Running) < before {
+			refill = true
+			if operatorStopped {
+				excludedIssueIDs = append(excludedIssueIDs, event.IssueID)
+			}
+		}
+		if queued == 0 || ctx.Err() != nil {
+			break
+		}
+		event = <-o.runResults
+		queued--
+	}
+	if refill && ctx.Err() == nil {
+		o.refillProjectSlotsExcluding(ctx, state, o.clockNow(), excludedIssueIDs...)
+	}
+}
+
 func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event runpkg.Completion) {
 	running, ok := state.Running[event.IssueID]
 	if !ok {

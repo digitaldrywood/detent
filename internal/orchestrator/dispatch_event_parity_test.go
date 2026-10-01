@@ -1,13 +1,117 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
+
+func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
+	for _, stopped := range []bool{false, true} {
+		name := "completed"
+		if stopped {
+			name = "multiple operator stops"
+		}
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, Project: scheduler.ProjectCandidate{ID: "fixture", Weight: 1}, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}), cfg.Project)
+			state := newState(cfg)
+			first := dispatchTestIssue("first", "Todo")
+			second := dispatchTestIssue("second", "Todo")
+			next := dispatchTestIssue("next", "Todo")
+			runner := newWorkerHostRunner()
+			o := Orchestrator{cfg: cfg, globalDispatchGate: gate, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 3), pendingStops: map[string]*pendingStopRun{}, completedStops: map[string]StopRunResult{}, now: func() time.Time { return now }, lastDispatchCandidates: []connector.Issue{first, second, next}}
+			defer o.releaseRunningSlots(&state)
+			for _, issue := range []connector.Issue{first, second} {
+				slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), cfg.Project, scheduler.SlotRequest{State: "Todo"}, now)
+				if err != nil || !acquired {
+					t.Fatalf("acquire fixture slot: acquired=%t error=%v", acquired, err)
+				}
+				state.Running[issue.ID] = Running{Issue: issue, StartedAt: now, globalSlot: slot}
+				if stopped {
+					o.pendingStops[issue.ID] = &pendingStopRun{reapDone: true, result: StopRunResult{ProjectID: cfg.Project.ID, IssueID: issue.ID, Destination: "Todo"}}
+				}
+			}
+			entered := make(chan struct{})
+			unblock := make(chan struct{})
+			fetches := 0
+			candidates := []connector.Issue{next}
+			if stopped {
+				candidates = []connector.Issue{first, second, next}
+			}
+			o.connector = completionRefillConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: next}, fetch: func(ctx context.Context) ([]connector.Issue, error) {
+				fetches++
+				if len(state.Running) != 0 || gate.PoolSnapshot().Used != 0 {
+					t.Errorf("refill began before both completions released: running=%d pool=%#v", len(state.Running), gate.PoolSnapshot())
+				}
+				close(entered)
+				select {
+				case <-unblock:
+					return candidates, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}}
+			result := func(issue connector.Issue) runpkg.Completion {
+				return runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}}
+			}
+			o.runResults <- result(second)
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				o.handleQueuedRunResults(t.Context(), &state, result(first))
+			}()
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("completion cohort did not reach refill")
+			}
+			close(unblock)
+			select {
+			case <-finished:
+			case <-time.After(time.Second):
+				t.Fatal("completion cohort did not finish")
+			}
+			if fetches != 1 {
+				t.Fatalf("fresh candidate reads=%d, want one", fetches)
+			}
+			request := receiveWorkerHostRunRequest(t, runner.started)
+			if request.Issue.ID != next.ID {
+				t.Fatalf("refilled %q, want %q; stopped issues must stay excluded", request.Issue.ID, next.ID)
+			}
+		})
+	}
+}
+
+func TestQueuedCompletionKeepsRejectedGenerationOwnership(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+	issue := dispatchTestIssue("current", "Todo")
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{Issue: issue, Generation: 2, StartedAt: now}
+	fetches := 0
+	tracker := completionRefillConnector{fetch: func(context.Context) ([]connector.Issue, error) { fetches++; return nil, nil }}
+	o := Orchestrator{cfg: cfg, connector: tracker, runResults: make(chan runpkg.Completion, 1), lastDispatchCandidates: []connector.Issue{issue}, now: func() time.Time { return now }}
+	o.handleQueuedRunResults(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Generation: 1}, CompletedAt: now})
+	if fetches != 0 || len(state.Running) != 1 {
+		t.Fatalf("nonreleased result refilled or lost ownership: reads=%d running=%d", fetches, len(state.Running))
+	}
+}
+
+type completionRefillConnector struct {
+	hydratingDispatchConnector
+	fetch func(context.Context) ([]connector.Issue, error)
+}
+
+func (c completionRefillConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	return c.fetch(ctx)
+}
 
 func TestEventAndTickDispatchEligibilityParity(t *testing.T) {
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
