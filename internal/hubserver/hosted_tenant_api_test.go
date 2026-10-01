@@ -614,6 +614,22 @@ func TestHostedInvitationKeyClaim(t *testing.T) {
 			},
 		},
 		{
+			name:   "a reservation failure before inviting releases the key so the same key succeeds",
+			status: http.StatusCreated, invitations: 1,
+			prepare: func(t *testing.T, f *browserHostedFixture) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_invitation_seat BEFORE INSERT ON hosted_member_reservations BEGIN SELECT RAISE(ABORT, 'fixture reservation failure'); END`); err != nil {
+					t.Fatal(err)
+				}
+				f.api(t, "owner", http.MethodPost, path, body, http.StatusServiceUnavailable)
+				if got := f.providerInvitations(); got != 0 {
+					t.Fatalf("reservation failure sent %d provider invitations", got)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `DROP TRIGGER reject_invitation_seat`); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
 			name:   "a provider failure retains the key because the outcome is uncertain",
 			status: http.StatusConflict, code: "idempotency_in_progress", invitations: 0,
 			prepare: func(t *testing.T, f *browserHostedFixture) {
