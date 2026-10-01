@@ -132,7 +132,11 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 }
 
 func operatorIdentity(credential apiCredential, organization string) operatortool.Identity {
-	return operatortool.Identity{PrincipalID: credential.ID, OrganizationID: organization, CredentialID: credential.Hash, SessionID: credential.SessionHash}
+	principal := credential.ID
+	if credential.HostedPrincipal != "" {
+		principal = credential.HostedPrincipal
+	}
+	return operatortool.Identity{PrincipalID: principal, OrganizationID: organization, CredentialID: credential.Hash, SessionID: credential.SessionHash}
 }
 
 func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCredential, organization string) (operatortool.Authority, error) {
@@ -167,6 +171,9 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
 		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
 	}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+		if credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, requirement.Scope) {
+			return operatortool.ErrAccessDenied
+		}
 		if requirement.OrganizationWide && credential.Hosted == nil && credential.NativeOnly {
 			return operatortool.ErrAccessDenied
 		}

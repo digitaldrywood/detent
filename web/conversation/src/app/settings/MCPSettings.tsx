@@ -6,6 +6,7 @@ import { Button } from "../../components/ui/button.tsx";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard.ts";
 import { basePath } from "../../runtime/basePath.ts";
 import { useAccountBootstrap } from "../account/context.ts";
+import { APIKeysSettings } from "./APIKeysSettings.tsx";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
 
 export function organizationMCPEndpoint(account: AccountBootstrap | null): string | null {
@@ -42,12 +43,12 @@ function CopyExample({ label, value }: { readonly label: string; readonly value:
         <span className="text-xs text-muted-foreground">{label}</span>
         <Button type="button" size="sm" variant="outline" aria-label={`Copy ${label}`} onClick={() => copyToClipboard(value)}>
           {isCopied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
-          {isCopied ? "Copied" : "Copy"}
+          {isCopied ? "Copied" : `Copy ${label}`}
         </Button>
       </div>
-      <pre tabIndex={0} aria-label={label} className="max-w-full rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
+      <details><summary className="cursor-pointer text-xs text-muted-foreground">Show {label}</summary><pre tabIndex={0} aria-label={label} className="max-w-full rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
         <code>{value}</code>
-      </pre>
+      </pre></details>
       <span role="status" aria-label={`${label} copy status`} className={failed ? "text-xs text-muted-foreground" : "sr-only"}>
         {failed ? "Could not copy. Select the text and copy it manually." : isCopied ? `${label} copied.` : ""}
       </span>
@@ -74,28 +75,65 @@ const CURSOR_CONFIG = JSON.stringify({
   },
 }, null, 2);
 
+function keySetupPrompt(endpoint: string): string {
+  const settings = endpoint.replace(/\/mcp$/, "/settings/mcp");
+  return `Use the shared expiring API key from Detent Settings → API & MCP (${settings}). Create or select a key on that same page with Read scope and only the needed projects. The same key works for direct HTTP API and MCP. Write/Admin keys still require my current role and project grants; expiry, revocation and membership removal apply to both.
+Ask me to store the secret directly in your private secret store or private environment as DETENT_API_KEY. Never ask me to paste it into this conversation. Never expose it in URLs, screenshots, logs, command traces, diagnostics or committed files. All examples below reference a private environment variable, not an embedded secret.
+401: check key configuration, expiry and revocation. 403 or hidden 404: check current membership, role, key scope and project grants. Revoke the key on this page when finished; deleting client configuration alone does not revoke it.`;
+}
+
+export function apiSetupPrompt(endpoint: string, organization: string, project: string): string {
+  const base = endpoint.replace(/\/mcp$/, `/api/v2/organizations/${encodeURIComponent(organization)}`);
+  return `Connect directly to the Detent HTTP API without an MCP client.
+Organization: ${organization}
+API base URL: ${base}
+${keySetupPrompt(endpoint)}
+
+Use Authorization: Bearer with the private DETENT_API_KEY environment variable; no browser cookies, session or CSRF state. Select a granted project ID from Settings → API & MCP; ${project} is the initial project context. With shell tracing disabled, verify an authorized read:
+DETENT_API_BASE='${base}'
+DETENT_PROJECT_ID='${project}'
+curl --fail --silent --show-error --header "Authorization: Bearer $DETENT_API_KEY" "$DETENT_API_BASE/projects/$DETENT_PROJECT_ID"
+curl --fail --silent --show-error --header "Authorization: Bearer $DETENT_API_KEY" "$DETENT_API_BASE/projects/$DETENT_PROJECT_ID/work-items?limit=20"
+Check returned project/organization IDs before reporting success; report no secret values. These are implemented GET routes. Use the native endpoint tables and request schemas at https://github.com/digitaldrywood/detent/blob/develop/docs/hub-api.md (Native collaboration and Changes); hosted API keys do not grant worker, runner or instance-admin endpoints. Do not invent /api/v1/state, an OpenAPI route, or unrestricted organization enumeration on Cloud.
+
+Before mutations, consult that operation's documented payload, revisions, idempotency and approval requirements. Ordinary writes require Write scope and current write grants. Material/destructive operations retain the existing exact-action browser approval boundary: present the preview/approval URL when supplied and have me review it in my signed-in Detent browser. If the direct route has no approved preview flow, stop and ask me to perform the operation in Detent; do not substitute a raw mutation to bypass approval. API keys cannot approve operations or write orchestrator lane state.`;
+}
+
+export function mcpSetupPrompt(endpoint: string, organization: string, project: string): string {
+  return `Configure your supported MCP client for this exact Detent Cloud organization endpoint:
+${endpoint}
+Organization: ${organization}
+${keySetupPrompt(endpoint)}
+
+Use Streamable HTTP with application/json JSON POSTs, Accept: application/json, text/event-stream and Authorization: Bearer from the private DETENT_API_KEY environment variable. No browser cookies, session or CSRF token is needed. GET/SSE and MCP OAuth are unsupported. For example, in Codex client configuration:
+[mcp_servers.detent]
+url = "${endpoint}"
+bearer_token_env_var = "DETENT_API_KEY"
+For another client, use its documented private header/secret configuration. If it cannot send bearer headers with MCP JSON POSTs or requires SSE/OAuth, explicitly report that client as unsupported and stop.
+
+Initialize MCP, retain the returned Mcp-Session-Id and negotiated protocol version, send notifications/initialized, then discover every tools/list page. Call the discovered work_list tool with {"project_id":"${project}","limit":20}, using a granted project selected on the same page. Verify the result belongs to this organization/project and report success without the key. Material/destructive actions return a preview and approval URL: I must review and approve the exact operation in my signed-in Detent browser. You and the API key cannot approve on my behalf; connecting never expands authority.`;
+}
+
 export function MCPSettings(): React.ReactElement {
   const account = useAccountBootstrap();
   const endpoint = organizationMCPEndpoint(account);
+  const [available, setAvailable] = React.useState(false);
+  const project = account?.projects[0]?.id ?? "YOUR_GRANTED_PROJECT_ID";
   return (
     <SettingsPageContainer>
-      <SettingsSection id="settings-mcp" title="MCP" icon={<PlugIcon className="size-3.5" />}>
-        <SettingsRow
-          title="Connect an AI client"
-          description="Model Context Protocol (MCP) lets an AI client read work and request actions in Detent. Every call checks the authenticated identity's current organization role and project permissions. Connecting does not unlock every tool."
-        />
-        <SettingsRow title="Organization endpoint" description={account?.organization.name ?? "Loading organization…"}>
-          {endpoint ? <CopyExample key={endpoint} label="Organization MCP endpoint" value={endpoint} /> : (
-            <p className="pb-3 text-sm text-muted-foreground">The organization HTTPS URL is unavailable. Ask your Cloud operator to confirm its public URL.</p>
-          )}
+      <SettingsSection id="settings-mcp" title="API & MCP" icon={<PlugIcon className="size-3.5" />}>
+        <SettingsRow title="Connect your agent" description="Use one expiring API key for direct HTTP API requests and MCP. Every call checks your current organization role, key scope and project permissions." />
+        <SettingsRow title="API base URL">
+          {endpoint && account ? <CopyExample label="API base URL" value={endpoint.replace(/\/mcp$/, `/api/v2/organizations/${encodeURIComponent(account.organization.id)}`)} /> : <p className="pb-3 text-sm text-muted-foreground">The organization HTTPS URL is unavailable. Ask your Cloud operator to confirm its public URL.</p>}
         </SettingsRow>
-        <SettingsRow title="Cloud connection requirements">
-          <ol className="list-decimal space-y-2 ps-5 pb-3 text-[13px] leading-relaxed text-muted-foreground">
-            <li>Confirm the endpoint belongs to the organization you want to use.</li>
-            <li>Cloud MCP currently requires a signed-in hosted browser session and CSRF protection. API tokens, worker tokens and runner credentials cannot authenticate an operator MCP client in Cloud.</li>
-            <li>External client installation with a bearer token is not available for Cloud yet. Detent does not offer MCP OAuth authorization. Do not copy browser cookies or session credentials into a client.</li>
-          </ol>
+        <SettingsRow title="Organization MCP endpoint" description={account?.organization.name ?? "Loading organization…"}>
+          {endpoint && <CopyExample label="Organization MCP endpoint" value={endpoint} />}
         </SettingsRow>
+        {endpoint && account && available && <SettingsRow title="Agent setup prompts" description="Copy instructions for your preferred connection. Both use the same key; prompts contain only private environment references.">
+          <CopyExample label="API setup prompt" value={apiSetupPrompt(endpoint, account.organization.id, project)} />
+          <CopyExample label="MCP setup prompt" value={mcpSetupPrompt(endpoint, account.organization.id, project)} />
+        </SettingsRow>}
+        <APIKeysSettings onAvailability={setAvailable} />
       </SettingsSection>
 
       <SettingsSection id="settings-mcp-permissions" title="Permissions and tools">
@@ -130,7 +168,7 @@ export function MCPSettings(): React.ReactElement {
 
       <SettingsSection id="settings-mcp-troubleshooting" title="Troubleshooting">
         <SettingsRow title="Incorrect URL or 404" description="Use the complete organization endpoint, including /organizations/… on shared Cloud. Do not use a project URL or /sse. An unavailable organization or hidden resource can also return 404." />
-        <SettingsRow title="Invalid or revoked credential" description="Cloud reports access_denied when MCP authentication fails. Sign in again; a machine bearer token cannot grant operator access. A self-hosted daemon can report unauthorized, token_expired or token_revoked. Check the token and replace it through existing key management." />
+        <SettingsRow title="Invalid or revoked credential" description="Check the shared API key, expiry and revocation on this page. Worker and runner credentials cannot grant operator MCP access. A self-hosted daemon can report unauthorized, token_expired or token_revoked." />
         <SettingsRow title="Insufficient permissions" description="A 403 access_denied or tool access-denied result requires checking the current role, scope, project grants and resource ownership. Reconnecting does not grant access. Ask an organization administrator for the permissions the operation needs." />
         <SettingsRow title="Transport or unavailable tools" description="A GET returns 405: server-sent events are not supported. Send application/json POST requests through an HTTP MCP client. If a tool is unavailable, refresh discovery and check deployment services and capability coverage. Discovery alone never authorizes a call." />
       </SettingsSection>

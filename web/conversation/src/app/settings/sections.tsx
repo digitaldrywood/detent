@@ -70,7 +70,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsSectionId, string>
   projects: "Projects",
   runners: "Providers & runners",
   integrations: "Integrations",
-  mcp: "MCP",
+  mcp: "API & MCP",
   plan: "Plan",
   billing: "Billing",
   keybindings: "Keybindings",

@@ -1080,3 +1080,65 @@ func TestSharedOriginPilotPreview(t *testing.T) {
 	case <-t.Context().Done():
 	}
 }
+
+func TestSharedOriginAPIKeyConnection(t *testing.T) {
+	p := newSharedOriginPilot(t, 1, 1)
+	owner := p.browser(t)
+	pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_dana:"), http.StatusSeeOther)
+	created := owner.createOrganization("API key organization")
+	pilotStatus(t, "organization", created, http.StatusSeeOther)
+	o := pilotOrganization{id: organizationFromLocation(t, created.location), owner: owner}
+	p.waitState(t, o.id, "ready")
+	pilotStatus(t, "organization sign-in", owner.login(o.page(), "user_dana:porg_"+o.id), http.StatusSeeOther)
+	o.ownerCSRF = owner.csrf(o.page())
+	project := owner.form("/organizations/"+o.id+"/projects", url.Values{"name": {"API key project"}, "grant_access": {"true"}, "csrf": {o.ownerCSRF}})
+	pilotStatus(t, "project", project, http.StatusSeeOther)
+	o.project = strings.TrimPrefix(project.location, "/organizations/"+o.id+"/projects/")
+	mount := "/organizations/" + o.id
+	api := mount + o.api()
+	pilotStatus(t, "seed readable work", owner.json(http.MethodPost, api+"/projects/"+o.project+"/work-items", o.ownerCSRF, map[string]any{"title": "Shared key read", "state": "Todo", "idempotency_key": "shared-key-read"}), http.StatusOK)
+	issued := owner.json(http.MethodPost, api+"/api-keys", o.ownerCSRF, map[string]any{"name": "external-client", "scope": "read", "expires_days": 7, "project_ids": []string{o.project}})
+	pilotStatus(t, "create shared key", issued, http.StatusCreated)
+	var key struct {
+		ID     string `json:"id"`
+		Token  string `json:"token"`
+		Expiry string `json:"expires_at"`
+	}
+	pilotDecode(t, issued, &key)
+	if key.ID == "" || key.Token == "" || key.Expiry == "" {
+		t.Fatal("expiring key missing")
+	}
+	external := p.browser(t)
+	external.client.Jar = nil
+	headers := map[string]string{"Authorization": "Bearer " + key.Token, "Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Origin": ""}
+	read := external.request(http.MethodGet, api+"/projects/"+o.project, nil, headers)
+	pilotStatus(t, "direct API read", read, http.StatusOK)
+	if !strings.Contains(read.body, o.project) {
+		t.Fatal("project context missing")
+	}
+	pilotStatus(t, "key read cannot write", external.request(http.MethodPost, api+"/projects/"+o.project+"/work-items", strings.NewReader(`{"title":"denied","state":"Todo","idempotency_key":"denied"}`), headers), http.StatusForbidden)
+	initialized := external.request(http.MethodPost, mount+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"shared-key-regression","version":"1"}}}`), headers)
+	pilotStatus(t, "MCP initialize", initialized, http.StatusOK)
+	session := initialized.header.Get("Mcp-Session-Id")
+	if session == "" {
+		t.Fatal("MCP session missing")
+	}
+	headers["Mcp-Session-Id"] = session
+	headers["Mcp-Protocol-Version"] = "2025-11-25"
+	pilotStatus(t, "MCP initialized", external.request(http.MethodPost, mount+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers), http.StatusAccepted)
+	listed := external.request(http.MethodPost, mount+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`), headers)
+	pilotStatus(t, "MCP tools", listed, http.StatusOK)
+	if !strings.Contains(listed.body, `"work_list"`) {
+		t.Fatal("authorized read tool missing")
+	}
+	call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"work_list","arguments":{"project_id":"` + o.project + `","limit":20}}}`
+	result := external.request(http.MethodPost, mount+"/mcp", strings.NewReader(call), headers)
+	pilotStatus(t, "MCP authorized read", result, http.StatusOK)
+	if !strings.Contains(result.body, o.project) || strings.Contains(result.body, `"isError":true`) {
+		t.Fatal("authorized MCP read failed")
+	}
+	pilotStatus(t, "foreign organization", external.request(http.MethodGet, "/organizations/org_foreign/api/v2/organizations/org_foreign/projects/"+o.project, nil, headers), http.StatusNotFound)
+	pilotStatus(t, "revoke shared key", owner.json(http.MethodDelete, api+"/api-keys/"+key.ID, o.ownerCSRF, nil), http.StatusNoContent)
+	pilotStatus(t, "revoked API key", external.request(http.MethodGet, api+"/projects/"+o.project, nil, headers), http.StatusUnauthorized)
+	pilotStatus(t, "revoked MCP session", external.request(http.MethodPost, mount+"/mcp", strings.NewReader(call), headers), http.StatusUnauthorized)
+}

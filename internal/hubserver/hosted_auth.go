@@ -249,6 +249,13 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ? AND g.project_id 
 // from this request's entry assertion, whose access token the entry verified,
 // so it is used as is; a dedicated tenant asks the provider.
 func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCredential) (auth.HostedIdentity, auth.Membership, error) {
+	if credential.HostedKeyScope != "" {
+		membership, err := s.hostedMembership(ctx, credential.Hosted)
+		if err != nil || membership.ID != credential.HostedMembership {
+			return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
+		}
+		return *credential.Hosted, membership, nil
+	}
 	if s.hostedShared() {
 		var membership auth.Membership
 		membership.ID, membership.Role.Slug = credential.HostedMembership, credential.HostedRole
@@ -280,10 +287,26 @@ func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope n
 		return auth.ErrHostedIdentity
 	}
 	var count int
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions s, hosted_members m
+	if scope.credential.HostedKeyScope != "" {
+		required := apikey.ScopeWrite
+		if scope.requireHostedAdmin {
+			required = apikey.ScopeAdmin
+		}
+		if !hostedKeyAllows(scope.credential.HostedKeyScope, required) {
+			return auth.ErrHostedIdentity
+		}
+		var local, keyScope string
+		err = tx.QueryRowContext(ctx, `SELECT m.role,t.operator_key_scope FROM hosted_members m JOIN api_tokens t ON t.hosted_user_id=m.user_id AND t.hosted_membership_id=m.membership_id
+WHERE t.id=? AND t.token_hash=? AND t.revoked_at IS NULL AND t.native_only=1 AND t.scope IN ('operator','admin') AND t.hosted_organization_id=? AND julianday(t.expires_at)>julianday(?) AND m.user_id=? AND m.membership_id=? AND m.active=1`, scope.credential.ID, scope.credential.Hash, scope.organization, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&local, &keyScope)
+		if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required) || !hostedKeyAllows(apikey.Scope(keyScope), required) {
+			return auth.ErrHostedIdentity
+		}
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions s, hosted_members m
 WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday(?) AND m.user_id = ? AND m.membership_id = ? AND m.active = 1`, scope.credential.SessionHash, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&count)
-	if err != nil || count != 1 {
-		return auth.ErrHostedIdentity
+		if err != nil || count != 1 {
+			return auth.ErrHostedIdentity
+		}
 	}
 	if scope.project != "" {
 		return s.requireHostedProject(ctx, tx, scope, true)

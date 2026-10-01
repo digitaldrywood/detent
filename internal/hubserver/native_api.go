@@ -266,7 +266,7 @@ func (scope nativeScope) actor() tracker.Actor {
 	if scope.credential.Scope == apiScopeWorker {
 		kind = "runner"
 	}
-	return tracker.Actor{Kind: kind, PrincipalID: scope.credential.ID}
+	return tracker.Actor{Kind: kind, PrincipalID: operatorIdentity(scope.credential, string(scope.organization)).PrincipalID}
 }
 
 func newNativeID(prefix string) string {

@@ -64,7 +64,7 @@ describe("which sections an actor gets", () => {
       "Projects",
       "Providers & runners",
       "Integrations",
-      "MCP",
+      "API & MCP",
       "Plan",
       "Billing",
       "Keybindings",
@@ -177,11 +177,11 @@ describe("MCP setup", () => {
     ["/organizations/org_threefold", "https://app.detent.cloud", "https://app.detent.cloud/organizations/org_threefold/mcp"],
     ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
     ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_parable", null],
-  ])("routes a viewer to setup at %j and copies only a matching organization URL or placeholder examples without requesting credentials", async (mount, publicURL, expected) => {
+  ])("routes a viewer to setup at %j and copies only a matching organization URL or placeholder examples using shared key metadata", async (mount, publicURL, expected) => {
     applyHubPaths({ base_path: mount });
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
-    const fetch = vi.spyOn(globalThis, "fetch");
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ keys: [] }), { status: 200 }));
     const activeAccount = {
       ...account,
       organization: { ...account.organization, public_url: publicURL },
@@ -189,15 +189,25 @@ describe("MCP setup", () => {
       csrf_token: "private-csrf-credential",
       token: "private-api-credential",
     };
-    renderSidebarNav("/settings/mcp", { account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Cloud connection requirements" })).toBeTruthy());
-    expect(screen.getByRole("button", { name: "MCP" }).getAttribute("aria-current")).toBe("true");
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Shared API keys" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: "API & MCP" }).getAttribute("aria-current")).toBe("true");
     expect(document.body.textContent).not.toContain("private-csrf-credential");
     expect(document.body.textContent).not.toContain("private-api-credential");
     if (expected) {
       fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
       await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(expected));
       expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("copied");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Copy API setup prompt" })).toBeTruthy());
+      for (const label of ["API setup prompt", "MCP setup prompt"]) {
+        fireEvent.click(screen.getByRole("button", { name: `Copy ${label}` }));
+        await waitFor(() => expect(writeText.mock.lastCall![0]).toContain("DETENT_API_KEY"));
+        const copied = writeText.mock.lastCall![0];
+        expect(copied).toContain(expected.replace(/\/mcp$/, "/settings/mcp"));
+        expect(copied).not.toContain("private-csrf-credential");
+        expect(copied).not.toContain("private-api-credential");
+        expect(copied).toContain(label.startsWith("API") ? "/work-items?limit=20" : "work_list");
+      }
     } else {
       expect(screen.queryByRole("button", { name: "Copy Organization MCP endpoint" })).toBeNull();
       expect(screen.getByText(/The organization HTTPS URL is unavailable/)).toBeTruthy();
@@ -205,7 +215,7 @@ describe("MCP setup", () => {
     }
     fireEvent.click(screen.getByText("Connect to your own Detent daemon"));
     fireEvent.click(screen.getByRole("button", { name: "Copy Local stdio configuration" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(expected ? 2 : 1));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(expected ? 4 : 1));
     expect(JSON.parse(writeText.mock.lastCall![0]).mcpServers.detent.env.DETENT_API_TOKEN).toBe("YOUR_DETENT_API_TOKEN");
     for (const [url, options] of fetch.mock.calls) {
       expect(String(url)).not.toMatch(/tokens|credentials/);
@@ -213,10 +223,53 @@ describe("MCP setup", () => {
     }
   });
 
+  it("creates and revokes a shared scoped key on the existing settings route while keeping it out of copied prompts", async () => {
+    const secret = "detent_synthetic_once_only_key";
+    const metadata = { id: "key1", name: "agent", scope: "read", expires_at: "2026-11-01T00:00:00Z", fingerprint: "fingerprint", revoked: false, project_ids: [account.projects[0]!.id] };
+    let created = false;
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
+      if (options?.method === "POST") { created = true; return new Response(JSON.stringify({ token: secret }), { status: 201 }); }
+      if (options?.method === "DELETE") return new Response(null, { status: 204 });
+      return new Response(JSON.stringify({ keys: created ? [metadata] : [] }));
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: "browser-csrf" }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create API key" })).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("Key name"), { target: { value: "agent" } });
+    fireEvent.click(screen.getAllByRole("checkbox")[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Create API key" }));
+    await waitFor(() => expect(screen.getByLabelText("New API key")).toBeTruthy());
+    expect(screen.getByLabelText("New API key").getAttribute("type")).toBe("password");
+    expect(document.body.textContent).not.toContain(secret);
+    fireEvent.click(screen.getByRole("button", { name: "Copy key privately" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(secret));
+    const post = fetch.mock.calls.find((call) => call[1]?.method === "POST")!;
+    expect(post[0]).toBe(`${account.api_base}/api-keys`);
+    expect(post[1]?.headers).toMatchObject({ "X-CSRF-Token": "browser-csrf" });
+    expect(JSON.parse(post[1]!.body as string)).toMatchObject({ name: "agent", scope: "read", expires_days: 30, project_ids: [account.projects[0]!.id] });
+    for (const label of ["API setup prompt", "MCP setup prompt"]) {
+      fireEvent.click(screen.getByRole("button", { name: `Copy ${label}` }));
+      await waitFor(() => expect(writeText).toHaveBeenCalled());
+      expect(writeText.mock.lastCall![0]).not.toContain(secret);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Revoke agent" }));
+    await waitFor(() => expect(screen.queryByLabelText("New API key")).toBeNull());
+    expect(fetch.mock.calls.some((call) => call[0] === `${account.api_base}/api-keys/key1` && call[1]?.method === "DELETE")).toBe(true);
+  });
+
+  it("keeps setup unavailable when shared key authentication is not installed", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 404 }));
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("unavailable"));
+    expect(screen.queryByRole("button", { name: "Copy MCP setup prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create API key" })).toBeNull();
+  });
+
   it("offers manual copying when clipboard access fails", async () => {
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
     vi.spyOn(console, "error").mockImplementation(() => {});
-    renderSidebarNav("/settings/mcp", { account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Copy Organization MCP endpoint" })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
     await waitFor(() => expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("Select the text"));
@@ -234,7 +287,7 @@ describe("the settings navigation in the sidebar", () => {
       "Projects",
       "Providers & runners",
       "Integrations",
-      "MCP",
+      "API & MCP",
       "Plan",
       "Billing",
       "Keybindings",
