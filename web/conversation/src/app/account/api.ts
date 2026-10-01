@@ -27,6 +27,7 @@ import {
   ProjectIntegration,
   ProjectSecretStatus,
   ProjectsResponse,
+  type ProjectGrant,
   RunnerEnrollment,
   SupportResponse,
   type WorkflowState,
@@ -165,10 +166,16 @@ export function makeAccountApi(options: AccountApiOptions) {
 
     // --- Organization -------------------------------------------------------
     members: () => send(MembersResponse, "GET", `${base}/members`),
-    invite: (input: { email: string; role: string; key: string }) =>
+    invite: (input: { email: string; role: string; key: string; grants?: readonly ProjectGrant[] }) =>
       send(Schema.Unknown, "POST", `${base}/members/invitations`, {
         email: input.email,
         role: input.role,
+        grants: input.grants ?? [],
+        idempotency_key: input.key,
+      }),
+    setInvitationGrants: (input: { invitation: string; grants: readonly ProjectGrant[]; key: string }) =>
+      send(null, "PUT", `${base}/members/invitations/${encodeURIComponent(input.invitation)}`, {
+        grants: input.grants,
         idempotency_key: input.key,
       }),
     revokeInvitation: (input: { invitation: string; key: string }) =>

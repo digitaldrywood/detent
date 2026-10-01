@@ -35,6 +35,7 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
 	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, session)
 	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, session)
+	e.PUT(hostedOrganizationBase+"/members/invitations/:invitation", s.editHostedInvitationJSON, session)
 	e.DELETE(hostedOrganizationBase+"/members/invitations/:invitation", s.revokeHostedInvitationJSON, session)
 	e.POST(hostedOrganizationBase+"/members/invitations/:invitation/resend", s.resendHostedInvitationJSON, session)
 	e.DELETE(hostedOrganizationBase+"/members/:member", s.revokeHostedMemberJSON, session)
@@ -96,11 +97,12 @@ type hostedMemberView struct {
 }
 
 type hostedInvitationView struct {
-	ID        string `json:"id"`
-	Email     string `json:"email"`
-	Role      string `json:"role"`
-	CreatedAt string `json:"created_at"`
-	ExpiresAt string `json:"expires_at"`
+	ID        string              `json:"id"`
+	Email     string              `json:"email"`
+	Role      string              `json:"role"`
+	CreatedAt string              `json:"created_at"`
+	ExpiresAt string              `json:"expires_at"`
+	Grants    []hostedMemberGrant `json:"grants"`
 }
 
 type hostedMembersResponse struct {
@@ -197,7 +199,7 @@ func (s *Service) hostedMemberGrants(ctx context.Context) (map[string][]hostedMe
 
 func (s *Service) hostedPendingInvitations(ctx context.Context) ([]hostedInvitationView, error) {
 	invitations := []hostedInvitationView{}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT id, email, role, created_at, expires_at
+	rows, err := s.database.db.QueryContext(ctx, `SELECT id, email, role, created_at, expires_at, grants_json
 FROM hosted_invitations
 WHERE organization_id = ? AND accepted_user_id = '' ORDER BY rowid DESC`, s.config.Hosted.OrganizationID)
 	if err != nil {
@@ -206,8 +208,12 @@ WHERE organization_id = ? AND accepted_user_id = '' ORDER BY rowid DESC`, s.conf
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var view hostedInvitationView
-		if err := rows.Scan(&view.ID, &view.Email, &view.Role, &view.CreatedAt, &view.ExpiresAt); err != nil {
+		var grants string
+		if err := rows.Scan(&view.ID, &view.Email, &view.Role, &view.CreatedAt, &view.ExpiresAt, &grants); err != nil {
 			return nil, fmt.Errorf("scan hosted invitation: %w", err)
+		}
+		if err := json.Unmarshal([]byte(grants), &view.Grants); err != nil {
+			return nil, err
 		}
 		if view.ExpiresAt == "" {
 			invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, view.ID)
@@ -249,12 +255,34 @@ func (s *Service) hostedMemberResponse(ctx context.Context, member auth.Membersh
 	return view, nil
 }
 
+func (s *Service) editHostedInvitationJSON(c echo.Context) error {
+	var request struct {
+		hostedIdempotent
+		Grants []hostedMemberGrant `json:"grants"`
+	}
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	credential, err := s.hostedAdministrator(c)
+	if err != nil {
+		return s.hostedJSONError(c, http.StatusForbidden, "You cannot edit invitations")
+	}
+	if err := s.editHostedInvitationFor(c.Request().Context(), credential, c.Param("invitation"), request.Grants); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 // inviteHostedMemberJSON answers POST /members/invitations.
 func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	var request struct {
 		hostedIdempotent
-		Email string `json:"email"`
-		Role  string `json:"role"`
+		Email  string              `json:"email"`
+		Role   string              `json:"role"`
+		Grants []hostedMemberGrant `json:"grants"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -266,7 +294,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	if err != nil || !auth.ValidOrganizationRole(request.Role) || request.Role == "owner" && credential.HostedRole != "owner" {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot invite a member with this role")
 	}
-	view, err := s.inviteHostedMemberFor(c.Request().Context(), credential, request.Email, request.Role, request.IdempotencyKey)
+	view, err := s.inviteHostedMemberFor(c.Request().Context(), credential, request.Email, request.Role, request.IdempotencyKey, request.Grants)
 	if err != nil {
 		var application *nativeError
 		var limit *hostedLimitError

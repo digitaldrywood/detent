@@ -330,9 +330,6 @@ func (s *Service) addHostedMember(ctx context.Context, identity auth.Identity, m
 }
 
 func (s *Service) storeHostedMember(ctx context.Context, identity auth.Identity, membership auth.Membership, organizationName string) (resultErr error) {
-	if !identity.EmailVerified || identity.Subject != membership.UserID || membership.Status != "active" || !auth.ValidOrganizationRole(membership.Role.Slug) {
-		return auth.ErrHostedIdentity
-	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -342,6 +339,16 @@ func (s *Service) storeHostedMember(ctx context.Context, identity auth.Identity,
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
+	if err := s.storeHostedMemberTx(ctx, tx, identity, membership, organizationName); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Service) storeHostedMemberTx(ctx context.Context, tx *sql.Tx, identity auth.Identity, membership auth.Membership, organizationName string) error {
+	if !identity.EmailVerified || identity.Subject != membership.UserID || membership.Status != "active" || !auth.ValidOrganizationRole(membership.Role.Slug) {
+		return auth.ErrHostedIdentity
+	}
 	stamp := s.config.now()
 	before, err := s.database.hostedConsumption(ctx, tx, stamp)
 	if err != nil {
@@ -390,7 +397,7 @@ VALUES (?,?,?,?,1,?,?,?) ON CONFLICT(user_id) DO UPDATE SET email=excluded.email
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 type hostedExecer interface {
