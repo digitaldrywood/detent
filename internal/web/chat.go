@@ -20,6 +20,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/explain"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -374,7 +375,7 @@ func (s *Server) chatFileIssueProposal(ctx context.Context, raw json.RawMessage)
 	return chatpkg.ToolResult{Proposal: &action}, nil
 }
 
-func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (chatpkg.ActionExecution, error) {
+func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (execution chatpkg.ActionExecution, executionErr error) {
 	if action.ConnectionID != "" {
 		if err := s.validateOperatorAction(ctx, action); err != nil {
 			return chatpkg.ActionExecution{}, err
@@ -384,6 +385,45 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (chat
 		if err != nil {
 			return chatpkg.ActionExecution{}, err
 		}
+	}
+	var records store.OperatorMutations
+	if action.ConnectionID != "" {
+		if action.Mutation.RetryIdentity == "" {
+			return execution, errOperatorCommandUnavailable
+		}
+		var ok bool
+		records, ok = s.store.(store.OperatorMutations)
+		if !ok {
+			return execution, errOperatorCommandUnavailable
+		}
+		ctx = mutation.WithContext(ctx, action.Mutation)
+		claimed, err := records.ClaimOperatorMutation(ctx, action.Mutation)
+		if err != nil {
+			return execution, errOperatorCommandUnavailable
+		}
+		if !claimed {
+			receipt, _, err := records.OperatorMutation(ctx, action.Mutation)
+			if err != nil {
+				return execution, safeMutationError(err)
+			}
+			if receipt.Outcome != "succeeded" {
+				return execution, mutation.ErrUncertain
+			}
+			return chatpkg.ActionExecution{Message: "Action completed.", ResourceID: receipt.ResourceID, Identifier: receipt.Identifier, URL: receipt.URL}, nil
+		}
+		defer func() {
+			if executionErr != nil {
+				return
+			} // Keep an uncertain effect pending; never repeat it.
+			m := action.Mutation
+			m.ResourceID = execution.ResourceID
+			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			defer cancel()
+			if err := records.CompleteOperatorMutation(persistCtx, store.OperatorReceipt{Metadata: m, Outcome: "succeeded", Identifier: execution.Identifier, URL: execution.URL}); err != nil {
+				execution = chatpkg.ActionExecution{}
+				executionErr = errOperatorCommandUnavailable
+			}
+		}()
 	}
 	if action.ScenarioID != "" {
 		return chatpkg.ActionExecution{Message: demoChatAction(action)}, nil
@@ -408,8 +448,13 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (chat
 		}
 		return chatpkg.ActionExecution{Message: result}, err
 	}
-	if err := s.recordChatAction(ctx, action, result); err != nil {
-		s.logger.WarnContext(ctx, "chat action audit failed", "action", action.Kind, "issue_id", action.IssueID, "error", err)
+	if action.ConnectionID != "" {
+		result = "Action completed."
+	}
+	if action.ConnectionID == "" {
+		if err := s.recordChatAction(ctx, action, result); err != nil {
+			s.logger.WarnContext(ctx, "chat action audit failed", "action", action.Kind, "issue_id", action.IssueID, "error", err)
+		}
 	}
 	return chatpkg.ActionExecution{Message: result, ResourceID: action.IssueID, Identifier: action.Identifier, URL: action.ResourceURL}, nil
 }

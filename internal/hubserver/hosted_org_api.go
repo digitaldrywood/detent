@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -315,7 +316,8 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	invitation, err := s.config.Hosted.Provider.Invite(ctx, credential.Hosted.OrganizationID, email, request.Role, credential.Hosted.Subject)
 	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
 		s.releaseFailedHostedInvitation(c, email, reserved, err)
-		s.abandonHostedCommand(c, command)
+		// The provider may have sent the invitation before its response was lost.
+		// Keep the existing receipt pending: Invite has no provider retry key.
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
 	created := formatHubTime(s.config.now())
@@ -357,56 +359,92 @@ const hostedPendingCommand = `{"detent_pending_command":true}`
 // key. It reports true when the caller owns the key and should perform the
 // mutation. Otherwise it has already answered: the stored response for a
 // completed key, a conflict for a key used with different content, and a
-// retryable conflict for a key whose mutation is still pending. A pending
-// claim is never taken over, so a request that stopped after calling the
-// provider cannot be repeated under the same key; the caller retries with a
-// new key once it has checked the invitations list.
-func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
+// safe conflict for a key whose outcome is still pending or uncertain.
+// A pending invitation is never taken over; inspect provider/application
+// records before choosing a new key.
+// claimHostedOperation is the application receipt path shared by adapters.
+// Authorization must precede each call, including a replay.
+func (s *Service) claimHostedOperation(ctx context.Context, command hostedCommand) (claimed bool, response json.RawMessage, err error) {
+	command = command.forContext(ctx)
 	hash, err := command.hash()
 	if err != nil {
-		return false, s.nativeAPIError(c, err)
+		return false, nil, err
 	}
-	ctx := c.Request().Context()
-	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
+	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
 	if err != nil {
-		return false, s.nativeAPIError(c, err)
+		return false, nil, err
 	}
-	if claimed, err := result.RowsAffected(); err != nil || claimed == 1 {
-		if err != nil {
-			return false, s.nativeAPIError(c, err)
-		}
-		return true, nil
-	}
-	var storedHash, response string
-	err = s.database.db.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key).Scan(&storedHash, &response)
+	count, err := result.RowsAffected()
 	if err != nil {
-		return false, s.nativeAPIError(c, err)
+		return false, nil, err
+	}
+	if count == 1 {
+		return true, nil, nil
+	}
+	var storedHash, raw string
+	if err := s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key).Scan(&storedHash, &raw); err != nil {
+		return false, nil, err
 	}
 	if storedHash != hash {
-		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict})
+		return false, nil, mutation.ErrConflict
 	}
-	if response == hostedPendingCommand {
-		return false, c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: "This request is still being processed; check the invitations before retrying with a new key"})
+	if raw == hostedPendingCommand {
+		return false, nil, mutation.ErrUncertain
 	}
-	return false, c.JSONBlob(status, []byte(response))
+	return false, json.RawMessage(raw), nil
 }
 
-// completeHostedCommand stores the response a replay of the claimed key
-// answers with, then sends it.
-func (s *Service) completeHostedCommand(c echo.Context, command hostedCommand, status int, value any) error {
+func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
+	claimed, response, err := s.claimHostedOperation(c.Request().Context(), command)
+	if errors.Is(err, mutation.ErrConflict) {
+		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
+	}
+	if errors.Is(err, mutation.ErrUncertain) {
+		return false, c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+	}
+	if err != nil {
+		return false, s.nativeAPIError(c, err)
+	}
+	if !claimed {
+		return false, c.JSONBlob(status, response)
+	}
+	return true, nil
+}
+
+func (s *Service) completeHostedOperation(ctx context.Context, command hostedCommand, value any) (json.RawMessage, error) {
+	command = command.forContext(ctx)
 	response, err := marshalNative(value)
+	if err != nil {
+		return nil, err
+	}
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand)
+	if err != nil {
+		return nil, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if count != 1 {
+		return nil, mutation.ErrUncertain
+	}
+	return json.RawMessage(response), nil
+}
+
+func (s *Service) completeHostedCommand(c echo.Context, command hostedCommand, status int, value any) error {
+	response, err := s.completeHostedOperation(c.Request().Context(), command, value)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), `UPDATE native_commands SET response_json = ? WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ? AND response_json = ?`, response, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(status, []byte(response))
+	return c.JSONBlob(status, response)
 }
 
 // abandonHostedCommand gives back a claim whose mutation did not happen, so
 // the same key can be retried.
 func (s *Service) abandonHostedCommand(c echo.Context, command hostedCommand) {
+	command = command.forContext(c.Request().Context())
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), 2*time.Second)
 	defer cancel()
 	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ? AND response_json = ?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
@@ -676,4 +714,13 @@ func hostedErrorCode(status int) string {
 	default:
 		return "request_failed"
 	}
+}
+
+// The HTTP and MCP application adapters share records. Context metadata is
+// created by trusted authority; it is never decoded from hosted request bodies.
+func (command hostedCommand) forContext(ctx context.Context) hostedCommand {
+	if m, ok := mutation.FromContext(ctx); ok && m.RetryIdentity != "" {
+		command.key = m.RetryIdentity
+	}
+	return command
 }

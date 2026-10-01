@@ -187,6 +187,14 @@ func (s *Service) Submit(ctx context.Context, action Action) (Action, error) {
 	action.OrganizationID = connection.Identity.OrganizationID
 	action.Client = current.connection.Client
 	action.Mode = current.mode
+	action.Mutation.Mode = string(current.mode)
+	action.Mutation.Confirmation = "none"
+	if RequiresConfirmation(action) {
+		action.Mutation.Confirmation = "pending"
+	}
+	if RequiresConfirmation(action) && current.mode == YOLOMode {
+		action.Mutation.Confirmation = "yolo"
+	}
 	var idErr error
 	action.ID, idErr = s.newID()
 	if idErr != nil {
@@ -204,6 +212,15 @@ func (s *Service) Submit(ctx context.Context, action Action) (Action, error) {
 			return Action{}, ErrUnavailable
 		}
 		result, executeErr := s.actions.ExecuteAction(ctx, action)
+		outcome := "succeeded"
+		if executeErr != nil {
+			outcome = "failed"
+		}
+		auditAction := action
+		if executeErr == nil && result.ResourceID != "" {
+			auditAction.IssueID = result.ResourceID
+		}
+		s.auditAction(ctx, auditAction, outcome)
 		_, err = s.resolveExecution(current, index, result, executeErr)
 	}
 	return cloneActions(current.actions[index : index+1])[0], err
@@ -226,5 +243,6 @@ func (s *Service) RejectConnectionAction(ctx context.Context, id, actionID strin
 	if current.actions[index].Status != ActionPending {
 		return s.conversation(current), ErrActionNotPending
 	}
+	s.auditAction(ctx, current.actions[index], "rejected")
 	return s.rejectAction(current, index)
 }

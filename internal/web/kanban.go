@@ -17,6 +17,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/provenance"
@@ -236,7 +237,7 @@ func (s *Server) moveKanbanCard(ctx context.Context, req kanbanMoveRequest, sour
 				"current_state", moveCurrentState,
 				"target_state", req.targetState,
 				"data_seq", moveDataSeq,
-				"error", blocked,
+				"error", mutation.ErrorText(ctx, blocked),
 			)
 			return kanbanBlockedMoveMessage(blocked, req.targetState, moveIssueIdentifier), http.StatusUnprocessableEntity, nil
 		}
@@ -250,7 +251,7 @@ func (s *Server) moveKanbanCard(ctx context.Context, req kanbanMoveRequest, sour
 			"current_state", moveCurrentState,
 			"target_state", req.targetState,
 			"data_seq", moveDataSeq,
-			"error", err,
+			"error", mutation.ErrorText(ctx, err),
 		)
 		return "Move failed: " + err.Error(), http.StatusBadGateway, nil
 	}
@@ -273,7 +274,7 @@ func (s *Server) moveKanbanCard(ctx context.Context, req kanbanMoveRequest, sour
 				"current_state", moveCurrentState,
 				"target_state", req.targetState,
 				"data_seq", moveDataSeq,
-				"error", reconcileErr,
+				"error", mutation.ErrorText(ctx, reconcileErr),
 			)
 		}
 	}
@@ -1481,7 +1482,7 @@ func (s *Server) requestKanbanRefreshWithRetry(ctx context.Context, retryOnError
 	}
 	response, err := s.refresher.RequestRefresh(ctx)
 	if err != nil {
-		s.logger.WarnContext(ctx, "kanban refresh request failed", "error", err)
+		s.logger.WarnContext(ctx, "kanban refresh request failed", "error", mutation.ErrorText(ctx, err))
 		if retryOnError {
 			s.scheduleKanbanRefreshRetry(ctx)
 		}

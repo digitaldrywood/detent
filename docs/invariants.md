@@ -17,6 +17,15 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+MCP mutations carry content-free, trusted audit/correlation context (#3338).
+Dashboard commands reuse durable operator events for retry receipts; native and
+hosted commands reuse `native_commands`, with existing billing intents/provider
+keys for resumable purchases. Replays reauthorize current authority and conflict
+on changed payloads; uncertain effects retain pending records without takeover
+or recovery. Audit records do not carry arguments, raw provider errors or secrets.
+These records are application effects/audit only and confer no tracker lane
+writing authority. The orchestrator remains the sole lane writer.
+
 MCP and the stdio daemon bridge resolve current application authority for each
 discovery/direct call (#3336). Principal, organization, credential and session
 are bound together; scope and project grants come from the existing credential

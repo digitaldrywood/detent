@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -158,7 +157,7 @@ func TestHTTPTransportResultLimits(t *testing.T) {
 		},
 		{
 			name:         "HTTP envelope limit",
-			executor:     &staticExecutor{err: errors.New(strings.Repeat("x", MaxHTTPResponseBytes))},
+			executor:     &staticExecutor{result: operatortool.Result{Content: json.RawMessage(`{"value":"` + strings.Repeat("<", operatortool.MaxResultBytes/2) + `"}`)}},
 			wantRPCError: true,
 		},
 	}

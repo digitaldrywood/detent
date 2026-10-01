@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
 type hostedCheckout struct {
@@ -33,12 +34,17 @@ func (s *Service) hostedBillingOwner(c echo.Context) (apiCredential, error) {
 func (s *Service) hostedBillingCheckout(c echo.Context) error {
 	api := hostedBillingAPI(c)
 	var request struct {
-		Price          string `json:"price"`
-		IdempotencyKey string `json:"idempotency_key"`
+		hostedIdempotent
+		Price string `json:"price"`
 	}
 	if api {
 		if err := decodeAPIJSON(c, &request); err != nil {
 			return invalidAPIRequest(c, err)
+		}
+	}
+	if api {
+		if err := request.validate(true); err != nil {
+			return s.nativeAPIError(c, err)
 		}
 	}
 	if _, err := s.hostedBillingOwner(c); err != nil {
@@ -68,6 +74,22 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 	}
 	if !approved {
 		return s.hostedBillingFailure(c, api, http.StatusBadRequest, "Choose an approved subscription plan")
+	}
+	var command hostedCommand
+	if api {
+		command = hostedCommand{actor: credential.ID, operation: "billing.checkout", key: request.IdempotencyKey, input: struct{ Price, Account, Mode, ReturnURL string }{priceID, cfg.AccountID, cfg.mode(), s.hostedBillingReturn(api)}}
+		_, response, err := s.claimHostedOperation(c.Request().Context(), command)
+		if errors.Is(err, mutation.ErrConflict) {
+			return s.hostedBillingFailure(c, api, http.StatusConflict, mutation.ErrConflict.Error())
+		}
+		if err != nil && !errors.Is(err, mutation.ErrUncertain) {
+			return s.nativeAPIError(c, err)
+		}
+		if response != nil {
+			return c.JSONBlob(http.StatusOK, response)
+		}
+		// The billing mutex serializes callers; a pending receipt resumes the
+		// existing checkout intent, whose provider key remains unchanged.
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 45*time.Second)
 	defer cancel()
@@ -101,6 +123,9 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 		if err := s.saveHostedCheckout(ctx, credential.Hosted.Subject, checkout, "checkout_created"); err != nil {
 			return s.nativeAPIError(c, err)
 		}
+	}
+	if api {
+		return s.completeHostedCommand(c, command, http.StatusOK, map[string]string{"url": checkout.Session.URL})
 	}
 	return s.hostedBillingDestination(c, api, checkout.Session.URL)
 }
@@ -153,12 +178,15 @@ func (s *Service) saveHostedCheckout(ctx context.Context, actor string, checkout
 
 func (s *Service) hostedBillingPortal(c echo.Context) error {
 	api := hostedBillingAPI(c)
+	var request hostedIdempotent
 	if api {
-		var request struct {
-			IdempotencyKey string `json:"idempotency_key"`
-		}
 		if err := decodeAPIJSON(c, &request); err != nil {
 			return invalidAPIRequest(c, err)
+		}
+	}
+	if api {
+		if err := request.validate(true); err != nil {
+			return s.nativeAPIError(c, err)
 		}
 	}
 	credential, err := s.hostedBillingOwner(c)
@@ -184,9 +212,22 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 	if err != nil {
 		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Billing is temporarily unavailable")
 	}
+	var command hostedCommand
+	if api {
+		command = hostedCommand{actor: credential.ID, operation: "billing.portal", key: request.IdempotencyKey, input: struct {
+			Configuration, ReturnURL, Mode string
+			Binding                        billing.Binding
+		}{cfg.PortalConfigurationID, s.hostedBillingReturn(api), cfg.mode(), binding}}
+		if claimed, err := s.claimHostedCommand(c, command, http.StatusOK); !claimed || err != nil {
+			return err
+		}
+	}
 	session, err := cfg.Provider.Portal(ctx, binding, cfg.PortalConfigurationID, s.hostedBillingReturn(api))
 	if err != nil {
 		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "The billing portal is temporarily unavailable. Existing data and exports remain available.")
+	}
+	if api {
+		return s.completeHostedCommand(c, command, http.StatusOK, map[string]string{"url": session.URL})
 	}
 	return s.hostedBillingDestination(c, api, session.URL)
 }

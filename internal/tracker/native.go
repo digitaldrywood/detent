@@ -2,11 +2,14 @@ package tracker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/mutation"
+
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 )
 
@@ -419,4 +422,13 @@ type NativeRunEvent struct {
 	SchemaVersion int           `json:"schema_version"`
 	OccurredAt    time.Time     `json:"occurred_at,omitempty"`
 	Data          NativeRunData `json:"data"`
+}
+
+// MutationForContext forwards the application retry identity without deriving
+// business identity from an HTTP/JSON-RPC request or including sensitive input.
+func MutationForContext(ctx context.Context, fallback string) Mutation {
+	if m, ok := mutation.FromContext(ctx); ok && m.RetryIdentity != "" {
+		return Mutation{IdempotencyKey: m.RetryIdentity}
+	}
+	return Mutation{IdempotencyKey: fallback}
 }

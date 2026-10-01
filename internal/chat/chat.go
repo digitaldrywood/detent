@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
 const (
@@ -34,37 +36,38 @@ type Message struct {
 }
 
 type Action struct {
-	ConnectionID      string          `json:"connection_id"`
-	OrganizationID    string          `json:"organization_id"`
-	Client            string          `json:"client"`
-	RequestID         string          `json:"request_id"`
-	Arguments         json.RawMessage `json:"arguments"`
-	Mode              ConnectionMode  `json:"mode"`
-	ID                string          `json:"id"`
-	Kind              ActionKind      `json:"kind"`
-	ProjectID         string          `json:"project_id"`
-	IssueID           string          `json:"issue_id"`
-	Identifier        string          `json:"identifier"`
-	ResourceURL       string          `json:"resource_url,omitempty"`
-	CurrentState      string          `json:"current_state"`
-	TargetState       string          `json:"target_state"`
-	Priority          string          `json:"priority"`
-	PriorityRank      int             `json:"priority_rank"`
-	Destination       string          `json:"destination"`
-	Reason            string          `json:"reason"`
-	Title             string          `json:"title"`
-	Description       string          `json:"description"`
-	State             string          `json:"state"`
-	Labels            []string        `json:"labels,omitempty"`
-	Attempt           int             `json:"attempt"`
-	WorkAttemptID     int64           `json:"work_attempt_id"`
-	DetentSessionID   int64           `json:"detent_session_id"`
-	ProviderSessionID string          `json:"provider_session_id"`
-	ScenarioID        string          `json:"scenario_id"`
-	Status            ActionStatus    `json:"status"`
-	Result            string          `json:"result,omitempty"`
-	CreatedAt         time.Time       `json:"created_at"`
-	ResolvedAt        *time.Time      `json:"resolved_at,omitempty"`
+	Mutation          mutation.Metadata `json:"-"`
+	ConnectionID      string            `json:"connection_id"`
+	OrganizationID    string            `json:"organization_id"`
+	Client            string            `json:"client"`
+	RequestID         string            `json:"request_id"`
+	Arguments         json.RawMessage   `json:"arguments"`
+	Mode              ConnectionMode    `json:"mode"`
+	ID                string            `json:"id"`
+	Kind              ActionKind        `json:"kind"`
+	ProjectID         string            `json:"project_id"`
+	IssueID           string            `json:"issue_id"`
+	Identifier        string            `json:"identifier"`
+	ResourceURL       string            `json:"resource_url,omitempty"`
+	CurrentState      string            `json:"current_state"`
+	TargetState       string            `json:"target_state"`
+	Priority          string            `json:"priority"`
+	PriorityRank      int               `json:"priority_rank"`
+	Destination       string            `json:"destination"`
+	Reason            string            `json:"reason"`
+	Title             string            `json:"title"`
+	Description       string            `json:"description"`
+	State             string            `json:"state"`
+	Labels            []string          `json:"labels,omitempty"`
+	Attempt           int               `json:"attempt"`
+	WorkAttemptID     int64             `json:"work_attempt_id"`
+	DetentSessionID   int64             `json:"detent_session_id"`
+	ProviderSessionID string            `json:"provider_session_id"`
+	ScenarioID        string            `json:"scenario_id"`
+	Status            ActionStatus      `json:"status"`
+	Result            string            `json:"result,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	ResolvedAt        *time.Time        `json:"resolved_at,omitempty"`
 }
 
 type Conversation struct {

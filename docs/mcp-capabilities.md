@@ -165,8 +165,10 @@ templates, queries or CSS inputs are changed by this inventory.
 
 `move_item`, `set_priority`, `stop_run`, and `file_issue` use the same application
 validation and commands as dashboard chat. Arguments are typed and bounded; a
-`request_id` identifies retries of an exact command within the connection. Changed
-arguments with the same ID deny, and expired connections cannot recreate receipts.
+`request_id` is an explicit business retry key for an exact command across
+connections; it is independent of the JSON-RPC request ID. Changed arguments
+with the same actor/organization/project/operation/key conflict. Expired or
+revoked authority cannot replay a receipt.
 `action_result` returns the original preview/outcome and never approves it. The
 preview includes exact arguments, resolved project/resource and run identity,
 organization, originating client, creation/resolution timestamps and a portable
@@ -198,3 +200,56 @@ unavailable results; this child does not install missing hosted conversation,
 access or billing operations. Their owner children must use this same human
 approval/connection authority boundary when extracting their application commands.
 Parent #3259 remains pending.
+
+
+## Shared mutation audit and retries (#3338)
+
+Application adapters carry trusted `mutation.Metadata`: principal, organization,
+project/resource, action, source, actual connection mode/confirmation decision,
+correlation and bound retry/input hashes. Authentication, mode and confirmation
+are never tool arguments. Every current MCP command provides this context;
+future mutation children must forward it through their shared application command.
+A fresh correlation identifies each submission; approved execution and rejection
+retain the original submission correlation. Business keys, credentials, invitation
+secrets, prompt/comment/body content, support tokens, billing secrets and raw
+provider errors are absent from audit summaries and protocol errors.
+
+Dashboard commands reuse `workflow_phase_events` operator records to bind the
+first authorized submission, including pending previews and rejected actions.
+Only its server-created action can start that operation; a unique bound identity
+permits only one execution across concurrent
+connections, disconnects and daemon restarts. Receipts contain identifiers/URLs
+and outcome, without arguments or rendered result text. Replays reauthorize the
+current credential/project authority. The application owns persistence; neither
+MCP transport writes SQLite nor a transport dedup cache decides business replay.
+This adds no recovery or takeover loop. A missing durable application service
+returns an opaque unavailable error before mutation.
+
+Native connector commands forward the context retry identity through
+`tracker.Mutation.IdempotencyKey` to the existing `native_commands` table.
+Hosted session IDs no longer divide business receipts: current session and member
+checks still precede replay. Hosted organization commands use the same extracted
+receipt functions. Billing API keys bind actor/organization/operation/input in
+`native_commands`, while checkout/customer retries continue using the existing
+billing intents and stable provider keys. Portal completion replays its stored
+URL; an uncertain portal attempt cannot repeat its provider effect. Hosted audit
+rows and billing audit JSON accept the same content-free context.
+
+Lost pending approval previews return a safe pending error after reconnect or
+restart; no replacement action takes over their record. Rejected commands replay
+the rejected outcome. Uncertain dashboard effects, invitation sends and portal
+creates retain their
+pending application receipt and return a safe error. Their providers cannot
+prove a negative outcome or accept a business retry key, so there is no automatic
+repeat. Inspect the resource/provider records before choosing a new key. Checkout
+may resume a pending receipt only through the existing serialized billing intent
+and provider idempotency semantics. Response persistence uses a bounded context
+that survives a client disconnect. These guarantees do not install the pending
+hosted/issue/comment tools or complete parent #3259.
+
+Native revision-based edits must replay the exact originally submitted tracker
+request, including its expected revision. Connector operations that recompute a
+revision after an uncertain response can return a safe payload conflict; inspect
+the resource instead of repeating the effect with a fresh key. Billing replay
+also binds the configured provider account/mode and return destination, so a
+configuration change cannot replay a purchase from another billing binding.

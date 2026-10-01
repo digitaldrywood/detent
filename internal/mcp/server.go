@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -328,7 +329,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 	}
 	params.Name = strings.TrimSpace(params.Name)
 	if _, ok := operatortool.Lookup(params.Name); !ok {
-		return s.writeError(message.ID, codeInvalidParams, "Unknown tool: "+params.Name, nil)
+		return s.writeError(message.ID, codeInvalidParams, "Unknown tool", nil)
 	}
 	if len(params.Arguments) == 0 {
 		params.Arguments = json.RawMessage(`{}`)
@@ -362,7 +363,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 		}
 		if err != nil {
 			if writeErr := s.writeResult(message.ID, toolCallResult{
-				Content: []textContent{{Type: "text", Text: err.Error()}},
+				Content: []textContent{{Type: "text", Text: safeToolError(err)}},
 				IsError: true,
 			}); writeErr != nil {
 				return
@@ -539,4 +540,13 @@ func requestIDKey(raw json.RawMessage) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func safeToolError(err error) string {
+	for _, safe := range []error{operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
+		if errors.Is(err, safe) {
+			return safe.Error()
+		}
+	}
+	return "Operator tool is unavailable"
 }
