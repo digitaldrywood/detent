@@ -24,28 +24,63 @@ import (
 
 func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	if got := runnerCheckoutRepository(t.Context(), root); got != "" {
-		t.Fatalf("missing checkout = %q", got)
-	}
-	runDoctorWorkflowSourceGit(t, root, "init")
-	if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte("# Workflow\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for index, test := range []struct {
+	for _, test := range []struct {
 		name, remote, want string
+		externalWorkflow   bool
+		missingWorkflow    bool
+		missingGit         bool
+		refWorkflow        bool
 	}{
-		{"private HTTPS origin", "https://alice:private-secret@github.com/Acme/Private.git", "Acme/Private"},
-		{"SSH origin", "git@github.com:Acme/Private.git", "Acme/Private"},
-		{"unsupported origin", "https://alice:private-secret@example.test/Acme/Private.git", ""},
+		{name: "registration default workflow", remote: "git@github.com:Acme/Private.git", want: "Acme/Private"},
+		{name: "private HTTPS origin", remote: "https://alice:private-secret@github.com/Acme/Private.git", want: "Acme/Private"},
+		{name: "unsupported origin", remote: "https://alice:private-secret@example.test/Acme/Private.git"},
+		{name: "configured workflow outside checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, want: "Acme/Private"},
+		{name: "missing configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingWorkflow: true},
+		{name: "missing default workflow", remote: "git@github.com:Acme/Private.git", missingWorkflow: true},
+		{name: "missing Git origin", externalWorkflow: true},
+		{name: "missing Git checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingGit: true},
+		{name: "configured Git ref workflow absent locally", remote: "git@github.com:Acme/Private.git", refWorkflow: true, want: "Acme/Private"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if index > 0 {
-				runDoctorWorkflowSourceGit(t, root, "remote", "remove", "origin")
+			t.Parallel()
+			root := t.TempDir()
+			workdir := filepath.Join(root, "checkout")
+			checkout(t, workdir)
+			runDoctorWorkflowSourceGit(t, workdir, "remote", "remove", "origin")
+			if test.remote != "" {
+				runDoctorWorkflowSourceGit(t, workdir, "remote", "add", "origin", test.remote)
 			}
-			runDoctorWorkflowSourceGit(t, root, "remote", "add", "origin", test.remote)
-			if got := runnerCheckoutRepository(t.Context(), root); got != test.want || strings.Contains(got, "private-secret") {
+			selected := globalconfig.Project{Workdir: workdir}
+			if test.externalWorkflow {
+				selected.Workflow = filepath.Join(root, "WORKFLOW.md")
+				if !test.missingWorkflow {
+					if err := os.WriteFile(selected.Workflow, []byte(mustRead(t, filepath.Join(workdir, "WORKFLOW.md"))), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Remove(filepath.Join(workdir, "WORKFLOW.md")); err != nil {
+						t.Fatal(err)
+					}
+					runDoctorWorkflowSourceGit(t, workdir, "add", "-u")
+					runDoctorWorkflowSourceGit(t, workdir, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "externalize workflow")
+				}
+			} else if test.missingWorkflow || test.refWorkflow {
+				if err := os.Remove(filepath.Join(workdir, "WORKFLOW.md")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.refWorkflow {
+				selected.Workflow, selected.WorkflowRef = "WORKFLOW.md", "HEAD"
+			}
+			if test.missingGit {
+				if err := os.RemoveAll(filepath.Join(workdir, ".git")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := runnerCheckoutRepository(t.Context(), selected); got != test.want || strings.Contains(got, "private-secret") {
 				t.Fatalf("repository = %q, want %q", got, test.want)
+			}
+			if got := runnerCheckoutReady(t.Context(), selected); got != (test.want != "") {
+				t.Fatalf("checkout ready = %v, want %v", got, test.want != "")
 			}
 		})
 	}
@@ -321,7 +356,7 @@ func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
 				checkout(t, workdir)
 			}
 			if !test.ready && !test.absentPaths {
-				if err := os.Remove(filepath.Join(workdir, ".git")); err != nil {
+				if err := os.RemoveAll(filepath.Join(workdir, ".git")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -362,12 +397,16 @@ func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
 
 func checkout(t *testing.T, dir string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "WORKFLOW.md"), []byte("Work the issue.\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "WORKFLOW.md"), []byte("---\ntracker:\n  kind: memory\n  repository: acme/orders\n---\nWork the issue.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	runDoctorWorkflowSourceGit(t, dir, "init")
+	runDoctorWorkflowSourceGit(t, dir, "add", "WORKFLOW.md")
+	runDoctorWorkflowSourceGit(t, dir, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial workflow")
+	runDoctorWorkflowSourceGit(t, dir, "remote", "add", "origin", "git@github.com:acme/orders.git")
 }
 
 func TestHubRunnerRegisterRejectsBadInput(t *testing.T) {
@@ -440,22 +479,6 @@ func TestHubRunnerRegisterRefusesAnotherRunnersFiles(t *testing.T) {
 			t.Fatalf("register rewrote the configuration or spent the token (%d redemptions)", hub.redeemed.Load())
 		}
 	})
-}
-
-func TestRunnerCheckoutReady(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	repository := filepath.Join(root, "repository")
-	if err := os.MkdirAll(filepath.Join(repository, ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if runnerCheckoutReady(filepath.Join(root, "missing")) || runnerCheckoutReady(repository) {
-		t.Fatal("a missing directory or a repository without WORKFLOW.md counted as ready")
-	}
-	checkout(t, repository)
-	if !runnerCheckoutReady(repository) {
-		t.Fatal("a repository with WORKFLOW.md did not count as ready")
-	}
 }
 
 func mustRead(t *testing.T, path string) string {

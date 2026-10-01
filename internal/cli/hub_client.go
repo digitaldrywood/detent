@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -76,10 +78,10 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	for name, id := range clientConfig.NativeProjects {
 		nativeProjects[name] = tracker.ProjectID(id)
 	}
-	checkoutRoots := make(map[string]string, len(nativeProjects))
-	for _, project := range cfg.Projects {
-		if _, ok := nativeProjects[project.ID]; ok {
-			checkoutRoots[project.ID] = project.Workdir
+	checkouts := make(map[string]globalconfig.Project, len(nativeProjects))
+	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
+		if _, ok := nativeProjects[selected.ID]; ok {
+			checkouts[selected.ID] = selected
 		}
 	}
 	var providerReports func() ([]providercapacity.Report, error)
@@ -113,7 +115,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		CheckoutRepository: func(project string) string {
-			return runnerCheckoutRepository(ctx, checkoutRoots[project])
+			return runnerCheckoutRepository(ctx, checkouts[project])
 		},
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
@@ -132,11 +134,20 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	})
 }
 
-func runnerCheckoutRepository(ctx context.Context, root string) string {
-	if root == "" || !runnerCheckoutReady(root) {
+func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project) string {
+	if selected.Workdir == "" {
 		return ""
 	}
-	remote, err := defaultGitRemoteURL(ctx, root)
+	if _, err := os.Stat(filepath.Join(selected.Workdir, ".git")); err != nil {
+		return ""
+	}
+	if strings.TrimSpace(selected.Workflow) == "" && strings.TrimSpace(selected.WorkflowRef) == "" {
+		selected.Workflow = filepath.Join(selected.Workdir, "WORKFLOW.md")
+	}
+	if _, err := project.LoadWorkflowContext(ctx, selected); err != nil {
+		return ""
+	}
+	remote, err := defaultGitRemoteURL(ctx, selected.Workdir)
 	if err != nil {
 		return ""
 	}

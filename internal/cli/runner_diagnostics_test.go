@@ -25,16 +25,22 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		name                                   string
 		pi                                     bool
 		checkout                               bool
+		externalWorkflow                       bool
+		missingOrigin                          bool
+		missingWorkflow                        bool
 		doctor                                 doctorStatus
 		auth                                   bool
 		wantCheckout, wantDoctor, wantProvider string
 	}{
-		{"missing checkout", false, false, doctorOK, true, "failed", "pending", "pending"},
-		{"failed doctor", false, true, doctorFail, true, "passed", "failed", "passed"},
-		{"missing provider", false, true, doctorOK, false, "passed", "passed", "failed"},
-		{"success", false, true, doctorOK, true, "passed", "passed", "passed"},
-		{"warnings", false, true, doctorWarn, true, "passed", "warning", "passed"},
-		{"Pi auth unknown", true, true, doctorOK, false, "passed", "passed", "pending"},
+		{name: "missing checkout", doctor: doctorOK, auth: true, wantCheckout: "failed", wantDoctor: "pending", wantProvider: "pending"},
+		{name: "failed doctor", checkout: true, doctor: doctorFail, auth: true, wantCheckout: "passed", wantDoctor: "failed", wantProvider: "passed"},
+		{name: "missing provider", checkout: true, doctor: doctorOK, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "failed"},
+		{name: "success", checkout: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
+		{name: "warnings", checkout: true, doctor: doctorWarn, auth: true, wantCheckout: "passed", wantDoctor: "warning", wantProvider: "passed"},
+		{name: "Pi auth unknown", pi: true, checkout: true, doctor: doctorOK, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "pending"},
+		{name: "configured workflow outside committed checkout", checkout: true, externalWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
+		{name: "missing Git origin", checkout: true, missingOrigin: true, doctor: doctorOK, auth: true, wantCheckout: "failed", wantDoctor: "pending", wantProvider: "pending"},
+		{name: "missing configured workflow", checkout: true, externalWorkflow: true, missingWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "failed", wantDoctor: "pending", wantProvider: "pending"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -44,12 +50,17 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Path = path
-			cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: filepath.Join(root, "WORKFLOW.md"), Workdir: root, Weight: 1}}
-			if err := globalconfig.Write(path, cfg, globalconfig.WithMissingWorkflowFiles()); err != nil {
+			workdir := filepath.Join(root, "checkout")
+			workflowPath := filepath.Join(workdir, "WORKFLOW.md")
+			if tt.externalWorkflow {
+				workflowPath = filepath.Join(root, "WORKFLOW.md")
+			}
+			cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: workdir, Weight: 1}}
+			if err := globalconfig.Write(path, cfg, globalconfig.WithMissingProjectPaths()); err != nil {
 				t.Fatal(err)
 			}
 			if tt.checkout {
-				if err := os.Mkdir(filepath.Join(root, ".git"), 0700); err != nil {
+				if err := os.MkdirAll(workdir, 0700); err != nil {
 					t.Fatal(err)
 				}
 				body := "---\ntracker:\n  kind: memory\n  repository: acme/orders\n"
@@ -57,12 +68,31 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 					body += "agents:\n  backends:\n    - id: pi\n      kind: pi_agent\n  routes:\n    - backend: pi\n      default: true\n"
 				}
 				body += "---\nPRIVATE WORKFLOW\n"
-				if err := os.WriteFile(filepath.Join(root, "WORKFLOW.md"), []byte(body), 0600); err != nil {
+				if !tt.missingWorkflow {
+					if err := os.WriteFile(workflowPath, []byte(body), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile(filepath.Join(workdir, "source.go"), []byte("package orders\n"), 0600); err != nil {
 					t.Fatal(err)
+				}
+				runDoctorWorkflowSourceGit(t, workdir, "init")
+				runDoctorWorkflowSourceGit(t, workdir, "add", ".")
+				runDoctorWorkflowSourceGit(t, workdir, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "source checkout")
+				if !tt.missingOrigin {
+					runDoctorWorkflowSourceGit(t, workdir, "remote", "add", "origin", "git@github.com:acme/orders.git")
+				}
+				if !tt.missingWorkflow {
+					if _, _, _, err := resolveRunnerSetupPolicy(t.Context(), path, "orders"); err != nil {
+						t.Fatalf("configured workflow cannot resolve: %v", err)
+					}
+				}
+				if status := runDoctorWorkflowSourceGit(t, workdir, "status", "--porcelain"); status != "" {
+					t.Fatalf("source checkout is dirty: %s", status)
 				}
 			}
 			var doctors, auths int
-			checks := collectRunnerLocalChecks(t.Context(), cfg, "orders", root, func(_ context.Context, c doctorConfig) doctorReport {
+			checks := collectRunnerLocalChecks(t.Context(), cfg, "orders", func(_ context.Context, c doctorConfig) doctorReport {
 				doctors++
 				if c.ProjectID != "orders" || c.ConfigPath != path || c.AllowWriteProbes || c.Flags.Port.Value != 0 {
 					t.Fatalf("wrong doctor context: %+v", c)
@@ -72,10 +102,10 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 			if checks.Checkout != tt.wantCheckout || checks.Doctor != tt.wantDoctor || checks.Provider != tt.wantProvider {
 				t.Fatalf("checks=%+v", checks)
 			}
-			if tt.checkout && (doctors != 1 || !tt.pi && auths == 0 || tt.pi && auths != 0) {
+			if tt.wantCheckout == "passed" && (doctors != 1 || !tt.pi && auths == 0 || tt.pi && auths != 0) {
 				t.Fatalf("probes doctor=%d auth=%d", doctors, auths)
 			}
-			if !tt.checkout && (doctors != 0 || auths != 0) {
+			if tt.wantCheckout != "passed" && (doctors != 0 || auths != 0) {
 				t.Fatal("probed before checkout")
 			}
 			encoded, err := json.Marshal(checks)
