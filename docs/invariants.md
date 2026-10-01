@@ -588,6 +588,18 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Allowance recovery (#3571) consolidates release authority under the current
+durable lane cause. Cleared historical Workpad predicates cannot release a newer
+allowance refusal; the existing allowance reconciler owns reduced-failure
+recovery and clean-head promotion after current human and dependency holds.
+Allowance accounting reads durable failed outcomes regardless of sparse or
+hydrated PR observations or authored completion claims. Successful delivery and
+actual merge boundaries remain owned by existing completion and merge accounting.
+No reason, loop, configuration, or lane writer is added.
+`TestAttemptTriageParkRechecksFailedAllowance` covers the conflicting observations
+and older cleared blocker sequence in SQLite, including preserved completion,
+reduced-allowance recovery, and human/dependency holds.
+
 Merged-completion ownership (#3529) resolves stale closed associations through
 existing native reference lookup and the existing merged-PR owner. Completion
 classification uses that same decision instead of a separate post-merge CI wait;

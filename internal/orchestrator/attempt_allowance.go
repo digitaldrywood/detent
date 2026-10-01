@@ -129,9 +129,8 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 }
 
 func (o *Orchestrator) issueAttemptAllowance(ctx context.Context, issue connector.Issue) (attemptAllowance, error) {
-	if _, operational := operationalCompletionFromIssue(issue); operational {
-		return attemptAllowance{}, nil
-	}
+	// Completion claims are evaluated by the completion owner. Allowance counts
+	// durable outcomes even when the current PR observation is sparse.
 	if o.workAttempts == nil {
 		return attemptAllowance{}, nil
 	}

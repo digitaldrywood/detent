@@ -255,11 +255,14 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 	tests := []struct {
 		name           string
 		fingerprint    string
+		durableCause   string
 		wantTransition bool
 		wantStatus     string
 	}{
 		{name: "condition holds", fingerprint: "config-a", wantStatus: blockerEvidenceStatusHolds},
 		{name: "condition clears", fingerprint: "config-b", wantTransition: true},
+		{name: "current durable Workpad cause clears", fingerprint: "config-b", durableCause: string(AutoPromoteReasonWorkpadBlocker), wantTransition: true},
+		{name: "current durable Workpad cause holds", fingerprint: "config-a", durableCause: string(AutoPromoteReasonWorkpadBlocker), wantStatus: blockerEvidenceStatusHolds},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -274,6 +277,12 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 					Type:        workpad.PredicateConfigFingerprint,
 					Fingerprint: "config-a",
 				})},
+			}
+			if tt.durableCause != "" {
+				orch.workflowMetrics = openWorkAttemptRecoveryStore(t, t.Context())
+				prior := cloneIssue(issue)
+				prior.State = "Todo"
+				orch.recordLaneTransition(t.Context(), prior, blockedStatusState, now.Add(-time.Hour), tt.durableCause, workflowLaneMetadata{})
 			}
 			state := newState(orch.cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: now.Add(-time.Hour), Source: BlockedSourceProjectStatus}

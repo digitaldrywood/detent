@@ -329,6 +329,14 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if !currentParkFound {
 		park, currentParkFound, derivedLaneReason, derivationFailure = o.deriveCurrentBreakerRecoveryPark(ctx, state, issue)
 	}
+	// A cleared Workpad predicate can release its own lane cause, but cannot
+	// supersede another durable owner (including an allowance refusal without
+	// recovery metadata). Those causes reach their existing reconcilers below.
+	laneEntry, laneFound := o.latestWorkflowLaneEntry(ctx, issue)
+	recordedBlockerOwnsLane := !laneFound ||
+		workflowLaneEntryMatchesCurrent(issue, laneEntry.Event) &&
+			normalizeState(laneEntry.Event.PhaseName) == normalizeState(blockedStatusState) &&
+			laneEntry.Event.Reason == string(AutoPromoteReasonWorkpadBlocker)
 	withDependencies := o.issueWithDependencyRefs(issue)
 	withDependencies, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
 	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
@@ -386,7 +394,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			setBlockedEvidence(state, issue.ID, recorded.Evidence)
 			return false
 		}
-		if !currentParkFound {
+		if !currentParkFound && recordedBlockerOwnsLane {
 			if o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now) {
 				return true
 			}
@@ -398,6 +406,11 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	}
 	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
 	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg, workpadCurrent)
+	// The live predicate evaluator above owns recorded blockers. Do not turn
+	// its cleared result back into a hold merely because the Workpad retains it.
+	if holdReason == "recorded_blocker" && recorded.Found {
+		holdReason = ""
+	}
 	if holdReason != "" && holdReason != "invalid_workpad_signal" {
 		o.recordBlockedRecoveryDecision(
 			ctx,

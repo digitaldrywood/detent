@@ -2575,7 +2575,7 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 				cfg.ServiceIdentity = "detent:detent"
 				cfg.AutoPromote.Gate.SecurityAudit = gate.SecurityAuditConfig{Enabled: true, MaxAttempts: 1}
 			}
-			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			metrics := openWorkAttemptRecoveryStore(t, t.Context())
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
 			if tt.audit != "" {
 				memo := newSecurityAuditMemoryStore()
@@ -2738,6 +2738,10 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 	for _, tt := range []struct {
 		name, priorLane, humanAction string
 		failures                     int
+		completionClaim              bool
+		hydratedDraft                bool
+		clearedHistoricalBlocker     bool
+		terminal                     store.WorkAttemptTerminalState
 		incomplete                   bool
 		dependencyState              string
 		wantLane                     string
@@ -2746,6 +2750,12 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 		{name: "preserve prior In Progress", priorLane: "In Progress", failures: 2, wantLane: "In Progress"},
 		{name: "resolved dependency", priorLane: "Rework", failures: 2, dependencyState: "Done", wantLane: "Rework"},
 		{name: "real failures remain exhausted", priorLane: "Rework", failures: 3},
+		{name: "sparse completion claim retains no progress allowance", priorLane: "In Progress", failures: 3, completionClaim: true},
+		{name: "hydrated closed draft retains no progress allowance", priorLane: "In Progress", failures: 3, completionClaim: true, hydratedDraft: true},
+		{name: "runner failures remain charged despite completion claim", priorLane: "Rework", failures: 3, completionClaim: true, terminal: store.WorkAttemptTerminalFailure},
+		{name: "successful operational receipt recovers unchanged", priorLane: "In Progress", completionClaim: true, wantLane: "In Progress"},
+		{name: "older cleared blocker cannot release exhausted allowance", priorLane: "In Progress", failures: 3, clearedHistoricalBlocker: true},
+		{name: "older cleared blocker permits reduced allowance recovery", priorLane: "Rework", failures: 2, clearedHistoricalBlocker: true, wantLane: "Rework"},
 		{name: "human hold remains", priorLane: "Rework", failures: 2, humanAction: "approve data migration"},
 		{name: "active dependency remains", priorLane: "Rework", failures: 2, dependencyState: "In Progress"},
 		{name: "incomplete success remains charged", priorLane: "Rework", failures: 2, incomplete: true},
@@ -2767,6 +2777,9 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 					t.Fatal(err)
 				}
 				terminal, phase := store.WorkAttemptTerminalNoProgress, "no_progress"
+				if tt.terminal != "" {
+					terminal = tt.terminal
+				}
 				if i == tt.failures {
 					terminal, phase = store.WorkAttemptTerminalSuccess, "completed"
 				}
@@ -2776,6 +2789,21 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: start.Add(time.Second), TerminalState: terminal, Phase: phase}); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if tt.clearedHistoricalBlocker {
+				orch.recordLaneTransition(t.Context(), issue, blockedStatusState, at.Add(-time.Hour), string(AutoPromoteReasonWorkpadBlocker), workflowLaneMetadata{})
+				orch.recordLaneTransition(t.Context(), promotedIssue(issue, blockedStatusState, at.Add(-time.Hour)), tt.priorLane, at.Add(-30*time.Minute), workflowActionRecordedBlockerRecovery, workflowLaneMetadata{})
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{Type: workpad.PredicateConfigFingerprint, Fingerprint: "config-a"})}}
+				orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig("config-b")}
+			}
+			if tt.completionClaim {
+				issue.Description = operationalCompletionAuthorizationBody()
+				body := operationalCompletionWorkpadBody("Authored claim; durable outcomes remain authoritative.")
+				issue.Comments = []connector.IssueComment{{Body: body, AuthorAuthorized: true}}
+				issue.WorkpadSignal, _ = workpad.SignalFromComment(body, "", "digitaldrywood/detent")
+			}
+			if tt.hydratedDraft {
+				issue.PullRequest = &connector.PullRequest{Number: 3407, State: "closed", Draft: true, HeadSHA: "closed-draft-head"}
 			}
 			orch.recordLaneTransition(t.Context(), issue, blockedStatusState, at, attemptAllowanceExhaustedReason, workflowLaneMetadata{})
 			issue.State = blockedStatusState
@@ -2791,6 +2819,14 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 				issue.BlockedBy = []connector.BlockedRef{{ID: blocker.ID, Identifier: blocker.Identifier, State: blocker.State, Source: connector.BlockedRefSourceNative}}
 				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Ref: blocker.Identifier, Identifier: blocker.Identifier, Reason: "prior validation gate awaits dependency"}}}
 				tracker.blockers = []connector.Issue{blocker}
+			}
+			allowance, err := orch.issueAttemptAllowance(t.Context(), issue)
+			wantSessions := tt.failures
+			if tt.incomplete {
+				wantSessions++
+			}
+			if err != nil || allowance.Sessions != wantSessions {
+				t.Fatalf("allowance sessions=%d, want %d; err=%v", allowance.Sessions, wantSessions, err)
 			}
 			tracker.stateIssues = []connector.Issue{issue}
 			state := newState(cfg)
@@ -2809,7 +2845,7 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 				t.Fatal("cleared allowance remains blocked")
 			}
 			entry, ok := orch.latestWorkflowLaneEntry(t.Context(), promotedIssue(issue, tt.wantLane, at.Add(time.Minute)))
-			if !ok || entry.Event.Reason != workflowActionRecordedBlockerRecovery {
+			if !ok || entry.Event.Reason != workflowActionRecordedBlockerRecovery || entry.Event.PreviousPhaseName != blockedStatusState {
 				t.Fatalf("entry=%+v, found=%v", entry, ok)
 			}
 		})
