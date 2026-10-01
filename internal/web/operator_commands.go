@@ -58,12 +58,17 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 			definitions = append(definitions, definition)
 		}
 	}
+	definitions = append(definitions, e.server.dashboardProjectTools(ctx)...)
 	return definitions, nil
 }
 
 func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.server
 	switch call.Name {
+	case "list_projects", "project_settings", "project_setup":
+		return s.dashboardProjectRead(ctx, call)
+	case "set_budget_override", "clear_budget_override":
+		return s.executeOperatorMutation(ctx, call)
 	case operatortool.ConnectionInfo:
 		if err := operatortool.DecodeArguments(call.Arguments, &struct{}{}); err != nil {
 			return operatortool.Result{}, err
@@ -232,6 +237,8 @@ func (s *Server) operatorActionProposal(ctx context.Context, name string, argume
 	var result chatpkg.ToolResult
 	var err error
 	switch name {
+	case "set_budget_override", "clear_budget_override":
+		return s.budgetActionProposal(ctx, name, arguments)
 	case operatortool.MoveItem:
 		result, err = s.chatMoveProposal(ctx, arguments)
 	case operatortool.SetPriority:

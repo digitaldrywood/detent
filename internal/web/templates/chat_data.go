@@ -7,10 +7,12 @@ import (
 )
 
 type ChatData struct {
-	Conversation chatpkg.Conversation
-	Error        string
-	FormToken    string
-	ActionTokens map[string]string
+	ApprovalCSRF     string
+	ApprovalBasePath string
+	Conversation     chatpkg.Conversation
+	Error            string
+	FormToken        string
+	ActionTokens     map[string]string
 }
 
 func chatMessageClass(message chatpkg.Message) string {
@@ -53,3 +55,6 @@ func chatActionStatus(action chatpkg.Action) string {
 func chatActionPath(action chatpkg.Action, decision string) string {
 	return "/api/v1/chat/actions/" + action.ID + "/" + strings.TrimSpace(decision)
 }
+
+func (d ChatData) approvalPath() string       { return d.ApprovalBasePath + "/chat/approval" }
+func (d ChatData) approvalStylesheet() string { return d.ApprovalBasePath + "/static/css/output.css" }

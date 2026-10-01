@@ -1,0 +1,512 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+var errProjectServiceUnavailable = errors.New("project operation is unavailable")
+
+type hubOperatorScopeKey struct{}
+type hubProjectExecutor struct{ service *Service }
+
+func (e hubProjectExecutor) OpenConnection(ctx context.Context) error {
+	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+		return err
+	}
+	return e.service.operatorChat.AttachConnection(ctx)
+}
+func projectToolScope(name string, read bool) apikey.Scope {
+	if read {
+		return apikey.ScopeRead
+	}
+	switch name {
+	case "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "approve_change_review_policy", "revoke_project_policy", "remove_project_secret":
+		return apikey.ScopeAdmin
+	}
+	return apikey.ScopeWrite
+}
+func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
+	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+		return nil, err
+	}
+	defs := []operatortool.Definition{}
+	for _, d := range operatortool.ProjectCatalog() {
+		if d.Name == "project_settings" || d.Name == "set_budget_override" || d.Name == "clear_budget_override" {
+			continue
+		}
+		if e.service.config.Hosted == nil && d.Name == "create_hosted_project" || e.service.config.Hosted != nil && d.Name == "create_native_project" {
+			continue
+		}
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(d.Name, d.Annotations.ReadOnly)}); err == nil {
+			defs = append(defs, d)
+		}
+	}
+	for _, d := range operatortool.CommandCatalog() {
+		if d.Name == operatortool.ActionResult || d.Name == operatortool.ConnectionInfo {
+			defs = append(defs, d)
+		}
+	}
+	return defs, nil
+}
+func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	d, known := operatortool.Lookup(call.Name)
+	if !known {
+		return result, operatortool.ErrUnknownTool
+	}
+	if call.Name == operatortool.ConnectionInfo || call.Name == operatortool.ActionResult {
+		return e.connectionRead(ctx, call)
+	}
+	if d.Meta.Toolset != "projects" {
+		return operatortool.NewAuthorizedExecutor(nil).Execute(ctx, call)
+	}
+	if d.Annotations.ReadOnly {
+		return e.read(ctx, call)
+	}
+	connection := operatortool.CurrentConnection(ctx)
+	m := mutation.Metadata{PrincipalID: connection.Identity.PrincipalID, OrganizationID: connection.Identity.OrganizationID, Action: call.Name, Source: "mcp", CorrelationID: newNativeID("mcp"), Confirmation: "none"}
+	defer func() {
+		outcome := "submitted"
+		if resultErr != nil {
+			outcome = "failed"
+		}
+		if errors.Is(resultErr, operatortool.ErrAccessDenied) {
+			outcome = "denied"
+		}
+		e.AuditAction(ctx, chatpkg.Action{Mutation: m}, outcome)
+	}()
+	var selector struct {
+		ProjectID string          `json:"project_id"`
+		RequestID string          `json:"request_id"`
+		Input     json.RawMessage `json:"input"`
+	}
+	if operatortool.DecodeProjectArguments(call.Arguments, &selector) != nil || strings.TrimSpace(selector.RequestID) == "" || len(selector.Input) == 0 || selector.Input[0] != '{' {
+		return result, operatortool.ErrInvalidArguments
+	}
+	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" {
+		return result, operatortool.ErrInvalidArguments
+	}
+	if (call.Name == "create_native_project" || call.Name == "create_hosted_project") && selector.ProjectID != "" {
+		return result, operatortool.ErrInvalidArguments
+	}
+	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(call.Name, false), ProjectID: selector.ProjectID})
+	if err != nil {
+		return result, err
+	}
+	// Decode the concrete command before it can appear in an approval preview.
+	if _, err := e.command(ctx, call, projectCommandPreview); err != nil {
+		return result, projectToolError(err)
+	}
+	if err := e.service.operatorChat.CheckConnection(ctx); err != nil {
+		return result, err
+	}
+	if previous, found, err := e.service.operatorChat.RetryResult(ctx, chatpkg.ActionKind(call.Name), selector.RequestID, call.Arguments); err != nil {
+		return result, err
+	} else if found {
+		if err := e.authorizeCreatedProjectResult(ctx, string(previous.Kind), json.RawMessage(previous.Result), previous.Status); err != nil {
+			return result, err
+		}
+		return e.actionResult(previous)
+	}
+	m.ProjectID = selector.ProjectID
+	m.Mode = string(e.service.operatorChat.Conversation(connection.ID).Mode)
+	m, err = m.Bind(selector.RequestID, call.Arguments)
+	if err != nil {
+		return result, operatortool.ErrInvalidArguments
+	}
+	if replay, err := e.command(ctx, call, projectCommandReplay); err != nil {
+		return result, projectToolError(err)
+	} else if replay != nil {
+		if err := e.authorizeCreatedProjectResult(ctx, call.Name, replay, chatpkg.ActionSucceeded); err != nil {
+			return result, err
+		}
+		replay, err = safeProjectCommandResult(call.Name, replay)
+		if err != nil {
+			return result, err
+		}
+		return hubProjectResult(chatpkg.Action{Kind: chatpkg.ActionKind(call.Name), OrganizationID: connection.Identity.OrganizationID, ProjectID: selector.ProjectID, RequestID: selector.RequestID, Status: chatpkg.ActionSucceeded, Result: string(replay)})
+	}
+	if confirmation, _ := operatortool.ProjectConfirmation(call.Name, call.Arguments); confirmation && e.service.config.Hosted == nil {
+		return result, errProjectServiceUnavailable
+	}
+	action, err := e.service.operatorChat.Submit(ctx, chatpkg.Action{Kind: chatpkg.ActionKind(call.Name), ProjectID: selector.ProjectID, RequestID: selector.RequestID, Arguments: call.Arguments, Title: strings.ReplaceAll(call.Name, "_", " "), Mutation: m})
+	if err != nil {
+		return result, projectToolError(err)
+	}
+	return e.actionResult(action)
+}
+func (e hubProjectExecutor) actionResult(action chatpkg.Action) (operatortool.Result, error) {
+	base := e.service.operatorChat.Conversation(action.ConnectionID).ApprovalBaseURL
+	return hubProjectResult(struct {
+		chatpkg.Action
+		ApprovalURL string `json:"approval_url"`
+		ResultTool  string `json:"result_tool"`
+	}{action, base + "/chat/approval?connection_id=" + url.QueryEscape(action.ConnectionID), operatortool.ActionResult})
+}
+
+func hubProjectResult(value any) (operatortool.Result, error) {
+	raw, err := json.Marshal(value)
+	if err != nil || len(raw) > operatortool.MaxResultBytes {
+		return operatortool.Result{}, errProjectServiceUnavailable
+	}
+	return operatortool.Result{Content: raw}, nil
+}
+func projectToolError(err error) error {
+	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.Is(err, mutation.ErrConflict) {
+		return err
+	}
+	var failure *nativeError
+	if errors.As(err, &failure) && (failure.Code == "revision_conflict" || failure.Code == "policy_mismatch" || failure.Code == "idempotency_conflict") {
+		return mutation.ErrConflict
+	}
+	return errProjectServiceUnavailable
+}
+func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Action) (chatpkg.ActionExecution, error) {
+	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), OrganizationID: action.OrganizationID, ProjectID: action.ProjectID})
+	if err != nil {
+		return chatpkg.ActionExecution{}, err
+	}
+	ctx = mutation.WithContext(ctx, action.Mutation)
+	result, err := e.command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
+	if err != nil {
+		return chatpkg.ActionExecution{}, projectToolError(err)
+	}
+	if err := e.authorizeCreatedProjectResult(ctx, string(action.Kind), result, chatpkg.ActionSucceeded); err != nil {
+		return chatpkg.ActionExecution{}, err
+	}
+	result, err = safeProjectCommandResult(string(action.Kind), result)
+	if err != nil {
+		return chatpkg.ActionExecution{}, err
+	}
+	return chatpkg.ActionExecution{Message: string(result)}, nil
+}
+func (e hubProjectExecutor) AuditAction(ctx context.Context, action chatpkg.Action, outcome string) {
+	m := action.Mutation
+	m.RetryIdentity, m.InputHash = "", ""
+	if action.Mode != "" {
+		m.Mode = string(action.Mode)
+	}
+	if outcome == "approved" || outcome == "rejected" {
+		m.Confirmation = outcome
+	}
+	raw, _ := json.Marshal(struct {
+		mutation.Metadata
+		Outcome string `json:"outcome"`
+	}{m, outcome})
+	e.service.config.Logger.InfoContext(ctx, "operator mutation", "audit", string(raw))
+}
+func (e hubProjectExecutor) connectionRead(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	var request struct {
+		ActionID string `json:"action_id,omitempty"`
+	}
+	if operatortool.DecodeProjectArguments(call.Arguments, &request) != nil {
+		return operatortool.Result{}, operatortool.ErrInvalidArguments
+	}
+	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+		return operatortool.Result{}, err
+	}
+	if err := e.service.operatorChat.CheckConnection(ctx); err != nil {
+		return operatortool.Result{}, err
+	}
+	c := operatortool.CurrentConnection(ctx)
+	if call.Name == operatortool.ConnectionInfo {
+		if request.ActionID != "" {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		return hubProjectResult(struct {
+			ConnectionID string                 `json:"connection_id"`
+			Mode         chatpkg.ConnectionMode `json:"mode"`
+			SetupURL     string                 `json:"setup_url"`
+		}{c.ID, e.service.operatorChat.Conversation(c.ID).Mode, e.service.projectApprovalBaseURL() + "/chat/approval?connection_id=" + url.QueryEscape(c.ID)})
+	}
+	if request.ActionID == "" {
+		return operatortool.Result{}, operatortool.ErrInvalidArguments
+	}
+	action, ok := e.service.operatorChat.Action(c.ID, request.ActionID)
+	if !ok {
+		return operatortool.Result{}, errProjectServiceUnavailable
+	}
+	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), ProjectID: action.ProjectID}); err != nil {
+		return operatortool.Result{}, err
+	}
+	if err := e.authorizeCreatedProjectResult(ctx, string(action.Kind), json.RawMessage(action.Result), action.Status); err != nil {
+		return operatortool.Result{}, err
+	}
+	return e.actionResult(action)
+}
+
+func projectCommandInput[T any](raw json.RawMessage) (operatortool.ProjectRequest[T], error) {
+	var r operatortool.ProjectRequest[T]
+	err := operatortool.DecodeProjectArguments(raw, &r)
+	return r, err
+}
+
+type projectCommandMode int
+
+const (
+	projectCommandPreview projectCommandMode = iota
+	projectCommandReplay
+	projectCommandExecute
+)
+
+func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call, mode projectCommandMode) (json.RawMessage, error) {
+	s := e.service
+	scope, ok := ctx.Value(hubOperatorScopeKey{}).(nativeScope)
+	if !ok {
+		return nil, operatortool.ErrAccessDenied
+	}
+	var operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)
+	var input any
+	var projectID, requestID, resourceID string
+	feature := "collaboration"
+	switch call.Name {
+	case "create_native_project":
+		if s.config.Hosted != nil {
+			return nil, errProjectServiceUnavailable
+		}
+		r, err := projectCommandInput[operatortool.ProjectCreateInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		if strings.TrimSpace(r.Input.Name) == "" || len(r.Input.Name) > 200 || validateNativeStates(r.Input.States) != nil {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		request := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Name: r.Input.Name, States: r.Input.States, RequireDependencies: r.Input.RequireDependencies}
+		input = request
+		operation = s.createNativeProjectOperation(request)
+	case "create_hosted_project":
+		if s.config.Hosted == nil || scope.credential.Hosted == nil {
+			return nil, errProjectServiceUnavailable
+		}
+		r, err := projectCommandInput[operatortool.HostedProjectCreateInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		if !r.Input.GrantAccess || strings.TrimSpace(r.Input.Name) == "" || len(r.Input.Name) > 120 {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		input = r.Input
+		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+			id, err := s.createHostedProjectInTx(ctx, tx, scope.credential, strings.TrimSpace(r.Input.Name))
+			if err != nil {
+				return nil, err
+			}
+			scope.project = tracker.ProjectID(id)
+			return readNativeProject(ctx, tx, scope)
+		}
+	case "save_onboarding":
+		r, err := projectCommandInput[operatortool.OnboardingInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		request := saveOnboardingRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Progress: r.Input.Progress}
+		if request.Progress.Validate() != nil {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		input = request
+		operation = s.saveOnboardingOperation(request)
+	case "update_project_integration":
+		r, err := projectCommandInput[operatortool.IntegrationInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		feature = "github_integration"
+		request := updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Intake: r.Input.Intake, Projection: r.Input.Projection, RepositoryEnabled: r.Input.RepositoryEnabled}
+		input = request
+		operation = s.updateProjectIntegrationOperation(request)
+	case "start_git_hub_import":
+		r, err := projectCommandInput[operatortool.ImportStartInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		feature = "github_integration"
+		request := startGitHubImportRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, IssueNumber: r.Input.IssueNumber, Restart: r.Input.Restart, ExpectedRevision: r.Input.ExpectedRevision}
+		input = request
+		operation = s.startGitHubImportOperation(request)
+	case "cutover_project":
+		r, err := projectCommandInput[operatortool.CutoverInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		feature = "github_integration"
+		request := CutoverRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ClosedState: r.Input.ClosedState, DryRun: r.Input.DryRun, Checkpoint: r.Input.Checkpoint, AcceptPartial: r.Input.AcceptPartial, CloseSource: r.Input.CloseSource, DestinationURL: r.Input.DestinationURL, States: r.Input.States, InitialState: r.Input.InitialState}
+		input = request
+		operation = s.cutoverProjectOperation(request)
+	case "approve_project_policy":
+		r, err := projectCommandInput[operatortool.PolicyApprovalInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		if r.Input.Policy.Validate() != nil {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		input = r.Input
+		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+			policyScope, err := operatorPolicyScope(ctx, tx, scope, r.Input.RepositoryPolicy)
+			if err != nil {
+				return nil, err
+			}
+			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, Policy: r.Input.Policy})
+		}
+	case "approve_change_review_policy":
+		r, err := projectCommandInput[operatortool.ChangeReviewPolicyInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedID: r.Input.ExpectedID, Policy: r.Input.Policy}
+		input = request
+		operation = s.approveChangeReviewPolicyOperation(request)
+	case "revoke_project_policy":
+		r, err := projectCommandInput[operatortool.PolicyRevokeInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		input = r.Input
+		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+			policyScope, err := operatorPolicyScope(ctx, tx, scope, r.Input.RepositoryPolicy)
+			if err != nil {
+				return nil, err
+			}
+			return revokeProjectPolicyInTx(ctx, tx, policyScope, r.Input.ExpectedID)
+		}
+	case "remove_project_secret":
+		r, err := projectCommandInput[struct{}](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		input = r.Input
+		if !canManageProjectSecrets(scope.credential) {
+			return nil, operatortool.ErrAccessDenied
+		}
+		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+			err := removeProjectSecretInTx(ctx, tx, scope, now)
+			return projectSecretStatus{Kind: flySpritesToken}, err
+		}
+	case "project_native_summary":
+		r, err := projectCommandInput[operatortool.SummaryInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID, resourceID = r.ProjectID, r.RequestID, r.Input.ItemID
+		request := projectNativeSummaryRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Body: r.Input.Body}
+		input = request
+		operation = s.projectNativeSummaryOperation(request, resourceID)
+	case "bind_native_repository":
+		r, err := projectCommandInput[operatortool.RepositoryInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if !validCheckoutRepository(r.Input.Repository) {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		if r.Input.Source != "" && r.Input.Source != "runner_checkout" {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		scope.project = tracker.ProjectID(r.ProjectID)
+		scope.requireHostedAdmin = true
+		request := bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Repository: r.Input.Repository, Source: r.Input.Source}
+		if mode == projectCommandReplay {
+			raw, _, err := s.nativeCommandReplay(ctx, scope, projectOperationID(scope, "POST", "/integration/repository"), r.RequestID, request)
+			return raw, err
+		}
+		return s.bindNativeRepositoryCommand(ctx, scope, nativeCommandOptions{Operation: projectOperationID(scope, "POST", "/integration/repository"), Feature: "github_integration"}, request)
+	case "advance_git_hub_import":
+		r, err := projectCommandInput[operatortool.ImportAdvanceInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if r.Input.ImportID == "" {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		scope.project = tracker.ProjectID(r.ProjectID)
+		if mode == projectCommandReplay {
+			input := struct {
+				ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+			}{r.Input.ExpectedRevision}
+			raw, _, err := s.nativeCommandReplay(ctx, scope, projectOperationID(scope, "POST", "/imports/"+r.Input.ImportID+"/advance"), r.RequestID, input)
+			return raw, err
+		}
+		return s.advanceGitHubImportCommand(ctx, scope, r.Input.ImportID, r.Input.ExpectedRevision, r.RequestID)
+	default:
+		return nil, errProjectServiceUnavailable
+	}
+	if mode == projectCommandPreview {
+		return nil, nil
+	}
+	scope.project = tracker.ProjectID(projectID)
+	scope.requireHostedAdmin = projectToolScope(call.Name, false) == apikey.ScopeAdmin
+	suffix := map[string]string{"create_native_project": "", "create_hosted_project": "", "save_onboarding": "/onboarding", "update_project_integration": "/integration", "start_git_hub_import": "/imports", "cutover_project": "/integration/cutover", "approve_project_policy": "/policy", "approve_change_review_policy": "/change-review-policy", "revoke_project_policy": "/policy", "remove_project_secret": "/secrets/" + flySpritesToken, "project_native_summary": "/work-items/" + resourceID + "/projection"}[call.Name]
+	method := "POST"
+	switch call.Name {
+	case "save_onboarding", "update_project_integration", "approve_project_policy", "approve_change_review_policy":
+		method = "PUT"
+	case "revoke_project_policy", "remove_project_secret":
+		method = "DELETE"
+	}
+	if mode == projectCommandReplay {
+		raw, _, err := s.nativeCommandReplay(ctx, scope, projectOperationID(scope, method, suffix), requestID, input)
+		return raw, err
+	}
+	return s.runNativeCommand(ctx, scope, nativeCommandOptions{Operation: projectOperationID(scope, method, suffix), Feature: feature}, tracker.Mutation{IdempotencyKey: requestID}, input, operation)
+}
+func projectOperationID(scope nativeScope, method, suffix string) string {
+	path := "/api/v2/organizations/" + string(scope.organization) + "/projects"
+	if scope.project != "" {
+		path += "/" + string(scope.project)
+	}
+	return method + " " + path + suffix
+}
+
+func safeProjectCommandResult(name string, raw json.RawMessage) (json.RawMessage, error) {
+	if name != "advance_git_hub_import" && name != "start_git_hub_import" {
+		return raw, nil
+	}
+	var job GitHubImport
+	if err := json.Unmarshal(raw, &job); err != nil {
+		return nil, errProjectServiceUnavailable
+	}
+	if job.LastError != "" {
+		job.LastError = "Import transport is unavailable"
+	}
+	return json.Marshal(job)
+}
+
+func (e hubProjectExecutor) authorizeCreatedProjectResult(ctx context.Context, name string, raw json.RawMessage, status chatpkg.ActionStatus) error {
+	if status != chatpkg.ActionSucceeded || name != "create_native_project" && name != "create_hosted_project" {
+		return nil
+	}
+	var project tracker.NativeProject
+	if json.Unmarshal(raw, &project) != nil || project.ID == "" {
+		return errProjectServiceUnavailable
+	}
+	_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(project.ID)})
+	return err
+}

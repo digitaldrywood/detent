@@ -17,6 +17,29 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Project MCP parity (#3342) calls the same dashboard project, onboarding,
+integration, import, policy and budget application commands. Native command
+receipts are checked before revisions/provider reads and before repeat approval,
+with current role/scope/grant/resource ownership checked again. The current
+application context is bound by the shared authority resolver, never by tool
+arguments. Native and repository policy scopes resolve through the authorized
+project; change-review policy retains its principal/provenance checks. Hosted
+browser approval reuses the existing chat form with session, CSRF and exact
+payload tokens, including the shared organization's path. Browser viewers cannot
+inspect ungranted previews or toggle another principal's confirmation mode;
+current operators need their own connection or administrator authority and each
+action's current grant/scope. Created-project receipts recheck the returned
+resource on cached, reconnect and action-result paths. YOLO suppresses only
+confirmation. Unhosted hubs without that browser authority return opaque
+unavailable errors for material variants. Tools accept no credentials; browser
+setup returns navigation/requirements, and import/provider errors are redacted
+from reads, actions and replay results. This extends INV-1 authorization
+adapters without a tracker lane writer or an INV-3 recovery/revocation mechanism.
+`TestHostedProjectTools`, `TestProjectImportToolReceipts`,
+`TestHostedOperatorCurrentAuthority`, `TestProjectArgumentBounds`,
+`TestActionConfirmationClassification` and project/budget cases in
+`TestMCPActionApprovalBoundary` cover these boundaries.
+
 MCP transport parity (#3339) uses one permission-filtered, paginated typed
 registry with toolset metadata. The `2026-07-28` stateless protocol validates
 per-request metadata and mirrored HTTP headers; older handshakes retain their

@@ -76,13 +76,15 @@ func (s *Service) createNativeOrganization(c echo.Context) error {
 	return c.JSON(http.StatusCreated, result)
 }
 
+type createNativeProjectRequest struct {
+	tracker.Mutation
+	Name                string                `json:"name"`
+	States              []tracker.NativeState `json:"states"`
+	RequireDependencies *bool                 `json:"require_dependencies,omitempty"`
+}
+
 func (s *Service) createNativeProject(c echo.Context) error {
-	var request struct {
-		tracker.Mutation
-		Name                string                `json:"name"`
-		States              []tracker.NativeState `json:"states"`
-		RequireDependencies *bool                 `json:"require_dependencies,omitempty"`
-	}
+	var request createNativeProjectRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
@@ -92,7 +94,11 @@ func (s *Service) createNativeProject(c echo.Context) error {
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
 	c.Set("native_scope", scope)
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, s.createNativeProjectOperation(request))
+}
+
+func (s *Service) createNativeProjectOperation(request createNativeProjectRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if strings.TrimSpace(request.Name) == "" || len(request.Name) > 200 {
 			return nil, nativeInvalid("Project name is required and limited to 200 bytes")
 		}
@@ -123,7 +129,7 @@ func (s *Service) createNativeProject(c echo.Context) error {
 			}
 		}
 		return project, nil
-	})
+	}
 }
 
 func validateNativeStates(states []tracker.NativeState) error {

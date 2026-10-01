@@ -31,6 +31,9 @@ func TestActionSummaryDescribesOperatorActions(t *testing.T) {
 		{name: "priority", action: Action{Kind: ActionSetPriority, IssueID: "issue-1", Priority: "High"}, want: "Set issue-1 priority to High"},
 		{name: "stop", action: Action{Kind: ActionStopRun, Destination: "Todo", Priority: "Urgent"}, want: "Stop item and move it to Todo at Urgent priority"},
 		{name: "file", action: Action{Kind: ActionFileIssue, ProjectID: "detent", Title: "Follow-up"}, want: `File "Follow-up" on detent`},
+		{name: "project policy", action: Action{Kind: "approve_project_policy", ProjectID: "project"}, want: "approve project policy for project project"},
+		{name: "project creation", action: Action{Kind: "create_hosted_project"}, want: "create hosted project"},
+		{name: "budget", action: Action{Kind: "set_budget_override", ProjectID: "project"}, want: "set budget override for project project"},
 		{name: "unknown", action: Action{}, want: "Unknown operator action"},
 	}
 	for _, test := range tests {

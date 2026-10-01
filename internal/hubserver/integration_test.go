@@ -75,6 +75,9 @@ func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 	if integration.Profile != "native" || integration.Repository != "digitaldrywood/detent" || integration.Intake != "disabled" {
 		t.Fatalf("binding = %+v", integration)
 	}
+	// A replay must consult its receipt before current-revision/provider checks.
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/integration/repository", testHubAdminToken, map[string]any{"idempotency_key": "bind", "expected_revision": "1", "repository": "digitaldrywood/detent"}), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/integration/repository", testHubAdminToken, map[string]any{"idempotency_key": "bind", "expected_revision": "2", "repository": "digitaldrywood/detent"}), http.StatusConflict)
 	requests := backend.Requests()
 	if len(requests) != 1 || !requests[0].SkipIssues || !requests[0].SkipRepository {
 		t.Fatalf("binding fetched issue or PR data: %+v", requests)
@@ -201,6 +204,11 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 				}
 				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/imports/"+job.ID+"/advance", f.token, map[string]any{"expected_revision": fmt.Sprint(job.Revision)})
 				requireNativeStatus(t, r, http.StatusTooManyRequests)
+				var throttled GitHubImport
+				decodeHubResponse(t, r, &throttled)
+				if throttled.ID != job.ID || throttled.Revision != job.Revision || throttled.RetryAfter == nil {
+					t.Fatalf("throttled import receipt = %+v", throttled)
+				}
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE github_imports SET retry_after = NULL WHERE id = ?", job.ID); err != nil {
 					t.Fatal(err)
 				}

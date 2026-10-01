@@ -250,6 +250,23 @@ func TestActionConfirmationClassification(t *testing.T) {
 		{Action{Kind: ActionSetPriority}, false}, {Action{Kind: ActionStopRun}, true},
 		{Action{Kind: ActionFileIssue}, false}, {Action{Kind: ActionFileIssue, State: "Done"}, true},
 		{Action{Kind: "billing"}, true}, {Action{Kind: "access"}, true},
+		{Action{Kind: "create_native_project"}, false},
+		{Action{Kind: "save_onboarding"}, false},
+		{Action{Kind: "advance_git_hub_import"}, false},
+		{Action{Kind: "clear_budget_override"}, false},
+		{Action{Kind: "start_git_hub_import", Arguments: json.RawMessage(`{"input":{"restart":false}}`)}, false},
+		{Action{Kind: "start_git_hub_import", Arguments: json.RawMessage(`{"input":{"restart":true}}`)}, true},
+		{Action{Kind: "cutover_project", Arguments: json.RawMessage(`{"input":{"dry_run":true}}`)}, false},
+		{Action{Kind: "cutover_project", Arguments: json.RawMessage(`{"input":{"dry_run":false}}`)}, true},
+		{Action{Kind: "update_project_integration", Arguments: json.RawMessage(`{"input":{"intake":"manual","projection":"disabled","repository_enabled":false}}`)}, false},
+		{Action{Kind: "update_project_integration", Arguments: json.RawMessage(`{"input":{"projection":"summary"}}`)}, true},
+		{Action{Kind: "update_project_integration", Arguments: json.RawMessage(`{"input":{"projection":"disabled","repository_enabled":true}}`)}, true},
+		{Action{Kind: "cutover_project", Arguments: json.RawMessage(`{"input":{"dry_run":true},"yolo":true}`)}, true},
+		{Action{Kind: "approve_project_policy"}, true},
+		{Action{Kind: "approve_change_review_policy"}, true},
+		{Action{Kind: "revoke_project_policy"}, true},
+		{Action{Kind: "remove_project_secret"}, true},
+		{Action{Kind: "set_budget_override"}, true},
 	} {
 		if got := RequiresConfirmation(tt.action); got != tt.want {
 			t.Errorf("%+v: confirmation=%v, want %v", tt.action, got, tt.want)

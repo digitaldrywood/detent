@@ -257,12 +257,19 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
+	project, err = s.createHostedProjectInTx(ctx, tx, credential, name)
+	if err != nil {
+		return "", err
+	}
+	return project, tx.Commit()
+}
+func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, credential apiCredential, name string) (project string, resultErr error) {
 	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return "", err
 	}
-	err = tx.QueryRowContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id=p.id WHERE p.organization_id=? AND p.name=? AND g.user_id=? AND g.can_write=1`, s.config.Hosted.OrganizationID, name, credential.Hosted.Subject).Scan(&project)
+	err := tx.QueryRowContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id=p.id WHERE p.organization_id=? AND p.name=? AND g.user_id=? AND g.can_write=1`, s.config.Hosted.OrganizationID, name, credential.Hosted.Subject).Scan(&project)
 	if err == nil {
-		return project, tx.Commit()
+		return project, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
@@ -300,7 +307,7 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 	if err := s.database.checkHostedGrowth(ctx, tx, before, stamp, false); err != nil {
 		return "", err
 	}
-	return project, tx.Commit()
+	return project, nil
 }
 
 // HostedProjectStates is the workflow a new hosted project starts with. A

@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -16,10 +17,10 @@ import (
 )
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
-	// Hosted hubs do not own the daemon's telemetry/explainer. An absent
-	// application service produces an empty catalog and opaque unavailable
-	// calls, rather than using the compatibility API or opening a runtime DB.
-	executor := operatortool.NewAuthorizedExecutor(nil)
+	// Hubs expose their own project application commands. The daemon's five
+	// telemetry reads remain opaque unavailable here when no runtime is installed.
+	s.operatorChat = chatpkg.NewService(nil, nil, hubProjectExecutor{service: s}, chatpkg.WithClock(s.config.now))
+	executor := hubProjectExecutor{service: s}
 	s.mcpHTTP = mcp.NewHTTPHandler(executor, s.config.Version, mcp.HTTPConfig{
 		Principal: func(request *http.Request) operatortool.Identity {
 			return operatortool.ConnectionIdentity(request.Context())
@@ -27,6 +28,8 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	})
 	e.Any("/api/v2/organizations/:organization/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	if s.config.Hosted != nil {
+		e.GET("/chat/approval", s.projectApprovalPage, s.operatorProjectBrowser)
+		e.POST("/chat/approval", s.projectApprovalDecision, s.operatorProjectBrowser)
 		e.Any("/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	}
 }
@@ -53,7 +56,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		claims, shared := hostedSharedClaims(c)
-		connection := operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		connection := operatortool.Connection{Identity: identity, DashboardURL: s.projectApprovalBaseURL(), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 			current := credential
 			if token != "" {
 				var err error
@@ -114,7 +117,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 	if err := s.authorizeConversationOrganization(ctx, scope); err != nil {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
-	return operatortool.Authority{Identity: operatorIdentity(credential, organization), Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+	return operatortool.Authority{Identity: operatorIdentity(credential, organization), Bind: func(ctx context.Context) context.Context { return context.WithValue(ctx, hubOperatorScopeKey{}, scope) }, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
 		if requirement.ResourceID != "" || requirement.ResourceKind != "" {
 			// Resource-specific commands must use their application's ownership
 			// check; this initial read adapter never grants an unknown resource.

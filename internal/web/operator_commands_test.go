@@ -30,7 +30,7 @@ const modernOperatorMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-
 // targets, and request metadata/header attempts to enable YOLO.
 func TestMCPActionApprovalBoundary(t *testing.T) {
 	for _, transport := range []string{"remote", "remote modern", "stdio"} {
-		for _, scenario := range []string{"ordinary", "different credential", "reconnect retry", "concurrent retry", "application failure", "approve", "approve after YOLO", "pending reconnect conflict", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard"} {
+		for _, scenario := range []string{"project settings", "budget", "ordinary", "different credential", "reconnect retry", "concurrent retry", "application failure", "approve", "approve after YOLO", "pending reconnect conflict", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard"} {
 			if transport != "remote" && scenario == "closed connection" || transport == "remote modern" && scenario == "pending reconnect conflict" {
 				continue // Modern HTTP has no protocol session to close or replace.
 			}
@@ -48,6 +48,12 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 				clock := time.Now()
 
 				mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}, conn)
+				if scenario == "budget" {
+					if err := deps.Registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+						t.Fatal(err)
+					}
+				}
+
 				snapshot := telemetry.Snapshot{GeneratedAt: time.Now().UTC(), BoardIssues: []telemetry.Issue{{ID: "issue", Identifier: "digitaldrywood/detent#3337", ProjectID: "detent", State: "Backlog"}}}
 				if err := deps.Hub.Publish(snapshot); err != nil {
 					t.Fatal(err)
@@ -190,6 +196,65 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					if reply := decision("", "mode", "yolo", false); reply.Code != 200 {
 						t.Fatalf("YOLO setup=%d %s", reply.Code, reply.Body.String())
 					}
+				}
+				if scenario == "project settings" {
+					for _, name := range []string{"list_projects", "project_settings", "project_setup"} {
+						r := call(name, `{"project_id":"detent"}`)
+						if r.Code != 200 || !strings.Contains(r.Body.String(), "setup_url") {
+							t.Fatalf("%s=%d %s", name, r.Code, r.Body.String())
+						}
+					}
+					return
+				}
+				if scenario == "budget" {
+					args := `{"project_id":"detent","request_id":"budget","input":{"per_day_max_usd":200,"duration":"4h","reason":"release"}}`
+					r := call("set_budget_override", args)
+					var receipt struct {
+						ID     string `json:"action_id"`
+						Status string `json:"status"`
+					}
+					body := r.Body.Bytes()
+					if transport != "stdio" {
+						var envelope struct {
+							Result struct {
+								Content json.RawMessage `json:"structuredContent"`
+							} `json:"result"`
+						}
+						if err := json.Unmarshal(body, &envelope); err != nil {
+							t.Fatal(err)
+						}
+						body = envelope.Result.Content
+					}
+					if err := json.Unmarshal(body, &receipt); err != nil {
+						t.Fatalf("receipt=%s %v", r.Body.String(), err)
+					}
+					if receipt.Status != "pending" {
+						t.Fatalf("budget approval=%s", r.Body.String())
+					}
+					writer := deps.Store.(store.BudgetOverrideStore)
+					if _, err := writer.ActiveBudgetOverride(t.Context(), "detent", time.Now()); !errors.Is(err, store.ErrNotFound) {
+						t.Fatalf("unapproved budget applied=%v", err)
+					}
+					if r := decision(receipt.ID, "confirm", "", false); r.Code != 200 {
+						t.Fatalf("approve budget=%d %s", r.Code, r.Body.String())
+					}
+					active, err := writer.ActiveBudgetOverride(t.Context(), "detent", time.Now())
+					if err != nil || active.PerDayMaxUSD == nil || *active.PerDayMaxUSD != 200 {
+						t.Fatalf("override=%+v %v", active, err)
+					}
+					if r := call("set_budget_override", args); !strings.Contains(r.Body.String(), `"status":"succeeded"`) {
+						t.Fatalf("budget replay=%s", r.Body.String())
+					}
+					if r := call("set_budget_override", strings.Replace(args, "200", "250", 1)); strings.Contains(r.Body.String(), `"status":"succeeded"`) {
+						t.Fatalf("changed budget replay=%s", r.Body.String())
+					}
+					if r := call("clear_budget_override", `{"project_id":"detent","request_id":"clear","input":{}}`); !strings.Contains(r.Body.String(), `"status":"succeeded"`) {
+						t.Fatalf("ordinary clear=%s", r.Body.String())
+					}
+					if _, err := writer.ActiveBudgetOverride(t.Context(), "detent", time.Now()); !errors.Is(err, store.ErrNotFound) {
+						t.Fatalf("clear=%v", err)
+					}
+					return
 				}
 				headers["X-Detent-YOLO"] = "true"
 				state := "Cancelled"

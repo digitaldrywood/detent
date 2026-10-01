@@ -38,6 +38,8 @@ type Requirement struct {
 // application services used by the dashboard. Neither transport defines roles.
 type Authority struct {
 	Identity Identity
+	// Bind installs freshly resolved application context for shared commands.
+	Bind     func(context.Context) context.Context
 	Check    func(context.Context, Requirement) error
 	Snapshot func(context.Context, telemetry.Snapshot) (telemetry.Snapshot, error)
 }
@@ -95,6 +97,9 @@ func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Con
 	}
 	if err := authority.Check(ctx, requirement); err != nil {
 		return ctx, ErrAccessDenied
+	}
+	if authority.Bind != nil {
+		ctx = authority.Bind(ctx)
 	}
 	return context.WithValue(ctx, authorityKey{}, authority), nil
 }

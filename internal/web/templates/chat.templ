@@ -93,7 +93,7 @@ templ ChatAction(action chatpkg.Action) {
 templ ChatApproval(data ChatData) {
  <!DOCTYPE html>
  <html lang="en">
-  <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Detent operator approval</title><link rel="stylesheet" href="/static/css/output.css"/></head>
+  <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Detent operator approval</title><link rel="stylesheet" href={ data.approvalStylesheet() }/></head>
   <body class="bg-page text-text">
    <main class="mx-auto max-w-2xl p-6">
     <h1 class="text-lg font-semibold">Detent chat · operator approval</h1>
@@ -102,8 +102,11 @@ templ ChatApproval(data ChatData) {
     if data.Error != "" {
  <p role="alert">{ data.Error }</p>
  }
-    <form method="post" action="/chat/approval" class="my-4 flex gap-2">
-     <input type="hidden" name="form_token" value={ data.FormToken }/>
+    <form method="post" action={ data.approvalPath() } class="my-4 flex gap-2">
+     if data.ApprovalCSRF != "" {
+ <input type="hidden" name="csrf" value={ data.ApprovalCSRF }/>
+ }
+ <input type="hidden" name="form_token" value={ data.FormToken }/>
      <input type="hidden" name="connection_id" value={ data.Conversation.ConnectionID }/>
      <input type="hidden" name="decision" value="mode"/>
      <label>Connection mode <select name="mode" class="rounded-card border border-line bg-surface p-2"><option value="confirmation" selected?={ data.Conversation.Mode != chatpkg.YOLOMode }>Confirmation</option><option value="yolo" selected?={ data.Conversation.Mode == chatpkg.YOLOMode }>YOLO · skip confirmations</option></select></label>
@@ -114,8 +117,11 @@ templ ChatApproval(data ChatData) {
      @ChatActionPreview(action)
      <pre class="my-2 overflow-auto whitespace-pre-wrap break-words text-xs">{ string(action.Arguments) }</pre>
      if action.Status == chatpkg.ActionPending {
-      <form method="post" action="/chat/approval" class="mb-4 flex gap-2">
-       <input type="hidden" name="form_token" value={ data.ActionTokens[action.ID] }/>
+      <form method="post" action={ data.approvalPath() } class="mb-4 flex gap-2">
+       if data.ApprovalCSRF != "" {
+ <input type="hidden" name="csrf" value={ data.ApprovalCSRF }/>
+ }
+ <input type="hidden" name="form_token" value={ data.ActionTokens[action.ID] }/>
        <input type="hidden" name="connection_id" value={ data.Conversation.ConnectionID }/>
        <input type="hidden" name="action_id" value={ action.ID }/>
        <button type="submit" name="decision" value="reject" class="rounded-card border border-line px-3 py-2">Cancel</button>

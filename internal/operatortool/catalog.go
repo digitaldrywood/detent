@@ -64,7 +64,7 @@ func Catalog() []Definition {
 }
 
 func Lookup(name string) (Definition, bool) {
-	for _, definition := range append(Catalog(), CommandCatalog()...) {
+	for _, definition := range AllDefinitions() {
 		if definition.Name == name {
 			return definition, true
 		}
@@ -74,4 +74,8 @@ func Lookup(name string) (Definition, bool) {
 
 func definition(name string, description string, schema string) Definition {
 	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: toolset(name)}
+}
+
+func AllDefinitions() []Definition {
+	return append(append(Catalog(), CommandCatalog()...), ProjectCatalog()...)
 }

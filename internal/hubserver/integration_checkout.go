@@ -3,11 +3,10 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -52,9 +51,9 @@ ON CONFLICT(runner_id, project_id) DO UPDATE SET repository=excluded.repository,
 	return err
 }
 
-func (s *Service) bindRunnerCheckoutRepository(c echo.Context, command tracker.Mutation, revision tracker.Revision, repository string) error {
+func (s *Service) bindRunnerCheckoutCommand(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, revision tracker.Revision, repository string) (json.RawMessage, error) {
 	if !validCheckoutRepository(repository) {
-		return s.nativeAPIError(c, nativeInvalid("Repository must be owner/name"))
+		return nil, nativeInvalid("Repository must be owner/name")
 	}
 	input := struct {
 		tracker.Mutation
@@ -62,7 +61,7 @@ func (s *Service) bindRunnerCheckoutRepository(c echo.Context, command tracker.M
 		Repository       string           `json:"repository"`
 		Source           string           `json:"source"`
 	}{command, revision, repository, "runner_checkout"}
-	return s.nativeMutation(c, command, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.runNativeCommand(ctx, scope, options, command, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		current, err := readProjectIntegration(ctx, tx, scope)
 		if err != nil {
 			return nil, err

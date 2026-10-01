@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -206,14 +207,7 @@ func (s *Service) removeProjectSecret(c echo.Context) error {
 	}
 	scope, ctx := nativeRequestScope(c), c.Request().Context()
 	err := s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
-		old, err := readSecretStatus(ctx, tx, scope)
-		if err != nil || !old.Present {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?`, scope.organization, scope.project, flySpritesToken); err != nil {
-			return err
-		}
-		return secretAudit(ctx, tx, string(scope.organization), string(scope.project), secretActor(scope), flySpritesToken, "remove", old.KeyVersion, formatHubTime(s.config.now()))
+		return removeProjectSecretInTx(ctx, tx, scope, s.config.now())
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -285,4 +279,15 @@ func RotateProjectSecrets(ctx context.Context, cfg Config, actor string) (count 
 		count++
 	}
 	return count, tx.Commit()
+}
+
+func removeProjectSecretInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
+	old, err := readSecretStatus(ctx, tx, scope)
+	if err != nil || !old.Present {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?`, scope.organization, scope.project, flySpritesToken); err != nil {
+		return err
+	}
+	return secretAudit(ctx, tx, string(scope.organization), string(scope.project), secretActor(scope), flySpritesToken, "remove", old.KeyVersion, formatHubTime(now))
 }

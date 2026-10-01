@@ -37,6 +37,13 @@ func ActionSummary(action Action) string {
 	case ActionFileIssue:
 		return fmt.Sprintf("File %q on %s", action.Title, action.ProjectID)
 	default:
+		if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" && !definition.Annotations.ReadOnly {
+			summary := strings.ReplaceAll(string(action.Kind), "_", " ")
+			if action.ProjectID != "" {
+				summary += " for project " + action.ProjectID
+			}
+			return summary
+		}
 		return "Unknown operator action"
 	}
 }

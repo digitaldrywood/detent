@@ -141,7 +141,11 @@ func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, s.approveChangeReviewPolicyOperation(request))
+}
+
+func (s *Service) approveChangeReviewPolicyOperation(request tracker.ApproveChangeReviewPolicy) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
 		approved, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 		if err != nil {
 			return nil, err
@@ -181,7 +185,7 @@ AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = t.id AND g.organizat
 		_, err = tx.ExecContext(ctx, `INSERT INTO change_review_policies (organization_id, project_id, policy_json) VALUES (?, ?, ?)
 ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.policy_json`, scope.organization, scope.project, raw)
 		return rules, err
-	})
+	}
 }
 
 func readChange(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string) (tracker.ChangeRequest, error) {
