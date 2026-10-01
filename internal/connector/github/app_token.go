@@ -199,7 +199,7 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
 
-	resp, err, finishHTTP := timedHTTPAttempt(attribution, s.httpClient, req, true, true)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, s.httpClient, req, true, true)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return InstallationTokenDetails{}, ctxErr
@@ -207,7 +207,7 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 		return InstallationTokenDetails{}, fmt.Errorf("%w: %w", ErrTransient, err)
 	}
 	defer func() {
-		if err := finishHTTP.Close(); err != nil {
+		if err := resp.Body.Close(); err != nil {
 			return
 		}
 	}()

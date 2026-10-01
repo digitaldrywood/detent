@@ -211,7 +211,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					if test.updateErr == nil {
 						t.Fatalf("the item was moved: %#v", tick.updates)
 					}
-					if update.state != "In Review" && !(test.finalMessage != "" && update.state == "Blocked") {
+					if update.state != "In Review" && (test.finalMessage == "" || update.state != "Blocked") {
 						t.Fatalf("refused write targeted %s", update.state)
 					}
 				}

@@ -847,7 +847,7 @@ func TestClientGraphQLClassifiesFailures(t *testing.T) {
 			scope := &connector.RESTScope{Name: "refresh"}
 			err = client.GraphQL(connector.WithRESTScope(t.Context(), scope), "query { viewer { login } }", nil, nil)
 			httpOutcome := classifyRESTScopeOutcome(&http.Response{StatusCode: tt.statusCode, Header: http.Header{}}, nil)
-			if tt.want == ErrRateLimited && tt.statusCode != http.StatusOK {
+			if errors.Is(tt.want, ErrRateLimited) && tt.statusCode != http.StatusOK {
 				httpOutcome = "429"
 			}
 			assertScopeTiming(t, scope, "http_transport", "graphql", httpOutcome, 1)
