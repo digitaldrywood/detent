@@ -419,9 +419,9 @@ func TestLocalGitDiffStat(t *testing.T) {
 func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 	t.Parallel()
 	source := initSourceRepo(t)
-	name := " source whitespace "
+	name := " source whitespace"
 	if runtime.GOOS != "windows" {
-		name += "\npath\n "
+		name += " \npath\n "
 	}
 	moved := filepath.Join(t.TempDir(), name)
 	if err := os.Rename(source, moved); err != nil {
@@ -439,10 +439,7 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := filepath.Join(t.TempDir(), " source whitespace ")
-	if runtime.GOOS != "windows" {
-		root += "\npath\n "
-	}
+	root := filepath.Join(t.TempDir(), name)
 	if err := os.MkdirAll(root, 0700); err != nil {
 		t.Fatal(err)
 	}
