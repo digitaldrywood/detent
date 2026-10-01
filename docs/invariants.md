@@ -24,12 +24,22 @@ and hosted membership services. HTTP dispatch preserves the request authority
 without retaining discovered permissions. Both hosted entry paths use the
 existing lesser-role rule, so local downgrades apply immediately. Workers and
 runners receive no operator authority, and neither transport writes tracker
-lanes. Future approved actions must call `operatortool.AuthorizeCurrent` again;
+lanes. MCP action previews reuse the existing chat session and direct dashboard commands
+(#3337). Pending previews retain exact arguments, project/resource, client and
+original connection authority. Only a browser with an existing authenticated dashboard login/private session
+can confirm or reject them; public UI cookies and API credentials cannot approve; tools cannot approve themselves. Ordinary writes run directly, while
+material actions require confirmation unless the operator selected YOLO for that
+authenticated connection. Mode lives on the server, never in tool input, initialize
+metadata or mode headers. Move commands share the dashboard mutation lock and
+delegate tracker writes to `ReconcileOperatorMove`; stop commands use `StopRun`.
+Approved and YOLO actions call `operatortool.AuthorizeCurrent` again at execution;
 approval and YOLO never confer permission. This consolidates authorization in
 application adapters without adding a revocation/recovery mechanism (INV-3).
 `TestCurrentAuthorityExecution`, `TestRemoteMCPCurrentProjectAuthority`,
 `TestHostedOperatorCurrentAuthority` and the shared-origin pilot cover denial,
-resource projection and entry/session binding.
+resource projection and entry/session binding. `TestConnectionActions` and
+`TestMCPActionApprovalBoundary` cover exact preview, replay, rejection, stale
+targets, closed protocol sessions, self-approval and operator-selected YOLO.
 
 SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
 

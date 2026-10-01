@@ -118,7 +118,7 @@ func (s *Server) apiStopRun(c echo.Context) error {
 		}
 		result, err = demoStopRunResult(request, running)
 	} else {
-		result, err = s.runStopper.StopRun(c.Request().Context(), request)
+		result, err = s.stopRun(c.Request().Context(), request)
 	}
 	if err != nil {
 		status, code, message := stopRunAPIError(err, result)
@@ -442,4 +442,11 @@ func stopRunErrorResponse(c echo.Context, status int, code string, message strin
 		return render(c, templates.StopRunDialogContent(data))
 	}
 	return c.JSON(status, errorResponse(code, message))
+}
+
+func (s *Server) stopRun(ctx context.Context, request orchestrator.StopRunRequest) (orchestrator.StopRunResult, error) {
+	if s.runStopper == nil {
+		return orchestrator.StopRunResult{}, errors.New("orchestrator is unavailable")
+	}
+	return s.runStopper.StopRun(ctx, request)
 }

@@ -33,6 +33,7 @@ type kanbanActionTarget struct {
 }
 
 type kanbanMoveRequest struct {
+	exactState   bool
 	projectID    string
 	board        string
 	issueID      string
@@ -125,24 +126,37 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	if response != "" {
 		return s.kanbanMoveValidationResponse(c, status, response)
 	}
+	message, status, err := s.moveKanbanCard(c.Request().Context(), req, kanbanMutationProvenanceSource(c))
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return s.kanbanMoveValidationResponse(c, status, message)
+	}
+	return s.kanbanMoveSuccess(c, req, "Moved card to "+req.targetState+".")
+}
+
+// moveKanbanCard is shared by dashboard and operator transports. Lane writes
+// remain delegated to the orchestrator.
+func (s *Server) moveKanbanCard(ctx context.Context, req kanbanMoveRequest, source provenance.Source) (string, int, error) {
 	target, response, status := s.kanbanActionTarget(req.projectID)
 	if response != "" {
-		return s.kanbanMoveValidationResponse(c, status, response)
+		return response, status, nil
 	}
 	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
-		return s.kanbanMoveValidationResponse(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
+		return "Kanban integration mode is not enabled.", http.StatusForbidden, nil
 	}
 	if !kanbanCanMoveCards(target) {
-		return s.kanbanMoveValidationResponse(c, http.StatusForbidden, kanbanMoveUnsupportedMessage)
+		return kanbanMoveUnsupportedMessage, http.StatusForbidden, nil
 	}
 	if req.issueID == "" {
 		if req.prNumber > 0 {
-			return s.kanbanMoveValidationResponse(c, http.StatusUnprocessableEntity, "Cannot move PR-only card without a linked issue.")
+			return "Cannot move PR-only card without a linked issue.", http.StatusUnprocessableEntity, nil
 		}
-		return s.kanbanMoveValidationResponse(c, http.StatusBadRequest, "Issue id is required.")
+		return "Issue id is required.", http.StatusBadRequest, nil
 	}
 	if !kanbanstate.StateAllowed(target.workflow, req.targetState) {
-		return s.kanbanMoveValidationResponse(c, http.StatusBadRequest, "Target state is not configured for this board.")
+		return "Target state is not configured for this board.", http.StatusBadRequest, nil
 	}
 	var feedback string
 	var feedbackStatus int
@@ -158,8 +172,8 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		moveIssueIdentifier = kanbanBlockedMoveIssueIdentifier(snapshotIssue, req.issueID)
 		moveCurrentState = currentState
 		moveDataSeq = dataSeqAtWrite
-		if !ok && (strings.TrimSpace(current) == "" || !target.workflow.KanbanTransitionAllowed(currentState, req.targetState)) {
-			s.logger.WarnContext(c.Request().Context(), "kanban move rejected: stale card",
+		if !ok && (req.exactState || strings.TrimSpace(current) == "" || !target.workflow.KanbanTransitionAllowed(currentState, req.targetState)) {
+			s.logger.WarnContext(ctx, "kanban move rejected: stale card",
 				"project", req.projectID,
 				"issue_id", req.issueID,
 				"identifier", moveIssueIdentifier,
@@ -176,7 +190,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			return nil
 		}
 		if !target.workflow.KanbanTransitionAllowed(currentState, req.targetState) {
-			s.logger.WarnContext(c.Request().Context(), "kanban move blocked by transition policy",
+			s.logger.WarnContext(ctx, "kanban move blocked by transition policy",
 				"project", req.projectID,
 				"issue_id", req.issueID,
 				"identifier", moveIssueIdentifier,
@@ -192,8 +206,8 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		if s.operatorMoves == nil {
 			return errors.New("orchestrator lane writer is unavailable")
 		}
-		if _, err := s.operatorMoves.ReconcileOperatorMove(c.Request().Context(), orchestrator.OperatorMoveRequest{
-			Attribution:     provenance.AttributionFromSource(kanbanMutationProvenanceSource(c), provenance.Actor{}),
+		if _, err := s.operatorMoves.ReconcileOperatorMove(ctx, orchestrator.OperatorMoveRequest{
+			Attribution:     provenance.AttributionFromSource(source, provenance.Actor{}),
 			ProjectID:       target.projectID,
 			IssueID:         req.issueID,
 			Identifier:      moveIssueIdentifier,
@@ -210,12 +224,12 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		return nil
 	})
 	if feedback != "" {
-		return s.kanbanMoveValidationResponse(c, feedbackStatus, feedback)
+		return feedback, feedbackStatus, nil
 	}
 	if err != nil {
 		var blocked *connector.StateUpdateBlockedError
 		if errors.As(err, &blocked) {
-			s.logger.WarnContext(c.Request().Context(), "kanban move blocked by connector",
+			s.logger.WarnContext(ctx, "kanban move blocked by connector",
 				"project", req.projectID,
 				"issue_id", req.issueID,
 				"identifier", moveIssueIdentifier,
@@ -224,12 +238,12 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 				"data_seq", moveDataSeq,
 				"error", blocked,
 			)
-			return s.kanbanMoveValidationResponse(c, http.StatusUnprocessableEntity, kanbanBlockedMoveMessage(blocked, req.targetState, moveIssueIdentifier))
+			return kanbanBlockedMoveMessage(blocked, req.targetState, moveIssueIdentifier), http.StatusUnprocessableEntity, nil
 		}
 		if errors.Is(err, connector.ErrNotImplemented) {
-			return s.kanbanMoveValidationResponse(c, http.StatusNotImplemented, kanbanMoveUnsupportedMessage)
+			return kanbanMoveUnsupportedMessage, http.StatusNotImplemented, nil
 		}
-		s.logger.WarnContext(c.Request().Context(), "kanban move failed",
+		s.logger.WarnContext(ctx, "kanban move failed",
 			"project", req.projectID,
 			"issue_id", req.issueID,
 			"identifier", moveIssueIdentifier,
@@ -238,13 +252,13 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			"data_seq", moveDataSeq,
 			"error", err,
 		)
-		return kanbanFeedback(c, http.StatusBadGateway, "Move failed: "+err.Error())
+		return "Move failed: " + err.Error(), http.StatusBadGateway, nil
 	}
 	var runtimeMove orchestrator.OperatorMoveResult
 	if s.operatorMoves != nil && strings.EqualFold(strings.TrimSpace(moveCurrentState), kanbanBlockedState) &&
 		!strings.EqualFold(strings.TrimSpace(req.targetState), kanbanBlockedState) {
 		var reconcileErr error
-		runtimeMove, reconcileErr = s.operatorMoves.ReconcileOperatorMove(c.Request().Context(), orchestrator.OperatorMoveRequest{
+		runtimeMove, reconcileErr = s.operatorMoves.ReconcileOperatorMove(ctx, orchestrator.OperatorMoveRequest{
 			ProjectID:  req.projectID,
 			IssueID:    req.issueID,
 			Identifier: moveIssueIdentifier,
@@ -252,7 +266,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			ToState:    req.targetState,
 		})
 		if reconcileErr != nil {
-			s.logger.WarnContext(c.Request().Context(), "kanban move runtime reconcile failed",
+			s.logger.WarnContext(ctx, "kanban move runtime reconcile failed",
 				"project", req.projectID,
 				"issue_id", req.issueID,
 				"identifier", moveIssueIdentifier,
@@ -263,7 +277,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			)
 		}
 	}
-	s.logger.InfoContext(c.Request().Context(), "kanban move succeeded",
+	s.logger.InfoContext(ctx, "kanban move succeeded",
 		"project", req.projectID,
 		"issue_id", req.issueID,
 		"identifier", moveIssueIdentifier,
@@ -272,7 +286,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		"data_seq", moveDataSeq,
 		"runtime_block_cleared", runtimeMove.BlockedCleared,
 	)
-	return s.kanbanMoveSuccess(c, req, "Moved card to "+req.targetState+".")
+	return "", http.StatusOK, nil
 }
 
 func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, message string) error {

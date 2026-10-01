@@ -11,11 +11,12 @@ import (
 func newMCPCommand(configPath *string, host *string, port *int, opts options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "mcp",
-		Short: "Serve read-only operator tools over MCP stdio",
-		Long: strings.TrimSpace(`Serve the shared read-only Detent operator catalog over MCP stdio.
+		Short: "Serve operator tools over MCP stdio",
+		Long: strings.TrimSpace(`Serve the shared Detent operator catalog over MCP stdio.
 
 The command connects to the already-running Detent daemon through its authenticated
-HTTP read API. It never opens the runtime database or starts a daemon. Standard
+HTTP application API. Destructive actions use dashboard operator approval.
+It never opens the runtime database or starts a daemon. Standard
 output is reserved for newline-delimited MCP JSON-RPC frames; diagnostics use
 standard error.`),
 		Example: strings.TrimSpace(`detent mcp

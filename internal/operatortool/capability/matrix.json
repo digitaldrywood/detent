@@ -8499,16 +8499,93 @@
       "summary": "Api chat confirm",
       "audience": "operator",
       "sources": [
-        {"source": "internal/web/server.go", "kind": "route", "definition": "s.echo.POST(\"/api/v1/chat/actions/:action_id/confirm\", s.apiChatConfirm, apiDashboardMutateAuth, apiWriteScope) [route=\"/api/v1/chat/actions/:action_id/confirm\"]", "occurrence": 1, "line": 556, "method": "POST", "path": "\"/api/v1/chat/actions/:action_id/confirm\"", "handler": "s.apiChatConfirm", "resolved_path": "/api/v1/chat/actions/:action_id/confirm"},
-        {"source": "internal/web/templates/chat.templ", "kind": "attribute", "definition": "hx-post={ chatActionPath(action, \"confirm\") }", "occurrence": 1, "line": 98}
+        {
+          "source": "internal/web/server.go",
+          "kind": "route",
+          "definition": "s.echo.POST(\"/api/v1/chat/actions/:action_id/confirm\", s.apiChatConfirm, apiDashboardMutateAuth, apiWriteScope) [route=\"/api/v1/chat/actions/:action_id/confirm\"]",
+          "occurrence": 1,
+          "line": 556,
+          "method": "POST",
+          "path": "\"/api/v1/chat/actions/:action_id/confirm\"",
+          "handler": "s.apiChatConfirm",
+          "resolved_path": "/api/v1/chat/actions/:action_id/confirm"
+        },
+        {
+          "source": "internal/web/templates/chat.templ",
+          "kind": "attribute",
+          "definition": "hx-post={ chatActionPath(action, \"confirm\") }",
+          "occurrence": 1,
+          "line": 98
+        },
+        {
+          "source": "internal/web/server.go",
+          "kind": "route",
+          "definition": "s.echo.POST(\"/chat/approval\", s.operatorApprovalDecision, s.operatorBrowserFormAuth) [route=\"/chat/approval\"]",
+          "occurrence": 1,
+          "line": 513,
+          "method": "POST",
+          "path": "\"/chat/approval\"",
+          "handler": "s.operatorApprovalDecision",
+          "resolved_path": "/chat/approval"
+        },
+        {
+          "source": "internal/web/templates/chat.templ",
+          "kind": "attribute",
+          "definition": "action=\"/chat/approval\"",
+          "occurrence": 2,
+          "line": 117
+        },
+        {
+          "source": "internal/web/templates/chat.templ",
+          "kind": "form",
+          "definition": "<form method=\"post\" action=\"/chat/approval\" class=\"mb-4 flex gap-2\">",
+          "occurrence": 1,
+          "line": 117
+        }
       ],
       "availability": [
-        {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "dashboard daemon"},
-        {"deployment": "hosted_dedicated", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
-        {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
-        {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
       ],
-      "authority": {"role": "local operator (dashboard authentication when configured)", "credential_scope": "global write/admin", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
+      "authority": {
+        "role": "operator with an existing authenticated dashboard login/private session",
+        "credential_scope": "global write/admin",
+        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
@@ -8516,15 +8593,29 @@
         "Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool."
       ],
       "confirmation": [
-        {"when": "real operator confirms the pending material action", "class": "operator"}
+        {
+          "when": "real operator confirms the pending material action",
+          "class": "operator"
+        }
       ],
-      "application": "s.apiChatConfirm; s.authorizeChatAction, s.chat.Confirm, s.chatContext",
-      "extraction": "Extract web.apiChatConfirm application inputs/results and validation from Echo; reuse s.authorizeChatAction, s.chat.Confirm, s.chatContext. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "conversations_workspaces", "name": "api_chat_confirm", "arguments": "Bounded apiChatConfirmRequest: action_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiChatConfirmResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": true, "idempotent": false, "openWorld": true}},
+      "application": "chat.Service.Confirm/RejectConnectionAction and shared dashboard action commands; operatorApprovalDecision authenticates the human browser and exact stored preview.",
+      "extraction": "Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution.",
+      "tool": {
+        "set": "conversations_workspaces",
+        "name": "action_result",
+        "arguments": "action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments",
+        "result": "bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
       "owner": "digitaldrywood/detent#3337",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Reuse real operator approval/rejection. Model-originated confirmation calls cannot approve their own pending material action."
+      "status": "implemented",
+      "coverage": "internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.",
+      "decision": "Human approval/rejection uses the existing dashboard chat preview and a portable authenticated form. MCP exposes action_result only; neither repeated calls nor annotations grant approval."
     },
     {
       "id": "web.api_chat_message",
@@ -8594,16 +8685,68 @@
       "summary": "Api chat reject",
       "audience": "operator",
       "sources": [
-        {"source": "internal/web/server.go", "kind": "route", "definition": "s.echo.POST(\"/api/v1/chat/actions/:action_id/reject\", s.apiChatReject, apiDashboardMutateAuth, apiWriteScope) [route=\"/api/v1/chat/actions/:action_id/reject\"]", "occurrence": 1, "line": 557, "method": "POST", "path": "\"/api/v1/chat/actions/:action_id/reject\"", "handler": "s.apiChatReject", "resolved_path": "/api/v1/chat/actions/:action_id/reject"},
-        {"source": "internal/web/templates/chat.templ", "kind": "attribute", "definition": "hx-post={ chatActionPath(action, \"reject\") }", "occurrence": 1, "line": 97}
+        {
+          "source": "internal/web/server.go",
+          "kind": "route",
+          "definition": "s.echo.POST(\"/api/v1/chat/actions/:action_id/reject\", s.apiChatReject, apiDashboardMutateAuth, apiWriteScope) [route=\"/api/v1/chat/actions/:action_id/reject\"]",
+          "occurrence": 1,
+          "line": 557,
+          "method": "POST",
+          "path": "\"/api/v1/chat/actions/:action_id/reject\"",
+          "handler": "s.apiChatReject",
+          "resolved_path": "/api/v1/chat/actions/:action_id/reject"
+        },
+        {
+          "source": "internal/web/templates/chat.templ",
+          "kind": "attribute",
+          "definition": "hx-post={ chatActionPath(action, \"reject\") }",
+          "occurrence": 1,
+          "line": 97
+        }
       ],
       "availability": [
-        {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "dashboard daemon"},
-        {"deployment": "hosted_dedicated", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
-        {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
-        {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
       ],
-      "authority": {"role": "local operator (dashboard authentication when configured)", "credential_scope": "global write/admin", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
+      "authority": {
+        "role": "operator with an existing authenticated dashboard login/private session",
+        "credential_scope": "global write/admin",
+        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
@@ -8611,15 +8754,29 @@
         "Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool."
       ],
       "confirmation": [
-        {"when": "read or ordinary non-destructive write", "class": "none"}
+        {
+          "when": "read or ordinary non-destructive write",
+          "class": "none"
+        }
       ],
-      "application": "s.apiChatReject; s.chat.Reject",
-      "extraction": "Extract web.apiChatReject application inputs/results and validation from Echo; reuse s.chat.Reject. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "conversations_workspaces", "name": "api_chat_reject", "arguments": "Bounded apiChatRejectRequest: action_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "apiChatRejectResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": false, "idempotent": false, "openWorld": true}},
+      "application": "chat.Service.Confirm/RejectConnectionAction and shared dashboard action commands; operatorApprovalDecision authenticates the human browser and exact stored preview.",
+      "extraction": "Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution.",
+      "tool": {
+        "set": "conversations_workspaces",
+        "name": "action_result",
+        "arguments": "action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments",
+        "result": "bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
       "owner": "digitaldrywood/detent#3337",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Reuse real operator approval/rejection. Model-originated confirmation calls cannot approve their own pending material action."
+      "status": "implemented",
+      "coverage": "internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.",
+      "decision": "Human approval/rejection uses the existing dashboard chat preview and a portable authenticated form. MCP exposes action_result only; neither repeated calls nor annotations grant approval."
     },
     {
       "id": "web.api_create_work_item",
@@ -11148,6 +11305,203 @@
       "status": "pending",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
       "decision": "Pending parity: return meaningful structured navigation/application results for these explicit browser sites; never scrape HTML or proxy arbitrary HTTP."
+    },
+    {
+      "id": "web.operator_connection_setup",
+      "summary": "Bind local/remote operator connection confirmation mode",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/web/server.go",
+          "kind": "route",
+          "definition": "s.echo.GET(\"/chat/approval\", s.operatorApprovalPage, s.operatorBrowserReadAuth) [route=\"/chat/approval\"]",
+          "occurrence": 1,
+          "line": 512,
+          "method": "GET",
+          "path": "\"/chat/approval\"",
+          "handler": "s.operatorApprovalPage",
+          "resolved_path": "/chat/approval"
+        },
+        {
+          "source": "internal/web/server.go",
+          "kind": "route",
+          "definition": "s.echo.POST(\"/api/v1/operator-connections\", s.apiOperatorConnection, apiReadAuth, apiReadScope, s.operatorAuthority) [route=\"/api/v1/operator-connections\"]",
+          "occurrence": 1,
+          "line": 511,
+          "method": "POST",
+          "path": "\"/api/v1/operator-connections\"",
+          "handler": "s.apiOperatorConnection",
+          "resolved_path": "/api/v1/operator-connections"
+        },
+        {
+          "source": "internal/web/templates/chat.templ",
+          "kind": "attribute",
+          "definition": "action=\"/chat/approval\"",
+          "occurrence": 1,
+          "line": 105
+        },
+        {
+          "source": "internal/web/templates/chat.templ",
+          "kind": "form",
+          "definition": "<form method=\"post\" action=\"/chat/approval\" class=\"my-4 flex gap-2\">",
+          "occurrence": 1,
+          "line": 105
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "authenticated connection; dashboard login/private session for mode selection",
+        "credential_scope": "global write/admin",
+        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool."
+      ],
+      "confirmation": [
+        {
+          "when": "operator selects connection mode through the authenticated dashboard form",
+          "class": "connection"
+        }
+      ],
+      "application": "chat.Service.AttachConnection/SetConnectionMode; operatorBrowserFormAuth; mcp HTTP session binding and DashboardReadClient.OpenConnection",
+      "extraction": "Authenticated transports bind connection identity and default confirmation mode. Only a same-origin authenticated dashboard form can select YOLO; mode never grants scope or workflow authority.",
+      "tool": {
+        "set": "connection_authority",
+        "name": "connection_info",
+        "arguments": "empty typed object; identity, connection and mode are trusted transport/server state",
+        "result": "connection_id, organization_id, originating client, current mode and authenticated dashboard setup URL",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3337",
+      "status": "implemented",
+      "coverage": "internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.",
+      "decision": "connection_info returns the current mode and portable dashboard setup URL. The human operator chooses YOLO for this connection through the existing chat affordance; model input cannot change it."
+    },
+    {
+      "id": "web.chat_approval_stylesheet",
+      "summary": "Chat approval stylesheet",
+      "audience": "asset",
+      "sources": [
+        {
+          "source": "internal/web/templates/chat.templ",
+          "kind": "attribute",
+          "definition": "href=\"/static/css/output.css\"",
+          "occurrence": 1,
+          "line": 96
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "dashboard daemon",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "local operator (dashboard authentication when configured)",
+        "credential_scope": "global write/admin",
+        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool."
+      ],
+      "confirmation": [
+        {
+          "when": "static asset",
+          "class": "not_applicable"
+        }
+      ],
+      "application": "existing static assets",
+      "extraction": "No operator operation; use the existing stylesheet.",
+      "tool": {
+        "set": "boundary",
+        "name": "",
+        "arguments": "not applicable",
+        "result": "not applicable"
+      },
+      "owner": "digitaldrywood/detent#3337",
+      "status": "excluded",
+      "coverage": "internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.",
+      "decision": "Static stylesheet is an asset and carries no operator authority."
     }
   ]
 }

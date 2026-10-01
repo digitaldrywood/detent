@@ -190,7 +190,7 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 	}
 	switch message.Method {
 	case "initialize":
-		return s.initialize(message)
+		return s.initialize(ctx, message)
 	case "ping":
 		return s.writeResult(message.ID, map[string]any{})
 	case "tools/list":
@@ -208,7 +208,7 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 	}
 }
 
-func (s *session) initialize(message request) error {
+func (s *session) initialize(ctx context.Context, message request) error {
 	var params struct {
 		ProtocolVersion string          `json:"protocolVersion"`
 		Capabilities    json.RawMessage `json:"capabilities"`
@@ -221,11 +221,22 @@ func (s *session) initialize(message request) error {
 		return s.writeError(message.ID, codeInvalidParams, "Invalid initialize parameters", nil)
 	}
 
+	if len(params.ClientInfo.Name) > 256 || len(params.ClientInfo.Version) > 256 {
+		return s.writeError(message.ID, codeInvalidParams, "Invalid initialize parameters", nil)
+	}
 	negotiated := negotiateVersion(params.ProtocolVersion)
 	s.mu.Lock()
 	if s.state != stateNew {
 		s.mu.Unlock()
 		return s.writeError(message.ID, codeInvalidRequest, "Server is already initialized", nil)
+	}
+	if opener, ok := s.executor.(interface{ OpenConnection(context.Context) error }); ok {
+		connection := operatortool.CurrentConnection(ctx)
+		ctx = operatortool.BindConnection(ctx, connection.ID, params.ClientInfo.Name)
+		if err := opener.OpenConnection(ctx); err != nil {
+			s.mu.Unlock()
+			return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
+		}
 	}
 	s.state = stateInitialized
 	s.protocolVersion = negotiated
@@ -241,7 +252,7 @@ func (s *session) initialize(message request) error {
 			"title":   serverTitle,
 			"version": s.version,
 		},
-		"instructions": "Read-only access to the Detent operator catalog through the running daemon.",
+		"instructions": "Use Detent operator tools through current connection authority. Pending actions require a human to use the returned dashboard approval URL; a tool call cannot approve them.",
 	})
 }
 

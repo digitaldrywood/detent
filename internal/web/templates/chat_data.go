@@ -9,6 +9,8 @@ import (
 type ChatData struct {
 	Conversation chatpkg.Conversation
 	Error        string
+	FormToken    string
+	ActionTokens map[string]string
 }
 
 func chatMessageClass(message chatpkg.Message) string {

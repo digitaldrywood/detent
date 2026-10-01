@@ -49,8 +49,8 @@ ownership check is implemented. Tool arguments cannot select credentials,
 principals or organization authority.
 
 Self-hosted `/mcp` requires an existing credential with read authority; write
-and admin credentials retain their existing hierarchy without adding mutation
-tools. Scoped keys are supported and are authenticated again at execution.
+and admin credentials retain their existing hierarchy. The dashboard now exposes
+the four shared chat application commands where available (#3337). Scoped keys are supported and are authenticated again at execution.
 An optional `X-Detent-Organization` header must match `self-hosted`. HTTP sessions
 bind the full identity tuple; each HTTP request carries its own authority through
 dispatch. The stdio client delegates both discovery and calls to the daemon's
@@ -160,3 +160,41 @@ Regenerate the readable view with `go generate ./internal/operatortool/capabilit
 It calls `capability.RenderMarkdown(matrix)` on the loaded fixture. The source-coverage diagnostic checks source decisions, not the
 text of the documentation. Regenerate the view after editing the fixture; no
 templates, queries or CSS inputs are changed by this inventory.
+
+## Operator confirmation and connection YOLO
+
+`move_item`, `set_priority`, `stop_run`, and `file_issue` use the same application
+validation and commands as dashboard chat. Arguments are typed and bounded; a
+`request_id` identifies retries of an exact command within the connection. Changed
+arguments with the same ID deny, and expired connections cannot recreate receipts.
+`action_result` returns the original preview/outcome and never approves it. The
+preview includes exact arguments, resolved project/resource and run identity,
+organization, originating client, creation/resolution timestamps and a portable
+dashboard approval URL. The application revalidates authority and target context
+before executing the stored action. Tracker lane writes still use the orchestrator.
+
+Ordinary writes execute directly. Moving Backlog to Todo differs from moving to
+Cancelled/Done, resetting a terminal item, or moving an active item; stop/cancel
+and unknown material actions require confirmation. Approval and rejection use the
+existing chat preview in a browser form, with the dashboard's session/private
+access session, same-origin form secret and browser cookie. An unprotected
+dashboard UI cookie cannot approve actions: configure the existing dashboard
+login or private access authentication before using approval or YOLO setup. API credentials,
+MCP annotations, initialize metadata and repeated tool calls cannot approve.
+
+`connection_info` returns a setup URL. Open it in the dashboard and explicitly
+choose **YOLO · skip confirmations** for the displayed client and connection.
+The same setup works for remote `/mcp` sessions and authenticated `detent mcp`
+stdio bridges. The bridge registers one server-generated connection in default
+confirmation mode; its setup identity stays fixed for discovery and calls. Mode
+is server-side connection state, never a tool argument or mode header. YOLO
+suppresses only confirmation: scope, grants, organization/resource ownership,
+current credential validity, rate limits and workflow policy still apply. Audit
+metadata records the connection mode, client, organization, action and retry ID.
+Connections start in confirmation mode again after a new setup or server restart.
+
+Hosted hubs with no dashboard command service continue to return opaque
+unavailable results; this child does not install missing hosted conversation,
+access or billing operations. Their owner children must use this same human
+approval/connection authority boundary when extracting their application commands.
+Parent #3259 remains pending.

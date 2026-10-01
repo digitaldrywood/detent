@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 const (
@@ -40,6 +42,8 @@ type Service struct {
 }
 
 type session struct {
+	connection *operatortool.Connection
+	mode       ConnectionMode
 	mu         sync.Mutex
 	threadID   string
 	messages   []Message
@@ -188,11 +192,22 @@ func (s *Service) Confirm(ctx context.Context, sessionID string, actionID string
 	if current.actions[index].Status != ActionPending {
 		return s.conversation(current), ErrActionNotPending
 	}
+	if current.connection != nil {
+		if err := authorizeHuman(ctx, current.connection.Identity.OrganizationID); err != nil {
+			return s.conversation(current), err
+		}
+		var err error
+		ctx, err = authorizeAction(ctx, *current.connection, current.actions[index])
+		if err != nil {
+			return s.resolveAction(current, index, "Operator access is unavailable.", err)
+		}
+		current.actions[index].Mode = current.mode
+	}
 	if s.actions == nil {
 		return s.resolveAction(current, index, "Action execution is unavailable.", ErrUnavailable)
 	}
 	result, err := s.actions.ExecuteAction(ctx, current.actions[index])
-	return s.resolveAction(current, index, result, err)
+	return s.resolveExecution(current, index, result, err)
 }
 
 func (s *Service) Reject(sessionID string, actionID string) (Conversation, error) {
@@ -206,6 +221,13 @@ func (s *Service) Reject(sessionID string, actionID string) (Conversation, error
 	if current.actions[index].Status != ActionPending {
 		return s.conversation(current), ErrActionNotPending
 	}
+	if current.connection != nil {
+		return s.conversation(current), operatortool.ErrAccessDenied
+	}
+	return s.rejectAction(current, index)
+}
+
+func (s *Service) rejectAction(current *session, index int) (Conversation, error) {
 	now := s.now().UTC()
 	current.actions[index].Status = ActionRejected
 	current.actions[index].Result = "Cancelled by the operator."
@@ -226,6 +248,15 @@ func (s *Service) providerFailure(current *session, content string, err error) (
 func (s *Service) providerFailureAfterUser(current *session, err error) (Conversation, error) {
 	s.appendAssistant(current, "Chat is temporarily unavailable. The board was not changed.", true)
 	return s.conversation(current), err
+}
+
+func (s *Service) resolveExecution(current *session, index int, result ActionExecution, actionErr error) (Conversation, error) {
+	if actionErr == nil && result.ResourceID != "" {
+		current.actions[index].IssueID = result.ResourceID
+		current.actions[index].Identifier = result.Identifier
+		current.actions[index].ResourceURL = result.URL
+	}
+	return s.resolveAction(current, index, result.Message, actionErr)
 }
 
 func (s *Service) resolveAction(current *session, index int, result string, actionErr error) (Conversation, error) {
@@ -294,11 +325,18 @@ func (s *Service) prune(now time.Time) {
 }
 
 func (s *Service) conversation(current *session) Conversation {
-	return Conversation{
+	conversation := Conversation{Mode: current.mode,
 		Messages:    append([]Message(nil), current.messages...),
 		Actions:     cloneActions(current.actions),
-		Unavailable: s.provider == nil,
+		Unavailable: s.provider == nil && current.connection == nil,
 	}
+	if current.connection != nil {
+		conversation.ConnectionID = current.connection.ID
+		conversation.ApprovalBaseURL = current.connection.DashboardURL
+		conversation.OrganizationID = current.connection.Identity.OrganizationID
+		conversation.Client = current.connection.Client
+	}
+	return conversation
 }
 
 func cloneActions(actions []Action) []Action {
@@ -306,6 +344,7 @@ func cloneActions(actions []Action) []Action {
 	copy(out, actions)
 	for index := range out {
 		out[index].Labels = append([]string(nil), out[index].Labels...)
+		out[index].Arguments = append(json.RawMessage(nil), out[index].Arguments...)
 	}
 	return out
 }

@@ -31,11 +31,12 @@ type dashboardHTTPClient interface {
 }
 
 type DashboardReadClient struct {
-	baseURL    *url.URL
-	address    dashboardAddress
-	credential string
-	http       dashboardHTTPClient
-	timeout    time.Duration
+	baseURL              *url.URL
+	address              dashboardAddress
+	credential           string
+	operatorConnectionID string
+	http                 dashboardHTTPClient
+	timeout              time.Duration
 }
 
 type dashboardAPIProblem struct {
@@ -289,6 +290,9 @@ func (c *DashboardReadClient) requestJSON(ctx context.Context, method string, re
 		return 0, fmt.Errorf("create dashboard API request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
+	if c.operatorConnectionID != "" {
+		request.Header.Set("X-Detent-Connection-ID", c.operatorConnectionID)
+	}
 	if c.credential != "" {
 		request.Header.Set("Authorization", "Bearer "+c.credential)
 	}
@@ -421,6 +425,9 @@ func (c *DashboardReadClient) Execute(ctx context.Context, call operatortool.Cal
 		return operatortool.Result{}, fmt.Errorf("create dashboard API request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
+	if c.operatorConnectionID != "" {
+		request.Header.Set("X-Detent-Connection-ID", c.operatorConnectionID)
+	}
 	request.Header.Set("Content-Type", "application/json")
 	if c.credential != "" {
 		request.Header.Set("Authorization", "Bearer "+c.credential)
@@ -481,4 +488,31 @@ type dashboardHTTPClientFunc func(*http.Request) (*http.Response, error)
 
 func (f dashboardHTTPClientFunc) Do(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+// OpenConnection establishes an authenticated stdio connection in default
+// confirmation mode. YOLO selection remains a browser operator action.
+func (c *DashboardReadClient) OpenConnection(ctx context.Context) error {
+	if c == nil || c.baseURL == nil {
+		return errors.New("dashboard API client is not configured")
+	}
+	requestURL := *c.baseURL
+	requestURL.Path = "/api/v1/operator-connections"
+	var result struct {
+		ID string `json:"connection_id"`
+	}
+	status, err := c.requestJSON(ctx, http.MethodPost, requestURL, &result)
+	if status == http.StatusNotFound || status == http.StatusNotImplemented {
+		// Read adapters without application commands preserve the existing
+		// read bridge. They expose no confirmation mode or write authority.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if result.ID == "" {
+		return errors.New("operator connection is unavailable")
+	}
+	c.operatorConnectionID = result.ID
+	return nil
 }

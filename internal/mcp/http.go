@@ -152,6 +152,7 @@ func (h *HTTPHandler) initializeSession(writer http.ResponseWriter, req *http.Re
 		return
 	}
 	session := newHTTPProtocolSession(sessionID, principal, h.executor, h.version, h.now())
+	session.now, session.idle = h.now, h.sessionIdleTimeout
 	frame, notification, err := session.dispatch(req.Context(), message, body)
 	if err != nil {
 		session.stop()
@@ -349,6 +350,8 @@ type httpProtocolSession struct {
 	closing  bool
 	inflight sync.WaitGroup
 	seenAt   atomic.Int64
+	now      func() time.Time
+	idle     time.Duration
 }
 
 func newHTTPProtocolSession(id string, principal operatortool.Identity, executor Executor, version string, now time.Time) *httpProtocolSession {
@@ -422,6 +425,19 @@ func (s *httpProtocolSession) cancelRequest(ctx context.Context, id json.RawMess
 }
 
 func (s *httpProtocolSession) sessionContext(request context.Context) context.Context {
+	connection := operatortool.CurrentConnection(request)
+	resolve := connection.Resolve
+	connection.ID = s.id
+	connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
+		s.mu.Lock()
+		closing := s.closing
+		s.mu.Unlock()
+		if closing || resolve == nil || s.now != nil && s.idle > 0 && s.now().Sub(s.lastSeen()) >= s.idle {
+			return operatortool.Authority{}, operatortool.ErrAccessDenied
+		}
+		return resolve(ctx)
+	}
+	request = operatortool.WithConnection(request, connection)
 	return httpSessionContext{Context: context.WithoutCancel(request), done: s.done}
 }
 

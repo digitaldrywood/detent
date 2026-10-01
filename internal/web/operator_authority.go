@@ -46,7 +46,15 @@ func (s *Server) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 		if organization != "" && organization != selfHostedOrganization {
 			return writeAPIAuthError(c, 403, "access_denied", operatortool.ErrAccessDenied.Error())
 		}
-		connection := operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		publicURL := s.mcpPublicURL
+		if publicURL == "" {
+			scheme := "http"
+			if c.Request().TLS != nil {
+				scheme = "https"
+			}
+			publicURL = scheme + "://" + c.Request().Host
+		}
+		connection := operatortool.Connection{DashboardURL: publicURL, Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 			current := credential
 			switch {
 			case token != "":
@@ -90,7 +98,21 @@ func (s *Server) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 				},
 			}, nil
 		}}
-		c.SetRequest(c.Request().WithContext(operatortool.WithConnection(c.Request().Context(), connection)))
+		ctx := operatortool.WithConnection(c.Request().Context(), connection)
+		if id := c.Request().Header.Get(operatorConnectionHeader); id != "" {
+			if !strings.HasPrefix(id, "stdio-") || len(id) != 54 {
+				return writeAPIAuthError(c, 403, "access_denied", operatortool.ErrAccessDenied.Error())
+			}
+			conversation := s.chat.Conversation(id)
+			if conversation.ConnectionID != id {
+				return writeAPIAuthError(c, 403, "access_denied", operatortool.ErrAccessDenied.Error())
+			}
+			ctx = operatortool.BindConnection(ctx, id, "local MCP stdio")
+			if err := s.chat.CheckConnection(ctx); err != nil {
+				return writeAPIAuthError(c, 403, "access_denied", operatortool.ErrAccessDenied.Error())
+			}
+		}
+		c.SetRequest(c.Request().WithContext(ctx))
 		return next(c)
 	}
 }

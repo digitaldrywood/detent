@@ -441,3 +441,6 @@ func boardItems(snapshot telemetry.Snapshot, projectID string, state string) []B
 	})
 	return out
 }
+
+// DecodeArguments applies the catalog's bounded strict decoder to shared commands.
+func DecodeArguments(raw json.RawMessage, target any) error { return decodeArguments(raw, target) }
