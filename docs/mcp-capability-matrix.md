@@ -5452,22 +5452,22 @@ Sources: [POST /api/v1/capacity/clear](../internal/web/server.go#L535), [interna
 
 Api chat confirm
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3337.
-- Decision: Reuse real operator approval/rejection. Model-originated confirmation calls cannot approve their own pending material action.
-- Tool: `conversations_workspaces.api_chat_confirm` — Bounded apiChatConfirmRequest: action_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiChatConfirmResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiChatConfirm; s.authorizeChatAction, s.chat.Confirm, s.chatContext
-- Extraction: Extract web.apiChatConfirm application inputs/results and validation from Echo; reuse s.authorizeChatAction, s.chat.Confirm, s.chatContext. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3337.
+- Decision: Human approval/rejection uses the existing dashboard chat preview and a portable authenticated form. MCP exposes action_result only; neither repeated calls nor annotations grant approval.
+- Tool: `conversations_workspaces.action_result` — action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments → bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result
+- Authority: role operator with an existing authenticated dashboard login/private session; credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: chat.Service.Confirm/RejectConnectionAction and shared dashboard action commands; operatorApprovalDecision authenticates the human browser and exact stored preview.
+- Extraction: Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: real operator confirms the pending material action → operator
 
-Sources: [POST /api/v1/chat/actions/:action_id/confirm](../internal/web/server.go#L556), [internal/web/templates/chat.templ:98](../internal/web/templates/chat.templ#L98)
+Sources: [POST /api/v1/chat/actions/:action_id/confirm](../internal/web/server.go#L556), [internal/web/templates/chat.templ:98](../internal/web/templates/chat.templ#L98), [POST /chat/approval](../internal/web/server.go#L513), [internal/web/templates/chat.templ:117](../internal/web/templates/chat.templ#L117), [internal/web/templates/chat.templ:117](../internal/web/templates/chat.templ#L117)
 ## web.api_chat_message
 
 Api chat message
@@ -5512,15 +5512,15 @@ Sources: [GET /api/v1/chat](../internal/web/server.go#L554), [internal/web/templ
 
 Api chat reject
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3337.
-- Decision: Reuse real operator approval/rejection. Model-originated confirmation calls cannot approve their own pending material action.
-- Tool: `conversations_workspaces.api_chat_reject` — Bounded apiChatRejectRequest: action_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiChatRejectResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiChatReject; s.chat.Reject
-- Extraction: Extract web.apiChatReject application inputs/results and validation from Echo; reuse s.chat.Reject. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3337.
+- Decision: Human approval/rejection uses the existing dashboard chat preview and a portable authenticated form. MCP exposes action_result only; neither repeated calls nor annotations grant approval.
+- Tool: `conversations_workspaces.action_result` — action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments → bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result
+- Authority: role operator with an existing authenticated dashboard login/private session; credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: chat.Service.Confirm/RejectConnectionAction and shared dashboard action commands; operatorApprovalDecision authenticates the human browser and exact stored preview.
+- Extraction: Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -7095,3 +7095,42 @@ Read a workspace file through the existing relay file channel
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [web/conversation/src/app/components/surfaces/FilesSurface.tsx:264](../web/conversation/src/app/components/surfaces/FilesSurface.tsx#L264), [web/conversation/src/app/components/surfaces/FilesSurface.tsx:57](../web/conversation/src/app/components/surfaces/FilesSurface.tsx#L57), [web/conversation/src/app/adapters/workspaceRelay.ts:396](../web/conversation/src/app/adapters/workspaceRelay.ts#L396)
+## web.operator_connection_setup
+
+Bind local/remote operator connection confirmation mode
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3337.
+- Decision: connection_info returns the current mode and portable dashboard setup URL. The human operator chooses YOLO for this connection through the existing chat affordance; model input cannot change it.
+- Tool: `connection_authority.connection_info` — empty typed object; identity, connection and mode are trusted transport/server state → connection_id, organization_id, originating client, current mode and authenticated dashboard setup URL
+- Authority: role authenticated connection; dashboard login/private session for mode selection; credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: chat.Service.AttachConnection/SetConnectionMode; operatorBrowserFormAuth; mcp HTTP session binding and DashboardReadClient.OpenConnection
+- Extraction: Authenticated transports bind connection identity and default confirmation mode. Only a same-origin authenticated dashboard form can select YOLO; mode never grants scope or workflow authority.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool.
+- Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / dashboard daemon
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: operator selects connection mode through the authenticated dashboard form → connection
+
+Sources: [GET /chat/approval](../internal/web/server.go#L512), [POST /api/v1/operator-connections](../internal/web/server.go#L511), [internal/web/templates/chat.templ:105](../internal/web/templates/chat.templ#L105), [internal/web/templates/chat.templ:105](../internal/web/templates/chat.templ#L105)
+## web.chat_approval_stylesheet
+
+Chat approval stylesheet
+
+- Audience: asset; status: **excluded**; owner: digitaldrywood/detent#3337.
+- Decision: Static stylesheet is an asset and carries no operator authority.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role local operator (dashboard authentication when configured); credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: existing static assets
+- Extraction: No operator operation; use the existing stylesheet.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool.
+- Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.
+- Availability: self_hosted / github,native / dashboard daemon
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: static asset → not_applicable
+
+Sources: [internal/web/templates/chat.templ:96](../internal/web/templates/chat.templ#L96)

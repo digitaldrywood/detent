@@ -1,17 +1,12 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -378,9 +374,19 @@ func (s *Server) chatFileIssueProposal(ctx context.Context, raw json.RawMessage)
 	return chatpkg.ToolResult{Proposal: &action}, nil
 }
 
-func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (string, error) {
+func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (chatpkg.ActionExecution, error) {
+	if action.ConnectionID != "" {
+		if err := s.validateOperatorAction(ctx, action); err != nil {
+			return chatpkg.ActionExecution{}, err
+		}
+		var err error
+		ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, OrganizationID: action.OrganizationID, ProjectID: action.ProjectID})
+		if err != nil {
+			return chatpkg.ActionExecution{}, err
+		}
+	}
 	if action.ScenarioID != "" {
-		return demoChatAction(action), nil
+		return chatpkg.ActionExecution{Message: demoChatAction(action)}, nil
 	}
 	var result string
 	var err error
@@ -394,54 +400,50 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (stri
 	case chatpkg.ActionFileIssue:
 		result, action, err = s.executeChatFileIssue(ctx, action)
 	default:
-		return "", errors.New("chat action is unsupported")
+		return chatpkg.ActionExecution{}, errors.New("chat action is unsupported")
 	}
 	if err != nil {
-		return result, err
+		if action.ConnectionID != "" {
+			return chatpkg.ActionExecution{}, errOperatorCommandUnavailable
+		}
+		return chatpkg.ActionExecution{Message: result}, err
 	}
 	if err := s.recordChatAction(ctx, action, result); err != nil {
 		s.logger.WarnContext(ctx, "chat action audit failed", "action", action.Kind, "issue_id", action.IssueID, "error", err)
 	}
-	return result, nil
+	return chatpkg.ActionExecution{Message: result, ResourceID: action.IssueID, Identifier: action.Identifier, URL: action.ResourceURL}, nil
 }
 
 func (s *Server) executeChatMove(ctx context.Context, action chatpkg.Action) (string, error) {
-	form := url.Values{
-		"project_id":    {action.ProjectID},
-		"issue_id":      {action.IssueID},
-		"current_state": {action.CurrentState},
-		"target_state":  {action.TargetState},
-		"board":         {"project"},
+	source := provenance.SourceHumanSession
+	if action.ConnectionID != "" && (action.Mode == chatpkg.YOLOMode || !chatpkg.RequiresConfirmation(action)) {
+		source = provenance.SourceExternalAutomation
 	}
-	recorder, err := s.invokeChatHandler(ctx, http.MethodPost, "/api/v1/kanban/move", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", nil, nil, s.apiKanbanMove)
+	message, status, err := s.moveKanbanCard(ctx, kanbanMoveRequest{projectID: action.ProjectID, issueID: action.IssueID, currentState: action.CurrentState, targetState: action.TargetState, board: "project", exactState: action.ConnectionID != ""}, source)
 	if err != nil {
 		return "", err
 	}
-	return chatHandlerMessage(recorder, "Moved "+action.Identifier+" to "+action.TargetState+" via chat.")
+	if status != http.StatusOK {
+		return message, errors.New(message)
+	}
+	s.requestKanbanRefresh(ctx)
+	return "Moved " + action.Identifier + " to " + action.TargetState + " via chat. Action source: chat.", nil
 }
 
 func (s *Server) executeChatPriority(ctx context.Context, action chatpkg.Action) (string, error) {
-	payload, err := json.Marshal(issuePriorityRequest{Priority: action.Priority})
-	if err != nil {
+	if _, _, err := s.setIssuePriority(ctx, action.ProjectID, action.IssueID, action.Priority); err != nil {
 		return "", err
 	}
-	recorder, err := s.invokeChatHandler(ctx, http.MethodPost, "/api/v1/projects/:project_id/issues/:issue_id/priority", bytes.NewReader(payload), echo.MIMEApplicationJSON, []string{"project_id", "issue_id"}, []string{action.ProjectID, action.IssueID}, s.apiIssuePriority)
-	if err != nil {
-		return "", err
-	}
-	return chatHandlerMessage(recorder, "Set "+action.Identifier+" priority to "+action.Priority+" via chat.")
+	s.requestKanbanRefresh(ctx)
+	return "Set " + action.Identifier + " priority to " + action.Priority + " via chat.", nil
 }
 
 func (s *Server) executeChatStop(ctx context.Context, action chatpkg.Action) (string, error) {
-	payload, err := json.Marshal(stopRunRequestPayload{IssueID: action.IssueID, WorkAttemptID: action.WorkAttemptID, DetentSessionID: action.DetentSessionID, ProviderSessionID: action.ProviderSessionID, Destination: action.Destination, Priority: action.PriorityRank, Reason: action.Reason, Confirm: true})
+	_, err := s.stopRun(ctx, orchestrator.StopRunRequest{ProjectID: action.ProjectID, IssueID: action.IssueID, Attempt: action.Attempt, WorkAttemptID: action.WorkAttemptID, DetentSessionID: action.DetentSessionID, ProviderSessionID: action.ProviderSessionID, Destination: action.Destination, Priority: action.PriorityRank, Reason: action.Reason})
 	if err != nil {
 		return "", err
 	}
-	recorder, err := s.invokeChatHandler(ctx, http.MethodPost, "/api/v1/projects/:project_id/runs/:attempt/stop", bytes.NewReader(payload), echo.MIMEApplicationJSON, []string{"project_id", "attempt"}, []string{action.ProjectID, strconv.Itoa(action.Attempt)}, s.apiStopRun)
-	if err != nil {
-		return "", err
-	}
-	return chatHandlerMessage(recorder, "Stop accepted for "+action.Identifier+"; board routing to "+action.Destination+" is continuing in the background.")
+	return "Stop accepted for " + action.Identifier + "; board routing to " + action.Destination + " is continuing in the background.", nil
 }
 
 func (s *Server) executeChatFileIssue(ctx context.Context, action chatpkg.Action) (string, chatpkg.Action, error) {
@@ -449,59 +451,13 @@ func (s *Server) executeChatFileIssue(ctx context.Context, action chatpkg.Action
 	if action.PriorityRank > 0 {
 		request.Priority = &action.PriorityRank
 	}
-	payload, err := json.Marshal(request)
+	response, err := s.createWorkItem(ctx, action.ProjectID, request)
 	if err != nil {
 		return "", action, err
 	}
-	recorder, err := s.invokeChatHandler(ctx, http.MethodPost, "/api/v1/projects/:project_id/work-items", bytes.NewReader(payload), echo.MIMEApplicationJSON, []string{"project_id"}, []string{action.ProjectID}, s.apiCreateWorkItem)
-	if err != nil {
-		return "", action, err
-	}
-	message, err := chatHandlerMessage(recorder, "Filed "+strconv.Quote(action.Title)+" on "+action.ProjectID+" via chat.")
-	if err != nil {
-		return "", action, err
-	}
-	var response workitem.Response
-	if json.Unmarshal(recorder.Body.Bytes(), &response) == nil {
-		action.IssueID = response.ID
-		action.Identifier = response.Identifier
-	}
-	return message, action, nil
-}
-
-func (s *Server) invokeChatHandler(ctx context.Context, method string, path string, body io.Reader, contentType string, paramNames []string, paramValues []string, handler echo.HandlerFunc) (*httptest.ResponseRecorder, error) {
-	request := httptest.NewRequest(method, path, body).WithContext(ctx)
-	request.Header.Set(echo.HeaderContentType, contentType)
-	recorder := httptest.NewRecorder()
-	ec := s.echo.NewContext(request, recorder)
-	ec.SetPath(path)
-	ec.SetParamNames(paramNames...)
-	ec.SetParamValues(paramValues...)
-	if err := handler(ec); err != nil {
-		return recorder, err
-	}
-	return recorder, nil
-}
-
-func chatHandlerMessage(recorder *httptest.ResponseRecorder, fallback string) (string, error) {
-	if recorder.Code >= http.StatusBadRequest {
-		var response struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(recorder.Body.Bytes(), &response) == nil && response.Error.Message != "" {
-			return response.Error.Message, errors.New(response.Error.Message)
-		}
-		return strings.TrimSpace(recorder.Body.String()), fmt.Errorf("chat action handler returned status %d", recorder.Code)
-	}
-	var response struct {
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(recorder.Body.Bytes(), &response) == nil && strings.TrimSpace(response.Message) != "" {
-		return response.Message + " Action source: chat.", nil
-	}
-	return fallback, nil
+	action.IssueID, action.Identifier, action.ResourceURL = response.ID, response.Identifier, response.URL
+	s.requestKanbanRefresh(ctx)
+	return "Filed " + strconv.Quote(action.Title) + " on " + action.ProjectID + " via chat.", action, nil
 }
 
 func (s *Server) recordChatAction(ctx context.Context, action chatpkg.Action, result string) error {
@@ -509,7 +465,7 @@ func (s *Server) recordChatAction(ctx context.Context, action chatpkg.Action, re
 		return nil
 	}
 	now := time.Now().UTC()
-	metadata, err := json.Marshal(map[string]string{"source": "chat", "action_id": action.ID, "result": result})
+	metadata, err := json.Marshal(map[string]string{"source": "chat", "action_id": action.ID, "result": result, "connection_mode": string(action.Mode), "connection_id": action.ConnectionID, "client": action.Client, "organization_id": action.OrganizationID, "request_id": action.RequestID})
 	if err != nil {
 		return err
 	}
@@ -600,13 +556,7 @@ func canonicalChatStopDestination(value string) (string, bool) {
 }
 
 func decodeChatToolArguments(raw json.RawMessage, target any) error {
-	if len(raw) == 0 || string(raw) == "null" {
-		raw = json.RawMessage(`{}`)
-	}
-	if err := json.Unmarshal(raw, target); err != nil {
-		return fmt.Errorf("invalid tool arguments: %w", err)
-	}
-	return nil
+	return operatortool.DecodeArguments(raw, target)
 }
 
 func trimChatStrings(values []string) []string {

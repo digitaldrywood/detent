@@ -37,7 +37,7 @@ func (s *Server) apiOperatorTool(c echo.Context) error {
 
 	ctx, cancel := context.WithTimeout(s.chatContext(c), operatorToolTimeout)
 	defer cancel()
-	result, err := operatortool.NewAuthorizedExecutor(s.operatorTools).Execute(ctx, operatortool.Call{
+	result, err := dashboardOperatorExecutor{server: s}.Execute(ctx, operatortool.Call{
 		Name:      strings.TrimSpace(c.Param("tool_name")),
 		Arguments: arguments,
 	})
@@ -66,7 +66,7 @@ func (s *Server) apiOperatorTool(c echo.Context) error {
 }
 
 func (s *Server) apiOperatorTools(c echo.Context) error {
-	definitions, err := operatortool.NewAuthorizedExecutor(s.operatorTools).ListTools(c.Request().Context())
+	definitions, err := dashboardOperatorExecutor{server: s}.ListTools(c.Request().Context())
 	if err != nil {
 		return c.JSON(http.StatusForbidden, errorResponse("access_denied", operatortool.ErrAccessDenied.Error()))
 	}

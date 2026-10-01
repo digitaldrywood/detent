@@ -18,94 +18,114 @@ import (
 func TestMCPCommandUsesDaemonBridgeAndProtocolOnlyStdout(t *testing.T) {
 	t.Parallel()
 
-	requested := make(chan struct{}, 1)
-	httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodGet && request.URL.Path == "/api/v1/operator-tools" {
-			_, _ = io.WriteString(writer, `{"tools":[]}`)
-			return
-		}
-		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/operator-tools/fleet_health" {
-			t.Errorf("request = %s %s", request.Method, request.URL.Path)
-		}
-		requested <- struct{}{}
-		_, _ = io.WriteString(writer, `{"generated_at":"2026-08-08T02:30:00Z","freshness":"live","counts":{}}`)
-	}))
-	t.Cleanup(httpServer.Close)
-	parsed, err := url.Parse(httpServer.URL)
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	port, err := strconv.Atoi(parsed.Port())
-	if err != nil {
-		t.Fatalf("Atoi() error = %v", err)
-	}
-	opts := dashboardClientOptions(httpServer.Client().Do, "", "")
-	opts.read = func(string) (globalconfig.Config, error) {
-		return globalconfig.Config{Port: &port}, nil
-	}
-	opts.version = "v-test"
-	configPath := "/config/global.yaml"
-	host := parsed.Hostname()
-	configuredPort := port
-	cmd := newMCPCommand(&configPath, &host, &configuredPort, opts)
-	reader, writer := io.Pipe()
-	output := newProtocolWriter()
-	var stderr bytes.Buffer
-	cmd.SetIn(reader)
-	cmd.SetOut(output)
-	cmd.SetErr(&stderr)
-	cmd.SetArgs(nil)
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.ExecuteContext(t.Context())
-	}()
+	for _, commands := range []bool{true, false} {
+		t.Run(strconv.FormatBool(commands), func(t *testing.T) {
 
-	writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`)
-	readProtocolResponse(t, output.frames)
-	writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
-	writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","id":9,"method":"tools/list"}`)
-	discovery := readProtocolResponse(t, output.frames)
-	if !bytes.Contains(discovery, []byte(`"tools":[]`)) {
-		t.Fatalf("discovery did not use daemon authority: %s", discovery)
-	}
-	writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fleet_health","arguments":{}}}`)
-	response := readProtocolResponse(t, output.frames)
-	select {
-	case <-requested:
-	case <-time.After(5 * time.Second):
-		t.Fatal("daemon bridge was not called")
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("ExecuteContext() error = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for MCP command shutdown")
-	}
+			requested := make(chan struct{}, 1)
+			httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method == http.MethodPost && request.URL.Path == "/api/v1/operator-connections" {
+					if !commands {
+						writer.WriteHeader(http.StatusNotFound)
+						return
+					}
+					_, _ = io.WriteString(writer, `{"connection_id":"stdio-test"}`)
+					return
+				}
+				expectedID := ""
+				if commands {
+					expectedID = "stdio-test"
+				}
+				if request.Header.Get("X-Detent-Connection-ID") != expectedID {
+					t.Errorf("stdio request lost connection binding")
+				}
+				if request.Method == http.MethodGet && request.URL.Path == "/api/v1/operator-tools" {
+					_, _ = io.WriteString(writer, `{"tools":[]}`)
+					return
+				}
+				if request.Method != http.MethodPost || request.URL.Path != "/api/v1/operator-tools/fleet_health" {
+					t.Errorf("request = %s %s", request.Method, request.URL.Path)
+				}
+				requested <- struct{}{}
+				_, _ = io.WriteString(writer, `{"generated_at":"2026-08-08T02:30:00Z","freshness":"live","counts":{}}`)
+			}))
+			t.Cleanup(httpServer.Close)
+			parsed, err := url.Parse(httpServer.URL)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			port, err := strconv.Atoi(parsed.Port())
+			if err != nil {
+				t.Fatalf("Atoi() error = %v", err)
+			}
+			opts := dashboardClientOptions(httpServer.Client().Do, "", "")
+			opts.read = func(string) (globalconfig.Config, error) {
+				return globalconfig.Config{Port: &port}, nil
+			}
+			opts.version = "v-test"
+			configPath := "/config/global.yaml"
+			host := parsed.Hostname()
+			configuredPort := port
+			cmd := newMCPCommand(&configPath, &host, &configuredPort, opts)
+			reader, writer := io.Pipe()
+			output := newProtocolWriter()
+			var stderr bytes.Buffer
+			cmd.SetIn(reader)
+			cmd.SetOut(output)
+			cmd.SetErr(&stderr)
+			cmd.SetArgs(nil)
+			done := make(chan error, 1)
+			go func() {
+				done <- cmd.ExecuteContext(t.Context())
+			}()
 
-	var envelope struct {
-		Result struct {
-			Content           []json.RawMessage          `json:"content"`
-			StructuredContent map[string]json.RawMessage `json:"structuredContent"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(response, &envelope); err != nil {
-		t.Fatalf("decode call response: %v", err)
-	}
-	if len(envelope.Result.Content) != 0 || string(envelope.Result.StructuredContent["freshness"]) != `"live"` {
-		t.Fatalf("call response = %s", response)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty", stderr.String())
-	}
-	for _, frame := range output.allFrames() {
-		if !json.Valid(bytes.TrimSpace(frame)) {
-			t.Fatalf("stdout contains non-protocol data: %q", frame)
-		}
+			writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`)
+			readProtocolResponse(t, output.frames)
+			writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+			writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","id":9,"method":"tools/list"}`)
+			discovery := readProtocolResponse(t, output.frames)
+			if !bytes.Contains(discovery, []byte(`"tools":[]`)) {
+				t.Fatalf("discovery did not use daemon authority: %s", discovery)
+			}
+			writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fleet_health","arguments":{}}}`)
+			response := readProtocolResponse(t, output.frames)
+			select {
+			case <-requested:
+			case <-time.After(5 * time.Second):
+				t.Fatal("daemon bridge was not called")
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("ExecuteContext() error = %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for MCP command shutdown")
+			}
+
+			var envelope struct {
+				Result struct {
+					Content           []json.RawMessage          `json:"content"`
+					StructuredContent map[string]json.RawMessage `json:"structuredContent"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(response, &envelope); err != nil {
+				t.Fatalf("decode call response: %v", err)
+			}
+			if len(envelope.Result.Content) != 0 || string(envelope.Result.StructuredContent["freshness"]) != `"live"` {
+				t.Fatalf("call response = %s", response)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+			for _, frame := range output.allFrames() {
+				if !json.Valid(bytes.TrimSpace(frame)) {
+					t.Fatalf("stdout contains non-protocol data: %q", frame)
+				}
+			}
+		})
 	}
 }
 

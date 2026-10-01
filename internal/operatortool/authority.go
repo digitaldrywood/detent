@@ -43,8 +43,11 @@ type Authority struct {
 }
 
 type Connection struct {
-	Identity Identity
-	Resolve  func(context.Context) (Authority, error)
+	DashboardURL string
+	ID           string
+	Client       string
+	Identity     Identity
+	Resolve      func(context.Context) (Authority, error)
 }
 
 type connectionKey struct{}
@@ -143,4 +146,18 @@ func (e *AuthorizedExecutor) Execute(ctx context.Context, call Call) (Result, er
 		return Result{}, ErrSnapshotUnavailable
 	}
 	return e.executor.Execute(ctx, call)
+}
+
+// CurrentConnection returns trusted transport binding, never tool arguments.
+func CurrentConnection(ctx context.Context) Connection {
+	connection, _ := ctx.Value(connectionKey{}).(Connection)
+	return connection
+}
+
+// BindConnection identifies the authenticated protocol connection; it does not
+// select confirmation mode or grant authority.
+func BindConnection(ctx context.Context, id, client string) context.Context {
+	connection := CurrentConnection(ctx)
+	connection.ID, connection.Client = id, client
+	return WithConnection(ctx, connection)
 }

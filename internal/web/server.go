@@ -240,6 +240,7 @@ type Server struct {
 	observeProcesses    func([]procgroup.Identity) ([]procgroup.Observation, error)
 	now                 func() time.Time
 	operatorTools       *operatortool.Executor
+	mcpPublicURL        string
 	mcpHTTP             *mcp.HTTPHandler
 }
 
@@ -331,6 +332,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		version:             strings.TrimSpace(cfg.Version),
 		build:               cfg.Build,
 		dashboardURL:        cfg.dashboardURL(),
+		mcpPublicURL:        strings.TrimRight(strings.TrimSpace(cfg.DashboardURL), "/"),
 		pricing:             cfg.pricing(),
 		globalConfig:        cfg.GlobalConfig,
 		globalConfigSource:  cfg.globalConfigSource(),
@@ -379,7 +381,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		chatProvider = server.demoChatProvider()
 	}
 	server.operatorTools = server.newReadOnlyToolExecutor()
-	server.mcpHTTP = mcp.NewHTTPHandler(operatortool.NewAuthorizedExecutor(server.operatorTools), server.version, mcp.HTTPConfig{
+	server.mcpHTTP = mcp.NewHTTPHandler(dashboardOperatorExecutor{server: server}, server.version, mcp.HTTPConfig{
 		Principal: func(req *http.Request) operatortool.Identity {
 			return operatortool.ConnectionIdentity(req.Context())
 		},
@@ -508,6 +510,9 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/operations", s.apiOperations, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
+	s.echo.POST("/api/v1/operator-connections", s.apiOperatorConnection, apiReadAuth, apiReadScope, s.operatorAuthority)
+	s.echo.GET("/chat/approval", s.operatorApprovalPage, s.operatorBrowserReadAuth)
+	s.echo.POST("/chat/approval", s.operatorApprovalDecision, s.operatorBrowserFormAuth)
 	s.echo.GET("/api/v1/operator-tools", s.apiOperatorTools, apiReadAuth, apiReadScope, s.operatorAuthority)
 	s.echo.POST("/api/v1/operator-tools/:tool_name", s.apiOperatorTool, apiReadAuth, apiReadScope, s.operatorAuthority)
 	s.echo.Any("/mcp", echo.WrapHandler(s.mcpHTTP), mcpReadAuth, s.operatorAuthority)
