@@ -98,8 +98,14 @@ func report(ctx context.Context, input io.Reader, gh ghCommand, getenv func(stri
 		}
 		log, logErr := gh(ctx, "", "api", fmt.Sprintf("repos/%s/actions/jobs/%d/logs", repository, j.ID), "--allow-escape-sequences")
 		problems := parseProblems(string(log), getenv("GITHUB_WORKSPACE"))
+		labels := []string{"detent:todo", "hotfix", "ci-scheduled-failure"}
 		if len(problems) == 0 {
-			problems = []problem{{Key: "scheduled-ci:" + repository + ":" + j.Name, Summary: "scheduled " + j.Name + " failure", Evidence: "No reliable failed test or source diagnostic was available; this identity is limited to the job."}}
+			labels = []string{"detent:backlog", "ci-scheduled-failure"}
+			evidence := "No reliable failed test or source diagnostic was available; this identity is limited to the job."
+			if excerpt := strings.TrimSpace(ansiEscape.ReplaceAllString(string(log), "")); excerpt != "" {
+				evidence += "\n\n" + diagnosticExcerpt(excerpt)
+			}
+			problems = []problem{{Key: "scheduled-ci:" + repository + ":" + j.Name, Summary: "scheduled " + j.Name + " failure", Evidence: evidence}}
 		}
 		for _, p := range problems {
 			// Preserve the legacy job fingerprint for conservative fallbacks.
@@ -108,11 +114,14 @@ func report(ctx context.Context, input io.Reader, gh ghCommand, getenv func(stri
 				fingerprint = legacyJobFingerprint(p.Key)
 			}
 			body := fmt.Sprintf("Scheduled validation job **%s** (%s) failed on development commit %s.\n\nRun: %s\nJob: %s\nProblem: `%s`\n\n```text\n%s\n```\n\nDiagnose this problem using the linked logs. Runner setup, backend startup, network/download, and protocol failures belong to the CI instance. Let the next scheduled full validation confirm the repair; a green run closes scheduled repair issues.\n\n```detent-agent\nschema: 1\neffort: high\n```", j.Name, j.Conclusion, getenv("CI_DEVELOP_SHA"), runURL, j.URL, p.Key, p.Evidence)
+			if strings.HasPrefix(p.Key, "scheduled-ci:") {
+				body += "\n\nThis issue is an intake for the CI instance owner. No source repair is authorized until a reproducible test or source diagnostic is identified."
+			}
 			if logErr != nil {
 				body += "\n\nJob logs could not be read: " + logErr.Error()
 			}
 			body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: runURL, Fingerprint: fingerprint})
-			if err := fileProblem(ctx, gh, repository, issues, fingerprint, p.Summary, body); err != nil {
+			if err := fileProblem(ctx, gh, repository, issues, fingerprint, p.Summary, body, labels); err != nil {
 				failures = append(failures, fmt.Errorf("report %s (%s): %w", j.Name, p.Key, err))
 			}
 		}
@@ -120,13 +129,13 @@ func report(ctx context.Context, input io.Reader, gh ghCommand, getenv func(stri
 	return errors.Join(failures...)
 }
 
-func fileProblem(ctx context.Context, gh ghCommand, repository string, issues map[string]int, fingerprint, summary, body string) error {
+func fileProblem(ctx context.Context, gh ghCommand, repository string, issues map[string]int, fingerprint, summary, body string, labels []string) error {
 	path := "repos/" + repository + "/issues"
 	title := []rune("fix(ci): " + summary)
 	if len(title) > 256 {
 		title = append(title[:255], '…')
 	}
-	payload := map[string]any{"title": string(title), "body": body, "labels": []string{"detent:todo", "hotfix", "ci-scheduled-failure"}}
+	payload := map[string]any{"title": string(title), "body": body, "labels": labels}
 	if number := issues[fingerprint]; number != 0 {
 		path += "/" + strconv.Itoa(number) + "/comments"
 		payload = map[string]any{"body": issueorigin.Occurrence(body)}

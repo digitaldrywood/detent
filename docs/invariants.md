@@ -2525,6 +2525,14 @@ Job-log fetches allow terminal escape sequences so colored output reaches the
 existing ANSI-stripping parser (#3709). `TestReport` replays the recorded
 colored-log refusal and verifies test identity and occurrence consolidation;
 unreadable logs retain job identity and CI-instance attribution.
+The repository scheduled reporter creates unknown or unreadable job fallbacks
+as Backlog intake, using the existing admission artifact contract (#3727).
+Parsed test and source diagnostics remain Todo hotfix repairs. Fallbacks retain
+bounded log evidence and retrieval errors, their legacy fingerprints, and
+repository-wide occurrence matching. Existing issues receive occurrences without
+lane changes; this producer policy does not retroactively close or move an
+instance-owned report. `TestReport` covers destination labels and runner shutdown
+evidence alongside the existing fingerprint and repeated-run scenarios.
 
 **Change:** Edit INV-7 and origin/deduplication scenarios in the same PR before
 changing identity format or duplicate handling.

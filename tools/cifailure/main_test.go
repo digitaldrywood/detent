@@ -66,6 +66,7 @@ type fakeGH struct {
 	logs       map[int64]string
 	comments   map[int][]string
 	created    []openIssue
+	labels     [][]string
 	listErr    error
 	logErr     error
 	publishErr error
@@ -130,11 +131,14 @@ func (f *fakeGH) command(_ context.Context, input string, args ...string) ([]byt
 		f.comments[number] = append(f.comments[number], payload.Body)
 		return []byte(`{}`), nil
 	}
-	if !reflect.DeepEqual(payload.Labels, []string{"detent:todo", "hotfix", "ci-scheduled-failure"}) || payload.Title == "" || len([]rune(payload.Title)) > 256 {
+	repairLabels := reflect.DeepEqual(payload.Labels, []string{"detent:todo", "hotfix", "ci-scheduled-failure"})
+	intakeLabels := reflect.DeepEqual(payload.Labels, []string{"detent:backlog", "ci-scheduled-failure"})
+	if !repairLabels && !intakeLabels || payload.Title == "" || len([]rune(payload.Title)) > 256 {
 		return nil, errors.New("missing scheduled repair metadata")
 	}
 	created := openIssue{Number: 100 + len(f.created), Body: payload.Body}
 	f.created = append(f.created, created)
+	f.labels = append(f.labels, payload.Labels)
 	f.issues = append(f.issues, created)
 	return json.Marshal(created)
 }
@@ -169,6 +173,7 @@ func TestReport(t *testing.T) {
 		{"colored logs retain test identity", map[int64]string{1: fixture(t, "colored"), 2: fixture(t, "colored")}, false, nil, 1, 3},
 		{"unknown evidence keeps job identity", map[int64]string{1: "exit code 1", 2: "exit code 1"}, false, nil, 2, 2},
 		{"unreadable logs keep job identity", nil, false, errors.New("logs unavailable"), 2, 2},
+		{"runner shutdown keeps job identity", map[int64]string{1: "The runner has received a shutdown signal.\nProcess completed with exit code 143.", 2: "Process completed with exit code 143."}, false, nil, 2, 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -206,13 +211,30 @@ func TestReport(t *testing.T) {
 					t.Fatalf("not an occurrence: %s", comment)
 				}
 			}
-			for _, issue := range gh.created {
+			for i, issue := range gh.created {
+				wantLabels := []string{"detent:todo", "hotfix", "ci-scheduled-failure"}
+				if strings.Contains(tt.name, "job identity") {
+					wantLabels = []string{"detent:backlog", "ci-scheduled-failure"}
+					if !strings.Contains(issue.Body, "This issue is an intake") {
+						t.Fatalf("unidentified failure became executable work: %s", issue.Body)
+					}
+				}
+				if !reflect.DeepEqual(gh.labels[i], wantLabels) {
+					t.Fatalf("labels = %v; want %v", gh.labels[i], wantLabels)
+				}
 				origin, ok := issueorigin.Parse(issue.Body)
 				if !ok || origin.Kind != "doctor" || origin.Instance != "github-actions" || !strings.Contains(issue.Body, scheduledEnv("CI_DEVELOP_SHA")) || !strings.Contains(origin.Source, "/attempts/1") || !strings.Contains(issue.Body, "effort: high") {
 					t.Fatalf("invalid machine issue: %+v", issue)
 				}
 				if tt.logErr != nil && (!strings.Contains(issue.Body, "Job logs could not be read: "+tt.logErr.Error()) || !strings.Contains(issue.Body, "network/download, and protocol failures belong to the CI instance")) {
 					t.Fatalf("log-read failure lost its diagnostics or CI-instance attribution: %s", issue.Body)
+				}
+			}
+			if tt.name == "runner shutdown keeps job identity" {
+				for _, issue := range gh.created {
+					if !strings.Contains(issue.Body, "Process completed with exit code 143.") {
+						t.Fatal("runner interruption evidence lost")
+					}
 				}
 			}
 			if strings.Contains(tt.name, "job identity") {
