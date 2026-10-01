@@ -16,10 +16,9 @@ import (
 )
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
-	// Hosted hubs do not own the daemon's telemetry/explainer. An absent
-	// application service produces an empty catalog and opaque unavailable
-	// calls, rather than using the compatibility API or opening a runtime DB.
-	executor := operatortool.NewAuthorizedExecutor(nil)
+	// Hubs expose their native application commands. Daemon-only telemetry,
+	// lane commands and approval services remain safely unavailable here.
+	executor := nativeOperatorExecutor{service: s}
 	s.mcpHTTP = mcp.NewHTTPHandler(executor, s.config.Version, mcp.HTTPConfig{
 		Principal: func(request *http.Request) operatortool.Identity {
 			return operatortool.ConnectionIdentity(request.Context())
@@ -53,22 +52,22 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		claims, shared := hostedSharedClaims(c)
-		connection := operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		resolveScope := func(ctx context.Context) (nativeScope, error) {
 			current := credential
 			if token != "" {
 				var err error
 				current, _, err = s.authenticateAPIToken(ctx, token, "", "")
 				if err != nil {
-					return operatortool.Authority{}, operatortool.ErrAccessDenied
+					return nativeScope{}, operatortool.ErrAccessDenied
 				}
 			} else {
 				session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
 				if err != nil || session.Identity == nil {
-					return operatortool.Authority{}, operatortool.ErrAccessDenied
+					return nativeScope{}, operatortool.ErrAccessDenied
 				}
 				if shared {
 					if claims.Kind != cloudassert.KindBrowser || !claims.AccessExpiresAt.After(s.config.now()) {
-						return operatortool.Authority{}, operatortool.ErrAccessDenied
+						return nativeScope{}, operatortool.ErrAccessDenied
 					}
 					current, _, err = s.hostedSharedCredential(ctx, session, credential.SessionHash, claims.Role)
 				} else {
@@ -77,12 +76,20 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 					}
 				}
 				if err != nil {
-					return operatortool.Authority{}, operatortool.ErrAccessDenied
+					return nativeScope{}, operatortool.ErrAccessDenied
 				}
 			}
-			return s.operatorCurrentAuthority(ctx, current, organization)
+			return nativeScope{organization: tracker.OrganizationID(organization), credential: current}, nil
+		}
+		connection := operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+			scope, err := resolveScope(ctx)
+			if err != nil {
+				return operatortool.Authority{}, err
+			}
+			return s.operatorCurrentAuthority(ctx, scope.credential, organization)
 		}}
 		ctx := operatortool.WithConnection(c.Request().Context(), connection)
+		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, resolveScope)
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}

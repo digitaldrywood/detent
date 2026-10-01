@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -24,27 +25,34 @@ type nativeCursor struct {
 }
 
 func (s *Service) nativePage(c echo.Context) (int, nativeCursor, []byte, error) {
-	limit, err := parsePageLimit(c.QueryParam("limit"))
-	if err != nil {
-		return 0, nativeCursor{}, nil, nativeInvalid("Page limit is invalid")
-	}
 	params, err := url.ParseQuery(c.Request().URL.RawQuery)
 	if err != nil {
 		return 0, nativeCursor{}, nil, nativeInvalid("Query is invalid")
 	}
+	return s.nativePagination(c.Request().Context(), nativeRequestScope(c), c.Request().URL.EscapedPath(), params)
+}
+
+func (s *Service) nativePagination(ctx context.Context, scope nativeScope, path string, params url.Values) (int, nativeCursor, []byte, error) {
+	limit, err := parsePageLimit(params.Get("limit"))
+	if err != nil {
+		return 0, nativeCursor{}, nil, nativeInvalid("Page limit is invalid")
+	}
+	params, err = url.ParseQuery(params.Encode())
+	if err != nil {
+		return 0, nativeCursor{}, nil, nativeInvalid("Query is invalid")
+	}
+	value := params.Get("cursor")
 	params.Del("cursor")
 	params.Del("limit")
-	scope := nativeRequestScope(c)
-	fingerprint := scope.credential.ID + " " + c.Request().URL.EscapedPath() + "?" + params.Encode()
+	fingerprint := scope.credential.ID + " " + path + "?" + params.Encode()
 	if scope.credential.Hosted != nil {
 		fingerprint += " " + scope.credential.Hosted.SessionID
 	}
 	cursor := nativeCursor{Version: 2, Scope: fingerprint, Expires: s.config.now().Add(time.Hour).Unix()}
 	var key []byte
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT cursor_key FROM hub_identity").Scan(&key); err != nil {
+	if err := s.database.db.QueryRowContext(ctx, "SELECT cursor_key FROM hub_identity").Scan(&key); err != nil {
 		return 0, cursor, nil, err
 	}
-	value := c.QueryParam("cursor")
 	if value == "" {
 		return limit, cursor, key, nil
 	}
@@ -184,7 +192,11 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGE
 }
 
 func nativePageIDs(c echo.Context, query nativeQueryer, statement string, args ...any) ([]string, error) {
-	rows, err := query.QueryContext(c.Request().Context(), statement, args...)
+	return nativeCommandPageIDs(c.Request().Context(), query, statement, args...)
+}
+
+func nativeCommandPageIDs(ctx context.Context, query nativeQueryer, statement string, args ...any) ([]string, error) {
+	rows, err := query.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -208,13 +220,20 @@ func (s *Service) listNativeComments(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	scope := nativeRequestScope(c)
-	if _, _, err := readNativeIssue(c.Request().Context(), s.database.db, scope, c.Param("item")); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	ids, err := nativePageIDs(c, s.database.db, "SELECT id FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > CAST(? AS INTEGER) ORDER BY sequence LIMIT ?", scope.organization, scope.project, c.Param("item"), cursor.After, limit+1)
+	page, err := s.nativeCommentPage(c.Request().Context(), nativeRequestScope(c), c.Param("item"), limit, cursor, key)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, page)
+}
+
+func (s *Service) nativeCommentPage(ctx context.Context, scope nativeScope, item string, limit int, cursor nativeCursor, key []byte) (tracker.Page[tracker.NativeComment], error) {
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+		return tracker.Page[tracker.NativeComment]{}, err
+	}
+	ids, err := nativeCommandPageIDs(ctx, s.database.db, "SELECT id FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > CAST(? AS INTEGER) ORDER BY sequence LIMIT ?", scope.organization, scope.project, item, cursor.After, limit+1)
+	if err != nil {
+		return tracker.Page[tracker.NativeComment]{}, err
 	}
 	page := tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{}}
 	hasMore := len(ids) > limit
@@ -222,9 +241,9 @@ func (s *Service) listNativeComments(c echo.Context) error {
 		ids = ids[:limit]
 	}
 	for _, id := range ids {
-		comment, err := readNativeComment(c.Request().Context(), s.database.db, scope, c.Param("item"), id)
+		comment, err := readNativeComment(ctx, s.database.db, scope, item, id)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return tracker.Page[tracker.NativeComment]{}, err
 		}
 		page.Items = append(page.Items, comment)
 		cursor.After = strconv.FormatInt(comment.Sequence, 10)
@@ -232,10 +251,10 @@ func (s *Service) listNativeComments(c echo.Context) error {
 	if hasMore {
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return tracker.Page[tracker.NativeComment]{}, err
 		}
 	}
-	return c.JSON(http.StatusOK, page)
+	return page, nil
 }
 
 func (s *Service) listNativeHistory(c echo.Context) error {
