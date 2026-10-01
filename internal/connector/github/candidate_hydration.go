@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -273,25 +272,4 @@ func (c *Connector) hydratePullRequestWithEvidence(ctx context.Context, issue co
 	}
 	err := c.attachStatePullRequests(ctx, issues, useStatusCache && node.CandidatePR == nil)
 	return issues[0], err
-}
-
-func (c *Connector) labelRefreshEvidence(ctx context.Context, nodes []githubIssueNode, issues []connector.Issue) map[string]githubIssueNode {
-	listed := make(map[string]*time.Time, len(issues))
-	for _, issue := range issues {
-		listed[issue.ID] = issue.UpdatedAt
-	}
-	evidence := make(map[string]githubIssueNode, len(nodes))
-	pending := make([]githubIssueNode, 0, len(nodes))
-	for _, node := range nodes {
-		if cached, ok := c.projectCache.GetLabelEvidence(node.ID, listed); ok {
-			evidence[node.ID] = cached
-		} else {
-			pending = append(pending, node)
-		}
-	}
-	for id, node := range c.candidateEvidence(ctx, pending, true) {
-		c.projectCache.SetLabelEvidence(node, listed[id])
-		evidence[id] = node
-	}
-	return evidence
 }

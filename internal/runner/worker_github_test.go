@@ -844,9 +844,9 @@ func workerGitHubRateLimitServer(t *testing.T, remaining func(int64) int64) *htt
 	var calls atomic.Int64
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/user":
+		case "/graphql":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":42,"login":"detent-worker[bot]","type":"Bot"}`))
+			_, _ = w.Write([]byte(`{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`))
 		case "/rate_limit":
 			if r.Header.Get("Authorization") != "Bearer worker-token" {
 				t.Errorf("Authorization = %q, want worker bearer token", r.Header.Get("Authorization"))
@@ -859,7 +859,7 @@ func workerGitHubRateLimitServer(t *testing.T, remaining func(int64) int64) *htt
 				strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10),
 			)
 		default:
-			t.Errorf("path = %q, want /user or /rate_limit", r.URL.Path)
+			t.Errorf("path = %q, want /graphql or /rate_limit", r.URL.Path)
 			http.NotFound(w, r)
 		}
 	}))
@@ -868,8 +868,8 @@ func workerGitHubRateLimitServer(t *testing.T, remaining func(int64) int64) *htt
 func workerGitHubPrincipalServer(t *testing.T, orchestratorUserID int64) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/user" {
-			t.Errorf("request = %s %s, want GET /user", r.Method, r.URL.Path)
+		if r.URL.Path != "/graphql" {
+			t.Errorf("path = %q, want /graphql", r.URL.Path)
 			http.NotFound(w, r)
 			return
 		}
@@ -883,7 +883,7 @@ func workerGitHubPrincipalServer(t *testing.T, orchestratorUserID int64) *httpte
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"id":%d,"login":%q,"type":"Bot"}`, userID, login)
+		_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"databaseId":%d,"login":%q,"__typename":"Bot"}}}`, userID, login)
 	}))
 }
 
@@ -953,7 +953,7 @@ func workerGitHubPrincipalResponse() *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(`{"id":42,"login":"detent-worker[bot]","type":"Bot"}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`)),
 	}
 }
 
@@ -1128,6 +1128,7 @@ func TestWorkerGitHubClassificationWaitsForSharedCooldown(t *testing.T) {
 	}{
 		{"secondary 403", 403, `{"message":"You have exceeded a secondary rate limit"}`, false},
 		{"secondary 429", 429, `{"message":"You have exceeded a secondary rate limit"}`, false},
+		{"graphql secondary error", 200, `{"errors":[{"type":"RATE_LIMITED","message":"secondary rate limit"}]}`, false},
 		{"existing shared cooldown", 403, `{"message":"You have exceeded a secondary rate limit"}`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1153,7 +1154,7 @@ func TestWorkerGitHubClassificationWaitsForSharedCooldown(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := shared.REST(t.Context(), http.MethodGet, "/user", nil, nil); !errors.Is(err, githubconnector.ErrRateLimited) {
+					if err := shared.GraphQL(t.Context(), "query { viewer { login } }", nil, nil); !errors.Is(err, githubconnector.ErrRateLimited) {
 						t.Fatalf("seed cooldown: %v", err)
 					}
 				}

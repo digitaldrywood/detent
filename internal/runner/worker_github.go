@@ -788,14 +788,16 @@ func (p workerGitHubPolicy) authenticatedPrincipal(ctx context.Context, token st
 		return 0, connector.IssueActor{}, err
 	}
 	var payload struct {
-		ID    int64  `json:"id"`
-		Login string `json:"login"`
-		Type  string `json:"type"`
+		Viewer struct {
+			DatabaseID int64  `json:"databaseId"`
+			Login      string `json:"login"`
+			TypeName   string `json:"__typename"`
+		} `json:"viewer"`
 	}
 	for {
 		// Bound each HTTP probe, not the credential's shared cooldown wait.
 		probeCtx, cancel := p.probeContext(ctx)
-		err = client.REST(probeCtx, http.MethodGet, "/user", nil, &payload)
+		err = client.GraphQL(probeCtx, "query WorkerCredentialIdentity { viewer { databaseId login __typename } }", nil, &payload)
 		cancel()
 		if !errors.Is(err, githubconnector.ErrRateLimited) {
 			break
@@ -812,12 +814,12 @@ func (p workerGitHubPolicy) authenticatedPrincipal(ctx context.Context, token st
 	if err != nil {
 		return 0, connector.IssueActor{}, err
 	}
-	if payload.ID <= 0 || strings.TrimSpace(payload.Login) == "" {
-		return 0, connector.IssueActor{}, errors.New("github authenticated user REST probe omitted the principal identity")
+	if payload.Viewer.DatabaseID <= 0 || strings.TrimSpace(payload.Viewer.Login) == "" {
+		return 0, connector.IssueActor{}, errors.New("github authenticated user graphql probe omitted the principal identity")
 	}
-	return payload.ID, connector.IssueActor{
-		Login: strings.TrimSpace(payload.Login),
-		Kind:  strings.TrimSpace(payload.Type),
+	return payload.Viewer.DatabaseID, connector.IssueActor{
+		Login: strings.TrimSpace(payload.Viewer.Login),
+		Kind:  strings.TrimSpace(payload.Viewer.TypeName),
 	}, nil
 }
 

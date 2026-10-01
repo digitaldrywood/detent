@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -324,6 +323,15 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 		t.Run(fmt.Sprintf("fallback=%t", fallback), func(t *testing.T) {
 			reads := map[string]int{}
 			phase := 0
+			statuses := []string{"blocked", "in_progress", "complete"}
+			commentUpdated := func() string { return fmt.Sprintf("2026-09-30T20:0%d:00Z", phase) }
+			commentBody := func() string {
+				action := "null"
+				if phase == 0 {
+					action = "Approve this work."
+				}
+				return fmt.Sprintf("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: %s\nblockers: []\nhuman_action: %s\n```", statuses[phase], action)
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodGet {
 					reads[r.URL.Path]++
@@ -339,11 +347,15 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 						}
 						rows := []any{}
 						for n := start; n <= end; n++ {
-							rows = append(rows, map[string]any{"node_id": fmt.Sprintf("I%d", n), "number": n, "state": "open", "body": "body", "updated_at": fmt.Sprintf("2026-09-30T20:0%d:00Z", phase), "comments": 1, "labels": []any{map[string]any{"name": label}}})
+							rows = append(rows, map[string]any{"node_id": fmt.Sprintf("I%d", n), "number": n, "state": "open", "body": "body", "updated_at": stamp, "comments": 1, "labels": []any{map[string]any{"name": label}}})
 						}
 						json.NewEncoder(w).Encode(rows)
 					case strings.HasSuffix(r.URL.Path, "/comments"):
-						fmt.Fprintf(w, `[{"id":1,"node_id":"C1","body":"answer%d"}]`, phase)
+						body := fmt.Sprintf("answer%d", phase)
+						if strings.HasSuffix(r.URL.Path, "/issues/31/comments") {
+							body = commentBody()
+						}
+						json.NewEncoder(w).Encode([]any{map[string]any{"id": 1, "node_id": "C1", "body": body, "created_at": stamp, "updated_at": commentUpdated(), "author_association": "OWNER", "user": map[string]any{"login": "operator"}}})
 					case strings.HasSuffix(r.URL.Path, "/dependencies/blocked_by"), strings.HasSuffix(r.URL.Path, "/pulls"):
 						fmt.Fprint(w, `[]`)
 					default:
@@ -378,7 +390,11 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 						if phase == 1 {
 							dependencies = append(dependencies, map[string]any{"id": "D1", "number": 99, "state": "CLOSED", "repository": map[string]any{"nameWithOwner": repo}, "labels": map[string]any{"nodes": []any{}}})
 						}
-						data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": id, "body": "body", "updatedAt": fmt.Sprintf("2026-09-30T20:0%d:00Z", phase), "comments": map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": "C1", "body": fmt.Sprintf("answer%d", phase)}}}, "blockedBy": map[string]any{"nodes": dependencies}}
+						body := fmt.Sprintf("answer%d", phase)
+						if id == "I31" {
+							body = commentBody()
+						}
+						data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": id, "body": "body", "updatedAt": stamp, "comments": map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": "C1", "body": body, "createdAt": stamp, "updatedAt": commentUpdated(), "author": map[string]any{"login": "operator"}, "authorAssociation": "OWNER"}}}, "blockedBy": map[string]any{"nodes": dependencies}}
 					}
 				case strings.Contains(req.Query, "CandidatePullRequestReferences"), strings.Contains(req.Query, "LabelIssuePullRequestReferences"):
 					ids, ok := req.Variables["ids"].([]any)
@@ -423,17 +439,25 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 			if !c.CombinedRefreshEnabled() {
 				t.Fatal("label refresh is not combined")
 			}
-			for phase = range 2 {
+			for phase = range 3 {
 				result := c.FetchRefreshIssues(t.Context(), []string{"Todo", "Blocked"}, []string{"Todo", "Blocked", "Backlog"}, connector.IssueFilterHint{SchedulerStates: []string{"Blocked"}})
 				if result.CandidateError != nil || result.StatusError != nil || len(result.Candidates) != 31 || len(result.Statuses) != 51 {
 					t.Fatalf("refresh: %+v", result)
 				}
 				for _, issue := range result.Candidates {
-					if len(issue.Comments) != 1 || (!fallback && issue.Comments[0].Body != fmt.Sprintf("answer%d", phase)) || issue.DependencySource != connector.BlockedRefSourceNative {
+					if len(issue.Comments) != 1 || (!fallback && issue.ID != "I31" && issue.Comments[0].Body != fmt.Sprintf("answer%d", phase)) || issue.DependencySource != connector.BlockedRefSourceNative {
 						t.Fatalf("scheduler evidence: %+v", issue)
 					}
 				}
-				if !fallback && len(result.Candidates[0].BlockedBy) != phase {
+				issue := result.Candidates[30]
+				signal := issue.WorkpadSignal
+				if signal == nil || signal.Invalid != nil || signal.Status != statuses[phase] || signal.RecordedAt == nil || signal.RecordedAt.Format("2006-01-02T15:04:05Z") != commentUpdated() {
+					t.Fatalf("same-comment edit retained previous Workpad authority: %+v", signal)
+				}
+				if issue.Comments[0].ID != "C1" || !issue.Comments[0].AuthorAuthorized || issue.Comments[0].Body != commentBody() || (signal.HumanAction != "") != (phase == 0) {
+					t.Fatalf("same-comment human authority stale: %+v", issue)
+				}
+				if !fallback && len(result.Candidates[0].BlockedBy) != phase%2 {
 					t.Fatalf("native dependencies stale: %+v", result.Candidates[0].BlockedBy)
 				}
 				blocked := result.Candidates[30]
@@ -449,18 +473,18 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 					}
 				}
 			}
-			if reads["/repos/fixture/labels/issues"] != 6 {
+			if reads["/repos/fixture/labels/issues"] != 9 {
 				t.Fatalf("label lists repeated: %v", reads)
 			}
 			if !fallback {
-				if reads["pr-status"] != 2 {
+				if reads["pr-status"] != 3 {
 					t.Fatalf("overlapping PR status hydrated more than once: %v", reads)
 				}
-				if reads["batch"] != 4 {
-					t.Fatalf("batch reads=%d want4", reads["batch"])
+				if reads["batch"] != 6 {
+					t.Fatalf("batch reads=%d want6", reads["batch"])
 				}
 				for n := 1; n <= 31; n++ {
-					if reads[fmt.Sprintf("evidence:I%d", n)] != 2 {
+					if reads[fmt.Sprintf("evidence:I%d", n)] != 3 {
 						t.Fatalf("evidence repeated or stale: %v", reads)
 					}
 				}
@@ -469,149 +493,6 @@ func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
 						t.Fatalf("complete batch used REST evidence: %v", reads)
 					}
 				}
-			}
-		})
-	}
-}
-
-func TestLabelRefreshReusesUnchangedEvidence(t *testing.T) {
-	const repo = "fixture/label-cache"
-	const stamp = "2026-09-30T20:00:00Z"
-	const edited = "2026-09-30T20:01:00Z"
-	for _, tt := range []struct {
-		name             string
-		changed          string
-		missingBlocker   bool
-		missingTimestamp bool
-		wantIDs          []string
-	}{
-		{name: "unchanged"},
-		{name: "issue edited", changed: "I1", wantIDs: []string{"I1"}},
-		{name: "blocker edited", changed: "I3", wantIDs: []string{"I1"}},
-		{name: "blocker missing", missingBlocker: true, wantIDs: []string{"I1"}},
-		{name: "timestamp missing", missingTimestamp: true, wantIDs: []string{"I1"}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			phase := 0
-			reads := make(map[string]int)
-			candidateQueries := 0
-			updated := func(id string) string {
-				if phase > 0 && id == tt.changed {
-					return edited
-				}
-				if tt.missingTimestamp && id == "I1" {
-					return ""
-				}
-				return stamp
-			}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodGet {
-					switch {
-					case r.URL.Path == "/repos/"+repo+"/issues":
-						rows := []any{}
-						for n := 1; n <= 3; n++ {
-							label := "detent:blocked"
-							if n == 3 {
-								label = "detent:backlog"
-							}
-							if label != r.URL.Query().Get("labels") || n == 3 && phase > 0 && tt.missingBlocker {
-								continue
-							}
-							id := fmt.Sprintf("I%d", n)
-							row := map[string]any{"node_id": id, "number": n, "title": id, "state": "open", "body": "body", "labels": []any{map[string]any{"name": label}}}
-							if stamp := updated(id); stamp != "" {
-								row["updated_at"] = stamp
-							}
-							rows = append(rows, row)
-						}
-						json.NewEncoder(w).Encode(rows)
-					case strings.HasSuffix(r.URL.Path, "/pulls"):
-						fmt.Fprint(w, `[]`)
-					default:
-						t.Errorf("unexpected REST read: %s", r.URL.Path)
-						http.NotFound(w, r)
-					}
-					return
-				}
-				var req struct {
-					Query     string
-					Variables map[string]any
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					t.Error(err)
-					return
-				}
-				data := map[string]any{}
-				switch {
-				case strings.Contains(req.Query, "CandidateHydration"):
-					candidateQueries++
-					for key, value := range req.Variables {
-						if !strings.HasPrefix(key, "id") {
-							continue
-						}
-						id := value.(string)
-						reads[id]++
-						dependencies := []any{}
-						if id == "I1" {
-							dependencies = append(dependencies, map[string]any{"id": "I3", "number": 3, "state": "OPEN", "updatedAt": updated("I3"), "repository": map[string]any{"nameWithOwner": repo}, "labels": map[string]any{"nodes": []any{map[string]any{"name": "detent:backlog"}}}})
-						}
-						comment := "## Codex Workpad\n\n### Human Action Needed\nNeed approval."
-						if phase > 0 && tt.changed == id {
-							comment += " Updated."
-						}
-						data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": id, "body": "body", "updatedAt": updated(id), "comments": map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": "C" + id, "body": comment, "updatedAt": updated(id)}}}, "blockedBy": map[string]any{"nodes": dependencies}}
-					}
-				case strings.Contains(req.Query, "CandidatePullRequestReferences"), strings.Contains(req.Query, "LabelIssuePullRequestReferences"):
-					if strings.Contains(req.Query, "CandidatePullRequestReferences") {
-						candidateQueries++
-					}
-					ids, _ := req.Variables["ids"].([]any)
-					if ids == nil {
-						ids, _ = req.Variables["issueIds"].([]any)
-					}
-					nodes := []any{}
-					for _, id := range ids {
-						nodes = append(nodes, map[string]any{"__typename": "Issue", "id": id, "timelineItems": map[string]any{"nodes": []any{}}, "closedByPullRequestsReferences": map[string]any{"totalCount": 0, "nodes": []any{}}})
-					}
-					data["nodes"] = nodes
-					data["repo0"] = map[string]any{"pullRequests": map[string]any{"nodes": []any{}}}
-				default:
-					t.Errorf("unexpected GraphQL: %s", req.Query)
-				}
-				json.NewEncoder(w).Encode(map[string]any{"data": data})
-			}))
-			t.Cleanup(server.Close)
-			cfg := Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: repo, ActiveStates: []string{"Blocked"}, ObservedStates: []string{"Blocked", "Backlog"}}
-			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, cfg)
-			refresh := func(c *Connector) connector.RefreshIssueResult {
-				result := c.FetchRefreshIssues(t.Context(), []string{"Blocked"}, []string{"Blocked", "Backlog"}, connector.IssueFilterHint{})
-				if result.CandidateError != nil || result.StatusError != nil {
-					t.Fatalf("refresh: %+v", result)
-				}
-				return result
-			}
-			first := refresh(c)
-			if len(first.Candidates) != 2 || first.Candidates[0].BlockerReason == "" || len(first.Candidates[0].BlockedBy) != 1 || first.Candidates[0].WorkpadSignal == nil {
-				t.Fatalf("missing fixture evidence: %+v", first)
-			}
-			phase = 1
-			clear(reads)
-			candidateQueries = 0
-			cached := refresh(c)
-			want := map[string]int{}
-			for _, id := range tt.wantIDs {
-				want[id] = 1
-			}
-			if !reflect.DeepEqual(reads, want) {
-				t.Errorf("hydrations = %v, want %v", reads, want)
-			}
-			if len(tt.wantIDs) == 0 && candidateQueries != 0 {
-				t.Errorf("unchanged refresh made %d candidate_issues queries", candidateQueries)
-			}
-			fresh := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, cfg)
-			full := refresh(fresh)
-			if !reflect.DeepEqual(cached, full) {
-				t.Errorf("cached scheduler results differ from full hydration:\ncached: %+v\nfull: %+v", cached, full)
 			}
 		})
 	}

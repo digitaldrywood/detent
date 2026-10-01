@@ -601,10 +601,11 @@ writes followed by successful persistence and normal turn completion.
 Dispatch Workpad comment-read failures use the existing tracker availability observer
 and tracker-unavailable dispatch reason; they never become issue dependency evidence.
 
-Worker credential classification reads `GET /user` and uses the connector's shared REST
-cooldown, including Retry-After (#3002). Shared/distinct principal classification
-and bounded probes are unchanged; no GraphQL identity query is sent.
-A failed `GET /rate_limit` observation now logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
+Worker credential classification uses the connector's shared GraphQL secondary
+cooldown, including Retry-After. The existing principal probe retains the generic
+credential contract, including GitHub App installation tokens; it does not require
+the narrower authenticated-user REST endpoint. A failed `GET /rate_limit`
+observation logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
 A successful response still enforces the configured worker reserve. The old
 credential-wide monitor condition, canary, retry restoration, and scheduler
 skip reason are retired. Historical monitor attempts remain visible in attempt
@@ -656,6 +657,14 @@ encoder. `TestNativeOptionalReportsNegotiateHubSupport`,
 `TestRunnerSetupHeartbeatOwnership`, and `TestOnboardingRunnerLocalChecks` cover
 strict older/current schemas, failed/missing evidence, routing identity, and the
 single startup heartbeat owner. No compatibility retry loop or gate is added.
+
+Label-based refresh reads current body, comments, Workpad, and native dependency
+evidence through its existing combined hydration owner. The competing persistent
+label-evidence cache is removed: issue timestamps cannot authorize reuse of a
+previous human request or clearance. `TestLabelRefreshSharesFreshSchedulerEvidence`
+covers repeated edits of the same authorized Workpad comment from blocked through
+in-progress to complete, with unchanged issue/listing timestamps and cleared
+dependencies. Existing project-item/ref caches and fresh PR readers remain intact.
 
 Rework-breaker recovery reads its historical park only for a current Blocked
 issue with automatic promotion enabled. Current-cause recovery remains the
