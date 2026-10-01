@@ -82,7 +82,8 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					headers["Authorization"], keyID = "Bearer "+token, key
 				}
 				var id string
-				if transport == "remote modern" {
+				switch transport {
+				case "remote modern":
 					headers["Mcp-Protocol-Version"] = "2026-07-28"
 					headers["Mcp-Method"] = "tools/call"
 					headers["Mcp-Name"] = "connection_info"
@@ -102,7 +103,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					if id == "" || setup.Header().Get("Mcp-Session-Id") != "" || !strings.Contains(setup.Body.String(), `"mode":"confirmation"`) {
 						t.Fatalf("modern setup=%d %s", setup.Code, setup.Body.String())
 					}
-				} else if transport == "remote" {
+				case "remote":
 					initialize := strings.Replace(mcpInitializeRequest, `"capabilities":{}`, `"capabilities":{"yolo":true},"_meta":{"yolo":true}`, 1)
 					reply := performJSON(t, server.Handler(), http.MethodPost, "/mcp", initialize, headers)
 					id = reply.Header().Get("Mcp-Session-Id")
@@ -111,7 +112,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					}
 					headers["Mcp-Session-Id"], headers["Mcp-Protocol-Version"] = id, "2025-11-25"
 					performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, headers)
-				} else {
+				default:
 					reply := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-connections", `{"yolo":true}`, headers)
 					var setup struct {
 						ID string `json:"connection_id"`
@@ -243,10 +244,11 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 						return c.ID
 					}
 					connectionID := connect()
-					if transport == "remote" {
+					switch transport {
+					case "remote":
 						headers["Mcp-Session-Id"] = connectionID
 						performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, headers)
-					} else if transport == "stdio" {
+					case "stdio":
 						headers["X-Detent-Connection-ID"] = connectionID
 					}
 					if scenario == "concurrent retry" {

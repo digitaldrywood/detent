@@ -2,7 +2,7 @@ package codex
 
 import (
 	"encoding/json"
-	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -193,7 +193,7 @@ func equalIntPointers(left *int, right *int) bool {
 
 func BenchmarkToolLifecycleNativeActions(b *testing.B) {
 	for _, size := range []int{32, 8100} {
-		b.Run(fmt.Sprint(size), func(b *testing.B) {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			command := "go test " + strings.Repeat("x", size)
 			params, _ := json.Marshal(map[string]any{"threadId": "thread", "turnId": "turn", "item": map[string]any{"id": "tool", "type": "commandExecution", "command": "/bin/zsh -lc '" + command + "'", "commandActions": []map[string]string{{"type": "unknown", "command": command}}, "status": "inProgress"}})
 			message := Message{Method: "item/started", Params: params}

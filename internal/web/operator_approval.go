@@ -123,9 +123,8 @@ func (s *Server) operatorApprovalDecision(c echo.Context) error {
 	default:
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid operator decision")
 	}
-	message := ""
 	if err != nil {
-		message = "The operator decision could not be applied. Refresh the connection or preview and try again."
+		message := "The operator decision could not be applied. Refresh the connection or preview and try again."
 		return s.renderOperatorApproval(c, id, message)
 	}
 	return c.Redirect(http.StatusSeeOther, "/chat/approval?connection_id="+id)

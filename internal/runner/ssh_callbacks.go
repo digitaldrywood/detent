@@ -96,13 +96,14 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 		}
 	}
 	if wire.Recovery != nil {
-		request.Execution = &sshExecution{peer: peer, recovery: *wire.Recovery}
+		execution := &sshExecution{peer: peer, recovery: *wire.Recovery}
+		request.Execution = execution
 		if wire.Native {
 			sources := wire.Sources
 			if sources == nil {
 				sources = &SSHExecutionSources{}
 			}
-			request.Execution = &sshNativeExecution{sshExecution: request.Execution.(*sshExecution), sources: sources, capacity: wire.Capacity}
+			request.Execution = &sshNativeExecution{sshExecution: execution, sources: sources, capacity: wire.Capacity}
 		}
 	}
 	return request

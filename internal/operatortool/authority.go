@@ -58,8 +58,7 @@ func WithConnection(ctx context.Context, connection Connection) context.Context 
 }
 
 func ConnectionIdentity(ctx context.Context) Identity {
-	connection, _ := ctx.Value(connectionKey{}).(Connection)
-	return connection.Identity
+	return CurrentConnection(ctx).Identity
 }
 
 // ProjectSnapshot applies the current application read boundary to an already
@@ -150,7 +149,10 @@ func (e *AuthorizedExecutor) Execute(ctx context.Context, call Call) (Result, er
 
 // CurrentConnection returns trusted transport binding, never tool arguments.
 func CurrentConnection(ctx context.Context) Connection {
-	connection, _ := ctx.Value(connectionKey{}).(Connection)
+	connection, ok := ctx.Value(connectionKey{}).(Connection)
+	if !ok {
+		return Connection{}
+	}
 	return connection
 }
 

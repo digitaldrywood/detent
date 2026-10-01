@@ -78,7 +78,7 @@ func Load() (Matrix, error) {
 		return Matrix{}, err
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		return Matrix{}, fmt.Errorf("matrix trailing data: %v", err)
+		return Matrix{}, fmt.Errorf("matrix trailing data: %w", err)
 	}
 	return matrix, nil
 }
