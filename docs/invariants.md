@@ -1169,8 +1169,16 @@ recorded failed-session outcomes: when the original allowance trigger no longer
 holds, the issue returns to its durable prior In Progress or Rework lane after
 live dependency and human-hold checks. Unknown prior lanes and real exhausted
 failures remain held. `TestAttemptTriageParkRechecksFailedAllowance` covers these
-boundaries with durable attempts and lane records. Exhausted issues with a
-recorded PR head still use the same promotion gate: a clean, green unchanged or
+boundaries with durable attempts and lane records. A current exhausted allowance
+cause retains that recovery owner even when older recorded
+blocker evidence has cleared. Sparse authored operational completion claims
+do not erase failed-session history; verified completion and actual merge
+boundaries keep their existing owners. This removes the competing historical
+blocker release and completion-claim accounting shortcut under INV-3 (#3571).
+The same SQLite regression covers sparse and closed-draft observations,
+exhausted outcomes, and corrected failed-session counts.
+An exhausted issue with a recorded PR head still uses the same promotion gate:
+a clean, green unchanged or
 newer head returns to Merging for
 the exact-head audit. Recovery evaluates audit eligibility once through the
 shared Rework readiness predicate, then applies the remaining promotion gates.

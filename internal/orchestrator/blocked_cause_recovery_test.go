@@ -2739,6 +2739,9 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 		name, priorLane, humanAction string
 		failures                     int
 		incomplete                   bool
+		clearedBlocker               bool
+		operationalClaim             bool
+		closedDraft                  bool
 		dependencyState              string
 		wantLane                     string
 	}{
@@ -2746,6 +2749,10 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 		{name: "preserve prior In Progress", priorLane: "In Progress", failures: 2, wantLane: "In Progress"},
 		{name: "resolved dependency", priorLane: "Rework", failures: 2, dependencyState: "Done", wantLane: "Rework"},
 		{name: "real failures remain exhausted", priorLane: "Rework", failures: 3},
+		{name: "older cleared blocker cannot release exhausted cause", priorLane: "Rework", failures: 3, clearedBlocker: true},
+		{name: "older cleared blocker permits corrected allowance", priorLane: "Rework", failures: 2, clearedBlocker: true, wantLane: "Rework"},
+		{name: "sparse operational claim does not erase failures", priorLane: "In Progress", failures: 3, operationalClaim: true},
+		{name: "hydrated closed draft agrees with sparse claim", priorLane: "In Progress", failures: 3, operationalClaim: true, closedDraft: true},
 		{name: "human hold remains", priorLane: "Rework", failures: 2, humanAction: "approve data migration"},
 		{name: "active dependency remains", priorLane: "Rework", failures: 2, dependencyState: "In Progress"},
 		{name: "incomplete success remains charged", priorLane: "Rework", failures: 2, incomplete: true},
@@ -2780,6 +2787,26 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 			orch.recordLaneTransition(t.Context(), issue, blockedStatusState, at, attemptAllowanceExhaustedReason, workflowLaneMetadata{})
 			issue.State = blockedStatusState
 			issue.StageUpdatedAt = &at
+			if tt.clearedBlocker {
+				issue.WorkpadSignal = &workpad.Signal{
+					Source: workpad.SourceStructured,
+					Status: workpad.StatusBlocked,
+					Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{
+						Type: workpad.PredicateConfigFingerprint, Fingerprint: "old-config",
+					})},
+				}
+				orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig("new-config")}
+			}
+			if tt.operationalClaim {
+				issue.Comments = []connector.IssueComment{{Body: mergedCompletionWorkpadBody()}}
+				if _, accepted := operationalCompletionFromIssue(issue); !accepted {
+					t.Fatal("fixture must reproduce sparse operational completion claim")
+				}
+			}
+			if tt.closedDraft {
+				issue.PullRequest = &connector.PullRequest{Number: 3424, State: "CLOSED", Draft: true, HeadSHA: "old-draft", BaseRef: "develop"}
+				issue.PRNumber = &issue.PullRequest.Number
+			}
 			if tt.humanAction != "" {
 				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: tt.humanAction}
 			}
@@ -2799,6 +2826,26 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 			if tt.wantLane == "" {
 				if len(tracker.updates) != 0 {
 					t.Fatalf("updates=%+v, want retained hold", tracker.updates)
+				}
+				if tt.operationalClaim {
+					for observation := range 4 {
+						snapshot := cloneIssue(issue)
+						if observation%2 == 0 {
+							snapshot.PullRequest = nil
+							snapshot.PRNumber = nil
+						} else {
+							snapshot.PullRequest = &connector.PullRequest{Number: 3424, State: "CLOSED", Draft: true, HeadSHA: "old-draft", BaseRef: "develop"}
+							snapshot.PRNumber = &snapshot.PullRequest.Number
+						}
+						tracker.stateIssues = []connector.Issue{snapshot}
+						restarted := newLaneMutationTestOrchestrator(cfg, tracker, db, db, at.Add(time.Duration(observation+2)*time.Minute))
+						restartedState := newState(cfg)
+						restarted.recoverBlockedIssues(t.Context(), &restartedState, []connector.Issue{snapshot}, at.Add(time.Duration(observation+2)*time.Minute))
+						allowance, err := restarted.issueAttemptAllowance(t.Context(), snapshot)
+						if err != nil || allowance.Sessions != 3 || len(tracker.updates) != 0 {
+							t.Fatalf("observation=%d allowance=%+v updates=%+v error=%v", observation, allowance, tracker.updates, err)
+						}
+					}
 				}
 				return
 			}
