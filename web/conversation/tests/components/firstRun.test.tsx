@@ -240,7 +240,7 @@ describe("FirstRunChecklist", () => {
 });
 
 describe("firstIssueState", () => {
-  it("picks the first dispatchable lane, then the first lane", () => {
+  it("stages native work in the first lane and preserves compatibility defaults", () => {
     const project = {
       id: "proj_example",
       name: "Example Studio",
@@ -253,7 +253,8 @@ describe("firstIssueState", () => {
         { name: "Done", terminal: true, dispatchable: false },
       ],
     } satisfies AccountProject;
-    expect(firstIssueState(project)).toBe("Todo");
+    expect(firstIssueState(project)).toBe("Backlog");
+    expect(firstIssueState({ ...project, profile: "github_compatible" })).toBe("Todo");
     expect(
       firstIssueState({ ...project, states: project.states.filter((s) => !s.dispatchable) }),
     ).toBe("Backlog");

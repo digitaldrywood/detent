@@ -29,7 +29,7 @@ import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "
 import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
-import { noApprovedPolicy, saveMessage } from "../../src/app/account/ProjectSettings.tsx";
+import { noApprovedPolicy, saveMessage, WorkflowSettings } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
 
 afterEach(cleanup);
@@ -317,6 +317,27 @@ describe("the wizard stepper", () => {
 });
 
 describe("the project settings", () => {
+  it("shows the saved workflow and submits a reviewed edit without allowing viewer edits", () => {
+    const integration = {
+      profile: "native", revision: "2", intake: "disabled", projection: "disabled", repository_enabled: false,
+      states: [
+        { name: "Backlog", terminal: false, dispatchable: false, operator_only: true, transitions: ["Todo"] },
+        { name: "Todo", terminal: false, dispatchable: true, transitions: [] },
+      ],
+    };
+    const onSave = vi.fn();
+    const view = render(<WorkflowSettings integration={integration} canManage saving={false} error={null} onSave={onSave} />);
+    expect(screen.getByText("Backlog · Initial · Nondispatchable · Operator only")).toBeTruthy();
+    const states = [...integration.states, { name: "Rework", terminal: false, dispatchable: true, transitions: ["Todo"] }];
+    fireEvent.change(screen.getByRole("textbox", { name: "Workflow definition" }), { target: { value: JSON.stringify(states) } });
+    fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
+    expect(onSave).toHaveBeenCalledWith(states);
+    view.rerender(<WorkflowSettings integration={{ ...integration, states }} canManage={false} saving={false} error={null} onSave={onSave} />);
+    expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
+    expect(screen.getByText("Rework · Dispatchable")).toBeTruthy();
+  });
+
   it("reads both shapes of \"nothing is approved\" as an answer, not a failure", () => {
     expect(
       noApprovedPolicy(new AccountError({ status: 404, code: "not_found", message: "" })),

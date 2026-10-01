@@ -526,8 +526,9 @@ type hostedProjectView struct {
 func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	var request struct {
 		hostedIdempotent
-		Name        string `json:"name"`
-		GrantAccess bool   `json:"grant_access"`
+		Name        string                `json:"name"`
+		GrantAccess bool                  `json:"grant_access"`
+		States      []tracker.NativeState `json:"states,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -543,7 +544,12 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	if name == "" || len(name) > 120 || !request.GrantAccess {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter a project name and explicitly grant yourself project access")
 	}
-	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name)
+	if request.States != nil {
+		if err := validateNativeStates(request.States); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name, request.States)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {

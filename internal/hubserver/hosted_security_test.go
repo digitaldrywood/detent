@@ -1038,7 +1038,7 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 				t.Fatal(err)
 			}
 			credential := apiCredential{ID: principal, Scope: apiScopeOperator, NativeOnly: true, Hosted: user.identity.Hosted, SessionHash: apikey.HashToken(user.token), HostedRole: "owner", ManageRunners: true}
-			project, err := f.service.createHostedProjectRecord(t.Context(), credential, "Project for "+test.role)
+			project, err := f.service.createHostedProjectRecord(t.Context(), credential, "Project for "+test.role, nil)
 			if (err == nil) != test.created {
 				t.Fatalf("createHostedProjectRecord() = %q, %v; want created %v", project, err, test.created)
 			}
