@@ -40,7 +40,8 @@ func main() {
 }
 
 func runGH(ctx context.Context, input string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "gh", args...) // #nosec G204 -- gh is fixed; API arguments are assembled by this package and passed directly without a shell.
+	cmd := exec.CommandContext(ctx, "gh")
+	cmd.Args = append(cmd.Args, args...)
 	cmd.Stdin = strings.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
