@@ -30,23 +30,15 @@ import { AttemptDiffBody } from "../components/surfaces/DiffSurface.tsx";
 import { Pill, type PillTone } from "./components/IssueCard.tsx";
 import { WorkTopBar } from "./components/WorkTopBar.tsx";
 import { actorLabel } from "./lib/activity.ts";
+import { currentVersion, useRoundDiff } from "./lib/roundDiff.ts";
 import { ageLabel, issueNumber } from "./lib/format.ts";
 import { NO_RUNNER_NAMES, useRunnerNames, type RunnerNames } from "./lib/runnerNames.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
 
-export type ReviewDecision = "approved" | "changes_requested";
+export { currentVersion, diffForRound } from "./lib/roundDiff.ts";
 
-/** The version a change is reviewed at: the current one, else the newest. */
-export function currentVersion(change: ChangeDetail): ChangeVersion | null {
-  return (
-    change.versions.find(
-      (version) => version.version_id === change.change.current_version_id,
-    ) ??
-    change.versions.at(-1) ??
-    null
-  );
-}
+export type ReviewDecision = "approved" | "changes_requested";
 
 /** The version the reader asked for, falling back to the current one. */
 export function selectVersion(
@@ -519,65 +511,6 @@ function useChangeRequest(
     };
   }, [http, projectId, workItemId, changeId, nonce]);
   return { data, error, loading, reload: () => setNonce((value) => value + 1) };
-}
-
-/**
- * The diff a round is decided on: a stored diff whose head is the round's
- * head, and nothing else. The attempt that published the round is asked
- * first; the issue's latest diff stands in only when it carries the same
- * head, so a reader never approves one round while looking at another's
- * code. The previous round's diff is dropped the moment the round changes.
- */
-export function diffForRound(
-  headSha: string | null,
-  candidate: AttemptDiff | null,
-): AttemptDiff | null {
-  if (headSha === null || candidate === null || candidate.files.length === 0) return null;
-  return candidate.head_sha === headSha ? candidate : null;
-}
-
-function useRoundDiff(
-  http: WorkHttp,
-  projectId: string | null,
-  workItemId: string,
-  version: ChangeVersion | null,
-): { diff: AttemptDiff | null; loading: boolean } {
-  const [state, setState] = React.useState<{
-    versionId: string | null;
-    diff: AttemptDiff | null;
-    loading: boolean;
-  }>({ versionId: null, diff: null, loading: false });
-  const attemptId = version?.attempt_id ?? null;
-  const versionId = version?.version_id ?? null;
-  const headSha = version?.head_sha ?? null;
-  React.useEffect(() => {
-    if (projectId === null || versionId === null || headSha === null) {
-      setState({ versionId, diff: null, loading: false });
-      return;
-    }
-    let cancelled = false;
-    setState({ versionId, diff: null, loading: true });
-    void (async () => {
-      const byAttempt =
-        attemptId === null
-          ? null
-          : await http.getAttemptDiff(projectId, attemptId).catch(() => null);
-      const found =
-        byAttempt ??
-        (await http
-          .getWorkItemDiff(projectId, workItemId)
-          .then((answer) => answer.diff)
-          .catch(() => null));
-      if (cancelled) return;
-      setState({ versionId, diff: diffForRound(headSha, found), loading: false });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [http, projectId, workItemId, attemptId, versionId, headSha]);
-  // A diff is only ever shown for the round it was read for.
-  if (state.versionId !== versionId) return { diff: null, loading: versionId !== null };
-  return { diff: state.diff, loading: state.loading };
 }
 
 export function ChangeRequestPage(): React.ReactElement {

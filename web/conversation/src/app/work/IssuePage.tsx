@@ -1,3 +1,4 @@
+import { Dialog } from "@base-ui/react/dialog";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -6,6 +7,7 @@ import React from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 
 import { Button } from "../../components/ui/button.tsx";
+import { useMediaQuery } from "../../hooks/useMediaQuery.ts";
 import {
   Collapsible,
   CollapsiblePanel,
@@ -51,6 +53,7 @@ import {
   type RelatedCandidate,
   type RelatedEntry,
 } from "./components/IssueProperties.tsx";
+import { IssueReviewDock } from "./components/IssueReviewDock.tsx";
 import { IssueResources, type ResourceRow } from "./components/IssueResources.tsx";
 import { mergeActivity, runnerLabel, type ActivityRow } from "./lib/activity.ts";
 import { toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts";
@@ -715,6 +718,8 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const navigate = useNavigate();
   const { data, item, conversation } = props;
   const [expanded, setExpanded] = React.useState(false);
+  const [reviewOpen, setReviewOpen] = React.useState(false);
+  const narrow = useMediaQuery("max-xl");
 
   const runnerNames = useRunnerNames();
   const running = data.attempts.at(-1)?.status === "running" ? data.attempts.at(-1) : undefined;
@@ -937,6 +942,18 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   );
 
   const truncated = item.body.length > BODY_CLAMP && !expanded;
+  const reviewDock = (
+    <IssueReviewDock
+      changes={data.changes}
+      projectId={data.project.project_id}
+      workItemId={item.id}
+      properties={properties}
+      activity={
+        <ActivityFeed rows={rows} live={null} liveAt={liveAt} onReply={null} posting={false} />
+      }
+      onOpenChange={props.onOpenChange}
+    />
+  );
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -947,6 +964,28 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
           }`}
         >
           <header>
+            {panelOpen ? null : (
+              <Dialog.Root open={reviewOpen && narrow} onOpenChange={setReviewOpen}>
+                <Dialog.Trigger
+                  render={<Button size="sm" variant="outline" className="mb-3 xl:hidden" />}
+                >
+                  Open review
+                </Dialog.Trigger>
+                {narrow ? (
+                  <Dialog.Portal>
+                    <Dialog.Popup className="fixed inset-0 z-50 flex min-h-0 flex-col bg-background">
+                      <Dialog.Title className="sr-only">Issue review</Dialog.Title>
+                      <Dialog.Close
+                        render={<Button size="sm" variant="ghost" className="m-2 self-end" />}
+                      >
+                        Close review
+                      </Dialog.Close>
+                      {reviewDock}
+                    </Dialog.Popup>
+                  </Dialog.Portal>
+                ) : null}
+              </Dialog.Root>
+            )}
             <p className="font-mono text-muted-foreground text-xs" data-testid="issue-identifier">
               {item.projectName} {issueNumber(item.identifier, item.number)}{item.archived ? " · Archived" : ""}
             </p>
@@ -1068,12 +1107,12 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
         </div>
       </div>
 
-      {panelOpen ? null : (
+      {panelOpen || narrow ? null : (
         <aside
-          className="hidden w-[300px] shrink-0 overflow-y-auto px-6 py-8 lg:block"
-          aria-label="Properties"
+          className={`flex min-h-0 shrink-0 flex-col border-l border-border bg-background ${data.changes.length === 0 ? "w-[300px]" : "w-[560px]"}`}
+          aria-label="Issue review"
         >
-          {properties}
+          {reviewDock}
         </aside>
       )}
     </div>
