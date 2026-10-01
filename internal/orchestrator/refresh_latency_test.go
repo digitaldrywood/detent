@@ -272,7 +272,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 	for _, mode := range []string{"id-only", "inline", "fresh", "missing", "failure", "partial failure", "independent failure", "independent forbidden", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			paths := map[string]int{}
-			graphqlReads := 0
+			graphQLRequests := 0
 			var requestMu sync.Mutex
 			independentFailure := mode == "independent failure" || mode == "independent forbidden"
 			closed := independentFailure
@@ -281,21 +281,21 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				defer requestMu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
 				if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
-					graphqlReads++
 					var request struct {
-						Query string `json:"query"`
+						Query string
 					}
 					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-						t.Errorf("decode authority query: %v", err)
+						t.Error(err)
 						w.WriteHeader(http.StatusBadRequest)
 						return
 					}
-					if !strings.HasPrefix(request.Query, "query DetentGitHubCandidateHydration(") {
+					if !strings.HasPrefix(request.Query, "query DetentGitHubCandidateHydration(") || !strings.Contains(request.Query, "blockedBy(") {
 						t.Errorf("unexpected authority query %s", request.Query)
 						w.WriteHeader(http.StatusBadRequest)
 						return
 					}
-					fmt.Fprint(w, `{"errors":[{"message":"Cannot query field \"blockedBy\" on type \"Issue\"."}]}`)
+					graphQLRequests++
+					fmt.Fprint(w, `{"errors":[{"message":"Field 'blockedBy' doesn't exist on type 'Issue'"}]}`)
 					return
 				}
 				paths[r.URL.Path]++
@@ -376,8 +376,8 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						t.Fatalf("ID-only phase authority changed: %+v", evidence)
 					}
 				}
-				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 || graphqlReads != 0 {
-					t.Fatalf("inline authority read remote: %v %v, GraphQL reads %d", tracker.fetchIdentifiers, paths, graphqlReads)
+				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 || graphQLRequests != 0 {
+					t.Fatalf("inline authority read remote: %v %v, GraphQL requests %d", tracker.fetchIdentifiers, paths, graphQLRequests)
 				}
 				return
 			}
@@ -418,7 +418,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			}
 			requestMu.Lock()
 			requests := maps.Clone(paths)
-			queries := graphqlReads
+			graphqlCount := graphQLRequests
 			requestMu.Unlock()
 			want := []string{"owner/repo#1", "owner/repo#2", "owner/other#1"}
 			if len(tracker.fetchIdentifiers) == 0 || fmt.Sprint(tracker.fetchIdentifiers[0]) != fmt.Sprint(want) {
@@ -429,8 +429,8 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				t.Fatalf("resolver calls = %v, requests = %v; failed cohort=%t", tracker.fetchIdentifiers, requests, failedCohort)
 			}
 			if mode == "fresh" {
-				if graphqlReads != 3 {
-					t.Fatalf("scheduler evidence reads = %d, want one per distinct issue", graphqlReads)
+				if graphqlCount != 3 {
+					t.Fatalf("GraphQL requests = %d, want 3 scheduler hydration fallbacks", graphqlCount)
 				}
 				if len(requests) != 8 {
 					t.Fatalf("requests = %v, want 3 issues + 3 dependencies + 2 repository lists", requests)
@@ -482,9 +482,12 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 					if total != cap {
 						t.Fatalf("request cap changed: %v", requests)
 					}
+					if graphqlCount != 1 {
+						t.Fatalf("GraphQL requests = %d, want 1 scheduler hydration fallback", graphqlCount)
+					}
 				}
-				if mode == "cancelled" && (len(requests) != 0 || queries != 0) {
-					t.Fatalf("cancelled phase read remote: %v, GraphQL reads %d", requests, queries)
+				if mode == "cancelled" && (len(requests) != 0 || graphqlCount != 0) {
+					t.Fatalf("cancelled phase read remote: %v, GraphQL requests %d", requests, graphqlCount)
 				}
 			}
 		})

@@ -170,7 +170,7 @@ func (r deferredCompletion) completion() runpkg.Completion {
 	}
 	workerAvailabilityKnown := r.ForgeAvailability != nil && (*r.ForgeAvailability == (forgeWaitMetadata{}) || validForgeAvailabilityClass(r.ForgeAvailability.ErrorClass))
 	if r.DeliverableRecovery != nil {
-		if _, deliveryFailure := runpkg.PullRequestDeliverableFailure(r.DeliverableRecovery.TypedCause); workerAvailabilityKnown && deliveryFailure {
+		if commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(r.DeliverableRecovery.TypedCause); workerAvailabilityKnown && deliveryFailure && commandErr != nil {
 			event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: r.DeliverableRecovery.TypedCause}
 		} else if event.Err == nil {
 			event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: errors.New(r.DeliverableRecovery.Cause)}

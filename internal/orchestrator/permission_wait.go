@@ -76,8 +76,8 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 		return false
 	}
 	if event.Err != nil {
-		_, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err)
-		if event.Result.FinalState != runpkg.FinalStateNeedsHumanAttention || !deliveryFailure {
+		commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err)
+		if event.Result.FinalState != runpkg.FinalStateNeedsHumanAttention || !deliveryFailure || commandErr == nil {
 			return false
 		}
 	}

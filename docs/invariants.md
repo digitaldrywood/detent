@@ -843,10 +843,14 @@ Workflow duration reports exclude `agent_activity` in their existing SQL owner
 before loading or converting the activity payloads that report aggregation does
 not use. A finite report window searches both inclusive-start/exclusive-end
 `finished_at` bounds through the existing index; absent bounds retain the
-optional query contract. Timeline/activity readers, history revision, flow,
-trends and representatives are unchanged. The existing report roundtrip fixture
-checks large activity exclusion, report equivalence, optional bounds and the
-actual bounded query plan. No index, cache, configuration or schema is added.
+optional query contract. Flow overlap reads likewise seek a present lower
+`finished_at` bound directly and retain the strict `started_at` upper bound.
+They do not constrain the upper `finished_at`: long sessions ending after the
+window still contribute their overlap. Absent lower bounds retain the optional
+query. Timeline/activity readers, history revision, trends and representatives
+are unchanged. Existing report fixtures check large activity exclusion, report
+equivalence, optional bounds, strict overlap boundaries and the actual lower
+index-seek operand. No index, cache, configuration or schema is added.
 
 GitHub usage timing (#3767) extends the existing `RESTScope` owner, mutex,
 fixed stage/step/family/outcome aggregation and single aggregate log event.
@@ -2979,11 +2983,11 @@ candidate dispatch behavior.
 **Change:** Edit INV-10 and its tests in the same PR before changing priority or
 capacity semantics. New names or indirect equivalents remain a review boundary.
 
-## INV-11 — Human scope approval before Todo
+## INV-11 — Human mechanism scope approval before Todo
 
-**Statement:** No feature and no new or expanded operational mechanism enters
-Todo without a human's explicit approval of that scope, regardless of who filed
-the issue or how its title is typed. Only a fix with recorded runtime evidence
+**Statement:** No new or expanded operational mechanism enters Todo without a
+human's explicit approval of that scope, regardless of who filed the issue or
+how its title is typed. Only a mechanism fix with recorded runtime evidence
 whose remedy removes or consolidates may reach Todo without a human.
 
 **Why:** The operator's September 14, 2026 audit of 253 PRs merged between
@@ -2996,20 +3000,27 @@ orchestrator code. Non-test orchestrator code grew from 23,828 lines at v0.44.0
 to 51,369 at v0.114.8. The growth came through unapproved scope, not machine
 self-filing.
 
-**Enforcement:** Admission Criteria rule 9 in the operator-managed
-`detent-orchestration/WORKFLOW.md` leaves features and new or expanded mechanisms
-in Backlog until a human approves their scope by moving them. Assistants file
-that work to Backlog only. The rule applies regardless of title type or author;
-only evidenced fixes that remove or consolidate qualify for automatic admission.
-That workflow is outside this repository and was updated by the operator.
+On October 1, 2026, the operator removed the feature scope gate. Features that
+do not add or expand mechanisms may be filed straight to Todo. Human scope
+approval remains required for new or expanded mechanisms, and the rest of the
+mechanism moratorium remains in effect. The operator also updated Admission
+Criteria rule 9 in the out-of-repo `detent-orchestration/WORKFLOW.md` to gate only
+new or expanded mechanisms. This invariant and its doctor enforcement record
+the in-repo half of that decision.
+
+**Enforcement:** Admission Criteria rule 9 leaves new or expanded mechanisms in
+Backlog until a human approves their scope by moving them. Assistants file that
+work to Backlog only. The rule applies regardless of title type or author; only
+evidenced mechanism fixes that remove or consolidate qualify for automatic
+admission without human scope approval.
 
 The doctor check `INV-11 human scope approval` inspects every applied Todo
 ledger entry in the last seven days, including repeat entries. It fetches current
 issue titles and bodies by ID in batches of at most 100 so GitHub's identity
-lookup can audit busy projects. Conventional `feat`, `perf`, and `refactor` titles
-and declarations in either titles or bodies adding or expanding config keys,
-reason codes, brakes, breakers, leases, parks, recovery paths, or reservations
-require a human move. Each
+lookup can audit busy projects. Declarations in either titles or bodies adding
+or expanding config keys, reason codes, brakes, breakers, leases, parks, recovery
+paths, or reservations require a human move. Conventional `feat`, `perf`, and
+`refactor` title prefixes alone do not require scope approval. Each
 violation reports the issue, ledger origin, reason, and timestamp. Declaration
 clauses are separated at punctuation and coordinating words so removal or
 negation of one mechanism does not hide a later addition in the same sentence.
@@ -3028,8 +3039,8 @@ store/schema/tracker/issue evidence warns rather than passing silently. This is
 a diagnostic, not an admission gate: body classification is a conservative
 natural-language heuristic, current issue text can differ from admission-time
 scope, and historical tracker moves absent from the ledger cannot be audited.
-It does not prove that every ordinary fix contains sufficient runtime evidence;
-admission rule 9 and review enforce that broader requirement.
+It does not prove that every mechanism fix contains sufficient runtime evidence;
+admission rule 9 and review enforce that requirement.
 
 **Change:** Editing INV-11 requires updating the doctor check and the admission
 criteria in the same PR. Identify INV-11 in the PR template and record the

@@ -812,6 +812,14 @@ WHERE event.finished_at IS NOT NULL
   AND (sqlc.narg(from_time) IS NULL OR event.finished_at > sqlc.narg(from_time))
   AND (sqlc.narg(to_time) IS NULL OR event.started_at < sqlc.narg(to_time));
 
+-- name: WorkflowPhaseFlowRowsFrom :many
+SELECT event.*
+FROM workflow_phase_events AS event INDEXED BY workflow_phase_events_finished_at_idx
+WHERE event.finished_at > sqlc.narg(from_time)
+  AND event.phase_type IN ('agent_session', 'local_check', 'ci')
+  AND (sqlc.narg(project_id) IS NULL OR event.project_id = sqlc.narg(project_id))
+  AND (sqlc.narg(to_time) IS NULL OR event.started_at < sqlc.narg(to_time));
+
 -- name: IssueWorkflowTimelineRows :many
 SELECT event.*
 FROM workflow_phase_events AS event
