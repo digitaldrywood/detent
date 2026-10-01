@@ -6,7 +6,7 @@
 // rendered
 // on its own with plain props, so what is under test is the screen's own
 // behaviour rather than the client it would otherwise be wired to.
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -231,13 +231,19 @@ describe("the organization's own rules", () => {
     expect(onExit).toHaveBeenCalled();
   });
 
-  it("sends the invitation with the role that was chosen", () => {
-    const onInvite = vi.fn();
+  it.each([true, false])("sends the chosen role and resets only on success (%s)", async (success) => {
+    const onInvite = vi.fn().mockResolvedValue(success);
     render(<InviteForm onInvite={onInvite} />);
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "rae@example.test" } });
     fireEvent.change(screen.getByLabelText("Role"), { target: { value: "admin" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send invitation" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send invitation" }));
+    });
     expect(onInvite).toHaveBeenCalledWith({ email: "rae@example.test", role: "admin" });
+    expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe(success ? "" : "rae@example.test");
+    expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe(success ? "member" : "admin");
+    if (success) expect(screen.getByRole("status").textContent).toContain("Invitation sent to rae@example.test.");
+    else expect(screen.queryByRole("status")).toBeNull();
   });
 });
 

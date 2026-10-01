@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -110,6 +111,56 @@ func TestHostedTenantAPIAuthorization(t *testing.T) {
 	})
 }
 
+func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
+	t.Parallel()
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			provider := &browserHostedProvider{invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string)}
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Hosted: &HostedConfig{
+				OrganizationID: "org_expiry", WorkOSOrganizationID: "org_provider_expiry", Provider: provider, PublicURL: "https://expiry.example.test",
+			}})
+			credential := apiCredential{ID: bootstrapTokenID, HostedRole: "owner", Hosted: &auth.HostedIdentity{OrganizationID: "org_provider_expiry", Subject: "user_owner"}}
+			var created []hostedInvitationView
+			for _, email := range []string{"older@example.test", "newest@example.test"} {
+				view, err := service.inviteHostedMemberFor(t.Context(), credential, email, "member", email)
+				if err != nil {
+					t.Fatal(err)
+				}
+				issued, err := provider.Invitation(t.Context(), view.ID)
+				if err != nil || view.ExpiresAt != formatHubTime(issued.ExpiresAt) {
+					t.Fatalf("response expiry = %q, provider expiry = %v: %v", view.ExpiresAt, issued.ExpiresAt, err)
+				}
+				var storedExpiry string
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT expires_at FROM hosted_invitations WHERE id=?", view.ID).Scan(&storedExpiry); err != nil || storedExpiry != view.ExpiresAt {
+					t.Fatalf("stored expiry = %q, response expiry = %q: %v", storedExpiry, view.ExpiresAt, err)
+				}
+				if legacy {
+					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE hosted_invitations SET expires_at='' WHERE id=?", view.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				created = append(created, view)
+			}
+			for _, releaseSeat := range []bool{false, true} {
+				if releaseSeat {
+					if _, err := service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_member_reservations"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				listed, err := service.hostedPendingInvitations(t.Context())
+				if err != nil || len(listed) != len(created) {
+					t.Fatalf("listed invitations = %#v: %v", listed, err)
+				}
+				for index, view := range listed {
+					if view != created[len(created)-1-index] {
+						t.Fatalf("listed invitation = %#v, created = %#v", view, created[len(created)-1-index])
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestHostedInvitationLifecycle(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
@@ -139,7 +190,7 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 			if !slices.Equal(users, test.members) || len(members.Invitations) != test.invitations {
 				t.Fatalf("members = %v, invitations = %#v", users, members.Invitations)
 			}
-			if test.invitations == 1 && (members.Invitations[0].ID != created.ID || members.Invitations[0].ExpiresAt == "") {
+			if test.invitations == 1 && (members.Invitations[0].ID != created.ID || members.Invitations[0].ExpiresAt != created.ExpiresAt) {
 				t.Fatalf("pending invitation = %#v", members.Invitations[0])
 			}
 		})
