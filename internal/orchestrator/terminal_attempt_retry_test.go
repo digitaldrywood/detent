@@ -917,18 +917,26 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 	now := time.Date(2026, 7, 18, 13, 0, 0, 0, time.UTC)
 	empty := terminalRetryTestIssue("service-restart-empty")
 	pushed := terminalRetryTestIssue("service-restart-pushed")
+	resumedRework := terminalRetryTestIssue("service-restart-rework")
 	planned := terminalRetryTestIssue("operator-recovered-plan")
 	successfulPlan := terminalRetryTestIssue("successful-plan")
 	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{
 		empty.ID:          cloneIssue(empty),
 		pushed.ID:         cloneIssue(pushed),
+		resumedRework.ID:  cloneIssue(resumedRework),
 		planned.ID:        cloneIssue(planned),
 		successfulPlan.ID: cloneIssue(successfulPlan),
 	}}
-	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}, Recovery: workflowconfig.Recovery{TerminalAttemptRetryLimit: new(0)}})
 	o := &Orchestrator{cfg: cfg, connector: tracker}
 	state := newState(cfg)
 	state.WorkAttempts = []telemetry.WorkAttempt{
+		{
+			AttemptID: 5, IssueID: resumedRework.ID, Identifier: resumedRework.Identifier,
+			Status: string(store.WorkAttemptStatusTerminal), TerminalState: string(store.WorkAttemptTerminalAbandoned),
+			ErrorClass: "service_restart", CompletedAt: timePointer(now.Add(-time.Minute)),
+			WorkerMetadataJSON: `{"dispatch_source_state":"Rework"}`,
+		},
 		{
 			AttemptID: 4, IssueID: planned.ID, Status: string(store.WorkAttemptStatusTerminal),
 			TerminalState: string(store.WorkAttemptTerminalAbandoned), ErrorClass: "operator_abandoned",
@@ -960,13 +968,16 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 		},
 	}
 
-	transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{pushed, empty, planned, successfulPlan}, now)
+	transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{pushed, empty, planned, successfulPlan, resumedRework}, now)
 
-	if len(transitions) != 1 || transitions[0].ID != empty.ID || transitions[0].State != "Todo" {
-		t.Fatalf("transitions = %#v, want empty attempt moved to Todo", transitions)
+	if len(transitions) != 2 || transitions[0].ID != empty.ID || transitions[0].State != "Todo" || transitions[1].ID != resumedRework.ID || transitions[1].State != "Rework" {
+		t.Fatalf("transitions = %#v, want empty legacy attempt in Todo and recorded source restored to Rework", transitions)
 	}
-	if got := tracker.transitionStates(); !slices.Equal(got, []string{"Todo"}) {
-		t.Fatalf("state transitions = %v, want [Todo]", got)
+	if got := tracker.transitionStates(); !slices.Equal(got, []string{"Todo", "Rework"}) {
+		t.Fatalf("state transitions = %v, want [Todo Rework]", got)
+	}
+	if len(state.Blocked) != 0 || tracker.issues[pushed.ID].State != "In Progress" {
+		t.Fatalf("restart entered failure park or moved pushed work: blocked=%+v pushed=%s", state.Blocked, tracker.issues[pushed.ID].State)
 	}
 	o.cfg.Plan = gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}
 	for _, issue := range []connector.Issue{planned, successfulPlan} {
@@ -1552,7 +1563,7 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 		{name: "zero capacity wait", limit: new(0), sequence: "C", wantState: "In Progress"},
 		{name: "zero GitHub wait", limit: new(0), sequence: "G", wantState: "In Progress"},
 		{name: "zero forge wait", limit: new(0), sequence: "A", wantState: "In Progress"},
-		{name: "zero service restart", limit: new(0), sequence: "RRR", wantState: "In Progress"},
+		{name: "zero service restart", limit: new(0), sequence: "RRR", wantState: "Todo"},
 		{name: "zero overload remains instance-owned", limit: new(0), sequence: "OOO", wantState: "In Progress"},
 		{name: "overloads never park the issue", sequence: "OOOOOO", wantState: "In Progress"},
 		{name: "overload does not reset failed outcomes", limit: new(1), sequence: "FOF", wantState: "Blocked"},

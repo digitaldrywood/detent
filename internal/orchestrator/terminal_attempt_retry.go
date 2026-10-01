@@ -491,14 +491,14 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 		if !ok {
 			continue
 		}
-		if preTurnAttempt(attempt) {
+		if preTurnAttempt(attempt) || strings.TrimSpace(attempt.ErrorClass) == "service_restart" {
 			var metadata struct {
 				Source string `json:"dispatch_source_state"`
 			}
 			if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) != nil {
 				metadata.Source = ""
 			}
-			if updated, changed := o.restorePreTurnIssue(ctx, state, Running{Issue: issue, DispatchSourceState: metadata.Source}, now); changed {
+			if updated, changed := o.restorePreTurnIssue(ctx, state, Running{Issue: issue, DispatchSourceState: metadata.Source, WorkProductPushed: workAttemptHasPushedProduct(attempt)}, now); changed {
 				transitions = append(transitions, updated)
 			}
 			continue
