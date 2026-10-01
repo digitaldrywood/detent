@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -39,6 +40,7 @@ type deferredCompletion struct {
 	DeferredAt          time.Time                      `json:"deferred_at"`
 	Availability        deferredCompletionAvailability `json:"availability"`
 	DeliverableRecovery *deferredDeliverableRecovery   `json:"deliverable_recovery,omitempty"`
+	ForgeAvailability   *forgeWaitMetadata             `json:"worker_forge_availability,omitempty"`
 	Persisted           bool                           `json:"-"`
 }
 
@@ -88,6 +90,13 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 	if fenceErr != nil {
 		record.Availability = deferredCompletionAvailability{Class: "completion_fence_unavailable", Message: fenceErr.Error()}
 	}
+	if availabilityErr, unavailable := forgeavailability.As(event.Err); unavailable {
+		record.ForgeAvailability = &forgeWaitMetadata{
+			Host:       availabilityErr.Scope.Host,
+			Operation:  availabilityErr.Scope.Operation,
+			ErrorClass: availabilityErr.Class,
+		}
+	}
 	var recoveryErr *runpkg.DeliverableRecoveryError
 	if commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err); deliveryFailure && errors.As(event.Err, &recoveryErr) && recoveryErr != nil {
 		record.DeliverableRecovery = &deferredDeliverableRecovery{
@@ -97,6 +106,7 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 				OperationClass: commandErr.OperationClass,
 				Operation:      commandErr.Operation,
 				Message:        errorString(recoveryErr.Err),
+				ApprovalDenied: commandErr.ApprovalDenied,
 			},
 		}
 	}
@@ -163,6 +173,11 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		} else if event.Err == nil {
 			event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: errors.New(r.DeliverableRecovery.Cause)}
 		}
+	}
+	if r.ForgeAvailability != nil {
+		event.Err = forgeavailability.NewError(forgeavailability.Scope{
+			Host: r.ForgeAvailability.Host, Operation: r.ForgeAvailability.Operation,
+		}, r.ForgeAvailability.ErrorClass, event.Err)
 	}
 	return event
 }
