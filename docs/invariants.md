@@ -410,7 +410,14 @@ metadata retains that same precedence for the entire canonical comment set.
 Selection precedes parsing: a selected invalid, cleared, or human-held Workpad
 cannot fall back to older comments or issue-body evidence. Signal parsing,
 artifact receipt/status hashes, session progress, and current human clearance
-share this selection owner. The explicit completed-receipt history search keeps
+share this selection owner. Producer handoff instructions target that same
+canonical comment: edit it when permitted, otherwise publish a new comment
+through the existing tracker writer. Issue-body or final-answer completion
+cannot supersede a canonical comment. Native/local event ownership remains
+unchanged. Verified evidence for an unchanged PR head and test inputs can be
+referenced to publish its receipt without rerunning solely for publication;
+pending acceptance, project verification and human approvals remain required.
+The explicit completed-receipt history search keeps
 its existing reverse traversal and skip semantics. This consolidates current
 comment authority under INV-3 without changing authorization, native dependency
 proof, or adding a recovery mechanism. Acceptance still requires the dispatch-time
