@@ -127,9 +127,13 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 		}
 
-		allowance, allowanceErr := o.issueAttemptAllowance(ctx, issue)
-		if allowanceErr != nil {
-			continue
+		var allowance attemptAllowance
+		if !autoPromoteOperationalCompletionAccepted(state, issue) {
+			var allowanceErr error
+			allowance, allowanceErr = o.issueAttemptAllowance(ctx, issue)
+			if allowanceErr != nil {
+				continue
+			}
 		}
 		allowanceExhausted := allowance.exhausted() && o.cfg.DeliverableKind != "artifact"
 		if allowanceExhausted && !repairOnly {
