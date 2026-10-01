@@ -43,8 +43,9 @@ type deferredCompletion struct {
 }
 
 type deferredDeliverableRecovery struct {
-	Branch string `json:"branch,omitempty"`
-	Cause  string `json:"cause,omitempty"`
+	Branch     string                          `json:"branch,omitempty"`
+	Cause      string                          `json:"cause,omitempty"`
+	TypedCause *runpkg.DeliverableCommandError `json:"typed_cause,omitempty"`
 }
 
 type deferredCompletionRequest struct {
@@ -88,10 +89,15 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 		record.Availability = deferredCompletionAvailability{Class: "completion_fence_unavailable", Message: fenceErr.Error()}
 	}
 	var recoveryErr *runpkg.DeliverableRecoveryError
-	if errors.As(event.Err, &recoveryErr) && recoveryErr != nil {
+	if commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err); deliveryFailure && errors.As(event.Err, &recoveryErr) && recoveryErr != nil {
 		record.DeliverableRecovery = &deferredDeliverableRecovery{
 			Branch: strings.TrimSpace(recoveryErr.Branch),
 			Cause:  errorString(recoveryErr.Err),
+			TypedCause: &runpkg.DeliverableCommandError{
+				OperationClass: commandErr.OperationClass,
+				Operation:      commandErr.Operation,
+				Message:        errorString(recoveryErr.Err),
+			},
 		}
 	}
 	if availabilityErr, ok := connector.AsTrackerAvailability(fenceErr); ok {
@@ -148,14 +154,15 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		RetryAttempt: r.RetryAttempt,
 		RetryDelay:   r.RetryDelay,
 	}
-	if r.DeliverableRecovery != nil {
-		var cause error
-		if strings.TrimSpace(r.DeliverableRecovery.Cause) != "" {
-			cause = errors.New(r.DeliverableRecovery.Cause)
-		}
-		event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: cause}
-	} else if strings.TrimSpace(r.Error) != "" {
+	if strings.TrimSpace(r.Error) != "" {
 		event.Err = errors.New(r.Error)
+	}
+	if r.DeliverableRecovery != nil {
+		if _, deliveryFailure := runpkg.PullRequestDeliverableFailure(r.DeliverableRecovery.TypedCause); deliveryFailure {
+			event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: r.DeliverableRecovery.TypedCause}
+		} else if event.Err == nil {
+			event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: errors.New(r.DeliverableRecovery.Cause)}
+		}
 	}
 	return event
 }

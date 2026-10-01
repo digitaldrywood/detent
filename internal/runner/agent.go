@@ -2001,7 +2001,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		execution = mergeAgentTurnExecutions(execution, recovery)
 		turns = int64(max(execution.turnCount, 1))
 		if recovery.err != nil {
-			if recoveryFailure, exhausted := pullRequestDeliverableFailure(recovery.err); exhausted {
+			if recoveryFailure, exhausted := PullRequestDeliverableFailure(recovery.err); exhausted {
 				execution.err = &DeliverableRecoveryError{Branch: branch, Err: errors.Join(initialErr, recovery.err)}
 				execution.result.FinalState = FinalStateNeedsHumanAttention
 				r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_deliverable_recovery_failed",
@@ -2186,7 +2186,7 @@ func recoverablePullRequestDeliverable(execution agentTurnExecution) (*Deliverab
 	if execution.err == nil || !execution.result.PullRequestHeadPushed {
 		return nil, false
 	}
-	return pullRequestDeliverableFailure(execution.err)
+	return PullRequestDeliverableFailure(execution.err)
 }
 
 func (r *Runner) reconcileFailedPushPublication(
@@ -2480,7 +2480,7 @@ func forgeRetryReadOperation(operation string) bool {
 	return strings.Contains(operation, "git fetch") || strings.Contains(operation, "git ls-remote")
 }
 
-func pullRequestDeliverableFailure(err error) (*DeliverableCommandError, bool) {
+func PullRequestDeliverableFailure(err error) (*DeliverableCommandError, bool) {
 	errorsFound, onlyDeliverableErrors := deliverableCommandErrors(err)
 	if !onlyDeliverableErrors || len(errorsFound) == 0 {
 		return nil, false

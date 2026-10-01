@@ -246,7 +246,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	deliverableLookup := deliverableRecoveryLookupResult{}
 	var deliverableRecoveryErr *runpkg.DeliverableRecoveryError
-	if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
+	if _, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err); deliveryFailure && errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
 		if diffStatsPresent(event.Result.DiffStats) {
 			running.DiffStats = event.Result.DiffStats
 		}
@@ -436,10 +436,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if running.Cancellation != nil {
 			statusMessage = running.Cancellation.Error()
 		}
-		deliverableRecoveryErr = nil
 		var projectionErr *runpkg.SessionBudgetProjectionError
 		projectionFailure := errors.As(event.Err, &projectionErr) && projectionErr != nil
-		if errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil && !deliverableRecoveryMachineOwned(deliverableLookup) {
+		if deliverableRecoveryErr != nil && !deliverableRecoveryMachineOwned(deliverableLookup) {
 			errorClass = deliverableRecoveryReasonCode(deliverableLookup)
 			phase = "blocked"
 			statusMessage = "branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs delivery recovery"
@@ -476,7 +475,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if !interrupted {
 			if deliverableRecoveryMachineOwned(deliverableLookup) {
 				running.Issue = o.returnMissingDeliverableBranchToRework(ctx, state, running.Issue, deliverableLookup, event.CompletedAt)
-			} else if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup) {
+			} else if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup, deliverableRecoveryErr) {
 				return
 			}
 			if projectionFailure && o.blockHumanOwnedWorkerFailure(

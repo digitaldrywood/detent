@@ -72,8 +72,14 @@ func terminalPermissionWait(output string) (permissionWaitRecord, bool) {
 }
 
 func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
-	if (event.Err != nil && event.Result.FinalState != runpkg.FinalStateNeedsHumanAttention) || (event.Result.FinalState != "" && event.Result.FinalState != runpkg.FinalStateCompleted && event.Result.FinalState != runpkg.FinalStateNeedsHumanAttention) {
+	if event.Result.FinalState != "" && event.Result.FinalState != runpkg.FinalStateCompleted && event.Result.FinalState != runpkg.FinalStateNeedsHumanAttention {
 		return false
+	}
+	if event.Err != nil {
+		_, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err)
+		if event.Result.FinalState != runpkg.FinalStateNeedsHumanAttention || !deliveryFailure {
+			return false
+		}
 	}
 	wait, ok := terminalPermissionWait(event.Result.FinalMessage)
 	if !ok && event.Result.FinalState == runpkg.FinalStateNeedsHumanAttention {
