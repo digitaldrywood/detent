@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -71,22 +72,30 @@ func (s *Server) apiIssueProgressCredit(c echo.Context) error {
 	if !ok {
 		return err
 	}
-	credits, ok := s.store.(store.ProgressCreditStore)
-	if !ok {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue progress credit store is unavailable"))
-	}
-	identity := store.IssueIdentity{
-		ProjectID:  explanation.Identity.ProjectID,
-		IssueID:    explanation.Identity.IssueID,
-		Identifier: explanation.Identity.Identifier,
-		IssueURL:   explanation.Identity.IssueURL,
-	}
-	credit, err := credits.CreditIssueProgress(c.Request().Context(), identity, s.now().UTC())
+	credit, err := s.creditOperatorProgress(c.Request().Context(), explanation.Identity)
 	if err != nil {
-		s.logger.Error("issue progress credit failed", slog.Any("error", err))
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue progress credit store is unavailable"))
+		return writeControlProblem(c, err)
 	}
 	return c.JSON(http.StatusOK, credit)
+}
+
+func (s *Server) creditOperatorProgress(ctx context.Context, identitySource explain.Identity) (store.IssueProgressCredit, error) {
+	credits, ok := s.store.(store.ProgressCreditStore)
+	if !ok {
+		return store.IssueProgressCredit{}, &controlProblem{http.StatusServiceUnavailable, "runtime_unavailable", "Issue progress credit store is unavailable"}
+	}
+	identity := store.IssueIdentity{
+		ProjectID:  identitySource.ProjectID,
+		IssueID:    identitySource.IssueID,
+		Identifier: identitySource.Identifier,
+		IssueURL:   identitySource.IssueURL,
+	}
+	credit, err := credits.CreditIssueProgress(ctx, identity, s.now().UTC())
+	if err != nil {
+		s.logger.Error("issue progress credit failed", slog.Any("error", mutation.ErrorText(ctx, err)))
+		return store.IssueProgressCredit{}, &controlProblem{http.StatusServiceUnavailable, "runtime_unavailable", "Issue progress credit store is unavailable"}
+	}
+	return credit, nil
 }
 
 func (s *Server) issueExplanation(c echo.Context) (explain.IssueExplanation, bool, error) {

@@ -370,7 +370,7 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 	if err != nil {
 		return false, nil, err
 	}
-	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
+	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, s.operatorCommandOrganization(ctx), command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
 	if err != nil {
 		return false, nil, err
 	}
@@ -382,7 +382,7 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 		return true, nil, nil
 	}
 	var storedHash, raw string
-	if err := s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key).Scan(&storedHash, &raw); err != nil {
+	if err := s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.operatorCommandOrganization(ctx), command.actor, command.operation, command.key).Scan(&storedHash, &raw); err != nil {
 		return false, nil, err
 	}
 	if storedHash != hash {
@@ -419,7 +419,7 @@ func (s *Service) completeHostedOperation(ctx context.Context, command hostedCom
 	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand)
+	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, s.operatorCommandOrganization(ctx), command.actor, command.operation, command.key, hostedPendingCommand)
 	if err != nil {
 		return nil, err
 	}
@@ -723,4 +723,41 @@ func (command hostedCommand) forContext(ctx context.Context) hostedCommand {
 		command.key = m.RetryIdentity
 	}
 	return command
+}
+
+// operatorCommandOrganization uses trusted mutation authority for non-hosted
+// application commands; hosted HTTP commands retain their configured tenant.
+func (s *Service) operatorCommandOrganization(ctx context.Context) string {
+	if m, ok := mutation.FromContext(ctx); ok && m.OrganizationID != "" {
+		return m.OrganizationID
+	}
+	if s.config.Hosted != nil {
+		return s.config.Hosted.OrganizationID
+	}
+	return ""
+}
+
+// readHostedOperation is the read-only application receipt lookup. It never
+// claims a missing command; action_result must remain a read operation.
+func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand) (json.RawMessage, bool, error) {
+	command = command.forContext(ctx)
+	hash, err := command.hash()
+	if err != nil {
+		return nil, false, err
+	}
+	var storedHash, raw string
+	err = s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.operatorCommandOrganization(ctx), command.actor, command.operation, command.key).Scan(&storedHash, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if storedHash != hash {
+		return nil, true, mutation.ErrConflict
+	}
+	if raw == hostedPendingCommand {
+		return nil, true, mutation.ErrUncertain
+	}
+	return json.RawMessage(raw), true, nil
 }

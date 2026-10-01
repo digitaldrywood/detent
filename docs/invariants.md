@@ -130,6 +130,27 @@ resource projection and entry/session binding. `TestConnectionActions` and
 `TestMCPActionApprovalBoundary` cover exact preview, replay, rejection, stale
 targets, closed protocol sessions, self-approval and operator-selected YOLO.
 
+Fleet/operator MCP adapters (#3343) share the dashboard refresh, availability
+clear, canary, update, progress-credit, warning-acknowledgment, recovery and
+runner administration commands. Runner display edits execute directly; capacity,
+scheduling, access, enrollment, revoke, stop and other material actions use the
+existing authenticated browser approval surface. Unknown action kinds still
+require confirmation. Fresh authority resolution binds application command
+credentials from the originating connection, including when another authorized
+browser approves. Hosted runner administration retains current all-project
+runner grants and transaction-time membership/credential checks. Browser previews
+containing fleet actions also require current runner grants, including for owners.
+Health and outbox reads retain dashboard deployment boundaries; AI debug projects
+its snapshot through current project grants. Missing runtime
+or approval services return opaque unavailable results; an unhosted hub bearer
+credential cannot stand in for a human. Worker enrollment redemption, credential
+renewal/rotation, claims, leases and heartbeat protocols remain worker-only.
+`TestMCPFleetReads`, `TestMCPFleetMutation`, `TestMCPOperatorControls`,
+`TestMCPStopExactRun`, `TestHostedMCPFleetControls`, `TestHubMCPFleetBoundary`
+and `TestFleetArgumentBoundary` cover current authority, bounded calls, exact
+targets, confirmation and safe retries. No adapter writes tracker lanes or adds
+a protection/recovery mechanism (INV-3); recovery/stop use existing services.
+
 SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
 
 Hub-native SSH runs capture Git artifacts and attempt diffs on the selected
@@ -681,6 +702,49 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+GitHub budget recovery resolves current credentials and reserves through the
+existing policy constructor. Exact identical worker/orchestrator tokens already
+establish shared-pool ownership without a duplicate principal lookup; recovery
+only reads current budget evidence. Different-token principal comparisons and
+fresh launch identity remain unchanged. The shared reserve check has one owner.
+`TestRunnerWorkerGitHubBudgetRecoveryOwnership` covers ten recovery/launch pairs,
+parallel current-budget reads, reserve reload, revoked credentials, and mutable
+GitHub login names. It removes ten of twenty principal reads per batch while
+retaining all twenty budget observations, without a retained identity cache,
+configuration, or recovery mechanism. Post-deployment timings are separate
+acceptance evidence, not implied by request counts.
+
+Fallback dependency hydration uses the existing fresh comment reader when comment
+or Workpad evidence is missing. The former issue-timestamp comment cache is
+removed because its diagnostic comments also became Workpad decision authority.
+`TestDependencyCommentEvidenceFreshWorkpad` covers authorized edits of the same
+comment and cleared human action in Todo, including unchanged, missing, and zero
+issue timestamps. Native dependency relations remain authoritative and fresh;
+comment references remain diagnostic notes. No replacement cache or recovery
+mechanism is added.
+
+Epic completion (#3639) defers a parent when current tick evidence already
+contains a nonterminal child, before reading that parent's linked children and
+unresolved checklist references. This removes the duplicate completion scan for
+an epic that cannot close. Tick evidence is negative authority only: terminal
+tick evidence never replaces the existing fresh linked-child and identifier
+reads used to close a parent. Unknown children and lookup failures retain the
+existing completion and retry owners. `TestCloseCompletedEpics` covers a large
+unresolved checklist, a later child reopen, and independent parent completion;
+the existing affected-epic retry tests retain transient failure behavior. No
+cache, timer, configuration, or recovery mechanism is added.
+
+Rework gate restoration owns its fresh tracker and Workpad read once, retaining
+the refreshed issue for later tick consumers. Required-gate snapshots project
+that evidence without another tracker read. The existing completion reader still
+fetches current evidence for callers outside restoration; history selection
+consumes that evidence rather than reading it again. Fresh blocked Workpads and
+unavailable reads cannot restore a wait, and current-head validator hydration
+keeps its existing owner. `TestReworkGateWaitHistoryCannotResurrectSupersededWait`
+checks one tracker/comment read, failed reads, and fresh blocker propagation;
+the existing current-head restoration cases cover validator handoff. This
+consolidates readers without a cache, configuration, or recovery mechanism.
+
 Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
 existing optional feature negotiation. The `runner_local_checks` capability
 permits `local_checks`; older Hubs receive the original heartbeat without that
@@ -1053,13 +1117,20 @@ links closure across direct completion and stale merged/Merging reconciliation.
 The reviewed transition fingerprints preserve existing reason
 selection and add no mechanism, reason code, or recovery path.
 
-Provider capacity retries use the existing provider resume deadline (including
-reset jitter) while it is in the future (#2912). Speculative probe backoff cannot
-shorten that pause; elapsed deadlines retain normal probe backoff and operator
-capacity clear still removes the outage immediately. This consolidates retry
-scheduling without adding a pause or recovery mechanism.
-`TestBackendCapacityProviderResetWindow` covers the reported dispatch times,
-reset boundary, and operator clear; safety fuzz seeds retain resume arithmetic.
+Provider capacity retries use the earlier future provider resume deadline
+(including reset jitter) or existing bounded probe deadline. A historical reset
+time cannot suppress recovery probes after an external quota reset or account
+change. The existing five-minute exponential backoff, capped at one hour, and
+single in-flight probe still prevent full-width retry storms. Failed probes retain
+the provider window and backoff; successful probes or authoritative available
+status release existing capacity retries. Credential-file changes keep their
+existing immediate probe notification. This replaces the deadline precedence from
+#2912 without adding a watcher, pause, configuration, or recovery mechanism.
+`TestBackendCapacityProviderResetWindow`,
+`TestBackendCapacityDispatchAllowsOneResetProbe`, and
+`TestBackendCapacityProbeFailureRefreshesProviderWindow` cover future reset
+metadata, early restored capacity, single-probe ownership, retry release, backoff,
+reset boundaries, and operator clear; safety fuzz seeds retain resume arithmetic.
 
 Workspace cleanup (#2913) uses one cancellable background execution of the existing
 reaper instead of synchronous tick and completion sweeps. Each pass bounds tracker

@@ -108,10 +108,20 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	ctx := c.Request().Context()
-	readable, err := s.hostedReadableProjects(ctx, credential)
+	result, err := s.readHostedFleet(c.Request().Context(), credential)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential) (hostedFleetResponse, error) {
+	readable, err := s.hostedReadableProjects(ctx, credential)
+	if err != nil {
+		return hostedFleetResponse{}, err
 	}
 	visible := make(map[tracker.ProjectID]bool, len(readable))
 	for _, project := range readable {
@@ -120,28 +130,25 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	editable := credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(ctx, credential)
 	runners, err := s.hostedFleetRunners(ctx, visible, editable)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return hostedFleetResponse{}, err
 	}
 	var projects int
 	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
-		return s.nativeAPIError(c, err)
+		return hostedFleetResponse{}, err
 	}
 	if len(readable) < projects {
 		scopeHostUsage(runners)
 		reservations, err := s.hostedVisibleReservations(ctx, visible)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return hostedFleetResponse{}, err
 		}
 		scopeProviderUsage(runners, reservations)
 	}
 	usage, err := s.hostedFleetUsage(ctx)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return hostedFleetResponse{}, err
 	}
-	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, hostedFleetResponse{Runners: runners, Editable: editable, Usage: usage, Current: detentVersion(s.config.Version)})
+	return hostedFleetResponse{Runners: runners, Editable: editable, Usage: usage, Current: detentVersion(s.config.Version)}, nil
 }
 
 func (s *Service) hostedFleetRunners(ctx context.Context, visible map[tracker.ProjectID]bool, editable bool) ([]hostedFleetRunner, error) {

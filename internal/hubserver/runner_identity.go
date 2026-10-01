@@ -151,13 +151,22 @@ func (s *Service) revokeRunnerIdentity(c echo.Context) error {
 	if !ok {
 		return s.nativeAPIError(c, runnerUnauthorized())
 	}
-	return s.runnerTransaction(c, http.StatusNoContent, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+	_, err := s.revokeRunnerIdentityCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope nativeScope, resource string) (any, error) {
+	return s.runnerAdminTransaction(ctx, scope, true, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		result, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ?, updated_at = ? WHERE revoked_at IS NULL AND id IN
-(SELECT token_id FROM runner_identities WHERE id = ? AND organization_id = ?)`, formatHubTime(now), formatHubTime(now), c.Param("runner"), c.Param("organization"))
+(SELECT token_id FROM runner_identities WHERE id = ? AND organization_id = ?)`, formatHubTime(now), formatHubTime(now), resource, string(scope.organization))
 		if err := requireRunnerUpdate(result, err); err != nil {
 			return nil, err
 		}
-		return struct{}{}, recordRunnerEvent(ctx, tx, c.Param("runner"), credential.ID, "revoked", now)
+		return struct{}{}, recordRunnerEvent(ctx, tx, resource, scope.credential.ID, "revoked", now)
 	})
 }
 
