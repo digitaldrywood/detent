@@ -853,7 +853,16 @@ park. The existing deferred-delivery receipt stores one summarized typed cause
 only after that whole-error proof; replay validates the same predicate. Existing
 Cause/Error diagnostics remain. Legacy text-only receipts cannot prove purity,
 so replay preserves their full original error instead of creating human attention
-or successful reconciliation. No top-level schema or recovery owner is added.
+or successful reconciliation. The same receipt retains the worker's typed forge
+scope/class separately from tracker-fence availability, reusing existing forge
+wait metadata. Replay restores that wrapper after its inner error and retains
+summarized approval-denial evidence, so existing credential/forge owners keep
+instance failures out of human holds and issue allowance. The same optional
+metadata is present and empty when the current encoder observed no forge wrapper.
+Absent or malformed metadata retains the full original error, including v35
+typed-delivery receipts that cannot prove outer availability. Missing authority
+is never reconstructed from text; no historical receipt is rewritten.
+No top-level schema or recovery owner is added.
 Historical Workpads, permission parks, allowance records and lanes are untouched.
 `TestHandleRunResultPermissionWait`, `TestNativeChangeRunCompletion` and
 `TestNativeLandingRunCompletion` cover canonical authority, nil-change human

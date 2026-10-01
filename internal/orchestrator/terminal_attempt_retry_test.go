@@ -901,12 +901,18 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 	event.Result.DiffStats = running.DiffStats
 	event.Err = &runpkg.DeliverableRecoveryError{Branch: branch, Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Operation: "gh pr create", Message: "gh pr create failed"}}
 	for _, test := range []struct {
-		name      string
-		joinedErr error
-		legacy    bool
-		wantPure  bool
+		name         string
+		joinedErr    error
+		legacy       bool
+		legacyTyped  bool
+		invalidClass bool
+		invalidScope bool
+		wantPure     bool
 	}{
 		{name: "pure typed receipt", wantPure: true},
+		{name: "legacy v35 typed receipt", legacyTyped: true},
+		{name: "unknown availability class", invalidClass: true},
+		{name: "nonempty availability without class", invalidScope: true},
 		{name: "workspace join", joinedErr: runpkg.ErrWorkspacePreparation},
 		{name: "checkpoint join", joinedErr: errors.New("checkpoint persistence failed")},
 		{name: "lease join", joinedErr: errors.New("native execution lease lost")},
@@ -921,6 +927,15 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 			if test.legacy {
 				record.DeliverableRecovery = &deferredDeliverableRecovery{Branch: branch, Cause: "gh pr create failed"}
 			}
+			if test.legacy || test.legacyTyped {
+				record.ForgeAvailability = nil
+			}
+			if test.invalidClass {
+				record.ForgeAvailability.ErrorClass = "unknown"
+			}
+			if test.invalidScope {
+				record.ForgeAvailability.Host = "forge.example.test"
+			}
 			data, err := json.Marshal(record)
 			if err != nil {
 				t.Fatal(err)
@@ -933,13 +948,16 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 			if _, pure := runpkg.PullRequestDeliverableFailure(replayed.Err); pure != test.wantPure {
 				t.Fatalf("replayed pure delivery = %v, want %v", pure, test.wantPure)
 			}
+			if test.wantPure && (decoded.ForgeAvailability == nil || *decoded.ForgeAvailability != (forgeWaitMetadata{})) {
+				t.Fatal("new bare delivery receipt lost explicit availability absence")
+			}
 			if decoded.Error != input.Err.Error() {
 				t.Fatalf("stored full error = %q, want %q", decoded.Error, input.Err.Error())
 			}
 			if !test.wantPure && replayed.Err.Error() != input.Err.Error() {
 				t.Fatalf("replayed full error = %q, want %q", replayed.Err.Error(), input.Err.Error())
 			}
-			if !test.legacy && !test.wantPure && decoded.DeliverableRecovery != nil {
+			if test.joinedErr != nil && !test.legacy && decoded.DeliverableRecovery != nil {
 				t.Fatal("mixed error acquired a typed recovery receipt")
 			}
 		})

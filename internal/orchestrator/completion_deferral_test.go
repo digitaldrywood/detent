@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -115,6 +116,10 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 		wantDeferred       bool
 		wantTerminal       store.WorkAttemptTerminalState
 		wantAcceptedTokens int64
+		forgeClass         string
+		approvalDenied     bool
+		native             bool
+		mixed              bool
 	}{
 		{
 			name:           "deferral survives restart",
@@ -142,6 +147,12 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			wantTerminal:       store.WorkAttemptTerminalSuccess,
 			wantAcceptedTokens: 37,
 		},
+		{name: "canonical server wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassServer},
+		{name: "native server wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassServer, native: true},
+		{name: "canonical approval wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassTransport, approvalDenied: true},
+		{name: "native approval wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassTransport, approvalDenied: true, native: true},
+		{name: "canonical mixed wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassServer, mixed: true},
+		{name: "native mixed wrapper", recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalCapacity, forgeClass: forgeavailability.ClassServer, mixed: true, native: true},
 	}
 
 	for _, tt := range tests {
@@ -155,13 +166,42 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 				firstErr:                     completionDeferralAvailabilityError(),
 			}
 			cfg := completionDeferralConfig()
+			cfg.ForgeHost = "github.com"
+			var trackerOwner connector.Connector = tracker
+			var nativeTracker *nativeWorkflowConnector
+			if tt.native {
+				nativeTracker = &nativeWorkflowConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, states: []connector.WorkflowState{
+					{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked", "Done"}},
+					{Name: "Blocked"}, {Name: "Done", Terminal: true},
+				}}
+				trackerOwner = nativeTracker
+			}
 			initialStore := openCompletionDeferralStoreWithoutCleanup(t, dbPath)
 			attemptID := startCompletionDeferralAttempt(t, initialStore, issue, now)
-			initialOrch := Orchestrator{cfg: cfg, connector: tracker, workAttempts: initialStore, now: func() time.Time { return now }}
+			initialOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: initialStore, now: func() time.Time { return now }}
 			initialState := newState(cfg)
 			initialState.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
 			initialState.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
-			initialOrch.handleRunResult(t.Context(), &initialState, completionDeferralEvent(issue, attemptID, now))
+			event := completionDeferralEvent(issue, attemptID, now)
+			if tt.forgeClass != "" {
+				message := "HTTP 503: upstream unavailable"
+				if tt.approvalDenied {
+					message = "tool approval declined"
+				}
+				delivery := &runpkg.DeliverableRecoveryError{Branch: "detent/1869", Err: &runpkg.DeliverableCommandError{
+					OperationClass: "pull_request", Operation: "gh pr create", Message: message, ApprovalDenied: tt.approvalDenied,
+					Command: "command-only-unrecorded", Arguments: `{"head":"detent/1869"}`, Body: "opaque backend detail",
+				}}
+				event.Err = forgeavailability.NewError(forgeavailability.Scope{Host: "forge.example.test", Operation: "gh pr create"}, tt.forgeClass, delivery)
+				if tt.mixed {
+					event.Err = errors.Join(event.Err, runpkg.ErrWorkspacePreparation)
+				}
+				event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
+				event.Result.FinalMessage = "May I merge?"
+				event.Result.PullRequestHeadPushed = true
+				event.Result.WorkspaceBranch = "detent/1869"
+			}
+			initialOrch.handleRunResult(t.Context(), &initialState, event)
 			if err := initialStore.Close(); err != nil {
 				t.Fatalf("Close(initial store) error = %v", err)
 			}
@@ -170,8 +210,11 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			recoveredIssue := cloneIssue(issue)
 			recoveredIssue.State = tt.recoveredState
 			tracker.setIssue(recoveredIssue)
+			if nativeTracker != nil {
+				nativeTracker.stateIssues = []connector.Issue{recoveredIssue}
+			}
 			restartAt := now.Add(2 * time.Minute)
-			restartedOrch := Orchestrator{cfg: cfg, connector: tracker, workAttempts: restartedStore, now: func() time.Time { return restartAt }}
+			restartedOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: restartedStore, now: func() time.Time { return restartAt }}
 			restartedState := newState(cfg)
 			restartedOrch.recoverDurableWorkAttempts(t.Context(), &restartedState, restartAt)
 
@@ -180,6 +223,19 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			}
 			if retry, ok := restartedState.Retry[issue.ID]; !ok || !retry.CompletionDeferred {
 				t.Fatalf("Retry[%q] = %#v, want recovered completion deferral", issue.ID, retry)
+			}
+			if tt.forgeClass != "" {
+				decoded := restartedState.deferredCompletions[issue.ID].completion()
+				availability, typed := forgeavailability.As(decoded.Err)
+				if !typed || availability.Scope.Host != "forge.example.test" || availability.Scope.Operation != "gh pr create" || availability.Class != tt.forgeClass {
+					t.Fatalf("restored worker availability = %+v, want original forge scope/class", availability)
+				}
+				if !tt.mixed {
+					var command *runpkg.DeliverableCommandError
+					if !errors.As(decoded.Err, &command) || command.ApprovalDenied != tt.approvalDenied || command.Arguments != "" || command.Command != "" || command.Body != "" {
+						t.Fatalf("restored summarized command = %+v", command)
+					}
+				}
 			}
 			if _, ok := restartedState.Claimed[issue.ID]; !ok {
 				t.Fatalf("Claimed[%q] missing after restart", issue.ID)
@@ -227,6 +283,23 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			}
 			if receipt.TerminalState != tt.wantTerminal {
 				t.Fatalf("terminal state = %q, want %q", receipt.TerminalState, tt.wantTerminal)
+			}
+			if tt.forgeClass != "" {
+				wantClass := tt.forgeClass
+				if tt.approvalDenied {
+					wantClass = forgeavailability.ClassWorkerGitHubCredentialUnavailable
+				}
+				retry := restartedState.Retry[issue.ID]
+				condition := restartedState.ForgeUnavailable["forge.example.test"]
+				if receipt.ErrorClass != forgeUnavailableErrorClass || !allowanceInfrastructureAttempt(receipt) || !retry.ForgeUnavailable || retry.Attempt != 2 || retry.ForgeRetry == nil || retry.ForgeRetry.Branch != "detent/1869" || !retry.ForgeRetry.WorkProductPushed || condition.Operation != "gh pr create" || condition.ErrorClass != wantClass {
+					t.Fatalf("receipt = %+v, retry = %+v, condition = %+v, want same-attempt instance %s wait", receipt, retry, condition, wantClass)
+				}
+				if _, blocked := restartedState.Blocked[issue.ID]; blocked {
+					t.Fatal("instance outage became a human hold")
+				}
+				if nativeTracker != nil && (len(nativeTracker.updates) != 0 || len(nativeTracker.comments) != 0) || len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+					t.Fatal("instance outage mutated tracker state")
+				}
 			}
 			if _, ok := restartedState.deferredCompletions[issue.ID]; ok {
 				t.Fatalf("deferred completion remains after fence decision")
