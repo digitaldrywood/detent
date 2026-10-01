@@ -51,10 +51,11 @@ type Preview struct {
 }
 
 type Output struct {
-	ResourceID string          `json:"resource_id,omitempty"`
-	URL        string          `json:"url,omitempty"`
-	Reconnect  bool            `json:"reconnect,omitempty"`
-	Data       json.RawMessage `json:"data,omitempty"`
+	SignOut    *operatortool.SignOutResult `json:"sign_out,omitempty"`
+	ResourceID string                      `json:"resource_id,omitempty"`
+	URL        string                      `json:"url,omitempty"`
+	Reconnect  bool                        `json:"reconnect,omitempty"`
+	Data       json.RawMessage             `json:"data,omitempty"`
 }
 
 // Application reuses the deployment's dashboard services, ownership checks,
@@ -223,6 +224,13 @@ func (e *Executor) Execute(ctx context.Context, call operatortool.Call) (operato
 	if err != nil {
 		return operatortool.Result{}, safe(err)
 	}
+	// Only the just-executed sign-out can return its content-free outcome after
+	// ending its own authority. Cached reads/retries still require current access.
+	if call.Name == operatortool.SessionLogout && action.Status == chat.ActionSucceeded && action.SignOut != nil {
+		return result(struct {
+			Action chat.Action `json:"action"`
+		}{action})
+	}
 	return e.actionResult(ctx, action)
 }
 
@@ -259,7 +267,12 @@ func (e *Executor) ExecuteAction(ctx context.Context, action chat.Action) (chat.
 	if err != nil || len(data) > operatortool.MaxResultBytes/2 {
 		return chat.ActionExecution{}, ErrUnavailable
 	}
-	return chat.ActionExecution{Message: "Administration action completed.", ResourceID: output.ResourceID, URL: output.URL, Data: data}, nil
+	execution := chat.ActionExecution{Message: "Administration action completed.", ResourceID: output.ResourceID, URL: output.URL, Data: data}
+	if name == operatortool.SessionLogout && output.SignOut != nil {
+		execution.SignOut = output.SignOut
+		execution.Message = output.SignOut.Message()
+	}
+	return execution, nil
 }
 
 func (e *Executor) AuditAction(ctx context.Context, action chat.Action, outcome string) {

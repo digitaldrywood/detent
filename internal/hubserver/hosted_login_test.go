@@ -670,6 +670,11 @@ func TestHostedLoginLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 			if strings.Contains(recorder.Body.String(), "private provider credential") {
 				t.Fatal("logout exposed provider error")
 			}
+
+			retry := hostedLoginRequest(s, http.MethodPost, "/logout", token, nil, true)
+			if retry.Code != http.StatusSeeOther || len(p.revoked) != 1 {
+				t.Fatalf("logout retry repeated provider effects: %d %v", retry.Code, p.revoked)
+			}
 		})
 	}
 }

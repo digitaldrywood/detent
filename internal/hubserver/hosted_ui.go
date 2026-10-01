@@ -116,12 +116,11 @@ func (s *Service) hostedHome(c echo.Context) error {
 		return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 	}
 	data := templates.HostedPageData{Mode: "onboarding", Title: "Your organization", Email: session.Email}
-	var members int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM hosted_members").Scan(&members); err != nil {
+	setup, err := s.hostedAccountSetupFor(c.Request().Context(), session)
+	if err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Organization information is temporarily unavailable")
 	}
-	data.CanCreate = members == 0 && session.Identity.Subject == s.config.Hosted.BootstrapSubject && session.Identity.SupportActor == "" && !hostedEmailListed(s.config.Hosted.StaffEmails, session.Email)
-	data.CanSupport = session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email)
+	data.CanCreate, data.CanSupport = setup.CanCreate, setup.CanSupport
 	if hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
 		data.Mode = "organization"
 		data.Notice = "Staff access is limited to account and usage metadata. Customer content requires authorized temporary support access."
@@ -368,4 +367,22 @@ func (s *Service) hostedCostDrivers(ctx context.Context, entitlement HostedEntit
 		result.OperatorAICostUSD = &cost
 	}
 	return result, nil
+}
+
+// hostedAccountSetupFor shares account/onboarding facts with the typed session
+// projection. It never carries the browser's form or provider exchange secrets.
+type hostedAccountSetup struct {
+	Email      string `json:"email"`
+	CanCreate  bool   `json:"can_create"`
+	CanSupport bool   `json:"can_support"`
+	Staff      bool   `json:"staff"`
+}
+
+func (s *Service) hostedAccountSetupFor(ctx context.Context, session auth.Session) (hostedAccountSetup, error) {
+	var members int
+	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&members); err != nil {
+		return hostedAccountSetup{}, err
+	}
+	staff := hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == ""
+	return hostedAccountSetup{Email: session.Email, CanCreate: members == 0 && session.Identity.Subject == s.config.Hosted.BootstrapSubject && session.Identity.SupportActor == "" && !staff, CanSupport: session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email), Staff: staff}, nil
 }

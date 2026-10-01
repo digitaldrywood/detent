@@ -37,6 +37,7 @@ type Message struct {
 }
 
 type Action struct {
+	SignOut           *operatortool.SignOutResult `json:"sign_out,omitempty"`
 	resultData        json.RawMessage             // Never serialized into browser, logs or audit.
 	Work              *operatortool.WorkArguments `json:"work,omitempty"`
 	Material          bool                        `json:"material,omitempty"`
@@ -116,6 +117,7 @@ type ActionExecutor interface {
 // ActionExecution carries the application command's result, including the
 // identity of a newly created resource, into the shared action receipt.
 type ActionExecution struct {
+	SignOut    *operatortool.SignOutResult
 	Data       json.RawMessage // Deliberate tool result; retained only in this bound chat session.
 	Revision   int64
 	CommentID  string

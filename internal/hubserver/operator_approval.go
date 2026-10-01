@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
@@ -125,7 +126,18 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 	var err error
 	switch c.FormValue("decision") {
 	case "confirm":
-		_, err = s.operatorChat.Confirm(ctx, id, actionID)
+		var resolved chatpkg.Conversation
+		resolved, err = s.operatorChat.Confirm(ctx, id, actionID)
+		if err == nil {
+			for _, action := range resolved.Actions {
+				if action.ID == actionID && action.Kind == chatpkg.ActionKind(operatortool.SessionLogout) && action.SignOut != nil {
+					s.hostedSetCookie(c, hostedCookie, "", "/", time.Unix(1, 0))
+					s.hostedSetCookie(c, hostedTransactionCookie, "", "/auth/oidc", time.Unix(1, 0))
+					c.Response().Header().Set("Cache-Control", "no-store")
+					return c.String(http.StatusOK, action.SignOut.Message())
+				}
+			}
+		}
 	case "reject":
 		_, err = s.operatorChat.RejectConnectionAction(ctx, id, actionID)
 	case "mode":

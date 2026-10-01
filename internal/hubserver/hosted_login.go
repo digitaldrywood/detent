@@ -273,26 +273,26 @@ func (s *Service) logoutHosted(c echo.Context) error {
 	}
 	if sessionErr != nil && hash != "" {
 		var encoded string
-		err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT identity_json FROM hosted_sessions WHERE token_hash = ?", hash).Scan(&encoded)
+		err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT identity_json FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&encoded)
 		if err == nil && json.Unmarshal([]byte(encoded), &session.Identity) == nil && session.Identity != nil {
 			sessionErr = nil
 		}
 	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_sessions SET revoked_at = ? WHERE token_hash = ?", formatHubTime(s.config.now()), hash); err != nil {
+	if sessionErr != nil {
+		session.Identity = nil
+	}
+	outcome, err := s.logoutHostedFor(c.Request().Context(), hash, session.Identity)
+	if err != nil {
 		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-out is temporarily unavailable", auth.HostedDenial{Flow: "logout", Reason: "session_revoke_failed"})
 	}
 	s.hostedSetCookie(c, hostedCookie, "", "/", time.Unix(1, 0))
 	s.hostedSetCookie(c, hostedTransactionCookie, "", "/auth/oidc", time.Unix(1, 0))
-	if sessionErr == nil {
-		auditErr := s.hostedAudit(c.Request().Context(), session.Identity, "session_ended", "/logout", "", http.StatusOK)
-		providerErr := s.config.Hosted.Provider.RevokeSession(c.Request().Context(), session.Identity.SessionID)
-		if auditErr != nil || providerErr != nil {
-			reason := "provider_revoke_failed"
-			if providerErr == nil {
-				reason = "audit_failed"
-			}
-			return s.hostedDenied(c, http.StatusServiceUnavailable, "You are signed out of this Hub. Provider sign-out could not be confirmed; close the support dashboard and retry provider sign-out.", auth.HostedDenial{Flow: "logout", Reason: reason, Err: providerErr, Email: session.Email})
+	if sessionErr == nil && (!outcome.ProviderConfirmed || !outcome.AuditRecorded) {
+		reason := "provider_revoke_failed"
+		if outcome.ProviderConfirmed {
+			reason = "audit_failed"
 		}
+		return s.hostedDenied(c, http.StatusServiceUnavailable, "You are signed out of this Hub. Provider sign-out could not be confirmed; close the support dashboard and retry provider sign-out.", auth.HostedDenial{Flow: "logout", Reason: reason, Email: session.Email})
 	}
 	return c.Redirect(http.StatusSeeOther, "https://detent.build")
 }
@@ -467,4 +467,22 @@ func (s *Service) hostedSupportPage(c echo.Context) error {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?staff=1")
 	}
 	return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "support", Title: "Temporary support access", Email: session.Email, CanSupport: session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email), SupportActor: session.Identity.SupportActor, SupportReason: session.Identity.SupportReason, SupportExpiry: session.Identity.ExpiresAt.UTC().Format(time.RFC3339)})
+}
+
+// logoutHostedFor retains the browser's current-session revocation semantics.
+func (s *Service) logoutHostedFor(ctx context.Context, hash string, identity *auth.HostedIdentity) (operatortool.SignOutResult, error) {
+	if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE token_hash = ?", formatHubTime(s.config.now()), hash); err != nil {
+		return operatortool.SignOutResult{}, err
+	}
+	outcome := operatortool.SignOutResult{SignedOut: true, ProviderConfirmed: true, AuditRecorded: true}
+	if identity != nil {
+		revocation, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		outcome.AuditRecorded = s.hostedAudit(revocation, identity, "session_ended", "/logout", "", http.StatusOK) == nil
+		outcome.ProviderConfirmed = s.config.Hosted.Provider.RevokeSession(revocation, identity.SessionID) == nil
+		if !outcome.ProviderConfirmed || !outcome.AuditRecorded {
+			s.config.Logger.WarnContext(revocation, "session sign-out incomplete", "provider_confirmed", outcome.ProviderConfirmed, "audit_recorded", outcome.AuditRecorded)
+		}
+	}
+	return outcome, nil
 }

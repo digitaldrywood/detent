@@ -16,7 +16,7 @@ import (
 
 // Approval is called only by a deployment's existing browser authentication
 // and CSRF middleware. Neither MCP nor an API credential can invoke it.
-func (e *Executor) Approval(c echo.Context, csrf string) error {
+func (e *Executor) Approval(c echo.Context, csrf string, signedOut ...func()) error {
 	ctx := c.Request().Context()
 	identity := operatortool.ConnectionIdentity(ctx)
 	id := c.QueryParam("connection_id")
@@ -67,7 +67,19 @@ func (e *Executor) Approval(c echo.Context, csrf string) error {
 		var err error
 		switch c.FormValue("decision") {
 		case "confirm":
-			_, err = e.Chat.Confirm(human, id, actionID)
+			var resolved chat.Conversation
+			resolved, err = e.Chat.Confirm(human, id, actionID)
+			if err == nil {
+				for _, action := range resolved.Actions {
+					if action.ID == actionID && action.Kind == chat.ActionKind(operatortool.SessionLogout) && action.SignOut != nil {
+						for _, clear := range signedOut {
+							clear()
+						}
+						c.Response().Header().Set("Cache-Control", "no-store")
+						return c.String(http.StatusOK, action.SignOut.Message())
+					}
+				}
+			}
 		case "reject":
 			_, err = e.Chat.RejectConnectionAction(human, id, actionID)
 		case "mode":

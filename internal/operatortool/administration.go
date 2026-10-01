@@ -9,6 +9,7 @@ import (
 
 const (
 	OrganizationSession = "organization_session"
+	SessionLogout       = "session_logout"
 	OrganizationList    = "organization_list"
 	OrganizationSwitch  = "organization_switch"
 	OrganizationCreate  = "organization_create"
@@ -38,6 +39,7 @@ func AdministrationCatalog() []Definition {
 	projects := `{"type":"array","maxItems":64,"items":` + id + `}`
 	scopes := `{"type":"array","minItems":1,"maxItems":3,"items":{"type":"string","enum":["read","write","admin"]}}`
 	return []Definition{
+		adminDefinition(SessionLogout, "End the current account session and provider sessions after human approval. Later calls and retries are denied; sign in and reconnect for new access.", "", "", false, true),
 		adminDefinition(OrganizationSession, "Read fresh organization/session authority without credentials.", "", "", true, false),
 		adminDefinition(OrganizationList, "List owned or joined organization contexts with fresh destinations.", `"offset":{"type":"integer","minimum":0,"maximum":100000},"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false),
 		adminDefinition(MembershipList, "Read memberships, invitations and project grants visible to the current principal.", `"offset":{"type":"integer","minimum":0,"maximum":100000},"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false),
@@ -78,7 +80,9 @@ func adminDefinition(name, description, properties, required string, readOnly, d
 	}
 	schema += `}`
 	group := "organization"
-	if strings.HasPrefix(name, "credential_") {
+	if name == SessionLogout {
+		group = "connection"
+	} else if strings.HasPrefix(name, "credential_") {
 		group = "credentials"
 	}
 	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{ReadOnly: readOnly, Destructive: destructive, Idempotent: true, OpenWorld: true}, Meta: ToolMetadata{Toolset: group}}
@@ -88,7 +92,7 @@ func AdministrationScope(name string) apikey.Scope {
 	switch name {
 	case OrganizationSession, OrganizationList, ProvisioningPage, MembershipList, CredentialList:
 		return apikey.ScopeRead
-	case OrganizationSwitch, InvitationAccept:
+	case OrganizationSwitch, InvitationAccept, SessionLogout:
 		return apikey.ScopeRead
 	default:
 		return apikey.ScopeAdmin
@@ -102,4 +106,22 @@ func IsAdministration(name string) bool {
 		}
 	}
 	return false
+}
+
+// SignOutResult contains only the outcome of ending access. Provider errors and
+// session identifiers never leave the application command.
+type SignOutResult struct {
+	SignedOut         bool `json:"signed_out"`
+	ProviderConfirmed bool `json:"provider_sign_out_confirmed"`
+	AuditRecorded     bool `json:"audit_recorded"`
+}
+
+func (r SignOutResult) Message() string {
+	if !r.ProviderConfirmed {
+		return "Signed out of Detent. Provider sign-out could not be confirmed; retry sign-out from your identity provider."
+	}
+	if !r.AuditRecorded {
+		return "Signed out of Detent. Sign-out audit could not be recorded. Sign in and open a fresh connection to continue."
+	}
+	return "Signed out of Detent. Sign in and open a fresh connection to continue."
 }

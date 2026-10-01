@@ -123,14 +123,14 @@ Sources: [GET /health](../internal/cloudentry/service.go#L197)
 
 Home
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending.
-- Tool: `work_reads.home` — Bounded homeRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → homeResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Fresh account identity, eligibility and semantic landing destination; organization_list supplies bounded choices. Browser HTML/login setup and CSRF stay browser-local. Implemented in #3662; full parent acceptance remains #3259.
+- Tool: `organization.organization_session` — Empty object; identity, organization and session come from the authenticated connection. → Bounded fresh session/account facts and semantic navigation destination, or exact destination receipt with reconnect=true. No browser/provider secrets; current session/membership checked for reads and replay.
 - Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.home; s.clientShell, s.landing, s.render
-- Extraction: Extract cloudentry.home application inputs/results and validation from Echo; reuse s.clientShell, s.landing, s.render. The HTTP handler and MCP must delegate to this same application operation.
+- Application: s.accountContextFor; s.landing
+- Extraction: Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestEntryAdministrationContext; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -143,20 +143,21 @@ Sources: [GET /](../internal/cloudentry/service.go#L198)
 
 Logout
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3336.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `connection.logout` — Bounded logoutRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → logoutResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.logout; s.csrfValid, s.loginDenied, s.render, s.revokeAtTenants
-- Extraction: Extract cloudentry.logout application inputs/results and validation from Echo; reuse s.csrfValid, s.loginDenied, s.render, s.revokeAtTenants. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3336.
+- Decision: Browser and MCP share account/session logout and existing tenant propagation. Local access ends even when provider sign-out is unconfirmed. Only the executing call/browser decision returns the content-free outcome; subsequent calls/retries are denied. Implemented in #3662; full parent acceptance remains #3259.
+- Tool: `connection.session_logout` — Exactly request_id (1–128 bytes); no identity, session, credential, CSRF, approval or YOLO arguments. → Exact pending action and browser approval destination by default; executing YOLO call returns signed_out, provider_sign_out_confirmed and audit_recorded booleans. Confirming browser sees the same safe outcome. All subsequent tool reads/retries fail current authority; reconnect after signing in.
+- Authority: role Current authenticated account/session owner; no administrator powers required to end own access; credential Original authenticated browser/account session; real browser approval with existing CSRF by default, or human connection-bound YOLO. MCP cannot self-approve.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: s.logoutFor; s.auth.revokeSession; s.revokeAtTenants
+- Extraction: Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestEntryAdministrationContext; TestSharedEntryLogoutRevokesLocalAndProviderSessions; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: end the current account/session access → operator
+- Confirmation: human selected YOLO on this exact connection → connection
 
 Sources: [POST /logout](../internal/cloudentry/service.go#L211), [POST /organizations/:organization/logout](../internal/cloudentry/service.go#L212)
 ## cloudentry.platform_allowlist_json
@@ -317,14 +318,14 @@ Sources: [POST /organizations/:organization/provisioning/resume](../internal/clo
 
 Session j s o n
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3336.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `connection.session_json` — Bounded sessionJSONRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → sessionJSONResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3336.
+- Decision: Session JSON and MCP share the account context read; browser CSRF is setup-only and never part of the typed result. Implemented in #3662; full parent acceptance remains #3259.
+- Tool: `organization.organization_session` — Empty object; identity, organization and session come from the authenticated connection. → Bounded fresh session/account facts and semantic navigation destination, or exact destination receipt with reconnect=true. No browser/provider secrets; current session/membership checked for reads and replay.
 - Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.sessionJSON; s.canCreate, s.platformStaff
-- Extraction: Extract cloudentry.sessionJSON application inputs/results and validation from Echo; reuse s.canCreate, s.platformStaff. The HTTP handler and MCP must delegate to this same application operation.
+- Application: s.accountContextFor
+- Extraction: Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
+- Coverage: TestEntryAdministrationContext; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -3203,14 +3204,14 @@ Sources: [GET /api/v2/organizations/:organization/fleet](../internal/hubserver/h
 
 Hosted landing
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending.
-- Tool: `work_reads.hosted_landing` — Bounded hostedLandingRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → hostedLandingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Fresh current role/account setup and semantic application or onboarding destination; organization_list supplies bounded organization choices. No HTML scraping or grant transfer. Implemented in #3662; full parent acceptance remains #3259.
+- Tool: `organization.organization_session` — Empty object; identity, organization and session come from the authenticated connection. → Bounded fresh session/account facts and semantic navigation destination, or exact destination receipt with reconnect=true. No browser/provider secrets; current session/membership checked for reads and replay.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.hostedLanding; s.appShell, s.hostedCredential, s.hostedHome
-- Extraction: Extract hubserver.hostedLanding application inputs/results and validation from Echo; reuse s.appShell, s.hostedCredential, s.hostedHome. The HTTP handler and MCP must delegate to this same application operation.
+- Application: s.hostedAccountSetupFor; s.operatorSessionDestination
+- Extraction: Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedCredential(c); err == nil
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestHostedAccountSessionOperations; TestDedicatedAdministrationSetup; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
@@ -3875,20 +3876,21 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces](
 
 Logout hosted
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3336.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `connection.logout_hosted` — Bounded logoutHostedRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → logoutHostedResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.logoutHosted; s.config.now, s.database.db.ExecContext, s.database.db.QueryRowContext, s.hostedDenied
-- Extraction: Extract hubserver.logoutHosted application inputs/results and validation from Echo; reuse s.config.now, s.database.db.ExecContext, s.database.db.QueryRowContext, s.hostedDenied. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3336.
+- Decision: Dedicated browser and MCP share current-session logout; provider failure never restores local access. Existing revoked session state prevents repeated effects. Shared deployments use entry session_logout; tenant hubs never impersonate account logout authority. Implemented in #3662; full parent acceptance remains #3259.
+- Tool: `connection.session_logout` — Exactly request_id (1–128 bytes); no identity, session, credential, CSRF, approval or YOLO arguments. → Exact pending action and browser approval destination by default; executing YOLO call returns signed_out, provider_sign_out_confirmed and audit_recorded booleans. Confirming browser sees the same safe outcome. All subsequent tool reads/retries fail current authority; reconnect after signing in.
+- Authority: role Current authenticated account/session owner; no administrator powers required to end own access; credential Original authenticated browser/account session; real browser approval with existing CSRF by default, or human connection-bound YOLO. MCP cannot self-approve.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: s.logoutHostedFor
+- Extraction: Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedSession(c)
-- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedAccountSessionOperations; TestHostedLoginLogoutRevokesLocalAndProviderSessions; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: end the current account/session access → operator
+- Confirmation: human selected YOLO on this exact connection → connection
 
 Sources: [POST /logout](../internal/hubserver/hosted_ui.go#L28), [internal/web/templates/hosted.templ:13](../internal/web/templates/hosted.templ#L13), [internal/web/templates/hosted.templ:96](../internal/web/templates/hosted.templ#L96), [internal/web/templates/hosted.templ:13](../internal/web/templates/hosted.templ#L13), [internal/web/templates/hosted.templ:96](../internal/web/templates/hosted.templ#L96), [web/conversation/src/app/account/api.ts:216](../web/conversation/src/app/account/api.ts#L216), [web/conversation/src/app/entry/EntryScreens.tsx:98](../web/conversation/src/app/entry/EntryScreens.tsx#L98), [web/conversation/src/app/entry/EntryScreens.tsx:98](../web/conversation/src/app/entry/EntryScreens.tsx#L98)
 ## hubserver.mcp_transport
@@ -4948,15 +4950,15 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Switch hosted organization
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3336.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.switch_hosted_organization` — Bounded switchHostedOrganizationRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → switchHostedOrganizationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3336.
+- Decision: Shared destination membership lookup runs before execution, replay and result delivery. Fresh destination login/connection is required; the original connection retains its identity and grants. Shared tenants leave account switching to entry. Implemented in #3662; full parent acceptance remains #3259.
+- Tool: `organization.organization_switch` — Exactly organization_id (1–256 bytes) and request_id (1–128 bytes); no model-selected authority or confirmation. → Bounded fresh session/account facts and semantic navigation destination, or exact destination receipt with reconnect=true. No browser/provider secrets; current session/membership checked for reads and replay.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.switchHostedOrganizationJSON; s.hostedEntryOwned, s.hostedSwitchDestination
-- Extraction: Extract hubserver.switchHostedOrganizationJSON application inputs/results and validation from Echo; reuse s.hostedEntryOwned, s.hostedSwitchDestination. The HTTP handler and MCP must delegate to this same application operation.
+- Application: s.hostedSwitchFor
+- Extraction: Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedSession(c); err != nil
-- Coverage: internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedAccountSessionOperations; TestHostedLoginOrganizationSwitching; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service

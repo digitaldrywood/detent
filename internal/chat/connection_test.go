@@ -286,6 +286,7 @@ func TestActionConfirmationClassification(t *testing.T) {
 		{Action{Kind: ActionKind(operatortool.EditItem), Material: true}, true},
 		{Action{Kind: ActionFileIssue, Material: true}, true},
 		{Action{Kind: ActionMoveItem, CurrentState: "Todo", TargetState: "Backlog", Material: true}, true},
+		{Action{Kind: ActionKind(operatortool.SessionLogout)}, true},
 		{Action{Kind: "billing"}, true}, {Action{Kind: "access"}, true},
 		{Action{Kind: ActionKind(operatortool.ResumeProvisioning)}, true},
 		{Action{Kind: "create_native_project"}, false},

@@ -34,6 +34,8 @@ type hostedSecurityProvider struct {
 	invitations     map[string]auth.Invitation
 	invitationRoles map[string]string
 	exchanges       int
+	revokeErr       error
+	revoked         []string
 }
 
 func newHostedSecurityProvider() *hostedSecurityProvider {
@@ -162,6 +164,10 @@ func (p *hostedSecurityProvider) AcceptInvitation(_ context.Context, token, user
 func (p *hostedSecurityProvider) RevokeSession(_ context.Context, id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.revoked = append(p.revoked, id)
+	if p.revokeErr != nil {
+		return p.revokeErr
+	}
 	delete(p.sessions, id)
 	return nil
 }

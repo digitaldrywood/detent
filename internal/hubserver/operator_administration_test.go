@@ -1,10 +1,15 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -252,6 +257,225 @@ func TestDedicatedAdministrationSetup(t *testing.T) {
 			}
 			if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: "write", ProjectID: string(f.project)}); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatal("account acquired project authority after setup")
+			}
+		})
+	}
+}
+
+// Catches account navigation granting tenant access, stale destination replay,
+// sign-out before a real browser decision and disclosure of provider diagnostics.
+func TestHostedAccountSessionOperations(t *testing.T) {
+	for _, scenario := range []string{"context", "switch", "foreign organization", "revoked destination membership", "logout approve", "logout reject", "logout YOLO", "logout provider failure", "logout revoked membership", "logout revoked session", "logout other browser"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newHostedSecurityFixture(t)
+			u := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
+			var audit bytes.Buffer
+			f.service.config.Logger = slog.New(slog.NewJSONHandler(&audit, nil))
+			var ctx context.Context
+			f.service.echo.POST("/session-operation-test", func(c echo.Context) error {
+				ctx = operatortool.BindConnection(c.Request().Context(), "session-test", "fixture")
+				return c.NoContent(http.StatusOK)
+			}, f.service.operatorAuthority)
+			if response := f.request(t, u, http.MethodPost, "/session-operation-test", nil); response.Code != http.StatusOK {
+				t.Fatalf("context=%d %s", response.Code, response.Body)
+			}
+			e := f.service.administration
+			dispatch := hostedOperatorExecutor{f.service}
+			if err := dispatch.OpenConnection(ctx); err != nil {
+				t.Fatal(err)
+			}
+			identity := operatortool.ConnectionIdentity(ctx)
+			defs, err := dispatch.ListTools(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, d := range defs {
+				if d.Name == operatortool.SessionLogout {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("viewer cannot discover own session logout")
+			}
+			if !strings.HasPrefix(scenario, "logout") {
+				account, err := dispatch.Execute(ctx, operatortool.Call{Name: operatortool.OrganizationSession, Arguments: json.RawMessage(`{}`)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var view struct {
+					Data struct {
+						Principal    string `json:"principal_id"`
+						Organization string `json:"organization_id"`
+						Role         string `json:"role"`
+						Destination  string `json:"destination"`
+						Reconnect    bool   `json:"reconnect"`
+					} `json:"data"`
+				}
+				if json.Unmarshal(account.Content, &view) != nil || view.Data.Principal != identity.PrincipalID || view.Data.Organization != identity.OrganizationID || view.Data.Role != "viewer" || view.Data.Destination != f.service.config.Hosted.PublicURL+"/" || !view.Data.Reconnect {
+					t.Fatalf("account=%s", account.Content)
+				}
+				for _, secret := range []string{identity.CredentialID, identity.SessionID, `"csrf"`} {
+					if strings.Contains(string(account.Content), secret) {
+						t.Fatal("account context leaked session")
+					}
+				}
+				if scenario == "context" {
+					return
+				}
+				f.service.config.Hosted.Directory = []HostedDestination{{OrganizationID: "org_destination", WorkOSOrganizationID: "provider_destination", PublicURL: "https://destination.example.test"}}
+				member := hostedLoginMembership(u.identity.Subject, "provider_destination", "member")
+				member.ID = "destination-member"
+				f.provider.mu.Lock()
+				f.provider.members[member.ID] = member
+				f.provider.mu.Unlock()
+				organization := "org_destination"
+				if scenario == "foreign organization" {
+					organization = "foreign"
+				}
+				call := operatortool.Call{Name: operatortool.OrganizationSwitch, Arguments: json.RawMessage(`{"request_id":"switch","organization_id":"` + organization + `"}`)}
+				result, err := dispatch.Execute(ctx, call)
+				if scenario == "foreign organization" {
+					if !errors.Is(err, operatortool.ErrAccessDenied) {
+						t.Fatalf("foreign switch=%v", err)
+					}
+					return
+				}
+				if err != nil || !strings.Contains(string(result.Content), `"url":"https://destination.example.test/auth/oidc/start"`) || !strings.Contains(string(result.Content), `"reconnect":true`) {
+					t.Fatalf("switch=%s %v", result.Content, err)
+				}
+				if operatortool.ConnectionIdentity(ctx) != identity {
+					t.Fatal("switch transferred authority")
+				}
+				if scenario == "revoked destination membership" {
+					f.provider.mu.Lock()
+					delete(f.provider.members, member.ID)
+					f.provider.mu.Unlock()
+				}
+				_, err = dispatch.Execute(ctx, call)
+				if scenario == "revoked destination membership" {
+					if !errors.Is(err, operatortool.ErrAccessDenied) {
+						t.Fatalf("revoked destination replay=%v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			call := operatortool.Call{Name: operatortool.SessionLogout, Arguments: json.RawMessage(`{"request_id":"logout"}`)}
+			if err := e.Chat.SetConnectionMode(ctx, "session-test", chat.YOLOMode); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("model YOLO=%v", err)
+			}
+			if scenario == "logout YOLO" {
+				human := chat.WithOperatorApproval(ctx, identity)
+				if err := e.Chat.SetConnectionMode(human, "session-test", chat.YOLOMode); err != nil {
+					t.Fatal(err)
+				}
+				other := operatortool.BindConnection(ctx, "second-hub", "fixture")
+				if err := dispatch.OpenConnection(other); err != nil {
+					t.Fatal(err)
+				}
+				pending, err := dispatch.Execute(other, call)
+				if err != nil || !strings.Contains(string(pending.Content), `"status":"pending"`) {
+					t.Fatalf("YOLO transferred=%s %v", pending.Content, err)
+				}
+			}
+			if scenario == "logout provider failure" {
+				f.provider.revokeErr = errors.New("provider-secret-sentinel")
+			}
+			result, err := dispatch.Execute(ctx, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reply struct {
+				Action chat.Action `json:"action"`
+			}
+			if json.Unmarshal(result.Content, &reply) != nil || reply.Action.ID == "" {
+				t.Fatalf("logout=%s", result.Content)
+			}
+			if scenario != "logout YOLO" {
+				if reply.Action.Status != chat.ActionPending || len(f.provider.revoked) != 0 {
+					t.Fatal("logout skipped human approval")
+				}
+				if _, err := e.Chat.Confirm(ctx, "session-test", reply.Action.ID); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("self approval=%v", err)
+				}
+				pending, err := dispatch.Execute(ctx, call)
+				if err != nil || !strings.Contains(string(pending.Content), `"id":"`+reply.Action.ID+`"`) {
+					t.Fatalf("pending retry=%s %v", pending.Content, err)
+				}
+				page := f.request(t, u, http.MethodGet, "/chat/approval?connection_id=session-test", nil)
+				if page.Code != http.StatusOK {
+					t.Fatalf("browser=%d %s", page.Code, page.Body)
+				}
+				token := ""
+				for _, form := range regexp.MustCompile(`<form[^>]*>[\s\S]*?</form>`).FindAllString(page.Body.String(), -1) {
+					if strings.Contains(form, `name="action_id" value="`+reply.Action.ID+`"`) {
+						match := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindStringSubmatch(form)
+						if len(match) == 2 {
+							token = match[1]
+						}
+					}
+				}
+				if token == "" {
+					t.Fatal("missing exact form token")
+				}
+				form := url.Values{"connection_id": {"session-test"}, "action_id": {reply.Action.ID}, "decision": {"confirm"}, "form_token": {token}}
+				if scenario == "logout reject" {
+					form.Set("decision", "reject")
+				}
+				if scenario == "logout revoked membership" {
+					operatorSQL(t, f, "UPDATE hosted_members SET active=0 WHERE user_id=?", u.identity.Subject)
+				}
+				if scenario == "logout revoked session" {
+					operatorSQL(t, f, "UPDATE hosted_sessions SET revoked_at='revoked' WHERE token_hash=?", identity.SessionID)
+				}
+				if scenario == "logout other browser" {
+					u = f.user(t, "other", "owner", "other@example.test", "write", "")
+				}
+				response := f.request(t, u, http.MethodPost, "/chat/approval", form)
+				if scenario == "logout revoked membership" || scenario == "logout revoked session" || scenario == "logout other browser" {
+					if response.Code != http.StatusForbidden && response.Code != http.StatusUnauthorized {
+						t.Fatalf("stale approval=%d %s", response.Code, response.Body)
+					}
+					if len(f.provider.revoked) != 0 {
+						t.Fatal("unauthorized approval signed out")
+					}
+					return
+				}
+				if scenario == "logout reject" {
+					if response.Code != http.StatusSeeOther || len(f.provider.revoked) != 0 {
+						t.Fatalf("rejection=%d %s", response.Code, response.Body)
+					}
+					if _, err := dispatch.Execute(ctx, call); err != nil {
+						t.Fatal(err)
+					}
+					if len(f.provider.revoked) != 0 {
+						t.Fatal("rejected retry signed out")
+					}
+					return
+				}
+				if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Signed out") {
+					t.Fatalf("confirm=%d %s", response.Code, response.Body)
+				}
+				reply.Action, _ = e.Chat.Action("session-test", reply.Action.ID)
+			}
+			if reply.Action.SignOut == nil || !reply.Action.SignOut.SignedOut || reply.Action.SignOut.ProviderConfirmed != (scenario != "logout provider failure") {
+				t.Fatalf("outcome=%+v", reply.Action)
+			}
+			for _, call := range []operatortool.Call{call, {Name: operatortool.OrganizationSession, Arguments: json.RawMessage(`{}`)}, {Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + reply.Action.ID + `"}`)}} {
+				if _, err := dispatch.Execute(ctx, call); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("post-logout access=%v", err)
+				}
+			}
+			if len(f.provider.revoked) != 1 {
+				t.Fatalf("provider effects=%v", f.provider.revoked)
+			}
+			raw, _ := json.Marshal(reply)
+			for _, secret := range []string{identity.CredentialID, identity.SessionID, u.identity.Hosted.SessionID, "provider-secret-sentinel"} {
+				if strings.Contains(string(raw), secret) || strings.Contains(audit.String(), secret) {
+					t.Fatal("result/audit leaked session or provider data")
+				}
 			}
 		})
 	}
