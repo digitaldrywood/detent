@@ -277,8 +277,12 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestMu.Lock()
 				defer requestMu.Unlock()
-				paths[r.URL.Path]++
 				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
+					fmt.Fprint(w, `{"errors":[{"message":"scheduler evidence unavailable"}]}`)
+					return
+				}
+				paths[r.URL.Path]++
 				if mode == "reserve" {
 					w.Header().Set("X-RateLimit-Limit", "5000")
 					w.Header().Set("X-RateLimit-Remaining", "1")
@@ -332,7 +336,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			if mode == "budget" {
 				cap = 2
 			}
-			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL, APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
+			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL + "/graphql", APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
 			if err != nil {
 				t.Fatal(err)
 			}
