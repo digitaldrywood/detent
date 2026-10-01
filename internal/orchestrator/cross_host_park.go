@@ -191,7 +191,7 @@ func (o *Orchestrator) retainUnacknowledgedRecoveryParks(ctx context.Context, st
 				}
 				continue
 			}
-			if park != nil && o.recoveryParkAcknowledged(event, metadata, *park, issue, parkedAt) {
+			if park != nil && o.recoveryParkAcknowledged(ctx, event, metadata, *park, issue, parkedAt) {
 				acknowledgedPark = park
 				parkReleasedAt = workflowLaneTransitionAt(event)
 				if operatorAcknowledgesRecoveryPark(event, metadata) {
@@ -263,7 +263,7 @@ func recoveryParkEventMatchesIssue(event store.WorkflowPhaseEvent, issue connect
 	return event.IssueURL != "" && event.IssueURL == issue.URL
 }
 
-func (o *Orchestrator) recoveryParkAcknowledged(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata, park workflowLaneBlockedRecoveryMetadata, issue connector.Issue, parkedAt time.Time) bool {
+func (o *Orchestrator) recoveryParkAcknowledged(ctx context.Context, event store.WorkflowPhaseEvent, metadata workflowLaneMetadata, park workflowLaneBlockedRecoveryMetadata, issue connector.Issue, parkedAt time.Time) bool {
 	if operatorAcknowledgesRecoveryPark(event, metadata) {
 		return true
 	}
@@ -275,11 +275,40 @@ func (o *Orchestrator) recoveryParkAcknowledged(event store.WorkflowPhaseEvent, 
 	}
 	switch event.Reason {
 	case workflowActionRecordedBlockerRecovery:
-		return park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason &&
-			(metadata.BlockedRecovery != nil && sameBlockedRecoveryPark(*metadata.BlockedRecovery, park) ||
-				metadata.BlockedRecovery == nil && park.CauseFingerprint != "" && !parkedAt.IsZero() &&
-					!issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) && clearedHumanActionRecordedAt(issue, parkedAt, true) != nil) &&
-			normalizeState(event.PreviousPhaseName) == normalizeState(blockedStatusState)
+		if park.Owner != blockedRecoveryOwnerHuman || park.Cause != workpadBlockedUnactionedReason ||
+			normalizeState(event.PreviousPhaseName) != normalizeState(blockedStatusState) {
+			return false
+		}
+		if metadata.BlockedRecovery != nil {
+			return sameBlockedRecoveryPark(*metadata.BlockedRecovery, park)
+		}
+		if park.CauseFingerprint == "" || parkedAt.IsZero() || issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) || clearedHumanActionRecordedAt(issue, parkedAt, true) == nil {
+			return false
+		}
+		updater, ok := o.workflowMetrics.(WorkflowMetricsMetadataUpdater)
+		if !ok || event.ID <= 0 {
+			return false
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(event.MetadataJSON), &raw); err != nil || raw == nil {
+			return false
+		}
+		encodedPark, err := json.Marshal(park)
+		if err != nil {
+			return false
+		}
+		raw["blocked_recovery"] = encodedPark
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return false
+		}
+		if err := updater.UpdateWorkflowPhaseEventMetadata(ctx, event.ID, string(encoded)); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("native Workpad clearance receipt persistence failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+			}
+			return false
+		}
+		return true
 	case workflowActionCauseBlockedRecovery:
 		return park.Owner == blockedRecoveryOwnerOrchestrator || deliverableRecoveryPark(park)
 	case string(AutoPromoteReasonCINotGreen):

@@ -637,6 +637,13 @@ by itself. Missing provenance, mismatched supplied park metadata, newer human
 requests, unauthorized or invalid Workpads, and current dependencies retain
 their holds. `TestLegacyRecordedHumanClearanceRetainsNativeAuthority` replays
 these receipts through SQLite before and after restarting the in-memory state.
+The existing workflow metadata updater persists the recognized park on that
+same native recovery receipt before releasing the retained hold. This preserves
+the accepted clearance when a worker edits the same Workpad comment to complete.
+Receipt identity, provenance, and unknown metadata remain unchanged; no history
+event is appended. Unsupported or failed persistence retains the hold, and write
+failure is logged against the instance. `TestLegacyHumanClearanceSurvivesWorkpadOverwrite`
+covers the same-comment edit and a new orchestrator using the same SQLite store.
 
 Session token ceilings record their existing typed outcome, usage, and agent
 session phase in the database without writing a repository lesson. Removing the
