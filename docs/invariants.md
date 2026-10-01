@@ -2010,7 +2010,9 @@ a validated release tag. Every full-suite job runs on the pinned commit. A green
 run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
 exact status evidence, and dispatches the release workflow. It does not merge
 to `main` or deploy production. A failing run opens or updates one fingerprinted
-Todo hotfix issue per failed job. A later green run closes those issues. Manual
+Todo hotfix issue per concrete failed test or source diagnostic, attaching each
+job occurrence to the same repair. Unrecognized or unavailable diagnostics keep
+conservative job-level identity. A later green run closes scheduled repair issues. Manual
 dispatch can force `verify-fast` to fail to exercise issue filing and closure.
 
 Every `develop` push deploys to staging even when that commit has not passed
@@ -2079,6 +2081,18 @@ and `TestConnectorFindIntakeIssuePrefersOpenDuplicate` covers duplicate selectio
 including completed and not-planned GitHub issues. Use `file_machine_issue`, with a stable problem key,
 for worker discoveries. Review must ensure a fingerprint describes the problem
 rather than a timestamp, attempt, or wording variation.
+
+Scheduled validation (#3625) reuses `issueorigin.Fingerprint`, `Stamp`, `Parse`,
+and `Occurrence` across the repository's paginated open issues. Plain and JSON
+Go failures identify the package-qualified test; failed subtests replace a
+parent summary that has no independent assertion. Source diagnostics identify the repository-relative location
+and message. Run, attempt, commit, and job evidence describe occurrences rather
+than changing problem identity. Unknown evidence retains the existing job
+fingerprint. The reporter remembers issues created in the same run, so coverage
+and race failures attach to one repair without a new coordination mechanism.
+`TestParseProblems` and `TestReport` in `tools/cifailure` exercise the recorded
+missing `skip_reason=already_running` diagnostic, separate tests and diagnostics,
+repeated runs, repository-wide matching, and conservative fallback.
 
 **Change:** Edit INV-7 and origin/deduplication scenarios in the same PR before
 changing identity format or duplicate handling.
