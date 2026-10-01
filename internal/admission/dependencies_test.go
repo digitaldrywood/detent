@@ -106,13 +106,19 @@ func TestResolveAdmissionDependencies(t *testing.T) {
 
 type dependencyAdmissionTracker struct {
 	IssueStore
-	issues []connector.Issue
-	err    error
-	calls  int
+	issues   []connector.Issue
+	err      error
+	calls    int
+	requests [][]string
+	resolve  func([]string) ([]connector.Issue, error)
 }
 
-func (s *dependencyAdmissionTracker) FetchIssueStatesByIdentifiers(context.Context, []string) ([]connector.Issue, error) {
+func (s *dependencyAdmissionTracker) FetchIssueStatesByIdentifiers(_ context.Context, refs []string) ([]connector.Issue, error) {
 	s.calls++
+	s.requests = append(s.requests, append([]string(nil), refs...))
+	if s.resolve != nil {
+		return s.resolve(refs)
+	}
 	return s.issues, s.err
 }
 
@@ -200,21 +206,50 @@ func TestAdmissionDependencyChangesInvalidateResults(t *testing.T) {
 
 func TestAdmissionRevalidatesDependenciesDuringEvaluation(t *testing.T) {
 	t.Parallel()
-	now := time.Now().UTC()
-	issue := admissionIssueFixture("dependent", "owner/repo#20", 1, now)
-	issue.Description += "\nDepends on: #10"
-	tracker := &dependencyAdmissionTracker{IssueStore: memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", Closed: true}}}
-	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
-		tracker.issues[0].Closed = false
-		return proposeEveryCandidate(request)
-	}}
-	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), openManagerTestStore(t), func() time.Time { return now })
-	result, err := manager.RunOnce(t.Context())
-	if err != nil || len(result.Proposals) != 0 || result.Skipped["stale_or_ineligible"] != 1 {
-		t.Fatalf("result=%+v, %v", result, err)
-	}
-	if len(result.Issues) != 1 || result.Issues[0].Evaluation != nil {
-		t.Fatalf("stale dependency result acquired an outcome: %+v", result.Issues)
+	for _, count := range []int{1, 2} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			t.Parallel()
+			now := time.Now().UTC()
+			issues := make([]connector.Issue, count)
+			for i := range issues {
+				issues[i] = admissionIssueFixture("dependent-"+strconv.Itoa(i), "owner/repo#"+strconv.Itoa(20+i), 1, now)
+				issues[i].Description += "\nDepends on: #10"
+			}
+			tracker := &dependencyAdmissionTracker{IssueStore: memory.New(memory.Config{Issues: issues, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", Closed: true}}}
+			var initial *runner.AdmissionDependencies
+			evaluated := 0
+			agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
+				if tracker.calls != 1 || len(request.Admission.Candidates) != 1 {
+					t.Fatalf("initial reads=%d candidates=%d", tracker.calls, len(request.Admission.Candidates))
+				}
+				candidate := request.Admission.Candidates[0]
+				if initial == nil {
+					initial = candidate.Dependencies
+				}
+				if initial == nil || !initial.Ready || !initial.ObservedAt.Equal(now) || !reflect.DeepEqual(candidate.Dependencies, initial) {
+					t.Fatalf("initial evidence=%+v", candidate.Dependencies)
+				}
+				evaluated++
+				if evaluated == count {
+					tracker.issues[0].Closed = false
+					now = now.Add(time.Minute)
+				}
+				return proposeEveryCandidate(request)
+			}}
+			manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), openManagerTestStore(t), func() time.Time { return now })
+			result, err := manager.RunOnce(t.Context())
+			if err != nil || len(result.Proposals) != 0 || result.Skipped["stale_or_ineligible"] != count || tracker.calls != 1+count || evaluated != count {
+				t.Fatalf("result=%+v, %v; reads=%d", result, err, tracker.calls)
+			}
+			if len(result.Issues) != count {
+				t.Fatalf("stale dependency results=%+v", result.Issues)
+			}
+			for _, receipt := range result.Issues {
+				if receipt.Evaluation != nil {
+					t.Fatalf("stale dependency result acquired an outcome: %+v", receipt)
+				}
+			}
+		})
 	}
 }
 
