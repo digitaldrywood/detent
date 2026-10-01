@@ -13,6 +13,8 @@ import (
 // OperatorReceipt uses the existing operator event record. Pending effects are
 // never taken over: uncertain external outcomes must be inspected by an operator.
 type OperatorReceipt struct {
+	Revision  int64  `json:"revision,omitempty"`
+	CommentID string `json:"comment_id,omitempty"`
 	mutation.Metadata
 	Outcome     string    `json:"outcome"`
 	Identifier  string    `json:"identifier,omitempty"`

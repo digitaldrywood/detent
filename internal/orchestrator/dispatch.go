@@ -1462,7 +1462,7 @@ func validCandidate(issue connector.Issue) bool {
 		issue.AssignedToWorker
 }
 
-func duplicatePullRequestWork(issue connector.Issue) bool {
+func duplicatePullRequestWork(issue connector.Issue, localStatus string) bool {
 	if issue.PullRequest == nil {
 		return false
 	}
@@ -1470,7 +1470,7 @@ func duplicatePullRequestWork(issue connector.Issue) bool {
 	case "merged":
 		return !staleMergedPullRequestHasFailedCIEvidence(issue.PullRequest, staleMergedPullRequestSummaryFromIssue(issue))
 	case "open":
-		return normalizeState(issue.State) == "todo"
+		return normalizeState(issue.State) == "todo" && !issue.PullRequest.HasMissingLocalStatus(localStatus)
 	default:
 		return false
 	}

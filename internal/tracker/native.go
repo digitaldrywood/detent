@@ -440,3 +440,15 @@ type NativeLabel struct {
 	// Count orders the existing project label-picker suggestions by usage.
 	Count int `json:"count"`
 }
+
+// WithExpectedRevision carries an operator command's optimistic precondition
+// to the native connector while the orchestrator owns the lane write.
+type expectedRevisionKey struct{}
+
+func WithExpectedRevision(ctx context.Context, revision Revision) context.Context {
+	return context.WithValue(ctx, expectedRevisionKey{}, revision)
+}
+func ExpectedRevision(ctx context.Context) Revision {
+	revision, _ := ctx.Value(expectedRevisionKey{}).(Revision)
+	return revision
+}

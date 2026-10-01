@@ -3195,13 +3195,50 @@ func TestRequiredStatusCheckFailures(t *testing.T) {
 
 	staleCompleted := time.Date(2026, 7, 7, 0, 49, 24, 0, time.UTC)
 	tests := []struct {
-		name       string
-		checkRuns  []restCheckRun
-		statuses   []restCommitStatus
-		required   []string
-		wantState  string
-		wantChecks []connector.PullRequestCheck
+		name        string
+		localStatus string
+		checkRuns   []restCheckRun
+		statuses    []restCommitStatus
+		required    []string
+		wantState   string
+		wantChecks  []connector.PullRequestCheck
 	}{
+		{
+			name:        "missing Detent-owned status is unproduced work",
+			wantState:   "success",
+			localStatus: "local-gate",
+			required:    []string{"local-gate"},
+			wantChecks:  []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}},
+		},
+		{
+			name:       "missing status without local ownership remains pending",
+			required:   []string{"local-gate"},
+			wantState:  "pending",
+			wantChecks: []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}},
+		},
+		{
+			name:        "other missing context still waits with local ownership",
+			localStatus: "local-gate",
+			required:    []string{"local-gate", "Verify"},
+			wantState:   "pending",
+			wantChecks:  []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}, {Name: "Verify", Status: "missing", Conclusion: "missing"}},
+		},
+		{
+			name:        "posted local pending status still waits",
+			localStatus: "local-gate",
+			required:    []string{"local-gate"},
+			statuses:    []restCommitStatus{{Context: "local-gate", State: "pending"}},
+			wantState:   "pending",
+			wantChecks:  []connector.PullRequestCheck{{Name: "local-gate", Status: "pending", Conclusion: "pending"}},
+		},
+		{
+			name:        "posted local failure still fails",
+			localStatus: "local-gate",
+			required:    []string{"local-gate"},
+			statuses:    []restCommitStatus{{Context: "local-gate", State: "failure"}},
+			wantState:   "failure",
+			wantChecks:  []connector.PullRequestCheck{{Name: "local-gate", Status: "failure", Conclusion: "failure"}},
+		},
 		{
 			name:      "all required check runs succeeded",
 			checkRuns: []restCheckRun{{Name: "Lint", Status: "completed", Conclusion: "success"}},
@@ -3334,7 +3371,7 @@ func TestRequiredStatusCheckFailures(t *testing.T) {
 			if !reflect.DeepEqual(gotChecks, tt.wantChecks) {
 				t.Fatalf("requiredStatusCheckFailures() = %#v, want %#v", gotChecks, tt.wantChecks)
 			}
-			if gotState := requiredStatusCheckState(gotChecks); gotState != tt.wantState {
+			if gotState := requiredStatusCheckState(gotChecks, tt.localStatus); gotState != tt.wantState {
 				t.Fatalf("requiredStatusCheckState() = %q, want %q", gotState, tt.wantState)
 			}
 		})

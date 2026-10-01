@@ -233,8 +233,8 @@ test("project settings show the integration and refuse to edit it for a viewer",
   await expect(page).toHaveURL(/\/settings\/integrations\?project=/);
   await expectOneHeadingOne(page, "Settings");
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
-  await expect(page.getByLabel("Intake")).toBeVisible();
-  await expect(page.getByLabel("Projection")).toBeVisible();
+  await expect(page.getByLabel("Intake", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Projection", { exact: true })).toBeVisible();
   await expectNoSeriousAxeViolations(page, "/projects/:project/settings as owner");
   // `GET {nativeBase}/policy` answers `409 policy_mismatch` on a project with
   // no approved descriptor, which is this fixture's state and a state the
@@ -246,7 +246,7 @@ test("project settings show the integration and refuse to edit it for a viewer",
   ).toEqual([]);
 
   await openAs(page, "viewer", `/projects/${hub.fixture.project_id}/settings`);
-  const intake = page.getByLabel("Intake");
+  const intake = page.getByLabel("Intake", { exact: true });
   await expect(intake).toBeVisible();
   await expect(intake).toBeDisabled();
   await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);

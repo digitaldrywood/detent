@@ -630,12 +630,12 @@ func (s *Server) apiWorkflowTimeline(c echo.Context) error {
 	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
 		return c.JSON(http.StatusBadRequest, errorResponse("missing_issue_identity", "issue_id, identifier, or issue_url is required"))
 	}
-	timeline, err := s.store.IssueWorkflowTimeline(c.Request().Context(), identity)
+	timeline, err := s.workTimeline(c.Request().Context(), identity)
 	if err != nil {
 		s.logger.Error("workflow timeline failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("workflow_timeline_failed", "Workflow timeline failed"))
 	}
-	return c.JSON(http.StatusOK, workflowTimelineResponse(timeline))
+	return c.JSON(http.StatusOK, timeline)
 }
 
 func (s *Server) methodNotAllowed(c echo.Context) error {

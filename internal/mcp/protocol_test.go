@@ -190,6 +190,8 @@ func TestProtocolApplicationParity(t *testing.T) {
 				}
 				cursor := ""
 				var tools []operatortool.Definition
+				want := append(operatortool.Catalog(), operatortool.CommandCatalog()...)
+				wantPages := (len(want) + catalogPageSize - 1) / catalogPageSize
 				pages := 0
 				for {
 					var page catalogPage
@@ -203,12 +205,11 @@ func TestProtocolApplicationParity(t *testing.T) {
 					if cursor == "" {
 						break
 					}
-					if pages > 3 {
+					if pages >= wantPages {
 						t.Fatal("pagination did not finish")
 					}
 				}
-				want := append(operatortool.Catalog(), operatortool.CommandCatalog()...)
-				if !reflect.DeepEqual(tools, want) || pages != 3 {
+				if !reflect.DeepEqual(tools, want) || pages != wantPages {
 					t.Fatalf("typed catalog/schema/annotation parity mismatch: pages=%d tools=%+v", pages, tools)
 				}
 				for _, tool := range tools {

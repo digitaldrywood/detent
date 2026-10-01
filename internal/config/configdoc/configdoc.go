@@ -488,7 +488,8 @@ func optionDefault(path string) (string, string) {
 		{"Claude Code", claude},
 		{"Pi", (config.AgentBackend{Kind: config.AgentBackendPiAgent}).PiAgentOptions()},
 	}
-	var descriptions, names []string
+	descriptions := make([]string, 0, len(variants))
+	names := make([]string, 0, len(variants))
 	literal := "null"
 	for _, variant := range variants {
 		value, ok := yamlFieldValue(reflect.ValueOf(variant.value), key)

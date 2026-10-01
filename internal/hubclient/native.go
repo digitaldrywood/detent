@@ -261,3 +261,22 @@ func (c *NativeClient) Renew(ctx context.Context, lease tracker.NativeLease, ttl
 func (c *NativeClient) Release(ctx context.Context, lease tracker.NativeLease, reason string) error {
 	return c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason}, nil)
 }
+
+// SetArchived calls the existing native archive/restore command with its revision.
+func (c *NativeClient) SetArchived(ctx context.Context, id tracker.NativeWorkItemID, revision tracker.Revision, archived bool, command tracker.Mutation) (tracker.NativeIssue, error) {
+	var result tracker.NativeIssue
+	path, err := nativeItemPath(id)
+	if err != nil {
+		return result, err
+	}
+	operation := "restore"
+	if archived {
+		operation = "archive"
+	}
+	request := struct {
+		tracker.Mutation
+		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	}{c.fencedMutation(ctx, id, command), revision}
+	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/"+operation, request, &result)
+	return result, err
+}

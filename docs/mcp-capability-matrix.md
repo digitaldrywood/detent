@@ -1555,20 +1555,21 @@ Sources: [PUT /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/ap
 
 Archive native issue
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.archive_native_issue` — Bounded archiveNativeIssueRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → archiveNativeIssueResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Hub-only deployments without daemon approval/orchestrator services return opaque unavailable errors. GitHub-compatible content edits/archive/restore are unavailable because the dashboard does not offer them. Hub-only destructive edits are unavailable without an approval service. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.archive_item` — project_id, request_id, identifier, expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.archiveNativeIssue; s.setNativeArchive
-- Extraction: Extract hubserver.archiveNativeIssue application inputs/results and validation from Echo; reuse s.setNativeArchive. The HTTP handler and MCP must delegate to this same application operation.
+- Application: setNativeArchiveCommand / executeNativeWorkCommand, preserving native revision and active-work restrictions.
+- Extraction: setNativeArchiveCommand / executeNativeWorkCommand, preserving native revision and active-work restrictions.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestMCPNativeWorkCommands; TestHubMCPWorkCommands (no hub approval service); existing native archive regressions. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: ordinary non-destructive write → none
+- Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/archive](../internal/hubserver/native_api.go#L129), [web/conversation/src/app/work/lib/workHttp.ts:576](../web/conversation/src/app/work/lib/workHttp.ts#L576)
 ## hubserver.artifact_read_grant
@@ -1813,15 +1814,15 @@ Sources: [PUT /api/v2/organizations/:organization/members/:member/role](../inter
 
 Change native dependency
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.change_native_dependency` — Bounded changeNativeDependencyRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → changeNativeDependencyResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Compatibility relationships/order/queue priority use the hub dashboard commands. Daemons without those installed commands return safe errors; native order/queue-priority overrides are unavailable. Native dependencies are offered through their revisioned command. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.set_dependency` — project_id, request_id, identifier, related, operation (add/remove), native expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.changeNativeDependency; s.nativeMutation
-- Extraction: Extract hubserver.changeNativeDependency application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: changeNativeDependencyCommand / changeDependencyTx / executeNativeWorkCommand, preserving native revision, cycle, project and ownership checks.
+- Extraction: changeNativeDependencyCommand / changeDependencyTx / executeNativeWorkCommand, preserving native revision, cycle, project and ownership checks.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestMCPNativeWorkCommands; TestHubMCPCompatibilityCommands; TestNativeConcurrentDependencyCycle; TestNativeDependencyReadPermissions. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -1853,15 +1854,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 Change work item dependency
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.change_work_item_dependency` — Bounded changeWorkItemDependencyRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → changeWorkItemDependencyResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Compatibility relationships/order/queue priority use the hub dashboard commands. Daemons without those installed commands return safe errors; native order/queue-priority overrides are unavailable. Native dependencies are offered through their revisioned command. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.set_dependency` — project_id, request_id, identifier, related, operation (add/remove), native expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.changeWorkItemDependency; s.database.changeDependency
-- Extraction: Extract hubserver.changeWorkItemDependency application inputs/results and validation from Echo; reuse s.database.changeDependency. The HTTP handler and MCP must delegate to this same application operation.
+- Application: changeNativeDependencyCommand / changeDependencyTx / executeNativeWorkCommand, preserving native revision, cycle, project and ownership checks.
+- Extraction: changeNativeDependencyCommand / changeDependencyTx / executeNativeWorkCommand, preserving native revision, cycle, project and ownership checks.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPNativeWorkCommands; TestHubMCPCompatibilityCommands; TestNativeConcurrentDependencyCycle; TestNativeDependencyReadPermissions. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
@@ -1873,15 +1874,15 @@ Sources: [POST /api/v1/work-items/:id/dependencies](../internal/hubserver/api_ht
 
 Change work item order
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.change_work_item_order` — Bounded changeWorkItemOrderRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → changeWorkItemOrderResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Compatibility relationships/order/queue priority use the hub dashboard commands. Daemons without those installed commands return safe errors; native order/queue-priority overrides are unavailable. Native dependencies are offered through their revisioned command. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.order_item` — project_id, request_id, identifier, queue_scope, state, rank; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.changeWorkItemOrder; s.database.changeQueueOrder
-- Extraction: Extract hubserver.changeWorkItemOrder application inputs/results and validation from Echo; reuse s.database.changeQueueOrder. The HTTP handler and MCP must delegate to this same application operation.
+- Application: changeQueueOrderTx, shared with the hub dashboard
+- Extraction: changeQueueOrderTx, shared with the hub dashboard; native queue-order mutation is unavailable.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHubMCPCompatibilityCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
@@ -1893,15 +1894,15 @@ Sources: [POST /api/v1/work-items/:id/order](../internal/hubserver/api_http.go#L
 
 Change work item priority
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.change_work_item_priority` — Bounded changeWorkItemPriorityRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → changeWorkItemPriorityResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Compatibility relationships/order/queue priority use the hub dashboard commands. Daemons without those installed commands return safe errors; native order/queue-priority overrides are unavailable. Native dependencies are offered through their revisioned command. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.set_queue_priority` — project_id, request_id, identifier, queue_scope, state, queue_priority (urgent/high/normal/low/none); identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.changeWorkItemPriority; s.commitOutbox, s.database.workItemRepositoryID
-- Extraction: Extract hubserver.changeWorkItemPriority application inputs/results and validation from Echo; reuse s.commitOutbox, s.database.workItemRepositoryID. The HTTP handler and MCP must delegate to this same application operation.
+- Application: workItemPriorityCommand, shared with the compatibility dashboard
+- Extraction: workItemPriorityCommand, shared with the compatibility dashboard; the existing outbox owns priority mirroring.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHubMCPCompatibilityCommands; TestChangeWorkItemPriorityClears. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
@@ -1913,21 +1914,21 @@ Sources: [POST /api/v1/work-items/:id/priority](../internal/hubserver/api_http.g
 
 Change work item workflow
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.change_work_item_workflow` — Bounded changeWorkItemWorkflowRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → changeWorkItemWorkflowResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Hub-only deployments without daemon approval/orchestrator services return opaque unavailable errors. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.move_item` — project_id, request_id, identifier, target_state, native expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.changeWorkItemWorkflow; s.ChangeWorkflowState, s.database.workItemRepositoryID
-- Extraction: Extract hubserver.changeWorkItemWorkflow application inputs/results and validation from Echo; reuse s.ChangeWorkflowState, s.database.workItemRepositoryID. The HTTP handler and MCP must delegate to this same application operation.
+- Application: moveKanbanCard / ReconcileOperatorMove
+- Extraction: moveKanbanCard / ReconcileOperatorMove; NativeConnector retains the expected revision and the native workflow graph. Hub-only adapters have no lane writer.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Request governed transition; orchestrator alone writes tracker lane state (INV-1); Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary; TestMCPNativeWorkCommands; TestHubMCPWorkCommands; TestHubMCPCompatibilityCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: non-terminal lane request → none
-- Confirmation: terminal/destructive lane target → operator
+- Confirmation: ordinary non-destructive write → none
+- Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v1/work-items/:id/workflow](../internal/hubserver/api_http.go#L68)
 ## hubserver.claim_native_issue
@@ -2150,15 +2151,15 @@ Sources: [POST /api/v2/organizations/:organization/projects](../internal/hubserv
 
 Create native comment
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.create_native_comment` — Bounded createNativeCommentRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createNativeCommentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Native PR targets are unavailable. GitHub/local connector comment creation returns the owning issue identity/URL because the existing command does not return a comment ID; native commands return comment IDs and revisions. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.add_comment` — project_id, request_id, identifier, body (1–32768 bytes), optional target (issue/pr), owned repository and pull_request for pr; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.createNativeComment; s.nativeMutation
-- Extraction: Extract hubserver.createNativeComment application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: addKanbanComment / createNativeCommentCommand / executeNativeWorkCommand
+- Extraction: addKanbanComment / createNativeCommentCommand / executeNativeWorkCommand; issue or linked PR targets retain dashboard capability and ownership checks.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary (issue/PR ownership and replay); TestMCPNativeWorkCommands; TestHubMCPWorkCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -2170,15 +2171,15 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Create native issue
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.create_native_issue` — Bounded createNativeIssueRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createNativeIssueResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.file_issue` — project_id, request_id, title (1–256 bytes), description (1–32768 bytes), optional configured state, labels (max 64), priority (1–4); identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.createNativeIssue; s.nativeMutation
-- Extraction: Extract hubserver.createNativeIssue application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: createWorkItem / createNativeIssueCommand / executeNativeWorkCommand
+- Extraction: createWorkItem / createNativeIssueCommand / executeNativeWorkCommand; tracker capabilities and configured native state are enforced.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary (creation/replay); TestMCPNativeWorkCommands; TestHubMCPWorkCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -3558,7 +3559,7 @@ List native comments
 - Decision: Typed work_comments exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
 - Tool: `board.work_comments` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.listNativeComments; s.nativePage
+- Application: readComments / nativeWorkComments / NativeClient.CommentsPage / authorized live issue discussion
 - Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
 - Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
@@ -4399,15 +4400,15 @@ Sources: [GET /api/v1/repositories/freshness](../internal/hubserver/api_http.go#
 
 Restore native issue
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.restore_native_issue` — Bounded restoreNativeIssueRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → restoreNativeIssueResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. GitHub-compatible content edits/archive/restore are unavailable because the dashboard does not offer them. Hub-only destructive edits are unavailable without an approval service. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.restore_item` — project_id, request_id, identifier, expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.restoreNativeIssue; s.setNativeArchive
-- Extraction: Extract hubserver.restoreNativeIssue application inputs/results and validation from Echo; reuse s.setNativeArchive. The HTTP handler and MCP must delegate to this same application operation.
+- Application: setNativeArchiveCommand / executeNativeWorkCommand, preserving native revision and archive restrictions.
+- Extraction: setNativeArchiveCommand / executeNativeWorkCommand, preserving native revision and archive restrictions.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestMCPNativeWorkCommands; TestHubMCPWorkCommands; existing native archive regressions. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -4929,21 +4930,21 @@ Sources: [POST /api/v2/organizations/:organization/switch](../internal/hubserver
 
 Transition native issue
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.transition_native_issue` — Bounded transitionNativeIssueRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → transitionNativeIssueResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Hub-only deployments without daemon approval/orchestrator services return opaque unavailable errors. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.move_item` — project_id, request_id, identifier, target_state, native expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.transitionNativeIssue; s.nativeMutation
-- Extraction: Extract hubserver.transitionNativeIssue application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: moveKanbanCard / ReconcileOperatorMove
+- Extraction: moveKanbanCard / ReconcileOperatorMove; NativeConnector retains the expected revision and the native workflow graph. Hub-only adapters have no lane writer.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Request governed transition; orchestrator alone writes tracker lane state (INV-1); Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary; TestMCPNativeWorkCommands; TestHubMCPWorkCommands; TestHubMCPCompatibilityCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: non-terminal lane request → none
-- Confirmation: terminal/destructive lane target → operator
+- Confirmation: ordinary non-destructive write → none
+- Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/workflow](../internal/hubserver/native_api.go#L132), [web/conversation/src/app/work/lib/workHttp.ts:566](../web/conversation/src/app/work/lib/workHttp.ts#L566)
 ## hubserver.unbind_workspace_worker
@@ -4988,42 +4989,41 @@ Sources: [POST /api/v2/organizations/:organization/entitlements](../internal/hub
 
 Update native comment
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.update_native_comment` — Bounded updateNativeCommentRequest: organization, project, item, comment; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → updateNativeCommentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.edit_comment` — project_id, request_id, identifier, comment_id, body (1–32768 bytes), native expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.updateNativeComment; s.nativeMutation
-- Extraction: Extract hubserver.updateNativeComment application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: mutateKanbanComment / updateNativeCommentCommand / executeNativeWorkCommand
+- Extraction: mutateKanbanComment / updateNativeCommentCommand / executeNativeWorkCommand; local-comment permissions and native comment revisions remain authoritative.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary; TestMCPNativeWorkCommands; TestHubMCPWorkCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: ordinary non-destructive edit → none
-- Confirmation: arguments remove data, alter access or create material external effects → operator
+- Confirmation: read or ordinary non-destructive write → none
 
 Sources: [PATCH /api/v2/organizations/:organization/projects/:project/work-items/:item/comments/:comment](../internal/hubserver/native_api.go#L136)
 ## hubserver.update_native_issue
 
 Update native issue
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.update_native_issue` — Bounded updateNativeIssueRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → updateNativeIssueResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. GitHub-compatible content edits/archive/restore are unavailable because the dashboard does not offer them. Hub-only destructive edits are unavailable without an approval service. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.edit_item` — project_id, request_id, identifier, expected_revision >= 1, optional title/body/labels/priority (native 0–3); at least one field; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.updateNativeIssue; s.nativeMutation
-- Extraction: Extract hubserver.updateNativeIssue application inputs/results and validation from Echo; reuse s.nativeMutation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: updateNativeIssueCommand / executeNativeWorkCommand, preserving reserved-label and native expected-revision checks.
+- Extraction: updateNativeIssueCommand / executeNativeWorkCommand, preserving reserved-label and native expected-revision checks.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestMCPNativeWorkCommands (content/priority/labels, stale revisions and destructive approval); TestHubMCPWorkCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: ordinary non-destructive edit → none
-- Confirmation: arguments remove data, alter access or create material external effects → operator
+- Confirmation: ordinary non-destructive write → none
+- Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
 Sources: [PATCH /api/v2/organizations/:organization/projects/:project/work-items/:item](../internal/hubserver/native_api.go#L128), [web/conversation/src/app/work/lib/workHttp.ts:556](../web/conversation/src/app/work/lib/workHttp.ts#L556)
 ## hubserver.update_project_integration
@@ -5531,15 +5531,15 @@ Sources: [POST /api/v1/chat/actions/:action_id/reject](../internal/web/server.go
 
 Api create work item
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_create_work_item` — Bounded apiCreateWorkItemRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiCreateWorkItemResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.file_issue` — project_id, request_id, title (1–256 bytes), description (1–32768 bytes), optional configured state, labels (max 64), priority (1–4); identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.apiCreateWorkItem; s.registry.Get, s.requestKanbanRefresh
-- Extraction: Extract web.apiCreateWorkItem application inputs/results and validation from Echo; reuse s.registry.Get, s.requestKanbanRefresh. The HTTP handler and MCP must delegate to this same application operation.
+- Application: createWorkItem / createNativeIssueCommand / executeNativeWorkCommand
+- Extraction: createWorkItem / createNativeIssueCommand / executeNativeWorkCommand; tracker capabilities and configured native state are enforced.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary (creation/replay); TestMCPNativeWorkCommands; TestHubMCPWorkCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5651,15 +5651,15 @@ Sources: [GET /api/v1/projects/:project_id/issues/explanation](../internal/web/s
 
 Api issue park acknowledgement
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_issue_park_acknowledgement` — Bounded apiIssueParkAcknowledgementRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiIssueParkAcknowledgementResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.acknowledge_parks` — project_id, request_id, identifier; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.apiIssueParkAcknowledgement; s.issueExplanation
-- Extraction: Extract web.apiIssueParkAcknowledgement application inputs/results and validation from Echo; reuse s.issueExplanation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: acknowledgeIssueParks, pinning the existing park sequence across approval/replay.
+- Extraction: acknowledgeIssueParks, pinning the existing park sequence across approval/replay.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPNativeWorkCommands; TestIssueExplanationAPIAcknowledgesCurrentParkSequence. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5671,15 +5671,15 @@ Sources: [POST /api/v1/projects/:project_id/issues/explanation](../internal/web/
 
 Api issue priority
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_issue_priority` — Bounded apiIssuePriorityRequest: project_id, issue_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiIssuePriorityResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.set_priority` — project_id, request_id, identifier, configured priority name, native expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.apiIssuePriority; s.requestKanbanRefresh, s.setIssuePriority
-- Extraction: Extract web.apiIssuePriority application inputs/results and validation from Echo; reuse s.requestKanbanRefresh, s.setIssuePriority. The HTTP handler and MCP must delegate to this same application operation.
+- Application: setIssuePriority
+- Extraction: setIssuePriority; configured priority names, native revision and the shared edit command are retained.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary; TestMCPNativeWorkCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5711,15 +5711,15 @@ Sources: [POST /api/v1/projects/:project_id/issues/progress-credit](../internal/
 
 Api kanban comment
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_kanban_comment` — Bounded apiKanbanCommentRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKanbanCommentResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Native PR targets are unavailable. GitHub/local connector comment creation returns the owning issue identity/URL because the existing command does not return a comment ID; native commands return comment IDs and revisions. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.add_comment` — project_id, request_id, identifier, body (1–32768 bytes), optional target (issue/pr), owned repository and pull_request for pr; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKanbanCommentDialog; s.kanbanCommentDialogData
-- Extraction: Extract web.apiKanbanCommentDialog application inputs/results and validation from Echo; reuse s.kanbanCommentDialogData. The HTTP handler and MCP must delegate to this same application operation.
+- Application: addKanbanComment / createNativeCommentCommand / executeNativeWorkCommand
+- Extraction: addKanbanComment / createNativeCommentCommand / executeNativeWorkCommand; issue or linked PR targets retain dashboard capability and ownership checks.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary (issue/PR ownership and replay); TestMCPNativeWorkCommands; TestHubMCPWorkCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5731,35 +5731,36 @@ Sources: [GET /api/v1/kanban/comment](../internal/web/server.go#L562), [POST /ap
 
 Api kanban comment delete
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_kanban_comment_delete` — Bounded apiKanbanCommentDeleteRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKanbanCommentDeleteResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Native comment deletion is unavailable; only permitted local dashboard comments can be deleted. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.delete_comment` — project_id, request_id, identifier, comment_id; approval is connection authority; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKanbanCommentDelete; s.kanbanActionTarget, s.kanbanCommentCanMutate, s.kanbanMutations.WithLock, s.requestKanbanRefresh
-- Extraction: Extract web.apiKanbanCommentDelete application inputs/results and validation from Echo; reuse s.kanbanActionTarget, s.kanbanCommentCanMutate, s.kanbanMutations.WithLock, s.requestKanbanRefresh. The HTTP handler and MCP must delegate to this same application operation.
+- Application: mutateKanbanComment
+- Extraction: mutateKanbanComment; only dashboard-offered local comments can be deleted, through shared operator approval.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary (pending/approve/reject/YOLO); TestMCPNativeWorkCommands (native unavailable). Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: ordinary non-destructive write → none
+- Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
 Sources: [DELETE /api/v1/kanban/comment](../internal/web/server.go#L565), [internal/web/templates/comments.templ:103](../internal/web/templates/comments.templ#L103), [internal/web/templates/comments.templ:103](../internal/web/templates/comments.templ#L103), [internal/web/templates/dashboard.templ:3190](../internal/web/templates/dashboard.templ#L3190), [internal/web/templates/dashboard.templ:3190](../internal/web/templates/dashboard.templ#L3190), [internal/web/templates/comments.templ:185](../internal/web/templates/comments.templ#L185), [internal/web/templates/comments.templ:185](../internal/web/templates/comments.templ#L185)
 ## web.api_kanban_comment_edit
 
 Api kanban comment edit
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_kanban_comment_edit` — Bounded apiKanbanCommentEditRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKanbanCommentEditResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.edit_comment` — project_id, request_id, identifier, comment_id, body (1–32768 bytes), native expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKanbanCommentEdit; s.kanbanActionTarget, s.kanbanCommentCanMutate, s.kanbanMutations.WithLock, s.requestKanbanRefresh
-- Extraction: Extract web.apiKanbanCommentEdit application inputs/results and validation from Echo; reuse s.kanbanActionTarget, s.kanbanCommentCanMutate, s.kanbanMutations.WithLock, s.requestKanbanRefresh. The HTTP handler and MCP must delegate to this same application operation.
+- Application: mutateKanbanComment / updateNativeCommentCommand / executeNativeWorkCommand
+- Extraction: mutateKanbanComment / updateNativeCommentCommand / executeNativeWorkCommand; local-comment permissions and native comment revisions remain authoritative.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary; TestMCPNativeWorkCommands; TestHubMCPWorkCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5771,40 +5772,42 @@ Sources: [POST /api/v1/kanban/comment/edit](../internal/web/server.go#L564), [in
 
 Api kanban move
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_kanban_move` — Bounded apiKanbanMoveRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKanbanMoveResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Hub-only deployments without daemon approval/orchestrator services return opaque unavailable errors. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.move_item` — project_id, request_id, identifier, target_state, native expected_revision >= 1; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKanbanMoveDialog; s.kanbanMoveDialogData
-- Extraction: Extract web.apiKanbanMoveDialog application inputs/results and validation from Echo; reuse s.kanbanMoveDialogData. The HTTP handler and MCP must delegate to this same application operation.
+- Application: moveKanbanCard / ReconcileOperatorMove
+- Extraction: moveKanbanCard / ReconcileOperatorMove; NativeConnector retains the expected revision and the native workflow graph. Hub-only adapters have no lane writer.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary; TestMCPNativeWorkCommands; TestHubMCPWorkCommands; TestHubMCPCompatibilityCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: ordinary non-destructive write → none
+- Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
 Sources: [GET /api/v1/kanban/move](../internal/web/server.go#L559), [POST /api/v1/kanban/move](../internal/web/server.go#L560), [internal/web/templates/board.templ:721](../internal/web/templates/board.templ#L721), [internal/web/templates/board.templ:721](../internal/web/templates/board.templ#L721), [internal/web/templates/dashboard.templ:3139](../internal/web/templates/dashboard.templ#L3139), [internal/web/templates/dashboard.templ:3139](../internal/web/templates/dashboard.templ#L3139), [internal/web/templates/sheet.templ:86](../internal/web/templates/sheet.templ#L86), [internal/web/templates/board.templ:647](../internal/web/templates/board.templ#L647)
 ## web.api_kanban_remove
 
 Api kanban remove
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_kanban_remove` — Bounded apiKanbanRemoveRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKanbanRemoveResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Hub-only deployments without daemon approval/orchestrator services return opaque unavailable errors. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.remove_item` — project_id, request_id, identifier; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKanbanRemove; s.kanbanActionTarget, s.kanbanCardFresh, s.kanbanMutations.NoteCardRemoved, s.kanbanMutations.WithLock, s.kanbanRemoveSuccess
-- Extraction: Extract web.apiKanbanRemove application inputs/results and validation from Echo; reuse s.kanbanActionTarget, s.kanbanCardFresh, s.kanbanMutations.NoteCardRemoved, s.kanbanMutations.WithLock, s.kanbanRemoveSuccess. The HTTP handler and MCP must delegate to this same application operation.
+- Application: removeKanbanCard / ReconcileOperatorMove(Remove), consolidating the former dashboard lane-field/project removal under the orchestrator.
+- Extraction: removeKanbanCard / ReconcileOperatorMove(Remove), consolidating the former dashboard lane-field/project removal under the orchestrator.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPActionApprovalBoundary (approve/YOLO); TestOperatorRemovalCommand; TestKanbanRemoveClearsConfiguredIssueField. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: ordinary non-destructive write → none
+- Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v1/kanban/remove](../internal/web/server.go#L561), [internal/web/templates/sheet.templ:99](../internal/web/templates/sheet.templ#L99), [internal/web/templates/sheet.templ:99](../internal/web/templates/sheet.templ#L99)
 ## web.api_keys_create
@@ -6009,20 +6012,21 @@ Sources: [POST /api/v1/refresh](../internal/web/server.go#L533)
 
 Api security audit disposition
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_security_audit_disposition` — Bounded apiSecurityAuditDispositionRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiSecurityAuditDispositionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Hub-only deployments without daemon approval/orchestrator services return opaque unavailable errors. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.dispose_security_finding` — project_id, request_id, identifier, repository, pull_request, base_sha, head_sha, finding_id, evidence (1–4096 bytes); identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential audit disposition authority for project; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.apiSecurityAuditDisposition; s.now, s.registry.Get
-- Extraction: Extract web.apiSecurityAuditDisposition application inputs/results and validation from Echo; reuse s.now, s.registry.Get. The HTTP handler and MCP must delegate to this same application operation.
+- Application: securityDispositionRun / recordSecurityDisposition
+- Extraction: securityDispositionRun / recordSecurityDisposition; current admin authority, exact trusted run and finding ownership are checked before shared operator approval.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestSecurityAuditDispositionAcceptsProjectScopedWorkerCredential; shared approval/authority regressions in TestMCPActionApprovalBoundary; exact-head checks retained in securityDispositionRun. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: ordinary non-destructive write → none
+- Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
 Sources: [POST /api/v1/projects/:project_id/security-audits/dispositions](../internal/web/server.go#L515)
 ## web.api_staleness_warning_acknowledgement
@@ -6229,15 +6233,15 @@ Sources: [POST /api/v1/projects/:project_id/work-attempts/:attempt_id/recovery](
 
 Api workflow timeline
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.api_workflow_timeline` — Bounded apiWorkflowTimelineRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiWorkflowTimelineResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Native comments are cursor-paginated; snapshot-backed discussion/history returns explicit truncation at the requested limit. All five original read tools remain; parent parity remains pending.
+- Tool: `actions.workflow_timeline` — project_id, identifier, limit (1–200); cursor unavailable for snapshot history; identifiers bounded to 256 bytes, request at most 64 KiB; authentication/YOLO are never arguments → Bounded application read or mutation receipt (at most 256 KiB), resource identity/URL, native issue/comment revisions where relevant, outcome/correlation and observed/completed time; safe service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiWorkflowTimeline; s.store.IssueWorkflowTimeline
-- Extraction: Extract web.apiWorkflowTimeline application inputs/results and validation from Echo; reuse s.store.IssueWorkflowTimeline. The HTTP handler and MCP must delegate to this same application operation.
+- Application: workTimeline, shared with the dashboard API
+- Extraction: workTimeline, shared with the dashboard API; project/item ownership, collection bounds, truncation and observed time are explicit.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPNativeWorkCommands; TestServerWorkflowTimelineAPI. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.

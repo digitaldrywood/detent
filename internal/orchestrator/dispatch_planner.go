@@ -716,13 +716,13 @@ func (p dispatchPlanner) previewCurrentHeadCIWait(
 	}
 	timing := reconcileMergeWorkerCurrentHeadCIWait(state, issue, now)
 	retry.Issue = cloneIssue(issue)
-	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue)
+	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)
 	if retry.Wait.StartedAt.IsZero() || !retry.Wait.StartedAt.Equal(timing.CIWaitStartedAt) {
 		retry.Wait.StartedAt = timing.CIWaitStartedAt
 		retry.Wait.PollCount = 0
 	}
 	retry.Wait.PollCount++
-	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue)
+	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)
 	retry.DueAt = mergeWorkerCurrentHeadCINextPollAt(retry.Wait.StartedAt, now, p.cfg.ContinuationRetryDelay)
 	state.Retry[issue.ID] = retry
 	return retry, true
@@ -784,8 +784,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}
 	}
-	if normalizeState(issue.State) == normalizeState(p.cfg.AutoPromote.ReworkState) && issue.PullRequest != nil &&
-		(currentHeadCIStatusPending(issue.PullRequest.CIStatus) || len(mergeWorkerCurrentHeadCIPendingChecks(issue)) > 0) {
+	if (normalizeState(issue.State) == normalizeState(p.cfg.AutoPromote.ReworkState) ||
+		(normalizeState(issue.State) == "todo" && issue.PullRequest.HasMissingLocalStatus(gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus))) && issue.PullRequest != nil &&
+		(currentHeadCIStatusPending(issue.PullRequest.CIStatus) || len(mergeWorkerCurrentHeadCIPendingChecks(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)) > 0) {
 		return dispatchableDecision{reason: dispatchSkipCurrentHeadCIWait}
 	}
 	if artifactGateWaitStatusBlocksDispatch(issue, p.cfg.AutoPromote.Gate) {
@@ -805,7 +806,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if mergedPullRequestReconciliationPending(issue, p.cfg) {
 		return dispatchableDecision{reason: dispatchSkipMergedPullRequest}
 	}
-	if duplicatePullRequestWork(issue) {
+	if duplicatePullRequestWork(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus) {
 		return dispatchableDecision{reason: dispatchSkipDuplicatePullRequest}
 	}
 	if authorization := p.authorizationDecision(issue); !authorization.Matched {

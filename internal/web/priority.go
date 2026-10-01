@@ -10,7 +10,9 @@ import (
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var (
@@ -52,6 +54,27 @@ func (s *Server) setIssuePriority(ctx context.Context, projectID string, issueID
 	priority, rank, ok := configuredPriority(tracked.Workflow().Config, requested)
 	if !ok {
 		return "", 0, errPriorityUnknown
+	}
+
+	if source, ok := tracked.Connector().(nativeClientSource); ok && source.NativeClient() != nil {
+		client := source.NativeClient()
+		issue, err := client.Issue(ctx, tracker.NativeWorkItemID(issueID))
+		if err != nil {
+			return "", 0, err
+		}
+		if rank < 1 || rank > 4 {
+			return "", 0, errPriorityUnknown
+		}
+		expected := tracker.ExpectedRevision(ctx)
+		if expected > 0 && expected != issue.Revision {
+			return "", 0, errPriorityUnavailable
+		}
+		if expected <= 0 {
+			expected = issue.Revision
+		}
+		level := rank - 1
+		_, err = executeNativeWorkCommand(ctx, client, nativeWorkCommand{Kind: operatortool.EditItem, ID: issue.WorkItemID, ExpectedRevision: expected, Priority: &level})
+		return priority, rank, err
 	}
 	if err := tracked.Connector().SetField(ctx, strings.TrimSpace(issueID), "Priority", priority); err != nil {
 		return "", 0, err

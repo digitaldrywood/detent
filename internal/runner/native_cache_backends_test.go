@@ -50,7 +50,8 @@ func TestINV12BackendToolchainEnvironment(t *testing.T) {
 					return cmd
 				}
 				var backend runner.AgentBackend
-				if backendKind == "codex" {
+				switch backendKind {
+				case "codex":
 					transport, err := codex.NewLocalTransportFactory(factory)
 					if err != nil {
 						t.Fatal(err)
@@ -63,13 +64,13 @@ func TestINV12BackendToolchainEnvironment(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-				} else if backendKind == "pi_agent" {
+				case "pi_agent":
 					var err error
 					backend, err = piagent.NewAgentBackend(piagent.Options{CommandFactory: func(ctx context.Context, _ []string) *exec.Cmd { return factory(ctx) }})
 					if err != nil {
 						t.Fatal(err)
 					}
-				} else {
+				default:
 					var err error
 					backend, err = claudecode.NewAgentBackend(claudecode.Options{CommandFactory: factory})
 					if err != nil {

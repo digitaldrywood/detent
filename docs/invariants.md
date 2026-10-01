@@ -32,6 +32,24 @@ writes tracker lanes, creates confirmations or adds a protection mechanism.
 `TestHostedOperatorCurrentAuthority` and `TestProtocolWorkReadParity` exercise
 the application boundary and both transports, including direct-call denial.
 
+Work-item MCP parity (#3341) reuses the dashboard work creation, discussion,
+priority, native collaboration, park acknowledgement and security-disposition
+commands. Native edits keep expected revisions and workflow authority; connection
+approval and YOLO cannot bypass them. Compatibility dependencies, ordering and
+priority use the hub's existing application commands. Board removal now delegates
+project removal or lane-field clearing to `ReconcileOperatorMove`, consolidating
+the former dashboard tracker writes under the orchestrator. Hub-only deployments
+without a daemon lane owner or approval service return opaque unavailable results
+for those commands. No tracker capability or lane writer is added to MCP.
+The reviewed `applyOperatorMove` source digest changes for this consolidation;
+the existing move reasons are unchanged and no mechanism or reason code is added
+(INV-3).
+`TestMCPNativeWorkCommands`, `TestHubMCPWorkCommands`,
+`TestHubMCPCompatibilityCommands`, `TestMCPActionApprovalBoundary`,
+`TestOperatorRemovalCommand` and `TestWorkArgumentsDirectCallBounds` cover
+replay, native revisions, workflow refusal, ownership, bounded direct calls,
+real approval/rejection, authorized YOLO and orchestrator-owned removal.
+
 MCP transport parity (#3339) uses one permission-filtered, paginated typed
 registry with toolset metadata. The `2026-07-28` stateless protocol validates
 per-request metadata and mirrored HTTP headers; older handshakes retain their
@@ -203,6 +221,17 @@ Open associations, incomplete ancestry receipts,
 human actions, unavailable native evidence, and failing checks retain their
 existing behavior. `TestMergedCompletionReconcilesClosedDraft` covers stale draft
 associations, native reopening, and both completion and refusal controls.
+
+Successful persisted worker completion delegates an already-merged PR to this
+same owner before scheduling a continuation (#3576). A finished worker's retained
+claim no longer excludes merged delivery; running workers and claimed open PRs
+remain excluded. Resolving a merged operational receipt preserves its supplied
+attempt/generation attribution and requires native merged evidence, rather than
+falling back to assertion-only operational completion.
+`TestMergedCompletionRefreshReplacesClosedDraft` replays #3533's attempt 7516,
+generation 118, clean workspace and merged PR #3555: Done replaces the continuation
+that redispatched attempt 7522. Its stale-attribution and missing-evidence cases
+retain rejection without changing lane ownership or adding a recovery mechanism.
 
 Authorized no-PR operational delivery reads the structured receipt from the
 canonical issue-body Workpad as well as Workpad comments (#3425). GitHub
@@ -572,9 +601,10 @@ writes followed by successful persistence and normal turn completion.
 Dispatch Workpad comment-read failures use the existing tracker availability observer
 and tracker-unavailable dispatch reason; they never become issue dependency evidence.
 
-Worker credential classification uses the connector's shared GraphQL secondary
-cooldown, including Retry-After. A failed `GET /rate_limit` observation now
-logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
+Worker credential classification reads `GET /user` and uses the connector's shared REST
+cooldown, including Retry-After (#3002). Shared/distinct principal classification
+and bounded probes are unchanged; no GraphQL identity query is sent.
+A failed `GET /rate_limit` observation now logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
 A successful response still enforces the configured worker reserve. The old
 credential-wide monitor condition, canary, retry restoration, and scheduler
 skip reason are retired. Historical monitor attempts remain visible in attempt
@@ -616,6 +646,40 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Rework-breaker recovery reads its historical park only for a current Blocked
+issue with automatic promotion enabled. Current-cause recovery remains the
+first owner for every Blocked issue, including when promotion is disabled.
+Configured recovery source lanes retain their existing maintenance behavior
+without loading breaker history they cannot consume.
+`TestRecoverBlockedIssuesReworkBreakerGuards` covers omitted history reads and
+retained current park decisions. This consolidates the existing eligibility
+condition before its read without a cache or recovery mechanism.
+
+Scoped park summaries select physical rows through the existing identity
+indexes before aggregating history. A fixed two or three `json_each` identity
+branches serve any batch size; `rowid IN` deduplicates rows matching several
+aliases without collapsing distinct usage rows. Project boundaries, one-hop
+alias matching, list and invalid-identity behavior, park provenance, and
+acknowledgment receipts remain unchanged. The existing park summary, bridging,
+and acknowledgment tests cover these contracts, including a board-sized batch.
+This consolidates scoped readers without a new index, cache, or mechanism.
+
+Missing `gate.local_status` evidence is unproduced Detent-owned work (#3172).
+The connector shares the ownership predicate with current-head CI telemetry and
+merge missing-check accounting, removing that context from pending-CI suppression,
+missing-check streaks, parks, and park-recovery waits. Todo duplicate suppression
+and stale-PR routing also exclude heads with this worker-owned work, using the
+existing worker path and CI wait reason. Required-check evidence remains present
+until validation posts the status, so native queues and programmatic merges
+cannot bypass it. Other missing contexts and projects without a local status
+retain their behavior. `TestRequiredStatusCheckFailures`,
+`TestHydrateMergingRulesetStatus`, `TestReworkCurrentHeadCIDispatch`,
+`TestPostValidatedGateStatusOnlyForTheValidatedHead`, and
+`TestPersistentlyMissingRequiredCheckParkRecovery` cover the boundary.
+The existing missing-check mechanism remains for external required contexts that
+need a human configuration repair. No mechanism, reason, or configuration key
+is added.
+
 Provider transport overload remains instance-owned after a worker has started.
 Its completion no longer invokes the competing issue demotion/parking path;
 the existing provider retry keeps the current lane. Terminal failure counting
@@ -639,6 +703,13 @@ stays active. A recorded Rework source returns to Rework, legacy empty source
 returns to Todo, and neither path enters the issue failure limit, including a
 configured zero limit. `TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt`
 checks these existing restoration contracts.
+Legacy GitHub REST capacity attempts without durable wait metadata use that
+same source-lane restoration owner rather than the issue-failure demoter.
+Their existing pushed-product, unresolved-PR, and foreign-claim ownership
+checks remain authoritative. Durable capacity waits stay in their current lane.
+`TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibility`
+covers legacy Todo and Rework restoration, configured zero limits, pushed work,
+foreign claims, and durable wait preservation.
 
 Merged-completion ownership (#3529) resolves stale closed associations through
 existing native reference lookup and the existing merged-PR owner. Completion

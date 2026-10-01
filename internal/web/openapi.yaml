@@ -137,6 +137,58 @@ paths:
         "400": {$ref: "#/components/responses/Problem"}
         "401": {$ref: "#/components/responses/Problem"}
         "403": {$ref: "#/components/responses/Problem"}
+  /api/v1/operator-connections:
+    post:
+      operationId: createOperatorConnection
+      summary: Establish a local MCP stdio operator connection
+      description: Binds a new connection to the authenticated operator identity in confirmation mode. The response links to the browser setup page; only the authenticated browser operator can change the mode or approve actions.
+      tags: [operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/operator-connections
+      responses:
+        "201":
+          description: Connection identity and browser setup link.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connection_id, setup_url]
+                properties:
+                  connection_id: {type: string}
+                  setup_url: {type: string}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "500": {$ref: "#/components/responses/Problem"}
+  /api/v1/operator-tools:
+    get:
+      operationId: listOperatorTools
+      summary: List operator tools available to the current identity
+      description: Returns tool definitions filtered by current authority. Mutation tools are included only for identities with write scope; discovery does not authorize a later call.
+      tags: [telemetry, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/operator-tools
+      responses:
+        "200":
+          description: Authorized tool catalog with input schemas, annotations, and toolset metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tools]
+                properties:
+                  tools:
+                    type: array
+                    items: {$ref: "#/components/schemas/GenericObject"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
   /api/v1/operator-tools/{tool_name}:
     parameters:
       - in: path
