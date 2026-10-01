@@ -46,34 +46,45 @@ func (s *Service) hostedArtifactPublisher(c echo.Context, credential apiCredenti
 }
 
 func (s *Service) bindArtifactService(c echo.Context) error {
-	var binding artifact.Binding
-	if err := decodeAPIJSON(c, &binding); err != nil {
+	var request struct {
+		artifact.Binding
+		tracker.Mutation
+	}
+	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if !artifact.ValidID(binding.ServiceID, "service") || binding.ServiceID != c.Param("service") || !artifact.ValidOrigin(binding.Origin) || !slices.Contains([]string{"customer", "hosted"}, binding.Mode) || binding.Mode == "hosted" && !binding.HostedOptIn || binding.PublisherTokenID == "" {
-		return s.nativeAPIError(c, nativeInvalid("Invalid artifact service binding"))
+	// Existing dashboard callers may omit a key; typed clients supply one to
+	// replay the same binding command across reconnects.
+	if request.IdempotencyKey == "" {
+		request.IdempotencyKey = newNativeID("command")
 	}
-	scope := nativeRequestScope(c)
+	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		return s.bindArtifactServiceCommand(ctx, tx, scope, c.Param("service"), request.Binding)
+	})
+}
+
+func (s *Service) bindArtifactServiceCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, serviceID string, binding artifact.Binding) (artifact.Binding, error) {
+	if !artifact.ValidID(binding.ServiceID, "service") || binding.ServiceID != serviceID || !artifact.ValidOrigin(binding.Origin) || !slices.Contains([]string{"customer", "hosted"}, binding.Mode) || binding.Mode == "hosted" && !binding.HostedOptIn || binding.PublisherTokenID == "" {
+		return artifact.Binding{}, nativeInvalid("Invalid artifact service binding")
+	}
 	var count int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM api_tokens t JOIN token_grants g ON g.token_id=t.id WHERE t.id=? AND t.revoked_at IS NULL AND g.organization_id=? AND g.project_id=?", binding.PublisherTokenID, scope.organization, scope.project).Scan(&count); err != nil {
-		return s.nativeAPIError(c, err)
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM api_tokens t JOIN token_grants g ON g.token_id=t.id WHERE t.id=? AND t.revoked_at IS NULL AND g.organization_id=? AND g.project_id=?", binding.PublisherTokenID, scope.organization, scope.project).Scan(&count); err != nil {
+		return artifact.Binding{}, err
 	}
 	if count != 1 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return artifact.Binding{}, nativeNotFound()
 	}
 	raw, err := json.Marshal(binding)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return artifact.Binding{}, err
 	}
-	_, err = s.database.db.ExecContext(c.Request().Context(), "INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id) VALUES(?,?,?,?,?) ON CONFLICT(organization_id,project_id,id) DO UPDATE SET binding_json=excluded.binding_json,publisher_token_id=excluded.publisher_token_id", scope.organization, scope.project, binding.ServiceID, raw, binding.PublisherTokenID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, binding)
+	_, err = tx.ExecContext(ctx, "INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id) VALUES(?,?,?,?,?) ON CONFLICT(organization_id,project_id,id) DO UPDATE SET binding_json=excluded.binding_json,publisher_token_id=excluded.publisher_token_id", scope.organization, scope.project, binding.ServiceID, raw, binding.PublisherTokenID)
+	binding.PublisherTokenID = ""
+	return binding, err
 }
 
 func (s *Service) artifactServices(c echo.Context) error {
-	result, err := s.artifactServicesCommand(c.Request().Context(), nativeRequestScope(c), s.config.now())
+	result, err := s.artifactServicesCommand(c.Request().Context(), nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -306,7 +317,7 @@ func (s *Service) authorizeHostedArtifactRead(c echo.Context, principal, session
 	return s.hostedAudit(ctx, session.Identity, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0)
 }
 
-func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope, now time.Time) (result []artifact.Binding, err error) {
+func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope) (result []artifact.Binding, err error) {
 	rows, err := s.database.db.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 16", scope.organization, scope.project)
 	if err != nil {
 		return result, err

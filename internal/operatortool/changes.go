@@ -27,6 +27,12 @@ const (
 	ReviewChange              = "review_change"
 	ViewChangeFile            = "view_change_file"
 	ApproveChangeReviewPolicy = "approve_change_review_policy"
+	BindArtifactService       = "bind_artifact_service"
+	GetAttemptDiff            = "get_attempt_diff"
+	GetWorkItemDiff           = "get_work_item_diff"
+	ListWorkItemPullRequests  = "list_work_item_pull_requests"
+	ArtifactLibrary           = "artifact_library"
+	GetNativeRun              = "get_native_run"
 )
 
 var ErrServiceUnavailable = errors.New("change or artifact service is unavailable")
@@ -53,6 +59,12 @@ type ChangeArguments struct {
 	Viewed           bool                        `json:"viewed,omitempty"`
 	ExpectedPolicyID string                      `json:"expected_review_policy_id,omitempty"`
 	Policy           *tracker.ChangeReviewPolicy `json:"policy,omitempty"`
+	Binding          *artifact.Binding           `json:"binding,omitempty"`
+	AttemptID        string                      `json:"attempt_id,omitempty"`
+	Sequence         int64                       `json:"sequence,omitempty"`
+	Source           string                      `json:"source,omitempty"`
+	Kind             string                      `json:"kind,omitempty"`
+	Status           string                      `json:"status,omitempty"`
 }
 
 // ChangeResult contains bounded application data, never rendered HTML.
@@ -74,6 +86,26 @@ type ChangeResult struct {
 	Artifacts      []artifact.Reference        `json:"artifacts,omitempty"`
 	Access         *ArtifactDownload           `json:"access,omitempty"`
 	Receipt        json.RawMessage             `json:"receipt,omitempty"`
+	Diff           *tracker.AttemptDiff        `json:"diff,omitempty"`
+	PullRequests   []tracker.PullRequestView   `json:"pull_requests,omitempty"`
+	Library        []ArtifactLibraryRow        `json:"library,omitempty"`
+	Attempt        *tracker.NativeAttempt      `json:"attempt,omitempty"`
+}
+
+// ArtifactLibraryRow is the business data from the existing library read,
+// without UI state, local database paths or arbitrary producer metadata.
+type ArtifactLibraryRow struct {
+	ID               string    `json:"id"`
+	ProjectID        string    `json:"project_id"`
+	Kind             string    `json:"kind"`
+	Title            string    `json:"title"`
+	State            string    `json:"state"`
+	ValidationStatus string    `json:"validation_status"`
+	ReviewURL        string    `json:"review_url,omitempty"`
+	SourceURL        string    `json:"source_url,omitempty"`
+	ArtifactPath     string    `json:"artifact_path,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // ArtifactDownload authorizes existing manifest/object endpoints for one exact
@@ -96,19 +128,21 @@ func DownloadResult(grant artifact.Grant) (ArtifactDownload, error) {
 func ChangeCatalog() []Definition {
 	str := func() json.RawMessage { return json.RawMessage(`{"type":"string","minLength":1,"maxLength":256}`) }
 	props := map[string]json.RawMessage{}
-	for _, k := range []string{"project_id", "work_item_id", "change_id", "version_id", "artifact_id", "expected_review_policy_id"} {
+	for _, k := range []string{"project_id", "work_item_id", "change_id", "version_id", "artifact_id", "expected_review_policy_id", "attempt_id", "kind", "status"} {
 		props[k] = str()
 	}
 	props["request_id"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":128}`)
 	props["title"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":256}`)
 	props["body"] = json.RawMessage(`{"type":"string","maxLength":32768}`)
 	props["decision"] = json.RawMessage(`{"type":"string","enum":["approved","changes_requested","commented"]}`)
-	for _, k := range []string{"expected_revision", "revision"} {
+	for _, k := range []string{"expected_revision", "revision", "sequence"} {
 		props[k] = json.RawMessage(`{"type":"integer","minimum":1,"maximum":9007199254740991}`)
 	}
 	props["limit"] = json.RawMessage(`{"type":"integer","minimum":1,"maximum":200}`)
 	props["offset"] = json.RawMessage(`{"type":"integer","minimum":0,"maximum":10000}`)
 	props["viewed"] = json.RawMessage(`{"type":"boolean"}`)
+	props["source"] = json.RawMessage(`{"type":"string","enum":["attempt","workspace"]}`)
+	props["binding"] = json.RawMessage(`{"type":"object","required":["service_id","origin","mode","hosted_opt_in","publisher_token_id"],"properties":{"service_id":{"type":"string","minLength":1,"maxLength":256},"origin":{"type":"string","minLength":1,"maxLength":2048},"mode":{"type":"string","enum":["customer","hosted"]},"hosted_opt_in":{"type":"boolean"},"publisher_token_id":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false}`)
 	for _, k := range []string{"sha256", "file_sha256"} {
 		props[k] = json.RawMessage(`{"type":"string","pattern":"^[0-9a-f]{64}$"}`)
 	}
@@ -131,7 +165,7 @@ func ChangeCatalog() []Definition {
 			Properties map[string]json.RawMessage `json:"properties"`
 			Additional bool                       `json:"additionalProperties"`
 		}{"object", req, fields, false})
-		definitions = append(definitions, Definition{Name: name, Description: description, InputSchema: schema, Annotations: Annotations{ReadOnly: read, Destructive: material, Idempotent: true, OpenWorld: true}, Meta: ToolMetadata{Toolset: "changes_artifacts"}})
+		definitions = append(definitions, Definition{Name: name, Description: description, InputSchema: schema, Annotations: Annotations{ReadOnly: read, Destructive: material, Idempotent: true, OpenWorld: name != ArtifactLibrary}, Meta: ToolMetadata{Toolset: "changes_artifacts"}})
 	}
 	add(ListChanges, "List Change Requests linked to an owned work item.", "work_item_id", "limit offset", true, false)
 	add(GetChange, "Read Change Request versions, discussion, reviews, checks and landing evidence.", "work_item_id change_id", "", true, false)
@@ -147,6 +181,12 @@ func ChangeCatalog() []Definition {
 	add(ReviewChange, "Review the current immutable bundle. Approval/requests for changes require real operator confirmation; comments run directly.", "work_item_id change_id version_id expected_revision decision bundle request_id", "body", false, true)
 	add(ViewChangeFile, "Record a viewed-file digest for an immutable review bundle.", "work_item_id change_id version_id bundle file_sha256 viewed request_id", "", false, false)
 	add(ApproveChangeReviewPolicy, "Approve the project review policy using current administrator authority and operator confirmation.", "policy request_id", "expected_review_policy_id", false, true)
+	add(BindArtifactService, "Bind an artifact service to this project using existing administrator policy and operator confirmation. Publisher identity is an existing granted credential ID, never a token.", "binding request_id", "", false, true)
+	add(GetAttemptDiff, "Read stored files and patches for an attempt owned by this work item.", "work_item_id attempt_id", "sequence source limit offset", true, false)
+	add(GetWorkItemDiff, "Read stored files and patches for this work item's latest diff.", "work_item_id", "source limit offset", true, false)
+	add(ListWorkItemPullRequests, "Read the existing PR panel with source observation times, checks, reviews and mergeability.", "work_item_id", "limit offset", true, false)
+	add(ArtifactLibrary, "Read a bounded page of this project's artifact library and review links.", "", "kind status limit offset", true, false)
+	add(GetNativeRun, "Read an owned native attempt, its linked changes and artifact receipts.", "work_item_id attempt_id", "", true, false)
 	return definitions
 }
 
@@ -175,7 +215,7 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 			return args, ErrInvalidArguments
 		}
 	}
-	for _, v := range []string{args.ProjectID, args.ItemID, args.ChangeID, args.VersionID, args.ArtifactID, args.ExpectedPolicyID} {
+	for _, v := range []string{args.ProjectID, args.ItemID, args.ChangeID, args.VersionID, args.ArtifactID, args.ExpectedPolicyID, args.AttemptID} {
 		if len(v) > 256 || strings.TrimSpace(v) != v || strings.ContainsAny(v, "/\\?#%") {
 			return args, ErrInvalidArguments
 		}
@@ -183,11 +223,14 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 	if args.ProjectID == "" || len(args.RequestID) > 128 || strings.TrimSpace(args.RequestID) != args.RequestID || len(args.Title) > 256 || len(args.Body) > 32768 || args.Limit < 0 || args.Limit > 200 || args.Offset < 0 || args.Offset > 10000 {
 		return args, ErrInvalidArguments
 	}
-	for _, key := range []string{"revision", "expected_revision"} {
+	for _, key := range []string{"revision", "expected_revision", "sequence"} {
 		if _, ok := fields[key]; ok {
 			v := args.Revision
 			if key == "expected_revision" {
 				v = args.ExpectedRevision
+			}
+			if key == "sequence" {
+				v = args.Sequence
 			}
 			if v < 1 || v > 9007199254740991 {
 				return args, ErrInvalidArguments
@@ -199,6 +242,22 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 	}
 	if args.Decision != "" && args.Decision != "approved" && args.Decision != "changes_requested" && args.Decision != "commented" {
 		return args, ErrInvalidArguments
+	}
+	if len(args.Kind) > 256 || len(args.Status) > 256 || args.Source != "" && args.Source != tracker.DiffSourceAttempt && args.Source != tracker.DiffSourceWorkspace {
+		return args, ErrInvalidArguments
+	}
+	if b := args.Binding; b != nil {
+		if !artifact.ValidID(b.ServiceID, "service") || !artifact.ValidOrigin(b.Origin) || len(b.Origin) > 2048 || b.Mode != "customer" && b.Mode != "hosted" || b.Mode == "hosted" && !b.HostedOptIn || b.PublisherTokenID == "" || len(b.PublisherTokenID) > 256 {
+			return args, ErrInvalidArguments
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &fields) != nil {
+			return args, ErrInvalidArguments
+		}
+		var bindingFields map[string]json.RawMessage
+		if json.Unmarshal(fields["binding"], &bindingFields) != nil || bindingFields["hosted_opt_in"] == nil || string(bindingFields["hosted_opt_in"]) == "null" {
+			return args, ErrInvalidArguments
+		}
 	}
 	if args.SHA256 != "" && !artifact.ValidHash(args.SHA256, 64) || args.FileSHA256 != "" && !artifact.ValidHash(args.FileSHA256, 64) {
 		return args, ErrInvalidArguments
@@ -268,4 +327,34 @@ func ChangePage[T any](items []T, args ChangeArguments) ([]T, *int) {
 		next = &end
 	}
 	return append([]T{}, items[start:end]...), next
+}
+
+// ChangeDiffPage retains source totals/identity while bounding patch text on a
+// transport page. Omitted patch bytes are explicitly marked truncated.
+func ChangeDiffPage(diff *tracker.AttemptDiff, args ChangeArguments) (*tracker.AttemptDiff, *int) {
+	if diff == nil {
+		return nil, nil
+	}
+	value := *diff
+	page, next := ChangePage(diff.Files, args)
+	files := make([]tracker.AttemptDiffFile, 0, len(page))
+	budget := MaxResultBytes / 2
+	for _, file := range page {
+		encoded, _ := json.Marshal(file)
+		if len(encoded) > budget && file.Patch != "" {
+			file.Patch = ""
+			file.Truncated = true
+			encoded, _ = json.Marshal(file)
+		}
+		if len(encoded) > budget {
+			offset := args.Offset + len(files)
+			next = &offset
+			break
+		}
+		budget -= len(encoded) + 1
+		value.Truncated = value.Truncated || file.Truncated
+		files = append(files, file)
+	}
+	value.Files = files
+	return &value, next
 }

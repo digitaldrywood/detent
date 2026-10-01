@@ -23,6 +23,7 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 	var mu sync.Mutex
 	upstreamStatus := 0
 	accessCalls := 0
+	forgedGrant := false
 	lastToken := ""
 	lastPath := ""
 	lastBody := map[string]json.RawMessage{}
@@ -48,6 +49,9 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/access"):
 			accessCalls++
 			result = artifact.Grant{Origin: "https://artifacts.example.test", Token: "fixture-grant", ArtifactID: ref.ArtifactID, Revision: 1, SHA256: ref.SHA256, ExpiresAt: time.Now().Add(time.Minute)}
+			if forgedGrant {
+				result = artifact.Grant{Origin: "https://artifacts.example.test", Token: "foreign-grant-secret", ArtifactID: artifact.NewID("artifact"), Revision: 1, SHA256: ref.SHA256, ExpiresAt: time.Now().Add(time.Minute)}
+			}
 		case strings.HasSuffix(r.URL.Path, "/viewed-files") && r.Method == http.MethodGet:
 			result = []tracker.ChangeViewedFile{}
 		}
@@ -148,7 +152,7 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"first", "replay", "foreign local grant", "offline"} {
+	for _, scenario := range []string{"first", "replay", "foreign local grant", "forged artifact grant", "offline"} {
 		t.Run("operator download/"+scenario, func(t *testing.T) {
 			token := fixture.keys["readnative"]
 			if scenario == "foreign local grant" {
@@ -156,6 +160,7 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 			}
 			mu.Lock()
 			lastToken = ""
+			forgedGrant = scenario == "forged artifact grant"
 			if scenario == "offline" {
 				upstreamStatus = 503
 			}
@@ -165,11 +170,11 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 			request.Header.Set("Authorization", "Bearer "+token)
 			response := httptest.NewRecorder()
 			server.Handler().ServeHTTP(response, request)
-			if scenario == "foreign local grant" || scenario == "offline" {
+			if scenario == "foreign local grant" || scenario == "forged artifact grant" || scenario == "offline" {
 				if response.Code < 400 {
 					t.Fatal("denied/offline operation succeeded")
 				}
-				if strings.Contains(response.Body.String(), "private upstream failure") {
+				if strings.Contains(response.Body.String(), "private upstream failure") || strings.Contains(response.Body.String(), "foreign-grant-secret") {
 					t.Fatal("upstream error exposed")
 				}
 				if scenario == "foreign local grant" {
@@ -197,8 +202,8 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if accessCalls-before != 2 {
-		t.Fatalf("grant calls=%d for two authorized calls", accessCalls-before)
+	if accessCalls-before != 3 {
+		t.Fatalf("grant calls=%d for two valid calls and one rejected forged grant", accessCalls-before)
 	}
 
 }

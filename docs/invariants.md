@@ -69,7 +69,12 @@ to freshly resolved connection authority. Nested work-item/change/version and
 exact artifact receipt ownership are checked before effects and replay. Native
 HTTP and MCP reuse the same transaction, policy, revision/bundle, attribution
 and retry commands; the existing chat browser approval owns material review and
-policy decisions. Historical artifact downloads preserve read grants, retention,
+policy/service-binding decisions. Global discovery honors the freshly resolved
+lesser hosted role as direct calls do. Stored diffs and run detail match the
+named attempt to its work item; PR reads reuse the existing connector projection
+and its observation times without direct GitHub access. Diff pages bound encoded
+JSON bytes and mark patch truncation. The daemon artifact library reuses its
+project-scoped dashboard reads. Historical artifact downloads preserve read grants, retention,
 TTL and original session authority; tokens appear only in the usable client result,
 never in URLs, audit summaries or durable retry receipts. Publishing, expected CI
 attestation, publisher callbacks and landing reports remain producer/service

@@ -142,7 +142,7 @@ func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return s.approveChangeReviewPolicyCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
+		return s.approveChangeReviewPolicyCommand(ctx, tx, scope, request)
 	})
 }
 
@@ -215,7 +215,7 @@ func (s *Service) createChange(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return s.createChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
+		return s.createChangeCommand(ctx, tx, scope, c.Param("item"), request, now)
 	})
 }
 
@@ -306,7 +306,7 @@ WHERE p.organization_id = ? AND p.id = ? AND pr.url = ? AND pr.issue_id IS NOT N
 	return nil
 }
 
-func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.CreateChange, now time.Time) (any, error) {
+func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, request tracker.CreateChange, now time.Time) (any, error) {
 	if strings.TrimSpace(request.Title) == "" || len(request.Title) > 512 || len(request.Body) > 64<<10 || len(request.LinkedIssues) > 32 {
 		return nil, nativeInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
 	}
@@ -337,7 +337,7 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	return change, nil
 }
 
-func (s *Service) approveChangeReviewPolicyCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ApproveChangeReviewPolicy, now time.Time) (any, error) {
+func (s *Service) approveChangeReviewPolicyCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.ApproveChangeReviewPolicy) (any, error) {
 	approved, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return nil, err

@@ -57,6 +57,8 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 	s := a.service
 	result := a.result(scope, args)
 	switch name {
+	case operatortool.ArtifactLibrary:
+		return result, operatortool.ErrServiceUnavailable
 	case operatortool.ListChanges:
 		rows, err := changeRows[tracker.ChangeRequest](ctx, s.database.db, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.rowid LIMIT ? OFFSET ?`, scope.organization, scope.project, args.ItemID, changeLimit(args)+1, args.Offset)
 		if len(rows) > changeLimit(args) {
@@ -66,6 +68,43 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		}
 		result.Changes = rows
 		return result, err
+	case operatortool.GetAttemptDiff, operatortool.GetWorkItemDiff:
+		source := args.Source
+		if source == "" {
+			source = tracker.DiffSourceAttempt
+		}
+		var diff *tracker.AttemptDiff
+		if name == operatortool.GetAttemptDiff {
+			value, readErr := s.readAttemptDiff(ctx, scope, args.ItemID, args.AttemptID, source, args.Sequence)
+			diff, err = &value, readErr
+		} else {
+			value, readErr := s.readWorkItemDiff(ctx, scope, args.ItemID, source)
+			diff, err = value.Diff, readErr
+		}
+		result.Diff, result.NextOffset = operatortool.ChangeDiffPage(diff, args)
+		return result, err
+	case operatortool.ListWorkItemPullRequests:
+		rows, readErr := s.readWorkItemPullRequests(ctx, scope, args.ItemID, "")
+		result.PullRequests, result.NextOffset = operatortool.ChangePage(rows, args)
+		return result, readErr
+	case operatortool.GetNativeRun:
+		attempt, readErr := s.readNativeAttempt(ctx, scope, args.ItemID, args.AttemptID)
+		if readErr != nil {
+			return result, readErr
+		}
+		result.Attempt = &attempt
+		changes, readErr := s.readChanges(ctx, scope, args.ItemID)
+		if readErr != nil {
+			return result, readErr
+		}
+		result.Changes = changes
+		refs, readErr := s.readArtifactReferences(ctx, scope, args.ItemID)
+		for _, ref := range refs {
+			if ref.AttemptID == args.AttemptID {
+				result.Artifacts = append(result.Artifacts, ref)
+			}
+		}
+		return result, readErr
 	case operatortool.GetChange, operatortool.GetChangeVersion:
 		tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
@@ -103,7 +142,7 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		result.Artifacts = []artifact.Reference{ref}
 		return result, err
 	case operatortool.ArtifactServices:
-		result.Services, err = s.artifactServicesCommand(ctx, scope, s.config.now())
+		result.Services, err = s.artifactServicesCommand(ctx, scope)
 		return result, err
 	case operatortool.ArtifactReferences:
 		rows, err := s.readArtifactReferences(ctx, scope, args.ItemID)
@@ -138,14 +177,14 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		input = request
 		path += "/changes"
 		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			return s.createChangeCommand(ctx, tx, scope, args.ItemID, "", "", request, now)
+			return s.createChangeCommand(ctx, tx, scope, args.ItemID, request, now)
 		}
 	case operatortool.DiscussChange:
 		request := tracker.DiscussChange{Mutation: command, VersionID: args.VersionID, Body: args.Body}
 		input = request
 		path += "/discussion"
 		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			return s.discussChangeCommand(ctx, tx, scope, args.ItemID, args.ChangeID, "", request, now)
+			return s.discussChangeCommand(ctx, tx, scope, args.ItemID, args.ChangeID, request, now)
 		}
 	case operatortool.ReviewChange:
 		if scope.credential.Hosted != nil {
@@ -177,7 +216,22 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		path += "/change-review-policy"
 		method = "PUT"
 		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			return s.approveChangeReviewPolicyCommand(ctx, tx, scope, "", "", "", request, now)
+			return s.approveChangeReviewPolicyCommand(ctx, tx, scope, request)
+		}
+	case operatortool.BindArtifactService:
+		if args.Binding == nil || scope.credential.Hosted == nil && scope.credential.Scope != apiScopeAdmin {
+			return result, operatortool.ErrAccessDenied
+		}
+		scope.requireHostedAdmin = true
+		request := struct {
+			artifact.Binding
+			tracker.Mutation
+		}{*args.Binding, command}
+		input = request
+		path += "/artifact-services/" + args.Binding.ServiceID
+		method = "PUT"
+		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+			return s.bindArtifactServiceCommand(ctx, tx, scope, args.Binding.ServiceID, *args.Binding)
 		}
 	case operatortool.ArtifactAccess:
 		// The retry receipt pins only safe immutable identity. A replay still checks
@@ -208,6 +262,15 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	result.Receipt, err = s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: method + " " + path, Item: args.ItemID, Feature: "collaboration", ArtifactRead: name == operatortool.ArtifactAccess}, command, input, op)
 	if err != nil {
 		return result, err
+	}
+	if name == operatortool.CreateChange {
+		var change tracker.ChangeRequest
+		if err := json.Unmarshal(result.Receipt, &change); err != nil {
+			return result, err
+		}
+		args.ChangeID = change.ID
+		result.ChangeID = change.ID
+		result.URL = a.result(scope, args).URL
 	}
 	if name == operatortool.ArtifactAccess {
 		ref, err := s.artifactReferenceCommand(ctx, s.database.db, scope, args.ItemID, args.ArtifactID, args.Revision, s.config.now())

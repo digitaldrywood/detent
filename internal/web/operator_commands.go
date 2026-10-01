@@ -61,7 +61,7 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 		if !definition.Annotations.ReadOnly && definition.Name != operatortool.ArtifactAccess {
 			scope = apikey.ScopeWrite
 		}
-		if definition.Name == operatortool.ApproveChangeReviewPolicy {
+		if definition.Name == operatortool.ApproveChangeReviewPolicy || definition.Name == operatortool.BindArtifactService {
 			scope = apikey.ScopeAdmin
 		}
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope}); err == nil {
@@ -82,7 +82,7 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		if !d.Annotations.ReadOnly && call.Name != operatortool.ArtifactAccess {
 			scope = apikey.ScopeWrite
 		}
-		if call.Name == operatortool.ApproveChangeReviewPolicy {
+		if call.Name == operatortool.ApproveChangeReviewPolicy || call.Name == operatortool.BindArtifactService {
 			scope = apikey.ScopeAdmin
 		}
 		ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ProjectID: args.ProjectID})
@@ -362,7 +362,7 @@ func (s *Server) validateOperatorAction(ctx context.Context, action chatpkg.Acti
 		return operatortool.ErrAccessDenied
 	}
 	name := string(action.Kind)
-	if name == operatortool.ApproveChangeReviewPolicy {
+	if name == operatortool.ApproveChangeReviewPolicy || name == operatortool.BindArtifactService {
 		var err error
 		ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID})
 		if err != nil {

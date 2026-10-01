@@ -29,11 +29,14 @@ func (e hubOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Defi
 	}
 	out := []operatortool.Definition{}
 	for _, d := range operatortool.ChangeCatalog() {
+		if d.Name == operatortool.ArtifactLibrary {
+			continue // The library belongs to the daemon dashboard application.
+		}
 		scope := apikey.ScopeRead
 		if !d.Annotations.ReadOnly && d.Name != operatortool.ArtifactAccess {
 			scope = apikey.ScopeWrite
 		}
-		if d.Name == operatortool.ApproveChangeReviewPolicy || d.Name == operatortool.ReviewChange && e.service.config.Hosted != nil {
+		if d.Name == operatortool.ApproveChangeReviewPolicy || d.Name == operatortool.BindArtifactService || d.Name == operatortool.ReviewChange && e.service.config.Hosted != nil {
 			scope = apikey.ScopeAdmin
 		}
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope}); err == nil {
@@ -148,7 +151,7 @@ func (s *Service) hubChangeAuthority(ctx context.Context, name string, raw json.
 	if !d.Annotations.ReadOnly && name != operatortool.ArtifactAccess {
 		scope = apikey.ScopeWrite
 	}
-	if name == operatortool.ApproveChangeReviewPolicy || name == operatortool.ReviewChange && s.config.Hosted != nil {
+	if name == operatortool.ApproveChangeReviewPolicy || name == operatortool.BindArtifactService || name == operatortool.ReviewChange && s.config.Hosted != nil {
 		scope = apikey.ScopeAdmin
 	}
 	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ProjectID: args.ProjectID})
@@ -226,7 +229,7 @@ func (e hubOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Acti
 	if err != nil {
 		return chat.ActionExecution{}, hubSafeChangeError(err)
 	}
-	return chat.ActionExecution{Message: "Change command completed.", ResourceID: args.ItemID, Identifier: args.ChangeID, URL: value.URL}, nil
+	return chat.ActionExecution{Message: "Change command completed.", ResourceID: args.ItemID, Identifier: value.ChangeID, URL: value.URL}, nil
 }
 func (s *Service) hubApprovalURL(id string) string {
 	base := ""
@@ -259,8 +262,13 @@ func hubSafeChangeError(err error) error {
 		return mutation.ErrConflict
 	}
 	var failure *nativeError
-	if errors.As(err, &failure) && failure.Code == "idempotency_conflict" {
-		return mutation.ErrConflict
+	if errors.As(err, &failure) {
+		if failure.status == 404 || failure.status == 403 || failure.status == 401 {
+			return operatortool.ErrAccessDenied
+		}
+		if failure.Code == "idempotency_conflict" {
+			return mutation.ErrConflict
+		}
 	}
 	if errors.Is(err, operatortool.ErrInvalidArguments) {
 		return operatortool.ErrInvalidArguments

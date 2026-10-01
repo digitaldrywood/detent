@@ -59,6 +59,8 @@ func TestOperatorChangeCommands(t *testing.T) {
 		want       error
 	}{
 		{"detail", operatortool.GetChange, nil, nil},
+		{"PR panel", operatortool.ListWorkItemPullRequests, func(a *operatortool.ChangeArguments) { a.ChangeID = "" }, nil},
+		{"missing library", operatortool.ArtifactLibrary, func(a *operatortool.ChangeArguments) { a.ChangeID = ""; a.ItemID = "" }, operatortool.ErrServiceUnavailable},
 		{"version", operatortool.GetChangeVersion, func(a *operatortool.ChangeArguments) { a.VersionID = version.ID }, nil},
 		{"foreign project", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ProjectID = "prj_foreign" }, operatortool.ErrAccessDenied},
 		{"foreign item", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ItemID = "wi_foreign" }, operatortool.ErrAccessDenied},
@@ -73,9 +75,16 @@ func TestOperatorChangeCommands(t *testing.T) {
 			if test.edit != nil {
 				test.edit(&args)
 			}
-			_, err := executor.Execute(ctx, changeToolCall(test.tool, args))
+			result, err := executor.Execute(ctx, changeToolCall(test.tool, args))
 			if !errors.Is(err, test.want) {
 				t.Fatalf("got %v want %v", err, test.want)
+			}
+
+			if test.tool == operatortool.ListWorkItemPullRequests {
+				var value operatortool.ChangeResult
+				if json.Unmarshal(result.Content, &value) != nil || len(value.PullRequests) != 1 || value.PullRequests[0].ChangeID != f.change.ID || value.PullRequests[0].FetchedAt.IsZero() {
+					t.Fatalf("missing PR panel identity/freshness: %s", result.Content)
+				}
 			}
 		})
 	}
@@ -144,6 +153,17 @@ func TestOperatorChangeCommands(t *testing.T) {
 	}
 	if _, err := executor.Execute(ctx, changeToolCall(operatortool.ReviewChange, args)); !errors.Is(err, operatortool.ErrServiceUnavailable) {
 		t.Fatalf("absent approval service: %v", err)
+	}
+
+	// Catches creation returning only the caller's empty selector rather than
+	// the new application identity needed for a subsequent detail call.
+	created, err := executor.Execute(ctx, changeToolCall(operatortool.CreateChange, operatortool.ChangeArguments{ProjectID: base.ProjectID, ItemID: base.ItemID, RequestID: "new-change", Title: "Follow-up change"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var createdResult operatortool.ChangeResult
+	if json.Unmarshal(created.Content, &createdResult) != nil || createdResult.ChangeID == "" || !strings.HasSuffix(createdResult.URL, "/changes/"+createdResult.ChangeID) {
+		t.Fatalf("unusable creation result: %s", created.Content)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
 		t.Fatal(err)
@@ -261,99 +281,152 @@ func TestOperatorArtifactResults(t *testing.T) {
 // Catches forged API approval, material actions running before confirmation,
 // stale policy previews, and approval under a downgraded originating role.
 func TestHostedOperatorPolicyApproval(t *testing.T) {
-	for _, scenario := range []string{"confirm", "reject", "YOLO", "role lost", "stale policy", "API approval", "policy floor"} {
-		t.Run(scenario, func(t *testing.T) {
-			f := newHostedSecurityFixture(t)
-			u := f.user(t, "approver", "owner", "approver@example.test", "write", "")
-			var ctx context.Context
-			f.service.echo.GET("/capture-authority", func(c echo.Context) error {
-				ctx = operatortool.BindConnection(c.Request().Context(), "policy-connection", "generic-client")
-				return c.NoContent(http.StatusOK)
-			}, f.service.operatorAuthority)
-			requireNativeStatus(t, f.request(t, u, http.MethodGet, "/capture-authority", nil), http.StatusOK)
-			ex := hubOperatorExecutor{f.service}
-			if err := ex.OpenConnection(ctx); err != nil {
-				t.Fatal(err)
-			}
-			f.grant(t, u, true, true)
-			descriptor := hubTestPolicy()
-			requireNativeStatus(t, f.request(t, u, http.MethodPut, f.base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
-			args := operatortool.ChangeArguments{ProjectID: string(f.project), RequestID: "policy", Policy: &tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}
-			if scenario == "policy floor" {
-				args.Policy.PolicyID = "forged-policy"
-			}
+	for _, tool := range []string{operatortool.ApproveChangeReviewPolicy, operatortool.BindArtifactService} {
+		t.Run(tool, func(t *testing.T) {
+			for _, scenario := range []string{"confirm", "reject", "YOLO", "role lost", "stale policy", "API approval", "policy floor"} {
+				if tool == operatortool.BindArtifactService && (scenario == "stale policy" || scenario == "policy floor") {
+					continue
+				}
+				t.Run(scenario, func(t *testing.T) {
+					f := newHostedSecurityFixture(t)
+					u := f.user(t, "approver", "owner", "approver@example.test", "write", "")
+					var ctx context.Context
+					f.service.echo.GET("/capture-authority", func(c echo.Context) error {
+						ctx = operatortool.BindConnection(c.Request().Context(), "policy-connection", "generic-client")
+						return c.NoContent(http.StatusOK)
+					}, f.service.operatorAuthority)
+					requireNativeStatus(t, f.request(t, u, http.MethodGet, "/capture-authority", nil), http.StatusOK)
+					ex := hubOperatorExecutor{f.service}
+					if err := ex.OpenConnection(ctx); err != nil {
+						t.Fatal(err)
+					}
+					f.grant(t, u, true, true)
+					descriptor := hubTestPolicy()
+					requireNativeStatus(t, f.request(t, u, http.MethodPut, f.base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
+					args := operatortool.ChangeArguments{ProjectID: string(f.project), RequestID: "policy", Policy: &tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}
+					if scenario == "policy floor" {
+						args.Policy.PolicyID = "forged-policy"
+					}
 
-			if scenario == "YOLO" {
-				if err := f.service.operatorChat.SetConnectionMode(chat.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx)), "policy-connection", chat.YOLOMode); err != nil {
-					t.Fatal(err)
-				}
-			}
-			result, err := ex.Execute(ctx, changeToolCall(operatortool.ApproveChangeReviewPolicy, args))
+					if tool == operatortool.BindArtifactService {
+						seedHostedArtifact(t, f)
+						args.Policy = nil
+						args.Binding = &artifact.Binding{ServiceID: artifact.NewID("service"), Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "artifact-publisher"}
+					}
+					assertNoEffect := func() {
+						t.Helper()
+						if tool == operatortool.BindArtifactService {
+							var count int
+							if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM artifact_services WHERE id=?", args.Binding.ServiceID).Scan(&count); err != nil || count != 0 {
+								t.Fatalf("denied binding side effects=%d: %v", count, err)
+							}
+						}
+					}
 
-			if scenario == "YOLO" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				var value struct {
-					Status string `json:"status"`
-				}
-				if json.Unmarshal(result.Content, &value) != nil || value.Status != "succeeded" {
-					t.Fatal("YOLO failed authorized command")
-				}
-				return
-			}
+					if scenario == "YOLO" {
+						if err := f.service.operatorChat.SetConnectionMode(chat.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx)), "policy-connection", chat.YOLOMode); err != nil {
+							t.Fatal(err)
+						}
+					}
+					result, err := ex.Execute(ctx, changeToolCall(tool, args))
 
-			if err != nil {
-				t.Fatal(err)
-			}
-			var preview struct {
-				ID     string `json:"action_id"`
-				Status string `json:"status"`
-			}
-			if json.Unmarshal(result.Content, &preview) != nil || preview.Status != "pending" {
-				t.Fatalf("material action not pending: %s", result.Content)
-			}
-			page := f.request(t, u, http.MethodGet, "/chat/approval?connection_id=policy-connection", nil)
-			requireNativeStatus(t, page, http.StatusOK)
-			tokenRE := regexp.MustCompile(`name="form_token" value="([^"]+)"`)
-			matches := tokenRE.FindAllStringSubmatch(page.Body.String(), -1)
-			if len(matches) < 2 {
-				t.Fatalf("approval form missing: %s", page.Body)
-			}
-			form := url.Values{"connection_id": {"policy-connection"}, "action_id": {preview.ID}, "decision": {"confirm"}, "form_token": {matches[1][1]}}
-			if scenario == "reject" {
-				form.Set("decision", "reject")
-			}
-			if scenario == "role lost" {
-				operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", u.identity.Subject)
-			}
-			if scenario == "stale policy" {
-				args.RequestID = "concurrent-policy"
-				args.Policy.RequireReview = true
-				requireNativeStatus(t, f.request(t, u, http.MethodPut, f.base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "concurrent-policy"}, Policy: *args.Policy}), http.StatusOK)
-			}
-			response := f.request(t, u, http.MethodPost, "/chat/approval", form)
-			if scenario == "API approval" {
-				r := httptest.NewRequest(http.MethodPost, "/chat/approval", strings.NewReader(form.Encode()))
-				r.Header.Set("Content-Type", echo.MIMEApplicationForm)
-				r.Header.Set("Authorization", "Bearer forged")
-				response = httptest.NewRecorder()
-				f.service.echo.ServeHTTP(response, r)
-			}
-			if scenario == "reject" {
-				requireNativeStatus(t, response, http.StatusSeeOther)
-				a, _ := f.service.operatorChat.Action("policy-connection", preview.ID)
-				if a.Status != chat.ActionRejected {
-					t.Fatal("rejection ignored")
-				}
-			} else if scenario == "confirm" {
-				requireNativeStatus(t, response, http.StatusSeeOther)
-				action, _ := f.service.operatorChat.Action("policy-connection", preview.ID)
-				if action.Status != chat.ActionSucceeded {
-					t.Fatal("confirmed policy did not execute")
-				}
-			} else if response.Code < 400 {
-				t.Fatalf("invalid authorization/policy succeeded: %d", response.Code)
+					if scenario == "YOLO" {
+						if err != nil {
+							t.Fatal(err)
+						}
+						var value struct {
+							Status string `json:"status"`
+						}
+						if json.Unmarshal(result.Content, &value) != nil || value.Status != "succeeded" {
+							t.Fatal("YOLO failed authorized command")
+						}
+						return
+					}
+
+					if err != nil {
+						t.Fatal(err)
+					}
+					var preview struct {
+						ID     string `json:"action_id"`
+						Status string `json:"status"`
+					}
+					if json.Unmarshal(result.Content, &preview) != nil || preview.Status != "pending" {
+						t.Fatalf("material action not pending: %s", result.Content)
+					}
+					assertNoEffect()
+					page := f.request(t, u, http.MethodGet, "/chat/approval?connection_id=policy-connection", nil)
+					requireNativeStatus(t, page, http.StatusOK)
+					tokenRE := regexp.MustCompile(`name="form_token" value="([^"]+)"`)
+					matches := tokenRE.FindAllStringSubmatch(page.Body.String(), -1)
+					if len(matches) < 2 {
+						t.Fatalf("approval form missing: %s", page.Body)
+					}
+					form := url.Values{"connection_id": {"policy-connection"}, "action_id": {preview.ID}, "decision": {"confirm"}, "form_token": {matches[1][1]}}
+					if scenario == "reject" {
+						form.Set("decision", "reject")
+					}
+					if scenario == "role lost" {
+						operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", u.identity.Subject)
+					}
+
+					if scenario == "role lost" {
+						definitions, err := ex.ListTools(ctx)
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, definition := range definitions {
+							if definition.Name == tool {
+								t.Fatal("material admin command discovered after role loss")
+							}
+						}
+						if _, err := ex.Execute(ctx, changeToolCall(tool, args)); !errors.Is(err, operatortool.ErrAccessDenied) {
+							t.Fatalf("role loss bypass: %v", err)
+						}
+					}
+					if scenario == "stale policy" {
+						args.RequestID = "concurrent-policy"
+						args.Policy.RequireReview = true
+						requireNativeStatus(t, f.request(t, u, http.MethodPut, f.base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "concurrent-policy"}, Policy: *args.Policy}), http.StatusOK)
+					}
+					var response *httptest.ResponseRecorder
+					if scenario == "API approval" {
+						r := httptest.NewRequest(http.MethodPost, "/chat/approval", strings.NewReader(form.Encode()))
+						r.Header.Set("Content-Type", echo.MIMEApplicationForm)
+						r.Header.Set("Authorization", "Bearer forged")
+						response = httptest.NewRecorder()
+						f.service.echo.ServeHTTP(response, r)
+					} else {
+						response = f.request(t, u, http.MethodPost, "/chat/approval", form)
+					}
+					if scenario == "reject" {
+						requireNativeStatus(t, response, http.StatusSeeOther)
+						a, _ := f.service.operatorChat.Action("policy-connection", preview.ID)
+						if a.Status != chat.ActionRejected {
+							t.Fatal("rejection ignored")
+						}
+					} else if scenario == "confirm" {
+						requireNativeStatus(t, response, http.StatusSeeOther)
+						action, _ := f.service.operatorChat.Action("policy-connection", preview.ID)
+						if action.Status != chat.ActionSucceeded {
+							t.Fatal("confirmed policy did not execute")
+						}
+
+						if _, err := ex.Execute(ctx, changeToolCall(tool, args)); err != nil {
+							t.Fatalf("confirmed replay: %v", err)
+						}
+						if tool == operatortool.BindArtifactService {
+							var count int
+							if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE command_key=?", args.RequestID).Scan(&count); err != nil || count != 1 {
+								t.Fatalf("binding replay receipts=%d: %v", count, err)
+							}
+						}
+					} else if response.Code < 400 {
+						t.Fatalf("invalid authorization/policy succeeded: %d", response.Code)
+					}
+					if scenario != "confirm" {
+						assertNoEffect()
+					}
+				})
 			}
 		})
 	}

@@ -817,7 +817,7 @@ Sources: [internal/web/ui/primitives/trackerlink.templ:17](../internal/web/ui/pr
 artifacts.js application
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3347.
-- Decision: Only these exact grant-bound artifact/media fetch and stream-reader sites are client display transport. Typed artifact references/access grants and change-review commands remain in separate pending rows.
+- Decision: Only these exact grant-bound artifact/media fetch and stream-reader sites are client display transport. Typed artifact references/access grants and change-review commands are implemented in the separate business-command rows.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: static/js/artifacts.js; extract the application operation behind these exact request/action sites; retain current handler/service validation
@@ -835,7 +835,7 @@ Sources: [static/js/artifacts.js:35](../static/js/artifacts.js#L35), [static/js/
 review.js application
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3347.
-- Decision: Only these exact grant-bound artifact/media fetch and stream-reader sites are client display transport. Typed artifact references/access grants and change-review commands remain in separate pending rows.
+- Decision: Only these exact grant-bound artifact/media fetch and stream-reader sites are client display transport. Typed artifact references/access grants and change-review commands are implemented in the separate business-command rows.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: static/js/review.js; extract the application operation behind these exact request/action sites; retain current handler/service validation
@@ -1213,7 +1213,7 @@ Sources: [web/conversation/src/components/media/OpenMediaLink.tsx:34](../web/con
 mediaContent.ts application
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3347.
-- Decision: Only these exact grant-bound artifact/media fetch and stream-reader sites are client display transport. Typed artifact references/access grants and change-review commands remain in separate pending rows.
+- Decision: Only these exact grant-bound artifact/media fetch and stream-reader sites are client display transport. Typed artifact references/access grants and change-review commands are implemented in the separate business-command rows.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: web/conversation/src/components/media/mediaContent.ts; extract the application operation behind these exact request/action sites; retain current handler/service validation
@@ -1691,15 +1691,15 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Bind artifact service
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3347 scope; required parity remains pending.
-- Tool: `work_reads.bind_artifact_service` — Bounded bindArtifactServiceRequest: organization, project, service; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → bindArtifactServiceResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3347.
+- Decision: Binding uses the shared administrator command and native_commands retry transaction. Confirmation and current admin/project grants are required; the bound publisher must already have this project grant.
+- Tool: `changes_artifacts.bind_artifact_service` — Exact per-tool schema in operatortool.ChangeCatalog, decoded as ChangeArguments: project/work-item/change/version/artifact selectors as applicable; explicit business request_id for mutations; revision, hash and review-bundle identity for material/immutable operations. Credentials and YOLO are connection authority. Limits: 64 KiB input, 200 items/page, 10,000 offset, 32 KiB body, bounded identifiers and at most 256 policy checks. → Typed ChangeResult or existing correlated approval/action receipt: organization/project/resource, application URL, live generated_at, bounded domain data and command receipt. artifact_access returns an expiring Bearer grant plus manifest/object endpoints with no token in URLs or audit/receipts; replays reauthorize and mint fresh access. Results cap at 256 KiB.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.bindArtifactService; s.database.db.ExecContext, s.database.db.QueryRowContext
-- Extraction: Extract hubserver.bindArtifactService application inputs/results and validation from Echo; reuse s.database.db.ExecContext, s.database.db.QueryRowContext. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: HTTP and MCP share extracted application reads/commands and existing authorization and retry/audit services. Binding uses the shared administrator command and native_commands retry transaction. Confirmation and current admin/project grants are required; the bound publisher must already have this project grant.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_changes_test.go; internal/hubserver/attempt_diffs_test.go (TestAttemptDiffStoreAndRead); internal/operatortool/changes_test.go; internal/web/change_review_test.go; internal/web/server_test.go (TestLibraryPageListsLocalArtifactsAndPullRequestRecords).
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -2427,15 +2427,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 Get attempt diff
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
-- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
-- Tool: `work_reads.get_attempt_diff` — Bounded getAttemptDiffRequest: organization, project, attempt; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getAttemptDiffResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3347.
+- Decision: Shared stored diff read pins source/generation and matches the named attempt to the owned work item. JSON-size-aware pages preserve file counts and identity, mark patch truncation, and provide the next offset.
+- Tool: `changes_artifacts.get_attempt_diff` — Exact per-tool schema in operatortool.ChangeCatalog, decoded as ChangeArguments: project/work-item/change/version/artifact selectors as applicable; explicit business request_id for mutations; revision, hash and review-bundle identity for material/immutable operations. Credentials and YOLO are connection authority. Limits: 64 KiB input, 200 items/page, 10,000 offset, 32 KiB body, bounded identifiers and at most 256 policy checks. → Typed ChangeResult or existing correlated approval/action receipt: organization/project/resource, application URL, live generated_at, bounded domain data and command receipt. artifact_access returns an expiring Bearer grant plus manifest/object endpoints with no token in URLs or audit/receipts; replays reauthorize and mint fresh access. Results cap at 256 KiB.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.getAttemptDiff; handler-owned application validation/read/command
-- Extraction: Extract hubserver.getAttemptDiff application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: HTTP and MCP share extracted application reads/commands and existing authorization and retry/audit services. Shared stored diff read pins source/generation and matches the named attempt to the owned work item. JSON-size-aware pages preserve file counts and identity, mark patch truncation, and provide the next offset.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_changes_test.go; internal/hubserver/attempt_diffs_test.go (TestAttemptDiffStoreAndRead); internal/operatortool/changes_test.go; internal/web/change_review_test.go; internal/web/server_test.go (TestLibraryPageListsLocalArtifactsAndPullRequestRecords).
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -2582,6 +2582,26 @@ Get git hub import
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/imports/:import](../internal/hubserver/integration.go#L154)
+## hubserver.get_native_attempt
+
+Read an owned native run
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3347.
+- Decision: Shared native attempt read enforces exact work-item/attempt ownership and returns run/checkpoint status, linked changes and attempt-scoped artifact receipts. Daemon forwards only the authenticated connection token, never the configured producer credential.
+- Tool: `changes_artifacts.get_native_run` — Exact per-tool schema in operatortool.ChangeCatalog, decoded as ChangeArguments: project/work-item/change/version/artifact selectors as applicable; explicit business request_id for mutations; revision, hash and review-bundle identity for material/immutable operations. Credentials and YOLO are connection authority. Limits: 64 KiB input, 200 items/page, 10,000 offset, 32 KiB body, bounded identifiers and at most 256 policy checks. → Typed ChangeResult or existing correlated approval/action receipt: organization/project/resource, application URL, live generated_at, bounded domain data and command receipt. artifact_access returns an expiring Bearer grant plus manifest/object endpoints with no token in URLs or audit/receipts; replays reauthorize and mint fresh access. Results cap at 256 KiB.
+- Authority: role local operator (dashboard authentication when configured); credential read; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
+- Application: s.readNativeAttempt; scanNativeAttempt; readNativeIssue
+- Extraction: HTTP detail and MCP use readNativeAttempt, sharing existing native attempt decoding, lease-interruption status and organization/project/work-item ownership. No worker execution authority is granted.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
+- Coverage: internal/hubserver/operator_changes_test.go; internal/hubserver/attempt_diffs_test.go (TestAttemptDiffStoreAndRead); internal/operatortool/changes_test.go; internal/web/change_review_test.go; internal/web/server_test.go (TestLibraryPageListsLocalArtifactsAndPullRequestRecords).
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub application service
+- Availability: hosted_dedicated / native / hub application service
+- Availability: hosted_shared / native / hub application service
+- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: read or ordinary non-destructive write → none
+
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/attempts/:attempt](../internal/hubserver/native_api.go#L139)
 ## hubserver.get_native_issue
 
 Get native issue
@@ -2805,15 +2825,15 @@ Sources: [GET /api/v1/work-items/:id](../internal/hubserver/api_http.go#L64)
 
 Get work item diff
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
-- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
-- Tool: `work_reads.get_work_item_diff` — Bounded getWorkItemDiffRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getWorkItemDiffResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3347.
+- Decision: Shared work-item stored diff read uses the existing latest generation and explicit source; file pages preserve totals and explicit patch truncation.
+- Tool: `changes_artifacts.get_work_item_diff` — Exact per-tool schema in operatortool.ChangeCatalog, decoded as ChangeArguments: project/work-item/change/version/artifact selectors as applicable; explicit business request_id for mutations; revision, hash and review-bundle identity for material/immutable operations. Credentials and YOLO are connection authority. Limits: 64 KiB input, 200 items/page, 10,000 offset, 32 KiB body, bounded identifiers and at most 256 policy checks. → Typed ChangeResult or existing correlated approval/action receipt: organization/project/resource, application URL, live generated_at, bounded domain data and command receipt. artifact_access returns an expiring Bearer grant plus manifest/object endpoints with no token in URLs or audit/receipts; replays reauthorize and mint fresh access. Results cap at 256 KiB.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.getWorkItemDiff; handler-owned application validation/read/command
-- Extraction: Extract hubserver.getWorkItemDiff application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: HTTP and MCP share extracted application reads/commands and existing authorization and retry/audit services. Shared work-item stored diff read uses the existing latest generation and explicit source; file pages preserve totals and explicit patch truncation.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_changes_test.go; internal/hubserver/attempt_diffs_test.go (TestAttemptDiffStoreAndRead); internal/operatortool/changes_test.go; internal/web/change_review_test.go; internal/web/server_test.go (TestLibraryPageListsLocalArtifactsAndPullRequestRecords).
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -3750,15 +3770,15 @@ Sources: [GET /api/v2/organizations/:organization/runners](../internal/hubserver
 
 List work item pull requests
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
-- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
-- Tool: `work_reads.list_work_item_pull_requests` — Bounded listWorkItemPullRequestsRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listWorkItemPullRequestsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3347.
+- Decision: Shared PR-panel read returns native change evidence joined to the existing connector projection, including source fetched_at and mergeability. MCP never calls GitHub or forces hydration.
+- Tool: `changes_artifacts.list_work_item_pull_requests` — Exact per-tool schema in operatortool.ChangeCatalog, decoded as ChangeArguments: project/work-item/change/version/artifact selectors as applicable; explicit business request_id for mutations; revision, hash and review-bundle identity for material/immutable operations. Credentials and YOLO are connection authority. Limits: 64 KiB input, 200 items/page, 10,000 offset, 32 KiB body, bounded identifiers and at most 256 policy checks. → Typed ChangeResult or existing correlated approval/action receipt: organization/project/resource, application URL, live generated_at, bounded domain data and command receipt. artifact_access returns an expiring Bearer grant plus manifest/object endpoints with no token in URLs or audit/receipts; replays reauthorize and mint fresh access. Results cap at 256 KiB.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.listWorkItemPullRequests; s.changePullRequestView, s.config.now, s.pullRequests.allowRefresh, s.pullRequests.get, s.pullRequests.set, s.requestPullRequestHydration
-- Extraction: Extract hubserver.listWorkItemPullRequests application inputs/results and validation from Echo; reuse s.changePullRequestView, s.config.now, s.pullRequests.allowRefresh, s.pullRequests.get, s.pullRequests.set, s.requestPullRequestHydration. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: HTTP and MCP share extracted application reads/commands and existing authorization and retry/audit services. Shared PR-panel read returns native change evidence joined to the existing connector projection, including source fetched_at and mergeability. MCP never calls GitHub or forces hydration.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_changes_test.go; internal/hubserver/attempt_diffs_test.go (TestAttemptDiffStoreAndRead); internal/operatortool/changes_test.go; internal/web/change_review_test.go; internal/web/server_test.go (TestLibraryPageListsLocalArtifactsAndPullRequestRecords).
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -6600,19 +6620,19 @@ Sources: [GET /projects/:project_id/issues/:issue_ref](../internal/web/server.go
 
 Library
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
-- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
-- Tool: `work_reads.library` — Bounded libraryRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → libraryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3347.
+- Decision: Daemon library reads reuse libraryRows under a current project read grant and return bounded business rows, artifact paths and review/source URLs. Local database paths and producer metadata are omitted; no direct MCP database writes.
+- Tool: `changes_artifacts.artifact_library` — Exact per-tool schema in operatortool.ChangeCatalog, decoded as ChangeArguments: project/work-item/change/version/artifact selectors as applicable; explicit business request_id for mutations; revision, hash and review-bundle identity for material/immutable operations. Credentials and YOLO are connection authority. Limits: 64 KiB input, 200 items/page, 10,000 offset, 32 KiB body, bounded identifiers and at most 256 policy checks. → Typed ChangeResult or existing correlated approval/action receipt: organization/project/resource, application URL, live generated_at, bounded domain data and command receipt. artifact_access returns an expiring Bearer grant plus manifest/object endpoints with no token in URLs or audit/receipts; replays reauthorize and mint fresh access. Results cap at 256 KiB.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.library; s.libraryData
-- Extraction: Extract web.library application inputs/results and validation from Echo; reuse s.libraryData. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: HTTP and MCP share extracted application reads/commands and existing authorization and retry/audit services. Daemon library reads reuse libraryRows under a current project read grant and return bounded business rows, artifact paths and review/source URLs. Local database paths and producer metadata are omitted; no direct MCP database writes.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/hubserver/operator_changes_test.go; internal/hubserver/attempt_diffs_test.go (TestAttemptDiffStoreAndRead); internal/operatortool/changes_test.go; internal/web/change_review_test.go; internal/web/server_test.go (TestLibraryPageListsLocalArtifactsAndPullRequestRecords).
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
-- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: The hub has no daemon artifact-library service; direct calls return opaque service unavailable. Native artifact references and access remain supported.
+- Availability: hosted_shared / github,native / dashboard daemon — unavailable: The hub has no daemon artifact-library service; direct calls return opaque service unavailable. Native artifact references and access remain supported.
+- Availability: credential_maintenance / github,native / dashboard daemon — unavailable: The hub has no daemon artifact-library service; direct calls return opaque service unavailable. Native artifact references and access remain supported.
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /library](../internal/web/server.go#L471), [internal/web/templates/library.templ:20](../internal/web/templates/library.templ#L20), [internal/web/templates/library.templ:58](../internal/web/templates/library.templ#L58), [internal/web/templates/library.templ:20](../internal/web/templates/library.templ#L20), [internal/web/templates/library.templ:127](../internal/web/templates/library.templ#L127), [internal/web/templates/library.templ:117](../internal/web/templates/library.templ#L117), [internal/web/templates/library.templ:122](../internal/web/templates/library.templ#L122)
@@ -6699,14 +6719,14 @@ Sources: [GET /projects/:project_id/issues/:issue_ref/edit](../internal/web/serv
 
 Native run detail
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
-- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
-- Tool: `work_reads.native_run_detail` — Bounded nativeRunDetailRequest: project_id, issue_ref, attempt; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → nativeRunDetailResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3347.
+- Decision: Shared native attempt read enforces exact work-item/attempt ownership and returns run/checkpoint status, linked changes and attempt-scoped artifact receipts. Daemon forwards only the authenticated connection token, never the configured producer credential.
+- Tool: `changes_artifacts.get_native_run` — Exact per-tool schema in operatortool.ChangeCatalog, decoded as ChangeArguments: project/work-item/change/version/artifact selectors as applicable; explicit business request_id for mutations; revision, hash and review-bundle identity for material/immutable operations. Credentials and YOLO are connection authority. Limits: 64 KiB input, 200 items/page, 10,000 offset, 32 KiB body, bounded identifiers and at most 256 policy checks. → Typed ChangeResult or existing correlated approval/action receipt: organization/project/resource, application URL, live generated_at, bounded domain data and command receipt. artifact_access returns an expiring Bearer grant plus manifest/object endpoints with no token in URLs or audit/receipts; replays reauthorize and mint fresh access. Results cap at 256 KiB.
 - Authority: role local operator (dashboard authentication when configured); credential read; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.nativeRunDetail; s.changePageData, s.loadArtifacts
-- Extraction: Extract web.nativeRunDetail application inputs/results and validation from Echo; reuse s.changePageData, s.loadArtifacts. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: HTTP and MCP share extracted application reads/commands and existing authorization and retry/audit services. Shared native attempt read enforces exact work-item/attempt ownership and returns run/checkpoint status, linked changes and attempt-scoped artifact receipts. Daemon forwards only the authenticated connection token, never the configured producer credential.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/hubserver/operator_changes_test.go; internal/hubserver/attempt_diffs_test.go (TestAttemptDiffStoreAndRead); internal/operatortool/changes_test.go; internal/web/change_review_test.go; internal/web/server_test.go (TestLibraryPageListsLocalArtifactsAndPullRequestRecords).
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.

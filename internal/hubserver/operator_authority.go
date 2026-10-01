@@ -161,6 +161,9 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		}
 		if requirement.Scope != apikey.ScopeRead {
 			if credential.Hosted != nil {
+				if credential.HostedRole == "viewer" || requirement.Scope == apikey.ScopeAdmin && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+					return operatortool.ErrAccessDenied
+				}
 				checkScope.requireHostedAdmin = requirement.Scope == apikey.ScopeAdmin
 				tx, err := s.database.db.BeginTx(ctx, nil)
 				if err != nil {

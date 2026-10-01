@@ -99,7 +99,7 @@ func (s *Service) discussChange(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		return s.discussChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
+		return s.discussChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), request, now)
 	})
 }
 
@@ -146,7 +146,7 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	return review, nil
 }
 
-func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.DiscussChange, now time.Time) (any, error) {
+func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID string, request tracker.DiscussChange, now time.Time) (any, error) {
 	change, err := readChange(ctx, tx, scope, item, changeID)
 	if err != nil {
 		return nil, err

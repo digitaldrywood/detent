@@ -41,6 +41,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -422,6 +423,30 @@ func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
 	}
 	if strings.Contains(body, "javascript:alert") {
 		t.Fatalf("library page rendered unsafe review URL:\n%s", body)
+	}
+
+	// Catches the daemon MCP library reaching another registered project or
+	// returning an unbounded list when the native hub service is absent.
+	for _, test := range []struct {
+		project string
+		want    int
+	}{{"video", 2}, {"detent", 1}} {
+		t.Run("operator library/"+test.project, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/operator-tools/artifact_library", strings.NewReader(`{"project_id":"`+test.project+`","limit":1}`))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("library status %d: %s", response.Code, response.Body)
+			}
+			var result operatortool.ChangeResult
+			if json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Library) != 1 || result.Library[0].ProjectID != test.project {
+				t.Fatalf("incorrect library page: %s", response.Body)
+			}
+			if (result.NextOffset != nil) != (test.want > 1) {
+				t.Fatal("missing pagination")
+			}
+		})
 	}
 }
 
