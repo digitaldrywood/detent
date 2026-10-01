@@ -13,11 +13,13 @@ const workflowHistoryFreshness = 30 * time.Second
 const maxWorkflowHistoryScopes = 16
 
 type workflowHistoryEntry struct {
-	metrics    telemetry.WorkflowMetrics
-	cycleTime  telemetry.CycleTimeReport
-	revision   int64
-	observedAt time.Time
-	loadedAt   time.Time
+	metrics          telemetry.WorkflowMetrics
+	cycleTime        telemetry.CycleTimeReport
+	shipped          []telemetry.Completed
+	shippedAvailable bool
+	revision         int64
+	observedAt       time.Time
+	loadedAt         time.Time
 }
 
 type workflowHistoryCache struct {
@@ -57,7 +59,7 @@ func (c *workflowHistoryCache) get(ctx context.Context, backend store.Store, pro
 		entry = load(ctx, projectID, observedAt)
 		finalRevision, revisionErr := workflowHistoryRevision(ctx, backend)
 		c.mu.Lock()
-		if entry.metrics.Available && (projectID != "" || entry.cycleTime.Available) && ctx.Err() == nil && revisionErr == nil && revision == finalRevision {
+		if entry.metrics.Available && (projectID != "" || entry.cycleTime.Available && entry.shippedAvailable) && ctx.Err() == nil && revisionErr == nil && revision == finalRevision {
 			if c.entries == nil {
 				c.entries = make(map[string]workflowHistoryEntry)
 			}
