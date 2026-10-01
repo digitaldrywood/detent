@@ -646,4 +646,81 @@ test.describe("the issue page", () => {
     await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}$`));
     await expect(page.getByTestId("issue-properties")).toBeVisible();
   });
+
+});
+
+test("shares project scope between the sidebar and Work across reloads", async ({ page }) => {
+  const errors = watchConsole(page);
+  await openWork(page, `/work/p/${hub.fixture.project_id}`);
+  const secondProjectId = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
+  const projects = [
+    { id: hub.fixture.project_id, name: "Browser collaboration", title: "Completed collaboration work" },
+    { id: secondProjectId, name: "Owner private project", title: "Completed private work" },
+  ];
+  for (const project of projects) {
+    const created = await page.evaluate(async ({ id, title }) => {
+      const bootstrap = await (await fetch("/chat/bootstrap")).json();
+      const response = await fetch(`${bootstrap.api_base}/projects/${id}/work-items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
+        body: JSON.stringify({ idempotency_key: `scope-done-${id}`, title, state: "Done" }),
+      });
+      return response.status;
+    }, project);
+    expect(created).toBe(200);
+  }
+  const scope = page.getByRole("combobox", { name: "Filter threads by project" });
+  const done = page.getByRole("region", { name: "Done", exact: true });
+  const selectScope = async (name) => {
+    await scope.click();
+    await page.getByRole("option", { name, exact: true }).click();
+  };
+  const expectProject = async (project) => {
+    await expect(page).toHaveURL(new RegExp(`/work/p/${project.id}$`));
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(project.name);
+    await expect(scope).toHaveText(project.name);
+    await expect(page.getByTestId("lane-count-Done")).toHaveText("1");
+    if (await page.getByTestId("lane-collapse-Done").getAttribute("aria-expanded") === "false") {
+      await page.getByRole("button", { name: "Expand Done", exact: true }).click();
+    }
+    await expect(done.getByRole("button", { name: project.title, exact: true })).toBeVisible();
+    const other = projects.find((candidate) => candidate.id !== project.id);
+    await expect(done.getByRole("button", { name: other.title, exact: true })).toHaveCount(0);
+  };
+  await expect(scope).toHaveText(projects[0].name);
+  await selectScope(projects[1].name);
+  await expectProject(projects[1]);
+  await page.reload();
+  await expectProject(projects[1]);
+  await page.getByTestId("nav-chat").click();
+  await page.getByTestId("nav-work").click();
+  await expectProject(projects[1]);
+  await selectScope(projects[0].name);
+  await expectProject(projects[0]);
+  await page.goBack();
+  await expectProject(projects[1]);
+  await page.goForward();
+  await expectProject(projects[0]);
+
+  await selectScope("All projects");
+  const expectAll = async () => {
+    await expect(page).toHaveURL(/\/work$/);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("All projects");
+    await expect(scope).toHaveText("All projects");
+    await expect(page.getByTestId("lane-count-Done")).toHaveText("2");
+    if (await page.getByTestId("lane-collapse-Done").getAttribute("aria-expanded") === "false") {
+      await page.getByRole("button", { name: "Expand Done", exact: true }).click();
+    }
+    for (const project of projects) {
+      await expect(done.getByRole("button", { name: project.title, exact: true })).toBeVisible();
+    }
+  };
+  await expectAll();
+  await page.reload();
+  await expectAll();
+  await page.getByTestId("nav-chat").click();
+  await page.reload();
+  await page.getByTestId("nav-work").click();
+  await expectAll();
+  await expect(errors).toEqual([]);
 });

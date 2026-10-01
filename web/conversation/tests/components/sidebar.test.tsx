@@ -206,11 +206,18 @@ describe("the thread sidebar", () => {
     expect(brand.getAttribute("href")).toBe("/work");
   });
 
-  it("names the project scope in the project combobox", async () => {
-    await renderSidebar();
+  it("names the project scope and reports project and all-project selections", async () => {
+    const onProjectChange = vi.fn();
+    await renderSidebar({ onProjectChange });
     expect(
       screen.getByLabelText("Filter threads by project").textContent,
     ).toContain("All projects");
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("option", { name: "beta", exact: true }));
+    expect(onProjectChange).toHaveBeenLastCalledWith("proj_beta");
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("option", { name: "All projects", exact: true }));
+    expect(onProjectChange).toHaveBeenLastCalledWith("");
   });
 
   it("carries the footer utility menu, pointed at Detent's destinations", async () => {
