@@ -2700,7 +2700,10 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		"Issue effort selection",
 		"recommended_effort",
 		"standard feature work",
-		"exactly one terminal evaluation for every supplied candidate",
+		"exactly one accepted terminal evaluation for every supplied candidate",
+		"correct it using the feedback and resubmit within this same conversation",
+		"Rejected input is not an accepted evaluation",
+		"After acceptance, do not submit another evaluation for that candidate",
 		`"evaluations"`,
 		`"disposition":"proposed"`,
 		"exactly one finding for every configured dimension",
@@ -2709,6 +2712,9 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		if !strings.Contains(agentBackend.request.Prompt, want) {
 			t.Fatalf("AgentTurnRequest.Prompt = %q, want %q", agentBackend.request.Prompt, want)
 		}
+	}
+	if strings.Contains(agentBackend.request.Prompt, "tool exactly once") {
+		t.Fatal("admission prompt forbids correcting rejected input")
 	}
 	if strings.Contains(agentBackend.request.Prompt, "Machine-local text must not appear.") {
 		t.Fatalf("AgentTurnRequest.Prompt includes merged workflow prompt: %q", agentBackend.request.Prompt)
