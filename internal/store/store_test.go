@@ -3002,6 +3002,7 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer rows.Close()
 			registers := make(map[int]string)
 			var lowerBoundSeek bool
 			for rows.Next() {
