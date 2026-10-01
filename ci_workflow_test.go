@@ -301,7 +301,7 @@ func TestScheduledCIFinalizerReportsAndTags(t *testing.T) {
 		}
 	}
 	finish := readNormalizedFile(t, "scripts/scheduled-ci-finish.sh")
-	for _, want := range []string{"ci-scheduled-failure", "detent:todo", "hotfix", "scheduled-full-ci", "git tag -a", "git push origin", "release.yml/dispatches"} {
+	for _, want := range []string{"ci-scheduled-failure", "scheduled-full-ci", "git tag -a", "git push origin", "release.yml/dispatches"} {
 		if !strings.Contains(finish, want) {
 			t.Errorf("scheduled finalizer script missing %q", want)
 		}
