@@ -151,6 +151,20 @@ is added. `TestAdministrationExecution`, `TestHostedAdministrationAuthority`,
 `TestEntryAdministrationContext` and `TestMCPCredentialAdministration` cover these
 boundaries with existing application identity fixtures.
 
+Creator provisioning parity (#3663) shares the browser's creator-bound allocation
+lookup and retryable resume command with the administration MCP executor. Current
+account session, managed allocation ownership and deployment availability are
+checked on direct calls, approval, execution and retry delivery. Resume is a
+material provisioning action: connection YOLO skips confirmation only, and the
+existing audit receipts prevent a retried command from resetting a later failed
+attempt. Status/results and previews omit allocation diagnostics, endpoints and
+provider credentials; ready status returns the current destination. The existing
+allocator retains admission, retry and capacity limits and its wake signal.
+`TestEntryProvisioningAdministration`, `TestAdministrationInputBounds`,
+`TestActionConfirmationClassification` and the existing provisioning capacity and
+tenant-start journeys cover these boundaries through shared stdio/HTTP dispatch.
+This extends INV-1 application authorization without adding an INV-3 mechanism.
+
 MCP mutations carry content-free, trusted audit/correlation context (#3338).
 Dashboard commands reuse durable operator events for retry receipts; native and
 hosted commands reuse `native_commands`, with existing billing intents/provider

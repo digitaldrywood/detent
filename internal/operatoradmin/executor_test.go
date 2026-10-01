@@ -164,6 +164,11 @@ func TestAdministrationInputBounds(t *testing.T) {
 		valid           bool
 	}{
 		{"bounded read", operatortool.CredentialList, `{"limit":200,"offset":0}`, true},
+		{"provisioning status", operatortool.ProvisioningPage, `{"organization_id":"org_saved"}`, true},
+		{"resume", operatortool.ResumeProvisioning, `{"request_id":"retry","organization_id":"org_saved"}`, true},
+		{"resume without retry identity", operatortool.ResumeProvisioning, `{"organization_id":"org_saved"}`, false},
+		{"resume cannot set confirmation", operatortool.ResumeProvisioning, `{"request_id":"retry","organization_id":"org_saved","yolo":true}`, false},
+		{"provisioning oversized ID", operatortool.ProvisioningPage, `{"organization_id":"` + strings.Repeat("x", 257) + `"}`, false},
 		{"unknown authority", operatortool.CredentialCreate, `{"request_id":"x","name":"key","scopes":["read"],"yolo":true}`, false},
 		{"wrong operation field", operatortool.InvitationRevoke, `{"request_id":"x","invitation_id":"id","credential_id":"id"}`, false},
 		{"oversized page", operatortool.CredentialList, `{"limit":201}`, false},

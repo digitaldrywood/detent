@@ -225,6 +225,8 @@ func RequiresConfirmation(action Action) bool {
 		return args.Decision != "commented"
 	case ActionKind(operatortool.OrganizationSwitch):
 		return false
+	case ActionKind(operatortool.ResumeProvisioning):
+		return true
 	case ActionKind(operatortool.BudgetOverrideClear), ActionKind(operatortool.Refresh), ActionKind(operatortool.AcknowledgeWarnings), ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
 		return false
 	case ActionKind(operatortool.EditItem):
