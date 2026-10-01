@@ -84,7 +84,7 @@ func (s *Server) authorizePrivateDashboardSession(c echo.Context) bool {
 		return false
 	}
 	cookie, err := c.Cookie(privateDashboardCookieName)
-	return err == nil && s.privateDashboardSessionAuthorized(cookie.Value)
+	return err == nil && cookie != nil && s.privateDashboardSessionAuthorized(cookie.Value)
 }
 
 func (s *Server) privateDashboardSessionAuthorized(value string) bool {
