@@ -3956,6 +3956,10 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 			}
 		})
 	}
+	// Current readers require the current schema; migration 55 was checked above.
+	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
+		t.Fatal(err)
+	}
 	backend := &sqliteStore{db: db, queries: sqlc.New(db)}
 	spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{ProjectID: "detent", IssueID: "issue", Since: startedAt.Add(-time.Second)})
 	if err != nil {

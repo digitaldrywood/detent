@@ -101,8 +101,9 @@ the tracker stops reporting a known conflict in a recognized mergeability state.
 Unknown includes tracker recomputation and credits progress without granting merge
 readiness. Attempt identity prevents stale-claim replay; tracker evidence provides
 the independent corroboration. The dispatch fingerprint and mergeability baseline
-persist with the attempt across restart, including merge-mode conflict repairs in active lanes
-(#2929); a changed head SHA alone is not implementation. No-progress
+persist with the attempt across restart, including merge-mode conflict repairs
+in In Progress and ordinary implementation repairs in Rework (#2929, #3547);
+a changed head SHA alone is not implementation. No-progress
 outcomes consume the existing issue attempt allowance, including merge-mode
 conflict repairs dispatched in active lanes. Completed successful sessions
 without a recorded error do not consume the allowance, including missing PR
@@ -1699,6 +1700,8 @@ Workspace diagnostics never rewrite shared Git metadata, including human-authore
 `info/exclude` (#3503). Diff statistics, fingerprints, patches, per-file diffs,
 and recovery path evidence apply the existing runtime exclusions through
 command-local pathspecs; tracked and untracked temporary artifacts stay excluded.
+The session-local progress fixture also counts committed project knowledge and
+excludes committed runtime scratch (#3547).
 Human-authored `.detent/notes.md` and `.detent/lessons.md` remain ordinary project
 files visible to diagnostics and recovery; removed automatic writers do not
 justify suppressing intentional documentation changes. Existing operator ignore
@@ -1863,6 +1866,11 @@ only diagnostics matching both location and source-line hash are accepted.
 required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
 checks every workflow for forbidden pull-request and merge-group events.
 `TestWorkflowViolations` rejects trigger and coverage regressions.
+
+The obsolete portability-stress configuration-text test is removed (#3547) per
+the test-suite audit policy. It encoded the retired single-job layout instead of
+executing stress behavior; manual stress suites retain their existing selection
+and budgets. Scheduled workflow invariant checks remain in place.
 
 **Change:** Update this invariant and its workflow assertions in the same pull
 request when changing validation or release evidence.
