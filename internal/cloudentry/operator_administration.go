@@ -23,7 +23,7 @@ import (
 type entryAdministration struct{ service *Service }
 
 func (s *Service) registerAdministration() {
-	names := []string{operatortool.OrganizationSession, operatortool.OrganizationList, operatortool.OrganizationSwitch, operatortool.SupportStart}
+	names := []string{operatortool.SessionLogout, operatortool.OrganizationSession, operatortool.OrganizationList, operatortool.OrganizationSwitch, operatortool.SupportStart}
 	if _, ok := s.config.Provider.(auth.InvitationAdministration); ok {
 		names = append(names, operatortool.InvitationAccept)
 	}
@@ -83,7 +83,7 @@ func (s *Service) administrationApproval(c echo.Context) error {
 	if err != nil {
 		return c.NoContent(http.StatusForbidden)
 	}
-	return s.administration.Approval(c, cloudassert.CSRFToken(session.CSRFSecret, ""))
+	return s.administration.Approval(c, cloudassert.CSRFToken(session.CSRFSecret, ""), func() { s.setCookie(c, "session", "", time.Unix(1, 0)) })
 }
 
 func (a entryAdministration) Authorize(ctx context.Context, name string, in operatoradmin.Input, resource string) error {
@@ -93,7 +93,7 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 		return err
 	}
 	switch name {
-	case operatortool.OrganizationSession, operatortool.OrganizationList:
+	case operatortool.OrganizationSession, operatortool.OrganizationList, operatortool.SessionLogout:
 		return nil
 	case operatortool.SupportStart:
 		if !s.supportActor(session.Email) || session.Identity.SupportActor != "" {
@@ -195,13 +195,7 @@ func (a entryAdministration) Read(ctx context.Context, name string, in operatora
 		return nil, err
 	}
 	if name == operatortool.OrganizationSession {
-		canCreate, err := s.canCreate(ctx, session)
-		return struct {
-			Subject    string `json:"subject"`
-			Email      string `json:"email"`
-			CanCreate  bool   `json:"can_create"`
-			CanSupport bool   `json:"can_support"`
-		}{session.Subject, session.Email, canCreate, s.supportActor(session.Email)}, err
+		return s.accountContextFor(ctx, session)
 	}
 	choices, err := s.organizationChoices(ctx, session)
 	if err != nil {
@@ -270,6 +264,10 @@ func (a entryAdministration) Execute(ctx context.Context, name string, in operat
 	session, err := s.currentAdministrationSession(ctx, operatortool.ConnectionIdentity(ctx))
 	if err != nil {
 		return operatoradmin.Output{}, err
+	}
+	if name == operatortool.SessionLogout {
+		outcome, err := s.logoutFor(ctx, session)
+		return operatoradmin.Output{URL: "https://detent.build", Reconnect: true, SignOut: &outcome}, err
 	}
 	// Reuse the entry application's audit ledger and serialization for receipts;
 	// no separate persistence owner, retry recovery, or provider retry is added.
@@ -361,4 +359,20 @@ func (s *Service) recordAdministrationReceipt(ctx context.Context, session accou
 func (a entryAdministration) Audit(ctx context.Context, m mutation.Metadata, outcome string) {
 	m.RetryIdentity, m.InputHash = "", ""
 	a.service.config.Logger.InfoContext(ctx, "operator mutation", "audit", m, "outcome", outcome)
+}
+
+// accountContext is the semantic browser landing/session projection without form secrets.
+type accountContext struct {
+	Subject     string `json:"subject"`
+	Email       string `json:"email"`
+	CanCreate   bool   `json:"can_create"`
+	CanSupport  bool   `json:"can_support"`
+	Staff       bool   `json:"staff"`
+	Destination string `json:"destination"`
+	Reconnect   bool   `json:"reconnect"`
+}
+
+func (s *Service) accountContextFor(ctx context.Context, session accountSession) (accountContext, error) {
+	canCreate, err := s.canCreate(ctx, session)
+	return accountContext{Subject: session.Subject, Email: session.Email, CanCreate: canCreate, CanSupport: s.supportActor(session.Email), Staff: s.platformStaff(session), Destination: s.config.PublicURL + s.landing(session.Email, session.Identity), Reconnect: true}, err
 }

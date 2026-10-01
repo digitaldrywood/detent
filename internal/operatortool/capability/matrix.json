@@ -811,13 +811,13 @@
           "class": "none"
         }
       ],
-      "application": "s.home; s.clientShell, s.landing, s.render",
-      "extraction": "Extract cloudentry.home application inputs/results and validation from Echo; reuse s.clientShell, s.landing, s.render. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "s.accountContextFor; s.landing",
+      "extraction": "Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.",
       "tool": {
-        "set": "work_reads",
-        "name": "home",
-        "arguments": "Bounded homeRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "homeResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "set": "organization",
+        "name": "organization_session",
+        "arguments": "Empty object; identity, organization and session come from the authenticated connection.",
+        "result": "Bounded fresh session/account facts and semantic navigation destination, or exact destination receipt with reconnect=true. No browser/provider secrets; current session/membership checked for reads and replay.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -826,9 +826,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3344",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "TestEntryAdministrationContext; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.",
+      "decision": "Fresh account identity, eligibility and semantic landing destination; organization_list supplies bounded choices. Browser HTML/login setup and CSRF stay browser-local. Implemented in #3662; full parent acceptance remains #3259."
     },
     {
       "id": "cloudentry.logout",
@@ -896,8 +896,8 @@
         }
       ],
       "authority": {
-        "role": "current account identity and organization membership",
-        "credential_scope": "hosted account session; CSRF for mutation",
+        "role": "Current authenticated account/session owner; no administrator powers required to end own access",
+        "credential_scope": "Original authenticated browser/account session; real browser approval with existing CSRF by default, or human connection-bound YOLO. MCP cannot self-approve.",
         "project_grant": "not project-scoped; organization/instance authority still enforced",
         "ownership": "current organization/account; no cross-organization resource lookup"
       },
@@ -908,28 +908,32 @@
       ],
       "confirmation": [
         {
-          "when": "read or ordinary non-destructive write",
-          "class": "none"
+          "when": "end the current account/session access",
+          "class": "operator"
+        },
+        {
+          "when": "human selected YOLO on this exact connection",
+          "class": "connection"
         }
       ],
-      "application": "s.logout; s.csrfValid, s.loginDenied, s.render, s.revokeAtTenants",
-      "extraction": "Extract cloudentry.logout application inputs/results and validation from Echo; reuse s.csrfValid, s.loginDenied, s.render, s.revokeAtTenants. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "s.logoutFor; s.auth.revokeSession; s.revokeAtTenants",
+      "extraction": "Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.",
       "tool": {
         "set": "connection",
-        "name": "logout",
-        "arguments": "Bounded logoutRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "logoutResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "name": "session_logout",
+        "arguments": "Exactly request_id (1\u2013128 bytes); no identity, session, credential, CSRF, approval or YOLO arguments.",
+        "result": "Exact pending action and browser approval destination by default; executing YOLO call returns signed_out, provider_sign_out_confirmed and audit_recorded booleans. Confirming browser sees the same safe outcome. All subsequent tool reads/retries fail current authority; reconnect after signing in.",
         "annotations": {
           "readOnly": false,
-          "destructive": false,
-          "idempotent": false,
+          "destructive": true,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3336",
-      "status": "pending",
-      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestEntryAdministrationContext; TestSharedEntryLogoutRevokesLocalAndProviderSessions; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.",
+      "decision": "Browser and MCP share account/session logout and existing tenant propagation. Local access ends even when provider sign-out is unconfirmed. Only the executing call/browser decision returns the content-free outcome; subsequent calls/retries are denied. Implemented in #3662; full parent acceptance remains #3259."
     },
     {
       "id": "cloudentry.platform_allowlist_json",
@@ -1743,13 +1747,13 @@
           "class": "none"
         }
       ],
-      "application": "s.sessionJSON; s.canCreate, s.platformStaff",
-      "extraction": "Extract cloudentry.sessionJSON application inputs/results and validation from Echo; reuse s.canCreate, s.platformStaff. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "s.accountContextFor",
+      "extraction": "Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.",
       "tool": {
-        "set": "connection",
-        "name": "session_json",
-        "arguments": "Bounded sessionJSONRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "sessionJSONResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "set": "organization",
+        "name": "organization_session",
+        "arguments": "Empty object; identity, organization and session come from the authenticated connection.",
+        "result": "Bounded fresh session/account facts and semantic navigation destination, or exact destination receipt with reconnect=true. No browser/provider secrets; current session/membership checked for reads and replay.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -1758,9 +1762,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3336",
-      "status": "pending",
-      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestEntryAdministrationContext; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.",
+      "decision": "Session JSON and MCP share the account context read; browser CSRF is setup-only and never part of the typed result. Implemented in #3662; full parent acceptance remains #3259."
     },
     {
       "id": "cloudentry.start_invitation",
@@ -14867,13 +14871,13 @@
           "class": "none"
         }
       ],
-      "application": "s.hostedLanding; s.appShell, s.hostedCredential, s.hostedHome",
-      "extraction": "Extract hubserver.hostedLanding application inputs/results and validation from Echo; reuse s.appShell, s.hostedCredential, s.hostedHome. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "s.hostedAccountSetupFor; s.operatorSessionDestination",
+      "extraction": "Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.",
       "tool": {
-        "set": "work_reads",
-        "name": "hosted_landing",
-        "arguments": "Bounded hostedLandingRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "hostedLandingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "set": "organization",
+        "name": "organization_session",
+        "arguments": "Empty object; identity, organization and session come from the authenticated connection.",
+        "result": "Bounded fresh session/account facts and semantic navigation destination, or exact destination receipt with reconnect=true. No browser/provider secrets; current session/membership checked for reads and replay.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -14882,9 +14886,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3344",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "TestHostedAccountSessionOperations; TestDedicatedAdministrationSetup; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.",
+      "decision": "Fresh current role/account setup and semantic application or onboarding destination; organization_list supplies bounded organization choices. No HTML scraping or grant transfer. Implemented in #3662; full parent acceptance remains #3259."
     },
     {
       "id": "hubserver.hosted_metadata",
@@ -18100,8 +18104,8 @@
         }
       ],
       "authority": {
-        "role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes",
-        "credential_scope": "hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation",
+        "role": "Current authenticated account/session owner; no administrator powers required to end own access",
+        "credential_scope": "Original authenticated browser/account session; real browser approval with existing CSRF by default, or human connection-bound YOLO. MCP cannot self-approve.",
         "project_grant": "not project-scoped; organization/instance authority still enforced",
         "ownership": "current organization/account; no cross-organization resource lookup"
       },
@@ -18113,28 +18117,32 @@
       ],
       "confirmation": [
         {
-          "when": "read or ordinary non-destructive write",
-          "class": "none"
+          "when": "end the current account/session access",
+          "class": "operator"
+        },
+        {
+          "when": "human selected YOLO on this exact connection",
+          "class": "connection"
         }
       ],
-      "application": "s.logoutHosted; s.config.now, s.database.db.ExecContext, s.database.db.QueryRowContext, s.hostedDenied",
-      "extraction": "Extract hubserver.logoutHosted application inputs/results and validation from Echo; reuse s.config.now, s.database.db.ExecContext, s.database.db.QueryRowContext, s.hostedDenied. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "s.logoutHostedFor",
+      "extraction": "Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.",
       "tool": {
         "set": "connection",
-        "name": "logout_hosted",
-        "arguments": "Bounded logoutHostedRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "logoutHostedResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "name": "session_logout",
+        "arguments": "Exactly request_id (1\u2013128 bytes); no identity, session, credential, CSRF, approval or YOLO arguments.",
+        "result": "Exact pending action and browser approval destination by default; executing YOLO call returns signed_out, provider_sign_out_confirmed and audit_recorded booleans. Confirming browser sees the same safe outcome. All subsequent tool reads/retries fail current authority; reconnect after signing in.",
         "annotations": {
           "readOnly": false,
-          "destructive": false,
-          "idempotent": false,
+          "destructive": true,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3336",
-      "status": "pending",
-      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestHostedAccountSessionOperations; TestHostedLoginLogoutRevokesLocalAndProviderSessions; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.",
+      "decision": "Dedicated browser and MCP share current-session logout; provider failure never restores local access. Existing revoked session state prevents repeated effects. Shared deployments use entry session_logout; tenant hubs never impersonate account logout authority. Implemented in #3662; full parent acceptance remains #3259."
     },
     {
       "id": "hubserver.mcp_transport",
@@ -23012,24 +23020,24 @@
           "class": "none"
         }
       ],
-      "application": "s.switchHostedOrganizationJSON; s.hostedEntryOwned, s.hostedSwitchDestination",
-      "extraction": "Extract hubserver.switchHostedOrganizationJSON application inputs/results and validation from Echo; reuse s.hostedEntryOwned, s.hostedSwitchDestination. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "s.hostedSwitchFor",
+      "extraction": "Implemented shared application projection/command; browser rendering, CSRF and provider exchange remain browser setup.",
       "tool": {
         "set": "organization",
-        "name": "switch_hosted_organization",
-        "arguments": "Bounded switchHostedOrganizationRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "switchHostedOrganizationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "name": "organization_switch",
+        "arguments": "Exactly organization_id (1\u2013256 bytes) and request_id (1\u2013128 bytes); no model-selected authority or confirmation.",
+        "result": "Bounded fresh session/account facts and semantic navigation destination, or exact destination receipt with reconnect=true. No browser/provider secrets; current session/membership checked for reads and replay.",
         "annotations": {
           "readOnly": false,
           "destructive": false,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3336",
-      "status": "pending",
-      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestHostedAccountSessionOperations; TestHostedLoginOrganizationSwitching; testEntrySessionTransports exercises the real adapter through stdio and HTTP; TestActionConfirmationClassification pins access-ending confirmation.",
+      "decision": "Shared destination membership lookup runs before execution, replay and result delivery. Fresh destination login/connection is required; the original connection retains its identity and grants. Shared tenants leave account switching to entry. Implemented in #3662; full parent acceptance remains #3259."
     },
     {
       "id": "hubserver.transition_native_issue",

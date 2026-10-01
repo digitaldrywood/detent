@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -318,32 +319,13 @@ func (s *Service) logout(c echo.Context) error {
 	if !s.csrfValid(c, session, c.Param("organization")) {
 		return s.loginDenied(c, http.StatusForbidden, "Reload the page and try again", auth.HostedDenial{Flow: "logout", Reason: "csrf_invalid", Email: session.Email})
 	}
-	revoked, err := s.auth.revokeSession(ctx, session.Hash)
+	outcome, err := s.logoutFor(ctx, session)
 	if err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-out is temporarily unavailable", auth.HostedDenial{Flow: "logout", Reason: "session_revoke_failed", Email: session.Email})
 	}
 	s.setCookie(c, "session", "", time.Unix(1, 0))
-	s.revokeAtTenants(ctx, revoked)
-	sessions := map[string]bool{session.Identity.SessionID: true}
-	for _, item := range revoked {
-		sessions[item.Identity.SessionID] = true
-	}
-	revocation, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-	defer cancel()
-	var providerErr error
-	for id := range sessions {
-		if id != "" {
-			providerErr = errors.Join(providerErr, s.config.Provider.RevokeSession(revocation, id))
-		}
-	}
-	auditErr := s.auth.audit(revocation, session.Subject, "", "session_ended")
-	if providerErr != nil || auditErr != nil {
-		reason := "provider_revoke_failed"
-		if providerErr == nil {
-			reason = "audit_failed"
-		}
-		auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), auth.HostedDenial{Flow: "logout", Reason: reason, Status: http.StatusServiceUnavailable, Err: errors.Join(providerErr, auditErr), Email: session.Email})
-		return s.render(c, http.StatusServiceUnavailable, templates.HostedPageData{Mode: "denied", Title: "Signed out", Error: "You are signed out of Detent. Provider sign-out could not be confirmed; retry sign-out from your identity provider."})
+	if !outcome.ProviderConfirmed || !outcome.AuditRecorded {
+		return s.render(c, http.StatusServiceUnavailable, templates.HostedPageData{Mode: "denied", Title: "Signed out", Error: outcome.Message()})
 	}
 	return c.Redirect(http.StatusSeeOther, "https://detent.build")
 }
@@ -419,11 +401,11 @@ func (s *Service) sessionJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
-	canCreate, err := s.canCreate(c.Request().Context(), session)
+	account, err := s.accountContextFor(c.Request().Context(), session)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "membership_unavailable", "message": "Organization information is temporarily unavailable"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": canCreate, "staff": s.platformStaff(session)})
+	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": account.CanCreate, "staff": account.Staff})
 }
 
 func (s *Service) organizationsJSON(c echo.Context) error {
@@ -492,4 +474,32 @@ func (s *Service) startInvitation(c echo.Context) error {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "transaction_failed"})
 	}
 	return nil
+}
+
+// logoutFor is shared by browser and MCP. Existing local revocation and tenant
+// propagation happen before provider effects; a provider failure never restores access.
+func (s *Service) logoutFor(ctx context.Context, session accountSession) (operatortool.SignOutResult, error) {
+	revoked, err := s.auth.revokeSession(ctx, session.Hash)
+	if err != nil {
+		return operatortool.SignOutResult{}, err
+	}
+	revocation, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	s.revokeAtTenants(revocation, revoked)
+	sessions := map[string]bool{session.Identity.SessionID: true}
+	for _, item := range revoked {
+		sessions[item.Identity.SessionID] = true
+	}
+	var providerErr error
+	for id := range sessions {
+		if id != "" {
+			providerErr = errors.Join(providerErr, s.config.Provider.RevokeSession(revocation, id))
+		}
+	}
+	auditErr := s.auth.audit(revocation, session.Subject, "", "session_ended")
+	outcome := operatortool.SignOutResult{SignedOut: true, ProviderConfirmed: providerErr == nil, AuditRecorded: auditErr == nil}
+	if providerErr != nil || auditErr != nil {
+		s.config.Logger.WarnContext(revocation, "session sign-out incomplete", "provider_confirmed", outcome.ProviderConfirmed, "audit_recorded", outcome.AuditRecorded)
+	}
+	return outcome, nil
 }

@@ -151,6 +151,23 @@ is added. `TestAdministrationExecution`, `TestHostedAdministrationAuthority`,
 `TestEntryAdministrationContext` and `TestMCPCredentialAdministration` cover these
 boundaries with existing application identity fixtures.
 
+Account/session parity (#3662) shares semantic landing/onboarding facts with browser
+account reads and binds destinations to current session/membership checks,
+including cached organization-switch delivery. `session_logout` shares browser
+logout execution and current-session revocation, retaining shared-entry tenant
+propagation; shared tenant hubs never substitute for shared-entry account
+logout. Access-ending sign-out uses the existing real browser approval or
+connection-bound human YOLO. Only the executing call/browser decision returns
+the content-free sign-out outcome after revocation; later reads and retries
+remain denied. Provider failure cannot restore local access or expose provider
+errors; browser form/provider exchange secrets stay outside typed results and
+audits. No new revocation or retry mechanism is added (INV-3).
+`TestEntryAdministrationContext`, `TestHostedAccountSessionOperations`,
+`TestSharedEntryLogoutRevokesLocalAndProviderSessions`,
+`TestHostedLoginLogoutRevokesLocalAndProviderSessions`, and
+`TestActionConfirmationClassification` cover these boundaries, including the
+real entry adapter through both transports.
+
 MCP mutations carry content-free, trusted audit/correlation context (#3338).
 Dashboard commands reuse durable operator events for retry receipts; native and
 hosted commands reuse `native_commands`, with existing billing intents/provider

@@ -21,7 +21,7 @@ func (s *Service) operatorAdministration() *operatoradmin.Executor {
 	if s.config.Hosted != nil {
 		names = append(names, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationRevoke, operatortool.MemberRemove, operatortool.MemberRole, operatortool.MemberGrant)
 		if !s.hostedShared() {
-			names = append(names, operatortool.OrganizationSwitch, operatortool.OrganizationCreate, operatortool.SupportStart)
+			names = append(names, operatortool.SessionLogout, operatortool.OrganizationSwitch, operatortool.OrganizationCreate, operatortool.SupportStart)
 			if _, ok := s.config.Hosted.Provider.(auth.InvitationAdministration); ok {
 				names = append(names, operatortool.InvitationAccept)
 			}
@@ -70,6 +70,12 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		return operatortool.ErrAccessDenied
 	}
 	s := a.service
+	if name == operatortool.SessionLogout {
+		if s.config.Hosted == nil || s.hostedShared() || credential.Hosted == nil || credential.SessionHash == "" {
+			return operatortool.ErrAccessDenied
+		}
+		return nil
+	}
 	if name == operatortool.OrganizationSession {
 		return nil
 	}
@@ -175,6 +181,10 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		if s.hostedShared() || credential.Hosted.SupportActor != "" {
 			return operatortool.ErrAccessDenied
 		}
+		if name == operatortool.OrganizationSwitch && in.OrganizationID != "" {
+			_, err := s.hostedSwitchFor(ctx, credential.Hosted, in.OrganizationID)
+			return err
+		}
 		return nil
 	}
 	if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
@@ -213,17 +223,34 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 	}
 	switch name {
 	case operatortool.OrganizationSession:
+		setup := hostedAccountSetup{}
+		if credential.Hosted != nil {
+			session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+			if err != nil {
+				return nil, err
+			}
+			setup, err = s.hostedAccountSetupFor(ctx, session)
+			if err != nil {
+				return nil, err
+			}
+			if credential.HostedRole != "account" {
+				setup.CanCreate = credential.HostedRole == "owner" || credential.HostedRole == "admin"
+			}
+		}
 		return struct {
+			hostedAccountSetup
 			Principal    string `json:"principal_id"`
 			Organization string `json:"organization_id"`
 			Role         string `json:"role"`
 			SupportActor string `json:"support_actor,omitempty"`
-		}{credential.ID, operatortool.ConnectionIdentity(ctx).OrganizationID, credential.HostedRole, func() string {
+			Destination  string `json:"destination"`
+			Reconnect    bool   `json:"reconnect"`
+		}{setup, credential.ID, operatortool.ConnectionIdentity(ctx).OrganizationID, credential.HostedRole, func() string {
 			if credential.Hosted != nil {
 				return credential.Hosted.SupportActor
 			}
 			return ""
-		}()}, nil
+		}(), s.operatorSessionDestination(credential), true}, nil
 	case operatortool.MembershipList:
 		members, err := s.hostedMembersFor(ctx, credential)
 		if err != nil {
@@ -333,6 +360,13 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	credential, err := a.credential(ctx)
 	if err != nil {
 		return operatoradmin.Output{}, err
+	}
+	if name == operatortool.SessionLogout {
+		if err := a.Authorize(ctx, name, in, ""); err != nil {
+			return operatoradmin.Output{}, err
+		}
+		outcome, err := s.logoutHostedFor(ctx, credential.SessionHash, credential.Hosted)
+		return operatoradmin.Output{URL: "https://detent.build", Reconnect: true, SignOut: &outcome}, err
 	}
 	if s.config.Hosted != nil && (name == operatortool.OrganizationCreate || name == operatortool.SupportStart || name == operatortool.InvitationAccept && credential.HostedRole == "account") {
 		return s.executeHostedAccountFor(ctx, credential, name, in, m)
@@ -585,4 +619,14 @@ func (a hubAdministration) AuthorizeOutput(ctx context.Context, name string, in 
 		return operatortool.ErrAccessDenied
 	}
 	return nil
+}
+
+func (s *Service) operatorSessionDestination(credential apiCredential) string {
+	if s.config.Hosted == nil {
+		return s.operatorDashboardURL()
+	}
+	if credential.HostedRole == "account" {
+		return s.config.Hosted.PublicURL + "/organization"
+	}
+	return s.config.Hosted.PublicURL + "/"
 }

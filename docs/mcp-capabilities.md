@@ -119,7 +119,7 @@ opaque unavailable errors after resource authorization. The read/service childre
 must supply shared application reads, not a compatibility HTTP proxy.
 
 Organization and credential administration (#3344) uses typed application tools:
-`organization_session`, `organization_list`, `organization_switch`,
+`organization_session`, `organization_list`, `organization_switch`, `session_logout`,
 `organization_create`, `organization_delete`, `invitation_accept`,
 `invitation_send`, `invitation_revoke`, `membership_list`, `member_remove`,
 `member_role`, `member_grant`, `credential_list`, `credential_create`,
@@ -146,7 +146,16 @@ current authority. Durable application receipts omit credential material; delibe
 credential results stay on their originating connection, recheck current authority
 and the delivered credential's validity, and are never restored from durable retry
 receipts. A fresh connection retry returns the resource receipt without its secret.
-These implementations do not complete parent #3259.
+`organization_session` returns account/onboarding facts and a semantic destination
+without browser form secrets. `session_logout` ends the originating account session
+through the same command as browser sign-out, including shared-entry tenant
+propagation. It requires a real browser decision by default; a human may select
+YOLO for that exact connection. The executing YOLO call or confirming browser
+receives a safe sign-out outcome, including whether provider sign-out was
+confirmed. Provider failure leaves local access ended. Later tool reads, action
+results and retries are denied, so response loss never repeats the effect; sign
+in and open a fresh connection to continue. Shared tenant hubs leave account
+sign-out to `/api/cloud/mcp`. These implementations do not complete parent #3259.
 
 Meaningful forms and redirects produce structured application data, command
 receipts or destination URLs. Provider login/callback exchanges are connection
