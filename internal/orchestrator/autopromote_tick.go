@@ -1290,7 +1290,10 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 	transitioned := map[string]struct{}{}
 	for _, issue := range issuesInStates(issues, staleLinkedPullRequestReconciliationStates(o.cfg)) {
 		issueID := strings.TrimSpace(issue.ID)
-		if issueID == "" || stateIn(issue.State, o.cfg.TerminalStates) || staleTodoPullRequestAlreadyActive(state, issueID) {
+		if issueID == "" || stateIn(issue.State, o.cfg.TerminalStates) {
+			continue
+		}
+		if _, running := state.Running[issueID]; running {
 			continue
 		}
 		if resolved, ok := o.resolveMergedCompletionPullRequest(ctx, issue); ok {
@@ -1328,6 +1331,9 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 		}
 
 		if normalizeState(issue.State) != "todo" {
+			continue
+		}
+		if staleTodoPullRequestAlreadyActive(state, issueID) {
 			continue
 		}
 		if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {

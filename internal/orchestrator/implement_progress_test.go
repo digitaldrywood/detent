@@ -258,15 +258,13 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:       true,
 		},
 		{
-			name:               "already merged completion needs no prior authorization",
+			name:               "merged receipt without native evidence cannot complete",
 			runningIssue:       implementProgressIssueWithoutPR(),
 			diffStats:          DiffStats{Status: "clean"},
 			noProgressLimit:    3,
-			wantTerminal:       store.WorkAttemptTerminalSuccess,
-			wantReason:         string(AutoPromoteReasonOperationalCompletion),
-			wantProgressKinds:  []string{"operational_completion"},
-			wantCompletionKind: workpad.CompletionOperational,
-			wantReview:         true,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         implementProgressOutcomeNoProgress,
+			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: mergedCompletionWorkpadBody(),
 		},
@@ -997,25 +995,11 @@ func TestHandleRunResultAcceptsMergedNoDiffCompletion(t *testing.T) {
 	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after accepted merged completion", runningIssue.ID)
 	}
-	if len(tracker.updates) != 0 {
-		t.Fatalf("updates = %#v, want no completion-time Blocked transition", tracker.updates)
+	if len(state.Retry) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 {
+		t.Fatalf("merged completion retained dispatch memory: retry=%d claimed=%d completed=%d", len(state.Retry), len(state.Claimed), len(state.Completed))
 	}
 	if tracker.hydrations != 1 {
 		t.Fatalf("hydrations = %d, want tracker-discovered PR hydrated once", tracker.hydrations)
-	}
-	completed := state.Completed[runningIssue.ID]
-	if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.State != "MERGED" {
-		t.Fatalf("completed issue pull request = %#v, want refreshed merged PR", completed.Issue.PullRequest)
-	}
-
-	transitioned := orch.reconcileStaleLinkedPullRequestIssues(
-		context.Background(),
-		&state,
-		[]connector.Issue{hydratedIssue},
-		now.Add(time.Minute),
-	)
-	if _, ok := transitioned[runningIssue.ID]; !ok {
-		t.Fatalf("transitioned = %#v, want issue %q", transitioned, runningIssue.ID)
 	}
 	if len(tracker.updates) != 1 || tracker.updates[0] != (implementProgressUpdate{issueID: runningIssue.ID, state: "Done"}) {
 		t.Fatalf("updates = %#v, want Done reconciliation", tracker.updates)
