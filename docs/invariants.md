@@ -715,6 +715,17 @@ unresolved checklist, a later child reopen, and independent parent completion;
 the existing affected-epic retry tests retain transient failure behavior. No
 cache, timer, configuration, or recovery mechanism is added.
 
+Rework gate restoration owns its fresh tracker and Workpad read once, retaining
+the refreshed issue for later tick consumers. Required-gate snapshots project
+that evidence without another tracker read. The existing completion reader still
+fetches current evidence for callers outside restoration; history selection
+consumes that evidence rather than reading it again. Fresh blocked Workpads and
+unavailable reads cannot restore a wait, and current-head validator hydration
+keeps its existing owner. `TestReworkGateWaitHistoryCannotResurrectSupersededWait`
+checks one tracker/comment read, failed reads, and fresh blocker propagation;
+the existing current-head restoration cases cover validator handoff. This
+consolidates readers without a cache, configuration, or recovery mechanism.
+
 Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
 existing optional feature negotiation. The `runner_local_checks` capability
 permits `local_checks`; older Hubs receive the original heartbeat without that

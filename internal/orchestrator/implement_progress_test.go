@@ -2333,8 +2333,11 @@ type implementProgressConnector struct {
 	hydrateErr         error
 	hydrateErrs        []error
 	refreshErr         error
+	commentErr         error
 	referenceErr       error
 	hydrations         int
+	stateReads         int
+	commentReads       int
 	referenceRefreshes int
 	updates            []implementProgressUpdate
 	comments           []implementProgressComment
@@ -2366,6 +2369,7 @@ func (c *implementProgressConnector) FetchIssuesByStates(context.Context, []stri
 }
 
 func (c *implementProgressConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	c.stateReads++
 	if c.refreshErr != nil {
 		return nil, c.refreshErr
 	}
@@ -2387,6 +2391,10 @@ func (c *implementProgressConnector) RefreshPullRequestReference(_ context.Conte
 }
 
 func (c *implementProgressConnector) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
+	c.commentReads++
+	if c.commentErr != nil {
+		return nil, c.commentErr
+	}
 	return cloneIssueComments(c.refreshed.Comments), nil
 }
 
