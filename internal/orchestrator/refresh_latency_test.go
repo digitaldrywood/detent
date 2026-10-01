@@ -280,7 +280,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				requestMu.Lock()
 				defer requestMu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
-				if r.Method == http.MethodPost && r.URL.Path == "/" {
+				if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
 					graphqlReads++
 					var request struct {
 						Query string `json:"query"`
@@ -295,7 +295,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						w.WriteHeader(http.StatusBadRequest)
 						return
 					}
-					fmt.Fprint(w, `{"data":{}}`)
+					fmt.Fprint(w, `{"errors":[{"message":"Cannot query field \"blockedBy\" on type \"Issue\"."}]}`)
 					return
 				}
 				paths[r.URL.Path]++
@@ -352,7 +352,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			if mode == "budget" {
 				cap = 2
 			}
-			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL, APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
+			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL + "/graphql", APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -429,6 +429,9 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				t.Fatalf("resolver calls = %v, requests = %v; failed cohort=%t", tracker.fetchIdentifiers, requests, failedCohort)
 			}
 			if mode == "fresh" {
+				if graphqlReads != 3 {
+					t.Fatalf("scheduler evidence reads = %d, want one per distinct issue", graphqlReads)
+				}
 				if len(requests) != 8 {
 					t.Fatalf("requests = %v, want 3 issues + 3 dependencies + 2 repository lists", requests)
 				}
