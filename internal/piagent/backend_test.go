@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func TestRunTurnRPC(t *testing.T) {
 		cancel    bool
 		reject    bool
 	}{
-		{mode: "success"}, {mode: "settled_before_ack"}, {mode: "retry"}, {mode: "no_delta"},
+		{mode: "success"}, {mode: "symlink_workspace"}, {mode: "settled_before_ack"}, {mode: "retry"}, {mode: "no_delta"},
 		{mode: "ack_only", wantError: "exited before completion"},
 		{mode: "turn_limit", wantError: "session turn limit exceeded"},
 		{mode: "max_duration", wantError: "context deadline exceeded"},
@@ -49,6 +50,16 @@ func TestRunTurnRPC(t *testing.T) {
 	} {
 		t.Run(test.mode+fmt.Sprint(test.cancel, test.reject), func(t *testing.T) {
 			dir := t.TempDir()
+			if test.mode == "symlink_workspace" {
+				link := filepath.Join(t.TempDir(), "workspace")
+				if err := os.Symlink(dir, link); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("directory symlinks unavailable: %v", err)
+					}
+					t.Fatal(err)
+				}
+				dir = link
+			}
 			var command *exec.Cmd
 			backend, err := NewAgentBackend(Options{Provider: "fixture", ThinkingLevel: "high", CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
 				command = exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPiRPCProcess$", "--")
@@ -185,9 +196,17 @@ func TestPiRPCProcess(t *testing.T) {
 	if request["type"] != "prompt" || request["id"] != "prompt" || request["message"] != "hello\u2028world\u2029" {
 		os.Exit(6)
 	}
-	cwd, err := os.Getwd()
-	if err != nil || cwd != os.Getenv("TMPDIR") || cwd != os.Getenv("TMP") || cwd != os.Getenv("TEMP") || os.Getenv("DETENT_PI_MARKER") != "propagated" {
+	cwd, err := os.Stat(".")
+	if err != nil || os.Getenv("DETENT_PI_MARKER") != "propagated" {
 		os.Exit(7)
+	}
+	// macOS may name the same directory through /var and /private/var.
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		temp, err := os.Stat(os.Getenv(key))
+		if err != nil || !os.SameFile(cwd, temp) {
+			fmt.Fprintf(os.Stderr, "fixture %s does not name the working directory\n", key)
+			os.Exit(7)
+		}
 	}
 	for _, arg := range []string{"--mode", "rpc", "--no-extensions", "--no-approve", "--no-skills", "--no-prompt-templates", "--provider", "fixture", "--model", "fixture-model", "--thinking", "high", "--tools"} {
 		if !slices.Contains(os.Args, arg) {
