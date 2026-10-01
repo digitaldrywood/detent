@@ -69,8 +69,10 @@ func (d *database) recordConversationUsage(ctx context.Context, tx *sql.Tx, usag
 		return fmt.Errorf("read conversation price: %w", err)
 	}
 	var pricedID, cost, saving any
+	var costUSD float64
 	if err == nil {
-		pricedID, cost = priceID, chatUsageCost(price, tokens)
+		costUSD = chatUsageCost(price, tokens)
+		pricedID, cost = priceID, costUSD
 		saving = float64(tokens.CachedInputTokens) * max(0, price.Input-price.CachedInput) / tokensPerPriceUnit
 	}
 	inserted, err := tx.ExecContext(ctx, `INSERT INTO conversation_usage(organization_id,project_id,conversation_id,turn_id,provider,model,occurred_at,input,cached_input,output,reasoning_output,outcome,price_id,cost_usd,cache_savings_usd)
@@ -83,7 +85,7 @@ func (d *database) recordConversationUsage(ctx context.Context, tx *sql.Tx, usag
 		return err
 	}
 	if count == 1 && d.aiCreditMode != "" && usage.Provider == "openai" && cost != nil {
-		micros := int64(math.Ceil(cost.(float64) * 1000000))
+		micros := int64(math.Ceil(costUSD * 1000000))
 		if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,?,?,?,'usage',?)", usage.OrganizationID, d.aiCreditMode, "usage:"+usage.TurnID, -micros, at.UnixMicro()); err != nil {
 			return err
 		}

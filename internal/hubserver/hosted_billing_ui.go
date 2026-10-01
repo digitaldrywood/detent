@@ -42,9 +42,11 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 	if err != nil {
 		return report, err
 	}
-	report.AICredits, err = s.readAICredits(ctx)
-	if err != nil {
-		return report, err
+	if s.database.aiCreditMode != "" {
+		report.AICredits, err = s.readAICredits(ctx)
+		if err != nil {
+			return report, err
+		}
 	}
 	var checked sql.NullString
 	err = s.database.db.QueryRowContext(ctx, "SELECT reconciled_at FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&checked)
