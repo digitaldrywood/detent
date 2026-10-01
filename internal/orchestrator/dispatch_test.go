@@ -4273,7 +4273,7 @@ func TestDispatchReadyIssuesRefreshesStaleBlocker(t *testing.T) {
 			}
 			wantBatches := 1
 			if tt.wantRunning > 0 {
-				wantBatches = len(candidates) // Dispatch completion discards pre-callback evidence.
+				wantBatches = len(candidates)
 			}
 			if tracker.identifierBatches != wantBatches {
 				t.Fatalf("blocker batches = %d, want %d", tracker.identifierBatches, wantBatches)

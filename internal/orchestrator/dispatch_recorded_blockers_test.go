@@ -56,7 +56,6 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 				cfg = normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "Merging", "In Progress"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Todo", "Merging", "In Progress"}, MergeFastPathEnabled: true})
 				orch.cfg = cfg
 				state = newState(cfg)
-				// A due retry keeps the first candidate ahead of the lane writer.
 				state.Retry[issue.ID] = savedRetry
 				writer := dispatchTestIssue("2472", "Todo")
 				writer.Fields = map[string]string{"Status": "Todo"}
@@ -116,7 +115,6 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 	}
 }
 
-// The dispatch failure simulates a lost response after an authoritative lane write.
 type dispatchReferenceMutationConnector struct {
 	*blockerEvidenceTestConnector
 	writerID       string

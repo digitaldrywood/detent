@@ -152,7 +152,7 @@ func TestDispatchWorkpadDependencyEvidence(t *testing.T) {
 			}
 			wantReads := 1
 			if tt.err != nil || len(tt.blockers) == 0 {
-				wantReads = 2 // Unknown dependency evidence must still attempt the predicate lookup.
+				wantReads = 2
 			}
 			if reads != wantReads {
 				t.Fatalf("reference reads = %d, want %d", reads, wantReads)
