@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,12 +13,17 @@ import (
 )
 
 func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
-	for _, stopped := range []bool{false, true} {
-		name := "completed"
-		if stopped {
-			name = "multiple operator stops"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		stopped bool
+		fenced  bool
+	}{
+		{name: "completed"},
+		{name: "multiple operator stops", stopped: true},
+		{name: "completion fence", fenced: true},
+		{name: "stops under completion fence", stopped: true, fenced: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, Project: scheduler.ProjectCandidate{ID: "fixture", Weight: 1}, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
 			gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}), cfg.Project)
@@ -26,7 +32,7 @@ func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
 			second := dispatchTestIssue("second", "Todo")
 			next := dispatchTestIssue("next", "Todo")
 			runner := newWorkerHostRunner()
-			o := Orchestrator{cfg: cfg, globalDispatchGate: gate, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 3), pendingStops: map[string]*pendingStopRun{}, completedStops: map[string]StopRunResult{}, now: func() time.Time { return now }}
+			o := Orchestrator{done: make(chan struct{}), cfg: cfg, globalDispatchGate: gate, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 3), pendingStops: map[string]*pendingStopRun{}, completedStops: map[string]StopRunResult{}, now: func() time.Time { return now }}
 			defer o.releaseRunningSlots(&state)
 			for _, issue := range []connector.Issue{first, second} {
 				slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), cfg.Project, scheduler.SlotRequest{State: "Todo"}, now)
@@ -34,15 +40,20 @@ func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
 					t.Fatalf("acquire fixture slot: acquired=%t error=%v", acquired, err)
 				}
 				state.Running[issue.ID] = Running{Issue: issue, StartedAt: now, globalSlot: slot}
-				if stopped {
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				if tt.stopped {
 					o.pendingStops[issue.ID] = &pendingStopRun{reapDone: true, result: StopRunResult{ProjectID: cfg.Project.ID, IssueID: issue.ID, Destination: "Todo"}}
 				}
+			}
+			o.publishState(&state)
+			if tt.fenced {
+				o.startCompletion(&state)
 			}
 			entered := make(chan struct{})
 			unblock := make(chan struct{})
 			fetches := 0
 			candidates := []connector.Issue{next}
-			if stopped {
+			if tt.stopped {
 				candidates = []connector.Issue{first, second, next}
 			}
 			o.connector = completionRefillConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: next}, fetch: func(ctx context.Context) ([]connector.Issue, error) {
@@ -67,12 +78,33 @@ func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
 				defer close(finished)
 				o.handleQueuedRunResults(t.Context(), &state, result(first))
 			}()
+			release := sync.OnceFunc(func() { close(unblock) })
+			defer func() { release(); <-finished }()
 			select {
 			case <-entered:
 			case <-time.After(time.Second):
 				t.Fatal("completion cohort did not reach refill")
 			}
-			close(unblock)
+			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+			observed, err := o.State(ctx)
+			cancel()
+			if err != nil {
+				t.Fatalf("State() during completion refill: %v", err)
+			}
+			wantOwned := 0
+			if tt.fenced {
+				wantOwned = 2
+			}
+			if len(observed.Running) != wantOwned || len(observed.Claimed) != wantOwned {
+				t.Fatalf("ownership during refill: running=%d claimed=%d, want %d each", len(observed.Running), len(observed.Claimed), wantOwned)
+			}
+			if o.refreshProgress.Load() != nil || observed.RefreshProgress.Stage != "" {
+				t.Fatal("completion refill started a tracker refresh")
+			}
+			if !tt.fenced && !observed.RuntimeObservation.IsZero() {
+				t.Fatal("unfenced refill acquired a completion observation")
+			}
+			release()
 			select {
 			case <-finished:
 			case <-time.After(time.Second):
