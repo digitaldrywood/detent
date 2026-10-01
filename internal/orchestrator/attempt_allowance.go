@@ -100,6 +100,9 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		return true
 	}
 	class := strings.ToLower(strings.TrimSpace(attempt.ErrorClass))
+	if class == workAttemptErrorRunner {
+		class = runnerWorkAttemptErrorClass(errors.New(attempt.ErrorMessage))
+	}
 	if strings.HasPrefix(class, "backend_startup_") {
 		return true
 	}

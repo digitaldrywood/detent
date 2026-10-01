@@ -2161,7 +2161,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
-			classifyForgeOperationError(fmt.Errorf("workspace diff stat: %w", err), "git fetch", forgeHost),
+			classifyForgeOperationError(fmt.Errorf("%w: workspace diff stat: %w", ErrWorkspacePreparation, err), "git fetch", forgeHost),
 			r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, turns, turnResult, resumeState.DetentSessionID),
 		)
 	}
