@@ -38,6 +38,7 @@ func (s *Server) loadWorkflowHistory(ctx context.Context, projectID string, now 
 	entry := workflowHistoryEntry{metrics: s.loadWorkflowMetrics(ctx, projectID, now)}
 	if projectID == "" {
 		entry.cycleTime = s.loadCycleTime(ctx)
+		entry.shipped, entry.shippedAvailable = s.loadShippedCompletions(ctx)
 	}
 	return entry
 }

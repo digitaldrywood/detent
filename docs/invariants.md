@@ -875,17 +875,22 @@ trigger, and its rollback restores unconditional UPDATE invalidation.
 checkpoint evidence, NULL transitions, projected identity changes, other phase
 updates and both migration directions.
 
-Cycle-time reports share the existing global workflow-history cache entry rather
-than scanning completed sessions and attempt metadata on each changed snapshot.
-Project views inherit the same global cycle projection; project history entries
-do not repeat that query. Existing revision checks, coalesced loading, scope
-bounds and 30-second wall/window freshness apply to both global projections.
-Direct session or attempt changes without a phase revision remain bounded by
-that existing freshness limit. A failed cycle query leaves workflow metrics
-available but does not cache the failed composite; retries retain degraded
-results. Existing cadence/concurrency/failure fixtures preserve cycle statistics
-and verify heartbeat reuse, scopes, revisions, boundaries and failed loads.
-No cache, TTL, query, index or configuration is added.
+Cycle-time reports and verified shipped outcomes share the existing global
+workflow-history cache entry rather than scanning completed sessions, attempt
+metadata or the lane ledger on each changed snapshot. Project views inherit
+those global projections; project history entries do not repeat their queries.
+Existing revision checks, coalesced loading, scope bounds and 30-second
+wall/window freshness apply. Direct session, attempt or applied lane-ledger
+changes without a phase revision remain bounded by that freshness limit.
+Latest-phase delivery identity, URL and PR changes retain revision invalidation.
+This read-only dashboard projection never supplies merge or lane authority.
+A failed component query leaves successful components available but does not
+cache the failed global composite; a failed shipped read preserves the input
+snapshot instead of fabricating deliveries. Existing cadence/concurrency/failure
+and changed-snapshot SSE fixtures preserve statistics, delivery identity and
+timestamps, and verify heartbeat reuse, scopes, revisions, independent ledger
+write bounds and failed-read retries. No cache, TTL, query, index or configuration
+is added.
 
 GitHub usage timing (#3767) extends the existing `RESTScope` owner, mutex,
 fixed stage/step/family/outcome aggregation and single aggregate log event.

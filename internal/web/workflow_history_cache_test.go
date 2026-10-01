@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,9 @@ type workflowHistoryTestStore struct {
 	reports       atomic.Int64
 	cycles        atomic.Int64
 	cycleError    bool
+	shipped       atomic.Int64
+	shippedError  bool
+	outcomes      []store.ShippedOutcome
 	evidence      atomic.Int64
 	revisionError bool
 	reportError   bool
@@ -60,6 +64,20 @@ func (s *workflowHistoryTestStore) CycleTimeReport(context.Context) (store.Cycle
 	}, nil
 }
 
+func (s *workflowHistoryTestStore) ShippedOutcomes(context.Context) ([]store.ShippedOutcome, error) {
+	s.shipped.Add(1)
+	if s.shippedError {
+		return nil, errors.New("shipped outcomes unavailable")
+	}
+	if s.outcomes != nil {
+		return s.outcomes, nil
+	}
+	return []store.ShippedOutcome{{
+		IssueIdentity: store.IssueIdentity{ProjectID: "detent", IssueID: "completed", Identifier: "DONE-1", IssueURL: "https://example.com/issues/1"},
+		State:         "Done", CompletedAt: time.Date(2026, 9, 8, 11, 0, 0, 0, time.UTC), PRNumber: s.revision.Load() + 42,
+	}}, nil
+}
+
 func TestWorkflowHistoryCacheCadence(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
@@ -68,6 +86,7 @@ func TestWorkflowHistoryCacheCadence(t *testing.T) {
 		elapsed, timeShift time.Duration
 		project            string
 		changed            bool
+		ledgerWrite        bool
 		want               int64
 	}{
 		{name: "heartbeat", elapsed: time.Second, timeShift: time.Second, want: 6},
@@ -77,6 +96,8 @@ func TestWorkflowHistoryCacheCadence(t *testing.T) {
 		{name: "window moves backward", timeShift: -time.Second, want: 12},
 		{name: "correction", changed: true, want: 12},
 		{name: "project scope", project: "other", want: 12},
+		{name: "independent ledger write within bound", elapsed: time.Second, timeShift: time.Second, ledgerWrite: true, want: 6},
+		{name: "independent ledger write", elapsed: 30 * time.Second, timeShift: 30 * time.Second, ledgerWrite: true, want: 12},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -85,6 +106,7 @@ func TestWorkflowHistoryCacheCadence(t *testing.T) {
 			server := &Server{store: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: func() time.Time { return now }}
 			snapshot := telemetry.Snapshot{Seq: 1, GeneratedAt: base}
 			firstCycle, _ := server.snapshotCycleTime(t.Context(), snapshot.GeneratedAt)
+			firstShipped := server.snapshotShippedCompletions(t.Context(), snapshot)
 			first := server.snapshotWorkflowMetrics(t.Context(), snapshot)
 			if !first.Available {
 				t.Fatal("history unavailable")
@@ -97,7 +119,11 @@ func TestWorkflowHistoryCacheCadence(t *testing.T) {
 			if tt.changed {
 				backend.revision.Add(1)
 			}
+			if tt.ledgerWrite {
+				backend.outcomes = []store.ShippedOutcome{{IssueIdentity: store.IssueIdentity{ProjectID: "detent", IssueID: "new", Identifier: "DONE-2"}, State: "Done", CompletedAt: now, PRNumber: 99}}
+			}
 			cycle, _ := server.snapshotCycleTime(t.Context(), snapshot.GeneratedAt)
+			shipped := server.snapshotShippedCompletions(t.Context(), snapshot)
 			got := server.snapshotWorkflowMetrics(t.Context(), snapshot)
 			if backend.reports.Load() != tt.want {
 				t.Fatalf("reports = %d, want %d", backend.reports.Load(), tt.want)
@@ -111,6 +137,23 @@ func TestWorkflowHistoryCacheCadence(t *testing.T) {
 			}
 			if backend.cycles.Load() != wantCycles {
 				t.Fatalf("cycle reports = %d, want %d", backend.cycles.Load(), wantCycles)
+			}
+			if backend.shipped.Load() != wantCycles {
+				t.Fatalf("shipped reads = %d, want %d", backend.shipped.Load(), wantCycles)
+			}
+			if len(firstShipped.Shipped) != 1 || firstShipped.Shipped[0].Issue.Title != "Completed DONE-1" || firstShipped.Shipped[0].Issue.URL != "https://example.com/issues/1" || firstShipped.Shipped[0].Issue.PullRequest.Number != 42 || firstShipped.Shipped[0].FinalState != "Done" || !firstShipped.Shipped[0].CompletedAt.Equal(base.Add(-time.Hour)) {
+				t.Fatalf("initial shipping projection = %+v", firstShipped.Shipped)
+			}
+			if tt.ledgerWrite && tt.want == 12 {
+				if len(shipped.Shipped) != 1 || shipped.Shipped[0].Issue.ID != "new" || shipped.Shipped[0].Issue.PullRequest.Number != 99 || !shipped.Shipped[0].CompletedAt.Equal(now) {
+					t.Fatalf("independent ledger write did not refresh: %+v", shipped.Shipped)
+				}
+			} else if tt.changed {
+				if len(shipped.Shipped) != 1 || shipped.Shipped[0].Issue.PullRequest.Number != 43 {
+					t.Fatalf("revised association did not refresh: %+v", shipped.Shipped)
+				}
+			} else if !reflect.DeepEqual(firstShipped.Shipped, shipped.Shipped) {
+				t.Fatalf("shipping projection changed: before=%+v after=%+v", firstShipped.Shipped, shipped.Shipped)
 			}
 			if !firstCycle.Available || !cycle.Available || firstCycle.AverageSeconds != 42 || cycle.AverageSeconds != backend.revision.Load()+42 || len(cycle.Issues) != 1 || cycle.Issues[0].DurationSeconds != 60 || cycle.Issues[0].Sessions != 2 || len(cycle.Buckets) != 1 || cycle.Buckets[0].Count != 1 {
 				t.Fatalf("cycle projection changed: first=%+v current=%+v", firstCycle, cycle)
@@ -152,14 +195,14 @@ func TestWorkflowHistoryConcurrentClients(t *testing.T) {
 		synctest.Wait()
 		close(release)
 		wg.Wait()
-		if backend.reports.Load() != 6 || backend.evidence.Load() != 1 || backend.cycles.Load() != 1 {
-			t.Fatalf("queries: reports=%d evidence=%d cycles=%d", backend.reports.Load(), backend.evidence.Load(), backend.cycles.Load())
+		if backend.reports.Load() != 6 || backend.evidence.Load() != 1 || backend.cycles.Load() != 1 || backend.shipped.Load() != 1 {
+			t.Fatalf("queries: reports=%d evidence=%d cycles=%d shipped=%d", backend.reports.Load(), backend.evidence.Load(), backend.cycles.Load(), backend.shipped.Load())
 		}
 	})
 }
 
 func TestWorkflowHistoryCacheFailureAndConcurrentMutation(t *testing.T) {
-	for _, mode := range []string{"report failure", "cycle failure", "revision failure", "mutation during load", "canceled load"} {
+	for _, mode := range []string{"report failure", "cycle failure", "shipped failure", "revision failure", "mutation during load", "canceled load"} {
 		t.Run(mode, func(t *testing.T) {
 			backend := &workflowHistoryTestStore{}
 			server := &Server{store: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
@@ -171,6 +214,8 @@ func TestWorkflowHistoryCacheFailureAndConcurrentMutation(t *testing.T) {
 				backend.reportError = true
 			case "cycle failure":
 				backend.cycleError = true
+			case "shipped failure":
+				backend.shippedError = true
 			case "revision failure":
 				backend.revisionError = true
 			case "mutation during load":
@@ -182,9 +227,23 @@ func TestWorkflowHistoryCacheFailureAndConcurrentMutation(t *testing.T) {
 			if mode == "cycle failure" && (!first.metrics.Available || first.cycleTime.Available || first.cycleTime.DegradedReason != "cycle-time query failed") {
 				t.Fatalf("cycle failure changed independent reports: %+v", first)
 			}
+			if mode == "shipped failure" && (!first.metrics.Available || !first.cycleTime.Available || first.shippedAvailable) {
+				t.Fatalf("shipped failure changed independent reports: %+v", first)
+			}
+			if (mode == "cycle failure" || mode == "report failure") && (!first.shippedAvailable || len(first.shipped) != 1) {
+				t.Fatalf("report failure discarded successful shipping: %+v", first)
+			}
+			if mode == "shipped failure" || mode == "revision failure" {
+				snapshot.Shipped = []telemetry.Completed{{Issue: telemetry.Issue{ID: "original"}}}
+				got := server.snapshotShippedCompletions(ctx, snapshot)
+				if !reflect.DeepEqual(got.Shipped, snapshot.Shipped) {
+					t.Fatalf("failed read replaced existing projection: %+v", got.Shipped)
+				}
+			}
 			before := backend.reports.Load()
 			backend.reportError = false
 			backend.cycleError = false
+			backend.shippedError = false
 			backend.revisionError = false
 			backend.onReport = nil
 			if !server.snapshotWorkflowMetrics(t.Context(), snapshot).Available {
@@ -192,6 +251,9 @@ func TestWorkflowHistoryCacheFailureAndConcurrentMutation(t *testing.T) {
 			}
 			if backend.reports.Load() != before+6 {
 				t.Fatal("invalid load was cached")
+			}
+			if got := server.snapshotShippedCompletions(t.Context(), snapshot); len(got.Shipped) != 1 || got.Shipped[0].Issue.ID != "completed" {
+				t.Fatalf("retry did not recover shipping: %+v", got.Shipped)
 			}
 		})
 	}
