@@ -409,7 +409,7 @@ func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue
 	}()
 	cmd := commandshell.Command(ctx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
-	cmd.Env = hookEnv(info, issue)
+	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)

@@ -261,7 +261,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	workflow := normalizeWorkflow(cfg.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget)
-	workflow.Config = withMappedNativeTracker(workflow.Config, deps.Scheduling, id)
+	workflow.Config = WithMappedNativeTracker(workflow.Config, deps.Scheduling, id)
 	if err := configureProjectPolicy(context.Background(), cfg.Project, &workflow, deps.Scheduling); err != nil {
 		return nil, projectDefinitionError{err: err}
 	}
@@ -1509,7 +1509,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(projectConfig.GlobalAgents, projectConfig.GlobalBudget)
-	workflow.Config = withMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
+	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
 	}
@@ -1757,11 +1757,11 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 	}, releaseBackend)}, nil
 }
 
-// withMappedNativeTracker makes a project that client.native_projects maps to
+// WithMappedNativeTracker makes a project that client.native_projects maps to
 // a Hub project use the Hub instead of the repository's GitHub tracker, so a
 // runner host can reuse a committed detent.yaml without a local override. Any
 // other tracker kind is an explicit local choice and is kept.
-func withMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
+func WithMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
 	source, ok := scheduling.(interface {
 		ConnectorForProject(string) (connector.Connector, bool)
 	})
@@ -1974,6 +1974,9 @@ func buildScheduleOwnership(
 	coordinationEndpoint := ""
 	if cfg.Tracker.Kind == workflowconfig.TrackerGitHub || cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
 		coordinationEndpoint = cfg.Tracker.Endpoint
+	}
+	if cfg.Tracker.Kind == workflowconfig.TrackerHubNative && cfg.ScheduleOwnership.Enabled && strings.TrimSpace(cfg.ScheduleOwnership.Repository) == "" {
+		return nil, nil, scheduleowner.Config{}, errors.New("native schedule ownership requires an explicit schedule_ownership.repository to opt into GitHub coordination")
 	}
 	ownership := cfg.ScheduleOwnership.Normalized(cfg.Tracker.Repository, coordinationEndpoint)
 	if !ownership.Enabled {

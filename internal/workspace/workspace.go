@@ -259,12 +259,13 @@ type Info struct {
 }
 
 type Hooks struct {
-	Shell        string
-	AfterCreate  string
-	BeforeRun    string
-	AfterRun     string
-	BeforeRemove string
-	Timeout      time.Duration
+	Shell             string
+	AfterCreate       string
+	BeforeRun         string
+	AfterRun          string
+	BeforeRemove      string
+	Timeout           time.Duration
+	StripGitHubTokens bool
 }
 
 type LocalGitOptions struct {
@@ -1939,7 +1940,7 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 
 	cmd := commandshell.Command(hookCtx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
-	cmd.Env = hookEnv(info, issue)
+	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 
 	l.logger.Info(
@@ -2278,13 +2279,29 @@ func pathWithin(root string, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
-func hookEnv(info Info, issue Issue) []string {
-	env := append([]string{}, os.Environ()...)
+func hookEnv(info Info, issue Issue, stripGitHubTokens bool) []string {
+	env := make([]string, 0, len(os.Environ())+len(workspaceEnvironmentKeys))
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if stripGitHubTokens && isGitHubTokenKey(key) {
+			continue
+		}
+		env = append(env, entry)
+	}
 	variables := EnvironmentVariables(info, issue)
 	for _, key := range workspaceEnvironmentKeys {
 		env = append(env, key+"="+variables[key])
 	}
 	return env
+}
+
+func isGitHubTokenKey(key string) bool {
+	switch key {
+	case "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN":
+		return true
+	default:
+		return false
+	}
 }
 
 var workspaceEnvironmentKeys = [...]string{

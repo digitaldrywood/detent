@@ -34,7 +34,7 @@ func EffectivePolicyConfig(cfg globalconfig.Project, workflow workflowconfig.Con
 // A local tracker choice remains authoritative even for a mapped project.
 func MapNativeTracker(workflow workflowconfig.Config, mapped bool) workflowconfig.Config {
 	if mapped && (workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal) {
-		workflow.Tracker.Kind = workflowconfig.TrackerHubNative
+		workflow = workflow.ForNativeTracker()
 	}
 	return workflow
 }
