@@ -1121,7 +1121,7 @@ func (c *Connector) fetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 			}
 		}
 		if includeDependencies {
-			if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			if err := c.hydrateIssueStatesWithEvidence(ctx, issues); err != nil {
 				return nil, err
 			}
 		}
@@ -1152,7 +1152,7 @@ func (c *Connector) fetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 			}
 		}
 		if includeDependencies {
-			if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
+			if err := c.hydrateIssueStatesWithEvidence(ctx, issues); err != nil {
 				return nil, err
 			}
 		}
@@ -1186,9 +1186,11 @@ func (c *Connector) fetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 		}
 		if ok {
 			if includeDependencies {
-				if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
+				current := []connector.Issue{issue}
+				if err := c.hydrateIssueStatesWithEvidence(ctx, current); err != nil {
 					return nil, err
 				}
+				issue = current[0]
 			}
 			issues = append(issues, issue)
 		}
@@ -1223,9 +1225,11 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 				issues = append(issues, issue)
 				continue
 			}
-			if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
+			current := []connector.Issue{issue}
+			if err := c.hydrateIssueStatesWithEvidence(ctx, current); err != nil {
 				return nil, err
 			}
+			issue = current[0]
 			issues = append(issues, issue)
 		}
 	}

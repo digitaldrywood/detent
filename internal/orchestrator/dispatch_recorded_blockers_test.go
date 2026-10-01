@@ -209,6 +209,7 @@ func TestQueuedDispatchUsesCurrentWorkpad(t *testing.T) {
 			issue.Identifier = "digitaldrywood/detent#2470"
 			fresh := cloneIssue(issue)
 			fresh.WorkpadSignal = nil
+			fresh.CommentsComplete = true
 			tracker := &queuedCurrentWorkpadConnector{queuedRecordedBlockerConnector: &queuedRecordedBlockerConnector{
 				blockerEvidenceTestConnector: &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{hydratedIssues: []connector.Issue{issue}}},
 				fresh:                        fresh,
@@ -217,6 +218,7 @@ func TestQueuedDispatchUsesCurrentWorkpad(t *testing.T) {
 				return connector.IssueComment{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: " + status + "\nblockers: []\nhuman_action: " + action + "\n```"}
 			}
 			tracker.comments = []connector.IssueComment{comment("in_progress", "null")}
+			tracker.fresh.Comments = append([]connector.IssueComment(nil), tracker.comments...)
 			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			held, ok, err := gate.TryAcquire(t.Context(), scheduler.ProjectCandidate{ID: "holder"}, scheduler.SlotRequest{State: "Todo"}, now)
 			if err != nil || !ok {
