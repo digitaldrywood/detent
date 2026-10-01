@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -72,10 +73,23 @@ func (d *database) recordConversationUsage(ctx context.Context, tx *sql.Tx, usag
 		pricedID, cost = priceID, chatUsageCost(price, tokens)
 		saving = float64(tokens.CachedInputTokens) * max(0, price.Input-price.CachedInput) / tokensPerPriceUnit
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO conversation_usage(organization_id,project_id,conversation_id,turn_id,provider,model,occurred_at,input,cached_input,output,reasoning_output,outcome,price_id,cost_usd,cache_savings_usd)
+	inserted, err := tx.ExecContext(ctx, `INSERT INTO conversation_usage(organization_id,project_id,conversation_id,turn_id,provider,model,occurred_at,input,cached_input,output,reasoning_output,outcome,price_id,cost_usd,cache_savings_usd)
  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,turn_id) DO NOTHING`, usage.OrganizationID, usage.ProjectID, usage.ConversationID, usage.TurnID, usage.Provider, usage.Model, at.UnixMicro(), tokens.InputTokens, tokens.CachedInputTokens, tokens.OutputTokens, tokens.ReasoningOutputTokens, usage.Outcome, pricedID, cost, saving)
 	if err != nil {
 		return fmt.Errorf("record conversation usage: %w", err)
+	}
+	count, err := inserted.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 1 && d.aiCreditMode != "" && usage.Provider == "openai" && cost != nil {
+		micros := int64(math.Ceil(cost.(float64) * 1000000))
+		if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,?,?,?,'usage',?)", usage.OrganizationID, d.aiCreditMode, "usage:"+usage.TurnID, -micros, at.UnixMicro()); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE ai_credit_accounts SET balance_micros=balance_micros-? WHERE organization_id=? AND mode=?", micros, usage.OrganizationID, d.aiCreditMode); err != nil {
+			return err
+		}
 	}
 	return nil
 }

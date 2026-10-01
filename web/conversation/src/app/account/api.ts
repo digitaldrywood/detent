@@ -417,6 +417,12 @@ export function makeAccountApi(options: AccountApiOptions) {
         price: input.price,
         idempotency_key: input.key,
       }),
+    creditCheckout: (input: { price: string; key: string }) =>
+      send(CheckoutResponse, "POST", `${base}/billing/credits/checkout`, {
+        price: input.price, idempotency_key: input.key,
+      }),
+    creditAutoFund: (input: { enabled: boolean; threshold_cents: number; price: string }) =>
+      send(Empty, "PUT", `${base}/billing/credits/auto-fund`, input),
     portal: (input: { key: string }) =>
       send(CheckoutResponse, "POST", `${base}/billing/portal`, { idempotency_key: input.key }),
   };

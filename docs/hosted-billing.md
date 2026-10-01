@@ -200,6 +200,54 @@ runner, provider-budget, or permission controls. Omitting billing configuration
 stops billing activity; previously verified local access still expires at its
 stored deadline rather than being extended indefinitely.
 
+## AI credits and auto-fund
+
+AI credits are optional on top of hosted subscriptions. No sponsored allowance is
+included. Add operator-created, active, one-time USD prices to the tenant's
+`billing.credit_packs` (or `allocation.billing.credit_packs` for newly provisioned
+tenants):
+
+```yaml
+credit_packs:
+  - price_id: price_ai_credit_example
+    label: AI credit pack
+    usd_cents: 500
+```
+
+The example sells $5 of AI credits. The configured amount must equal the Stripe
+price's unit amount; pack amounts are never selected by Detent. A pack's amount
+is immutable within its Stripe mode. Create a new price to change an amount.
+Test and live balances are separate.
+
+Owners buy packs in billing settings. Checkout saves the payment method for
+optional future auto-fund; returning from Checkout does not add credits. Verified
+Stripe events confirm payment, with the event and purchase identities preventing
+duplicate crediting. The shared entry forwards event identifiers through its
+existing delivery worker; the owning tenant reads payment details from Stripe.
+Enable `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+`payment_intent.succeeded`, `payment_intent.payment_failed`, and
+`payment_intent.canceled` on the existing webhook endpoint. Stripe credentials
+must permit reading events/prices/payment intents and creating payment intents.
+
+The existing billing worker checks enabled auto-fund settings. Owners choose a
+pack and a positive USD threshold smaller than that pack. Auto-fund uses the
+saved credit-purchase method or the customer's default invoice payment method.
+It charges only below the threshold, retaining a single durable top-up and
+Stripe idempotency key per organization/mode until the outcome is known.
+Declines or authentication failures disable auto-fund; owners see the failure
+on billing and in the exhausted conversation state. Uncertain payments retain
+the same purchase identity, and are never retried after the Stripe idempotency
+window can have expired; unresolved payments need billing review.
+
+Priced operator-funded OpenAI chat usage debits credits atomically with its usage
+record, once per turn. Purchased credits do not expire at period boundaries.
+Chat can use a positive purchased balance even on Free; no sponsored usage is
+introduced. When credits are exhausted, new chat turns stop and direct the user
+to an owner or billing settings. In-flight usage is still recorded, including
+any balance overrun, before the next turn is refused. Customer-owned provider
+usage remains separate. Self-hosted hubs and tenants without credit packs keep
+their existing behavior.
+
 ## Shared-site billing configuration
 
 Implemented for the shared entry (`detent cloud serve`) and the tenants it

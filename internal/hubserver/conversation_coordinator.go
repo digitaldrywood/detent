@@ -468,6 +468,29 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		if refusal != nil && !errors.As(refusal, &limit) {
 			return refusal
 		}
+		if c.service.server.hasLunaCoordinator() && c.service.server.database.aiCreditMode != "" {
+			d := c.service.server.database
+			var balance int64
+			var failure string
+			if err := tx.QueryRowContext(ctx, "SELECT balance_micros,failure FROM ai_credit_accounts WHERE organization_id=? AND mode=?", record.OrganizationID, d.aiCreditMode).Scan(&balance, &failure); err != nil {
+				return err
+			}
+			refusal = nil
+			if balance <= 0 {
+				var owner bool
+				if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_members WHERE principal_id=? AND active=1 AND role='owner')", pending[len(pending)-1].Actor.PrincipalID).Scan(&owner); err != nil {
+					return err
+				}
+				message := "AI credits are exhausted. Ask an organization owner to buy credits in billing settings."
+				if owner {
+					message = "AI credits are exhausted. Buy credits in billing settings."
+					if failure != "" {
+						message += " Auto-fund is disabled: " + failure + "."
+					}
+				}
+				refusal = errors.New(message)
+			}
+		}
 		if record.ProviderThreadID == "" {
 			transcript, err = c.transcript(ctx, tx, record.ID, pending[0].Seq)
 			if err != nil {

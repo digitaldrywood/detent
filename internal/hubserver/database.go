@@ -26,6 +26,7 @@ type database struct {
 	hostedOrganization tracker.OrganizationID
 	hostedPlans        *HostedPlansConfig
 	hostedBilling      bool
+	aiCreditMode       string
 	// workspaceRetainAfterRun is workspaces.retain_after_run, read by the
 	// claim gate: inside that window an attempt's worktree still exists on
 	// the runner that produced it, and only that runner may serve a

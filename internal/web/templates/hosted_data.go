@@ -16,6 +16,7 @@ type HostedPageData struct {
 	BillingCanPurchase   bool
 	BillingStatus        string
 	BillingMessage       string
+	AICredits            *HostedAICredits
 	ChatUsage            string
 	ChatUsagePeriod      string
 	BillingCheckedAt     string
@@ -47,6 +48,19 @@ type HostedPageData struct {
 	Organizations        []HostedOrganizationChoice
 	Projects             []HostedProjectChoice
 	Members              []HostedMember
+}
+
+type HostedAICredits struct {
+	Returned    bool
+	Balance     string
+	Enabled     bool
+	Threshold   string
+	PriceID     string
+	Failure     string
+	InFlight    bool
+	CanAutoFund bool
+	Packs       []HostedBillingPrice
+	History     []HostedBillingAudit
 }
 
 type HostedBillingPrice struct {
