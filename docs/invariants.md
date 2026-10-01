@@ -853,8 +853,10 @@ timing-only outside-refresh cohorts. Completed observations carry attempt count,
 timed count, elapsed sum and maximum in nanoseconds; absent observations remain
 unknown and do not establish complete coverage of uninstrumented work.
 
-`http_transport` measures `Do` through response-body consumption plus the existing
-deferred drain/close duration, excluding intervening decoding and auth-retry work.
+`http_transport` sums the actual `Do`, body-read/counting and existing deferred
+drain/close segments. Response logging, progress callbacks, header accounting,
+decoding and recursive auth retries between those segments are excluded. The
+existing request and cleanup order is unchanged.
 It includes any connection-pool wait, DNS/TLS and server time inside `Do`, without
 separately measuring those components or claiming pure network time.
 `token_resolution_inclusive` measures the existing request-entry `Token` call,

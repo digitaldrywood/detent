@@ -98,11 +98,12 @@ outside-refresh cohort. No per-request intervals or rows are retained.
 
 | Boundary | Observed entry paths | Meaning |
 | --- | --- | --- |
-| `http_transport` | REST/RESTPage, RESTText/RESTTextWithSize, batch REST probe, GraphQL/GraphQLWithType, installation-token mint | `Do` through body consumption, plus existing deferred drain/close duration. Includes transport and body/close failures, 304 and canceled attempts reaching `Do`. |
+| `http_transport` | REST/RESTPage, RESTText/RESTTextWithSize, batch REST probe, GraphQL/GraphQLWithType, installation-token mint | Sum of the actual `Do`, body-read/counting and existing deferred drain/close segments. Includes transport and body/close failures, 304 and canceled attempts reaching `Do`. |
 | `token_resolution_inclusive` | Existing `Token` invocation in regular REST, REST text/size, batch REST probe and GraphQL request entries, including auth retries | Inclusive resolution with resolver locks/fallback and any nested installation-token HTTP. A cached token creates no HTTP attempt. |
 
-The HTTP clock excludes decoding/auth retries between body consumption and the
-existing deferred close, preserving resource cleanup and request sequencing.
+The HTTP clock excludes response logging, progress callbacks, header accounting,
+decoding and recursive auth retries between its measured segments. Existing
+resource cleanup and request sequencing stay unchanged.
 Bounded text reads time only the consumption/close they actually perform;
 RESTTextWithSize includes its full-body counting pass. HTTP outcome is the
 existing fixed HTTP status classification (`200`, `304`, `429`, `error`), with

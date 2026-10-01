@@ -212,6 +212,7 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 		}
 	}()
 
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(resp.Body)
 	finishHTTP.BodyConsumed(err)
 	if err != nil {
