@@ -874,9 +874,10 @@ func TestLegacyHumanClearanceSurvivesWorkpadOverwrite(t *testing.T) {
 			if err := db.(WorkflowMetricsMetadataUpdater).UpdateWorkflowPhaseEventMetadata(t.Context(), released.ID, string(raw)); err != nil {
 				t.Fatal(err)
 			}
-			if persistence == "failed" {
+			switch persistence {
+			case "failed":
 				host.workflowMetrics = failingHumanClearanceMetadataWriter{Store: db}
-			} else if persistence == "unsupported" {
+			case "unsupported":
 				host.workflowMetrics = struct{ store.Store }{db}
 			}
 			state := newState(host.cfg)
