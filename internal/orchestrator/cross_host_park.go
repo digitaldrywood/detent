@@ -293,7 +293,11 @@ func (o *Orchestrator) recoveryParkAcknowledged(ctx context.Context, event store
 		if err := json.Unmarshal([]byte(event.MetadataJSON), &raw); err != nil || raw == nil {
 			return false
 		}
-		raw["blocked_recovery"], _ = json.Marshal(park)
+		encodedPark, err := json.Marshal(park)
+		if err != nil {
+			return false
+		}
+		raw["blocked_recovery"] = encodedPark
 		encoded, err := json.Marshal(raw)
 		if err != nil {
 			return false
