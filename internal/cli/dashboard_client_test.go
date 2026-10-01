@@ -18,6 +18,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -76,6 +77,31 @@ func TestDashboardReadClientOperatorToolFailures(t *testing.T) {
 			t.Fatalf("error = %v, requests = %d", err, requests.Load())
 		}
 	})
+
+	for _, test := range []struct {
+		code   string
+		status int
+		want   error
+	}{
+		{"access_denied", http.StatusForbidden, operatortool.ErrAccessDenied},
+		{"invalid_arguments", http.StatusBadRequest, operatortool.ErrInvalidArguments},
+		{"idempotency_conflict", http.StatusConflict, mutation.ErrConflict},
+		{"idempotency_in_progress", http.StatusConflict, mutation.ErrUncertain},
+	} {
+		t.Run(test.code, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(test.status)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": test.code, "message": "raw-service-secret-sentinel"}})
+			}))
+			t.Cleanup(server.Close)
+			_, err := dashboardClientForServer(t, server, "read-token").Execute(t.Context(), operatortool.Call{Name: operatortool.SetPriority, Arguments: json.RawMessage(`{"project_id":"detent","request_id":"retry-1","identifier":"#3339","priority":"high"}`)})
+			var problem *DashboardResponseError
+			if !errors.Is(err, test.want) || !errors.As(err, &problem) || problem.StatusCode != test.status {
+				t.Fatalf("bridge lost safe category: %#v", err)
+			}
+		})
+	}
 
 	t.Run("daemon unavailable", func(t *testing.T) {
 		t.Parallel()

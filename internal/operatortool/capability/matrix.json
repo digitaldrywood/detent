@@ -728,7 +728,7 @@
       "tool": {"set": "existing_reads", "name": "board_state", "arguments": "definition(BoardState, \"Read live board items, lanes, priorities, blockers, and active run identity. Use this before answering board questions or proposing item actions.\", limitedSchema)", "result": "board_state existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go",
       "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
@@ -755,7 +755,7 @@
       "tool": {"set": "existing_reads", "name": "explain_item", "arguments": "definition(ExplainItem, \"Explain an issue's current lane, latest transition reason, eligibility, active or latest attempt, sessions, pull request, required gate, freshness, and evidence from the versioned issue explanation read model.\", `{\"type\":\"object\",\"required\":[\"project_id\",\"reference\"],\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1},\"reference\":{\"type\":\"string\",\"minLength\":1}},\"additionalProperties\":false}`)", "result": "explain_item existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go",
       "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
@@ -782,7 +782,7 @@
       "tool": {"set": "existing_reads", "name": "fleet_health", "arguments": "definition(FleetHealth, \"Read live fleet health, capacity outages, failure breakers, rate limits, refresh state, and running counts.\", `{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}`)", "result": "fleet_health existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3343",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go",
       "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
@@ -809,7 +809,7 @@
       "tool": {"set": "existing_reads", "name": "recent_activity", "arguments": "definition(RecentActivity, \"Read recent events and completed work retained in the current live telemetry snapshot, including merge timestamps. This is live-only activity, not the durable issue activity stream.\", activitySchema)", "result": "recent_activity existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go",
       "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
@@ -836,7 +836,7 @@
       "tool": {"set": "existing_reads", "name": "telemetry_usage", "arguments": "definition(TelemetryUsage, \"Read live token, spend, throughput, and per-project usage telemetry.\", `{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\"}},\"additionalProperties\":false}`)", "result": "telemetry_usage existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3345",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go",
       "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
@@ -1428,8 +1428,8 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3339",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions."
+      "coverage": "internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.",
+      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations."
     },
     {
       "id": "frontend.web_conversation_src_app_account_idempotency_ts.local_ui",
@@ -1640,8 +1640,8 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3339",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions."
+      "coverage": "internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.",
+      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations."
     },
     {
       "id": "frontend.web_conversation_src_app_fleet_RunnersSection_tsx.navigation_results",
@@ -1695,8 +1695,8 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3339",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions."
+      "coverage": "internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.",
+      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations."
     },
     {
       "id": "frontend.web_conversation_src_app_work_lib_workHttp_ts.application",
@@ -1753,8 +1753,8 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3339",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions."
+      "coverage": "internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.",
+      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations."
     },
     {
       "id": "frontend.web_conversation_src_components_ChatMarkdown_tsx.navigation_results",
@@ -2001,8 +2001,8 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3339",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions."
+      "coverage": "internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.",
+      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations."
     },
     {
       "id": "frontend.web_conversation_src_runtime_rpc_http_ts.http_adapter",
@@ -2030,8 +2030,8 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3339",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions."
+      "coverage": "internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.",
+      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations."
     },
     {
       "id": "frontend.web_conversation_src_runtime_rpc_sse_ts.http_adapter",
@@ -2057,8 +2057,8 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3339",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions."
+      "coverage": "internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.",
+      "decision": "Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations."
     },
     {
       "id": "frontend.web_conversation_src_runtime_rpc_sse_ts.transport_frames",

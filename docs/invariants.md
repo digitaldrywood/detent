@@ -17,6 +17,19 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+MCP transport parity (#3339) uses one permission-filtered, paginated typed
+registry with toolset metadata. The `2026-07-28` stateless protocol validates
+per-request metadata and mirrored HTTP headers; older handshakes retain their
+bound sessions. Discovery cursors and client metadata confer no authority.
+Modern HTTP binds the existing application approval conversation to authenticated
+principal/organization/credential/session identity, independently of the POST's
+lifetime; browser approval retains the application resolver for current authority.
+No protocol session, confirmation argument, persistence writer or tracker lane
+writer is introduced. `TestProtocolApplicationParity`,
+`TestModernHTTPMetadataValidation`, `TestCatalogCursorCurrentAuthority`, and
+modern cases in `TestMCPActionApprovalBoundary` cover transport parity, forged
+metadata, direct-call ownership, revoked authority and approval after a POST ends.
+
 MCP mutations carry content-free, trusted audit/correlation context (#3338).
 Dashboard commands reuse durable operator events for retry receipts; native and
 hosted commands reuse `native_commands`, with existing billing intents/provider

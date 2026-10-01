@@ -51,7 +51,7 @@ principals or organization authority.
 Self-hosted `/mcp` requires an existing credential with read authority; write
 and admin credentials retain their existing hierarchy. The dashboard now exposes
 the four shared chat application commands where available (#3337). Scoped keys are supported and are authenticated again at execution.
-An optional `X-Detent-Organization` header must match `self-hosted`. HTTP sessions
+An optional `X-Detent-Organization` header must match `self-hosted`. Legacy HTTP sessions
 bind the full identity tuple; each HTTP request carries its own authority through
 dispatch. The stdio client delegates both discovery and calls to the daemon's
 application bridge, including legacy daemon-authorized loopback reads. It never
@@ -253,3 +253,74 @@ revision after an uncertain response can return a safe payload conflict; inspect
 the resource instead of repeating the effect with a fresh key. Billing replay
 also binds the configured provider account/mode and return destination, so a
 configuration change cannot replay a purchase from another billing binding.
+
+## Generic client setup
+
+Use any MCP client with either a stdio command (`detent mcp`) or the deployed
+organization's HTTPS MCP endpoint. Authoritative wire references are the
+[2026-07-28 announcement](https://blog.modelcontextprotocol.io/posts/2026-07-28/),
+[current specification](https://modelcontextprotocol.io/specification/2026-07-28),
+[version compatibility](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning),
+[discovery](https://modelcontextprotocol.io/specification/2026-07-28/server/discover),
+and [HTTP binding](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
+
+1. Select an existing application identity and least-privilege credential with
+   read authority, adding write authority and project grants for intended commands.
+   Supply it through the stdio environment/config or each remote HTTP request.
+   Self-hosted authority is `self-hosted`; if `X-Detent-Organization` is supplied,
+   it must match. Hosted clients select an authorized organization through the
+   existing organization-bound URL described above. Neither a tool argument nor
+   client metadata can select an organization, role, scope, grant or principal.
+2. Modern clients may call `server/discover` first and then send independent
+   requests. Required `params._meta` keys are
+   `io.modelcontextprotocol/protocolVersion: "2026-07-28"` and
+   `io.modelcontextprotocol/clientCapabilities: {}`. Client info is optional display
+   metadata. HTTP also requires matching `MCP-Protocol-Version` and `Mcp-Method`,
+   and `Mcp-Name` for tool calls; encoded names follow the standard Base64 sentinel
+   format. Unknown revisions, malformed metadata and mismatched headers produce
+   bounded protocol errors. Older revisions use their original initialize/ready
+   handshake and legacy HTTP sessions. No modern MCP session is created.
+3. Load `tools/list` pages by following the returned opaque `nextCursor` until
+   absent. Each page contains at most five tools; group definitions with
+   `_meta["detent/toolset"]` (`board`, `fleet`, `telemetry`, `actions`, `connection`).
+   A changed catalog/identity invalidates its cursor: restart discovery. Permissions
+   are resolved on every page and invocation. Loading a page is not required for
+   a direct call, and loading one never authorizes that call. Only available typed
+   application tools are advertised; parent #3259's pending operations stay pending.
+4. Call `connection_info` when available to get the application connection ID,
+   current mode and dashboard setup URL. Stdio uses the authenticated bridge's
+   server-issued handle; legacy HTTP uses its bound connection; modern HTTP binds
+   the existing application approval conversation to the authenticated identity
+   tuple. That application handle persists across POSTs and reconnects with the
+   same credential/organization. Changing a credential or organization cannot
+   retrieve another identity's pending actions. It is not an MCP protocol session.
+5. Reads and ordinary non-destructive writes execute without a Detent confirmation.
+   Material/destructive actions return an exact preview, `action_id`, approval URL
+   and `result_tool`. Open the URL in an authenticated operator browser and confirm
+   or reject the preview, then call `action_result` for the same action ID. This is
+   portable across clients and needs no client-specific approval integration.
+   Metadata, annotations, repeated calls and MCP input responses cannot approve.
+6. YOLO requires the operator to explicitly enable it on the authenticated dashboard
+   setup page for that application connection. It suppresses confirmation only;
+   current authorization, ownership, exact targets, audits and retries still apply.
+   It cannot be set in tool arguments, initialize/request metadata or mode headers.
+   Modern HTTP callers using the same credential/organization share this existing
+   application mode; use separate existing credentials to separate authority.
+7. Mutations use a bounded explicit `request_id` business retry key, independent
+   of JSON-RPC IDs. Reuse it only for identical arguments/operation/resource.
+   The shared application command returns the receipt or a safe conflict/uncertain
+   result; the MCP transport neither writes persistence nor decides business replay.
+
+Remote connections require a trusted HTTPS endpoint and existing application
+credentials. Terminate TLS at Detent or a trusted proxy configured with the public
+application URL, preserve the intended origin, and redact credentials in logs.
+Use localhost HTTP only for isolated local access; keep the daemon's established
+listener and authorization policy. Untrusted forwarding headers cannot select a
+public origin or principal. Cancellation is per-request: stdio supports
+`notifications/cancelled`, and an HTTP disconnect cancels that request. Requests
+and arguments are bounded, result objects are capped at 256 KiB, and encoded
+response frames at 320 KiB on both transports. Supported optional capabilities
+are advertised accurately: this server exposes tools, not subscriptions, sampling,
+roots, tasks, logging, caching or MRTR elicitation. Operator approval uses the
+existing dashboard flow; no new revocation/recovery mechanism or lane writer is
+introduced.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -122,6 +123,26 @@ func (h *HTTPHandler) servePost(writer http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	meta, problem := metadata(message)
+	if meta.Modern || req.Header.Get(httpProtocolHeader) == ProtocolVersion || message.Method == "server/discover" {
+		if problem == nil && !meta.Modern {
+			problem = &rpcError{Code: codeInvalidParams, Message: "Protocol metadata is required"}
+		}
+		if problem != nil {
+			writeHTTPResponse(writer, http.StatusBadRequest, marshalHTTPResponse(response{JSONRPC: "2.0", ID: responseID(message.ID), Error: problem}))
+			return
+		}
+		if problem = validateModernHeaders(req, message, meta); problem != nil {
+			writeHTTPResponse(writer, http.StatusBadRequest, marshalHTTPResponse(response{JSONRPC: "2.0", ID: responseID(message.ID), Error: problem}))
+			return
+		}
+		h.serveModern(writer, req, message, body)
+		return
+	}
+	if version := req.Header.Get(httpProtocolHeader); version != "" && negotiateVersion(version) != version {
+		writeHTTPResponse(writer, http.StatusBadRequest, marshalHTTPResponse(response{JSONRPC: "2.0", ID: responseID(message.ID), Error: &rpcError{Code: codeUnsupportedVersion, Message: "Unsupported protocol version", Data: map[string]any{"supported": supportedVersions()}}}))
+		return
+	}
 	principal := h.requestPrincipal(req)
 	sessionID := strings.TrimSpace(req.Header.Get(httpSessionHeader))
 	if sessionID == "" {
@@ -339,12 +360,15 @@ func stopHTTPSessions(sessions []*httpProtocolSession) {
 var errHTTPSessionClosed = errors.New("MCP HTTP session is closed")
 
 type httpProtocolSession struct {
-	id        string
-	principal operatortool.Identity
-	done      <-chan struct{}
-	cancel    context.CancelFunc
-	protocol  *session
-	router    *httpResponseRouter
+	id           string
+	connectionID string
+	modern       bool
+	principal    operatortool.Identity
+	lifetime     context.Context
+	done         <-chan struct{}
+	cancel       context.CancelFunc
+	protocol     *session
+	router       *httpResponseRouter
 
 	mu       sync.Mutex
 	closing  bool
@@ -369,7 +393,7 @@ func newHTTPProtocolSession(id string, principal operatortool.Identity, executor
 	if protocol.version == "" {
 		protocol.version = "dev"
 	}
-	result := &httpProtocolSession{id: id, principal: principal, done: ctx.Done(), cancel: cancel, protocol: protocol, router: router}
+	result := &httpProtocolSession{id: id, principal: principal, lifetime: ctx, done: ctx.Done(), cancel: cancel, protocol: protocol, router: router}
 	result.touch(now)
 	return result
 }
@@ -428,6 +452,12 @@ func (s *httpProtocolSession) sessionContext(request context.Context) context.Co
 	connection := operatortool.CurrentConnection(request)
 	resolve := connection.Resolve
 	connection.ID = s.id
+	if s.modern {
+		connection.ID = s.connectionID
+		// Approval outlives this POST. Retain the application's current-authority
+		// resolver, not the transient protocol request's closed/idle predicate.
+		return operatortool.WithConnection(request, connection)
+	}
 	connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
 		s.mu.Lock()
 		closing := s.closing
@@ -592,7 +622,17 @@ func sameOriginRequest(req *http.Request) bool {
 		return true
 	}
 	parsed, err := url.Parse(origin)
-	return err == nil && parsed != nil && parsed.Host != "" && strings.EqualFold(parsed.Host, req.Host)
+	scheme := "http"
+	host := req.Host
+	if req.TLS != nil {
+		scheme = "https"
+	}
+	// The application may supply its configured public origin behind TLS
+	// termination. Never infer trust from caller-supplied forwarding headers.
+	if public, err := url.Parse(operatortool.CurrentConnection(req.Context()).DashboardURL); err == nil && public != nil && public.Host != "" && (public.Scheme == "https" || public.Scheme == "http") {
+		scheme, host = public.Scheme, public.Host
+	}
+	return err == nil && parsed != nil && parsed.User == nil && parsed.Opaque == "" && parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == "" && parsed.Scheme == scheme && parsed.Host != "" && strings.EqualFold(parsed.Host, host)
 }
 
 func responseHasError(frame []byte) bool {
@@ -652,4 +692,110 @@ func (c httpSessionContext) Err() error {
 	default:
 		return nil
 	}
+}
+
+// A modern POST has request-scoped cancellation/routing only. Its application
+// connection belongs to the authenticated credential, never an MCP session ID
+// or client-supplied metadata. Existing chat approval/mode ownership applies.
+func (h *HTTPHandler) serveModern(writer http.ResponseWriter, req *http.Request, message request, body []byte) {
+	principal := h.requestPrincipal(req)
+	if !principal.Valid() {
+		writeHTTPTransportError(writer, http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		return
+	}
+	id, err := newHTTPSessionID()
+	if err != nil {
+		writeHTTPTransportError(writer, http.StatusServiceUnavailable, "MCP request could not be started")
+		return
+	}
+	current := operatortool.CurrentConnection(req.Context())
+	applicationID := current.ID
+	if applicationID == "" {
+		raw, _ := json.Marshal(principal)
+		digest := sha256.Sum256(raw)
+		applicationID = "mcp-" + base64.RawURLEncoding.EncodeToString(digest[:])
+	}
+	requestSession := newHTTPProtocolSession(id, principal, h.executor, h.version, h.now())
+	requestSession.modern = true
+	requestSession.connectionID = applicationID
+	if !h.addSession(requestSession) {
+		requestSession.stop()
+		requestSession.wait()
+		writeHTTPTransportError(writer, http.StatusServiceUnavailable, "MCP request capacity is unavailable")
+		return
+	}
+	defer func() { h.removeSession(id, requestSession); requestSession.stop(); requestSession.wait() }()
+	dispatchContext, cancel := context.WithCancel(req.Context())
+	stop := context.AfterFunc(requestSession.lifetime, cancel)
+	defer func() { stop(); cancel() }()
+	frame, notification, err := requestSession.dispatch(dispatchContext, message, body)
+	if err != nil {
+		writeHTTPTransportError(writer, http.StatusServiceUnavailable, "MCP request could not be completed")
+		return
+	}
+	if notification {
+		writer.WriteHeader(http.StatusAccepted)
+		return
+	}
+	status := http.StatusOK
+	var result response
+	if json.Unmarshal(frame, &result) == nil && result.Error != nil {
+		switch result.Error.Code {
+		case codeMethodNotFound:
+			status = http.StatusNotFound
+		case codeInvalidParams, codeUnsupportedVersion, codeHeaderMismatch:
+			status = http.StatusBadRequest
+		}
+	}
+	writeHTTPResponse(writer, status, frame)
+}
+
+func validateModernHeaders(req *http.Request, message request, meta requestMetadata) *rpcError {
+	// Notifications have no required request headers in the modern core.
+	if len(message.ID) == 0 {
+		return nil
+	}
+	mismatch := func() *rpcError {
+		return &rpcError{Code: codeHeaderMismatch, Message: "MCP request headers are missing or do not match the body"}
+	}
+	if req.Header.Get(httpProtocolHeader) != meta.Version || req.Header.Get("Mcp-Method") != message.Method {
+		return mismatch()
+	}
+	if message.Method == "tools/call" || message.Method == "resources/read" || message.Method == "prompts/get" {
+		var params struct {
+			Name string `json:"name"`
+			URI  string `json:"uri"`
+		}
+		if decodeObject(message.Params, &params, false) != nil {
+			return mismatch()
+		}
+		name := params.Name
+		if message.Method == "resources/read" {
+			name = params.URI
+		}
+		header, ok := decodeNameHeader(req.Header.Get("Mcp-Name"))
+		if !ok || header == "" || header != name {
+			return mismatch()
+		}
+	}
+	return nil
+}
+
+func decodeNameHeader(value string) (string, bool) {
+	if len(value) > 1024 {
+		return "", false
+	}
+	if strings.HasPrefix(value, "=?base64?") && strings.HasSuffix(value, "?=") {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(value, "=?base64?"), "?="))
+		return string(decoded), err == nil
+	}
+	if strings.TrimSpace(value) != value {
+		return "", false
+	}
+	for _, c := range value {
+		if c < 0x20 || c > 0x7e {
+			return "", false
+		}
+	}
+	return value, true
 }

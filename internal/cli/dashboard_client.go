@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -60,6 +61,26 @@ func (e *DashboardResponseError) Error() string {
 		return e.Message
 	}
 	return fmt.Sprintf("dashboard API returned HTTP %d", e.StatusCode)
+}
+
+// Preserve the application's safe error categories through the authenticated
+// bridge. MCP formats these sentinels, never the HTTP service's raw message.
+func (e *DashboardResponseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	switch e.Code {
+	case "access_denied", "unauthorized", "token_revoked", "token_expired", "read_scope_required":
+		return operatortool.ErrAccessDenied
+	case "invalid_arguments":
+		return operatortool.ErrInvalidArguments
+	case "idempotency_conflict":
+		return mutation.ErrConflict
+	case "idempotency_in_progress":
+		return mutation.ErrUncertain
+	default:
+		return nil
+	}
 }
 
 type DashboardTransportError struct {

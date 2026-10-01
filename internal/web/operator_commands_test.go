@@ -23,14 +23,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
+const modernOperatorMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"portable-client","version":"1"},"yolo":true,"principal_id":"forged-admin","organization_id":"forged-org","connection_id":"forged-session"}`
+
 // Exercise both authenticated transports against the real dashboard commands.
 // These regressions catch annotation bypass, forged browser decisions, stale
 // targets, and request metadata/header attempts to enable YOLO.
 func TestMCPActionApprovalBoundary(t *testing.T) {
-	for _, transport := range []string{"remote", "stdio"} {
-		for _, scenario := range []string{"ordinary", "reconnect retry", "concurrent retry", "application failure", "approve", "approve after YOLO", "pending reconnect conflict", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard"} {
-			if transport == "stdio" && scenario == "closed connection" {
-				continue // Protocol DELETE is a remote MCP lifecycle operation.
+	for _, transport := range []string{"remote", "remote modern", "stdio"} {
+		for _, scenario := range []string{"ordinary", "different credential", "reconnect retry", "concurrent retry", "application failure", "approve", "approve after YOLO", "pending reconnect conflict", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard"} {
+			if transport != "remote" && scenario == "closed connection" || transport == "remote modern" && scenario == "pending reconnect conflict" {
+				continue // Modern HTTP has no protocol session to close or replace.
 			}
 			t.Run(transport+"/"+scenario, func(t *testing.T) {
 				conn := &kanbanActionConnector{name: "memory"}
@@ -80,7 +82,27 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					headers["Authorization"], keyID = "Bearer "+token, key
 				}
 				var id string
-				if transport == "remote" {
+				if transport == "remote modern" {
+					headers["Mcp-Protocol-Version"] = "2026-07-28"
+					headers["Mcp-Method"] = "tools/call"
+					headers["Mcp-Name"] = "connection_info"
+					headers["Mcp-Session-Id"] = "forged-session"
+					setup := performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"connection_info","arguments":{},"_meta":`+modernOperatorMeta+`}}`, headers)
+					var result struct {
+						Result struct {
+							Content struct {
+								ID string `json:"connection_id"`
+							} `json:"structuredContent"`
+						} `json:"result"`
+					}
+					if err := json.Unmarshal(setup.Body.Bytes(), &result); err != nil {
+						t.Fatal(err)
+					}
+					id = result.Result.Content.ID
+					if id == "" || setup.Header().Get("Mcp-Session-Id") != "" || !strings.Contains(setup.Body.String(), `"mode":"confirmation"`) {
+						t.Fatalf("modern setup=%d %s", setup.Code, setup.Body.String())
+					}
+				} else if transport == "remote" {
 					initialize := strings.Replace(mcpInitializeRequest, `"capabilities":{}`, `"capabilities":{"yolo":true},"_meta":{"yolo":true}`, 1)
 					reply := performJSON(t, server.Handler(), http.MethodPost, "/mcp", initialize, headers)
 					id = reply.Header().Get("Mcp-Session-Id")
@@ -107,7 +129,17 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					if transport == "stdio" {
 						return performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/"+name, arguments, headers)
 					}
-					return performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"`+name+`","arguments":`+arguments+`,"_meta":{"yolo":true}}}`, headers)
+					meta := `{"yolo":true}`
+					requestHeaders := headers
+					if transport == "remote modern" {
+						meta = modernOperatorMeta
+						requestHeaders = make(map[string]string, len(headers))
+						for key, value := range headers {
+							requestHeaders[key] = value
+						}
+						requestHeaders["Mcp-Name"] = name
+					}
+					return performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"`+name+`","arguments":`+arguments+`,"_meta":`+meta+`}}`, requestHeaders)
 				}
 				entry := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{path: "/?token=human-only-fixture"})
 				browserCookies := entry.Result().Cookies()
@@ -189,6 +221,9 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 				if scenario == "reconnect retry" || scenario == "concurrent retry" || scenario == "application failure" {
 					// Reconnect through the real transport and reuse the explicit business key.
 					connect := func() string {
+						if transport == "remote modern" {
+							return id
+						}
 						path, body := "/api/v1/operator-connections", `{}`
 						if transport == "remote" {
 							path = "/mcp"
@@ -211,7 +246,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					if transport == "remote" {
 						headers["Mcp-Session-Id"] = connectionID
 						performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, headers)
-					} else {
+					} else if transport == "stdio" {
 						headers["X-Detent-Connection-ID"] = connectionID
 					}
 					if scenario == "concurrent retry" {
@@ -251,7 +286,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					Preview chatpkg.Action       `json:"preview"`
 				}
 				body := reply.Body.Bytes()
-				if transport == "remote" {
+				if transport != "stdio" {
 					var envelope struct {
 						Result struct {
 							Content json.RawMessage `json:"structuredContent"`
@@ -267,6 +302,21 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 				}
 				if receipt.ID == "" {
 					t.Fatalf("no receipt=%s", reply.Body.String())
+				}
+				if scenario == "different credential" {
+					otherToken, _ := createRemoteMCPKey(t, server, "Other connection", []string{"write"}, nil)
+					headers["Authorization"] = "Bearer " + otherToken
+					outcome := call("action_result", `{"action_id":"`+receipt.ID+`"}`)
+					if strings.Contains(outcome.Body.String(), `"status":"pending"`) || strings.Contains(outcome.Body.String(), `"status":"succeeded"`) || strings.Contains(outcome.Body.String(), receipt.ID) || len(conn.stateUpdates()) != 0 {
+						t.Fatalf("cross-credential action reuse: %s", outcome.Body.String())
+					}
+					if transport == "remote modern" {
+						mode := call("connection_info", `{}`)
+						if !strings.Contains(mode.Body.String(), `"mode":"confirmation"`) || strings.Contains(mode.Body.String(), id) {
+							t.Fatalf("cross-credential connection reuse: %s", mode.Body.String())
+						}
+					}
+					return
 				}
 				if scenario == "ordinary" || scenario == "YOLO" {
 					if receipt.Status != chatpkg.ActionSucceeded || len(conn.stateUpdates()) != 1 {
