@@ -44,6 +44,7 @@ import {
   settingsNavItems,
   type SettingsSectionId,
 } from "./sections.tsx";
+import { CreditSettings } from "./CreditSettings.tsx";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
 import { MCPSettings } from "./MCPSettings.tsx";
 import { signInPath } from "../../runtime/basePath.ts";
@@ -526,6 +527,9 @@ export function BillingSettings(): React.ReactElement {
           </>
         )}
       </SettingsSection>
+      {billing.value?.ai_credits === undefined ? null : (
+        <CreditSettings credits={billing.value.ai_credits} refresh={billing.refresh} />
+      )}
     </SettingsPageContainer>
   );
 }

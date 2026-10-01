@@ -742,6 +742,24 @@ func TestHostedBrowserPreview(t *testing.T) {
 		close(done)
 		f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
 	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_AI_CREDITS") != "" {
+		plans := hostedTestPlans(t, f.service, map[string]int64{"projects": 2})
+		base := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
+		cfg := f.service.config.Hosted
+		cfg.Plans = &plans
+		cfg.Billing = &HostedBillingConfig{AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_credits_browser"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: base, Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}}}
+		configureTestCredits(t, f, base)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE ai_credit_accounts SET balance_micros=1250000,payment_method='pm_credit',failure='automatic payment failed; update the saved payment method'"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES('org_browser_preview','test','fixture-purchase',1250000,'purchase',?)", f.service.config.now().UnixMicro()); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		close(done)
+		f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
+	}
+
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_USAGE") != "" {
 		err := f.service.database.RecordConversationUsage(t.Context(), ConversationUsage{OrganizationID: "org_browser_preview", ProjectID: tracker.ProjectID(f.project), ConversationID: f.conversation, TurnID: "preview-chat-usage", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: 1_000_000, CachedInputTokens: 400_000, OutputTokens: 100_000, ReasoningOutputTokens: 30_000}})
 		if err != nil {

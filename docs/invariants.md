@@ -838,8 +838,10 @@ publishes confirmed operation state before its fresh candidate read; unresolved 
 snapshots retain priority over runtime and full publications during completion
 refill, until final publication clears the existing fence. Returned state remains
 independent, with live runtime ownership, persisted worker heartbeat and validator
-progress observable outside the fence. Reads do not advance tracker freshness,
-complete an unfinished refresh or establish dispatch eligibility. Existing
+progress observable outside the fence. Full publication stores runtime ownership
+before the full snapshot and initial readiness, so a newly observed full snapshot
+cannot be overlaid with older runtime ownership. Reads do not advance tracker
+freshness, complete an unfinished refresh or establish dispatch eligibility. Existing
 publication, operator-move, queued-completion, defensive-copy, worker-progress,
 startup and promotion-read fixtures cover these boundaries. No new cache,
 timeout, configuration, guard, lane writer or recovery mechanism is added.

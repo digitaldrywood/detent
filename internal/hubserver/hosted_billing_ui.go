@@ -17,6 +17,7 @@ import (
 )
 
 type hostedBillingReport struct {
+	AICredits      *aiCreditView                  `json:"ai_credits,omitempty"`
 	ChatUsage      chatUsageSummary               `json:"chat_usage"`
 	OrganizationID string                         `json:"organization_id"`
 	State          hostedBillingState             `json:"state"`
@@ -38,6 +39,10 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 		return report, err
 	}
 	report.ChatUsage, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, chatBillingWindow(s.config.now(), report.State.Snapshot), nil)
+	if err != nil {
+		return report, err
+	}
+	report.AICredits, err = s.readAICredits(ctx)
 	if err != nil {
 		return report, err
 	}
@@ -108,6 +113,15 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	for _, name := range []string{"projects", "unarchived_issues"} {
 		used, limit := report.Entitlement.Usage[name], report.Entitlement.Allowances[name]
 		data.Allowances = append(data.Allowances, templates.HostedAllowanceRow{Label: strings.ReplaceAll(name, "_", " "), Consumption: strconv.FormatInt(used, 10), Allowance: strconv.FormatInt(limit, 10), Remaining: strconv.FormatInt(max(limit-used, 0), 10), OverLimit: used > limit})
+	}
+	if credits := report.AICredits; credits != nil {
+		data.AICredits = &templates.HostedAICredits{Returned: c.QueryParam("credits") == "returned", Balance: fmt.Sprintf("$%.6f USD", float64(credits.BalanceMicros)/1000000), Enabled: credits.AutoEnabled, Threshold: strconv.FormatInt(credits.ThresholdCents, 10), PriceID: credits.PriceID, Failure: credits.Failure, InFlight: credits.InFlight, CanAutoFund: credits.CanAutoFund}
+		for _, pack := range credits.Packs {
+			data.AICredits.Packs = append(data.AICredits.Packs, templates.HostedBillingPrice{ID: pack.PriceID, Label: fmt.Sprintf("%s · $%.2f USD", pack.Label, float64(pack.USDCents)/100)})
+		}
+		for _, item := range credits.History {
+			data.AICredits.History = append(data.AICredits.History, templates.HostedBillingAudit{Action: item.Kind, Summary: fmt.Sprintf("$%.6f USD", float64(item.AmountMicros)/1000000), At: item.At.Format(time.RFC3339)})
+		}
 	}
 	data.BillingStatus, data.BillingMessage = hostedBillingMessage(report.State, now)
 	if (report.State.Status == "free" || report.State.Status == "") && report.Entitlement.EffectiveBase.ID != "free" {

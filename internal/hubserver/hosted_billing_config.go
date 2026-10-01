@@ -15,6 +15,12 @@ type HostedBillingPrice struct {
 	Plan    PlanReference `yaml:"plan"`
 }
 
+type HostedCreditPack struct {
+	PriceID  string `yaml:"price_id" json:"price_id"`
+	Label    string `yaml:"label" json:"label"`
+	USDCents int64  `yaml:"usd_cents" json:"usd_cents"`
+}
+
 type HostedBillingConfig struct {
 	CheckoutDisabled      bool
 	Mode                  string
@@ -24,6 +30,7 @@ type HostedBillingConfig struct {
 	WebhookSecret         []byte
 	GraceSeconds          int64
 	ReconcileSeconds      int64
+	CreditPacks           []HostedCreditPack
 	Prices                []HostedBillingPrice
 	Provider              billing.Provider
 }
@@ -58,6 +65,20 @@ func (c *HostedBillingConfig) validate(plans *HostedPlansConfig) error {
 			return errors.New("hosted billing prices require unique approved paid plans and bounded labels")
 		}
 		seen[price.PriceID] = true
+	}
+	if len(c.CreditPacks) > 20 {
+		return errors.New("too many AI credit packs")
+	}
+	if len(c.CreditPacks) > 0 {
+		if _, ok := c.Provider.(billing.CreditProvider); !ok {
+			return errors.New("billing provider cannot sell AI credits")
+		}
+	}
+	for _, pack := range c.CreditPacks {
+		if !strings.HasPrefix(pack.PriceID, "price_") || !hostedSafeID(pack.PriceID) || seen[pack.PriceID] || strings.TrimSpace(pack.Label) == "" || len(pack.Label) > 80 || pack.USDCents <= 0 || pack.USDCents > 1000000 {
+			return errors.New("AI credit packs require unique one-time prices, bounded labels and positive USD cents")
+		}
+		seen[pack.PriceID] = true
 	}
 	return nil
 }
@@ -134,8 +155,40 @@ func (d *database) configureHostedBilling(ctx context.Context, cfg *HostedConfig
 			return err
 		}
 	}
+	for _, pack := range c.CreditPacks {
+		var cents int64
+		err := tx.QueryRowContext(ctx, "SELECT usd_cents FROM ai_credit_packs WHERE price_id=? AND mode=?", pack.PriceID, c.mode()).Scan(&cents)
+		if err == nil && cents != pack.USDCents {
+			return errors.New("AI credit pack amounts are immutable; configure a new Stripe price")
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_packs(price_id,mode,usd_cents) VALUES(?,?,?) ON CONFLICT DO NOTHING", pack.PriceID, c.mode(), pack.USDCents); err != nil {
+			return err
+		}
+	}
+	if len(c.CreditPacks) > 0 {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_accounts(organization_id,mode) VALUES(?,?) ON CONFLICT DO NOTHING", d.hostedOrganization, c.mode()); err != nil {
+			return err
+		}
+	}
+	var creditAccounts int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, c.mode()).Scan(&creditAccounts); err != nil {
+		return err
+	}
+	if creditAccounts > 0 {
+		if _, ok := c.Provider.(billing.CreditProvider); !ok {
+			return errors.New("existing AI credits require a credit-capable billing provider")
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	if creditAccounts > 0 {
+		d.aiCreditMode = c.mode()
+	} else {
+		d.aiCreditMode = ""
 	}
 	d.hostedBilling = true
 	return nil

@@ -80,5 +80,8 @@ func VerifyModeEvent(body []byte, signature string, secret []byte, now time.Time
 }
 
 func (e Event) Relevant() bool {
+	if e.Type == "payment_intent.succeeded" || e.Type == "payment_intent.payment_failed" || e.Type == "payment_intent.canceled" {
+		return true
+	}
 	return strings.HasPrefix(e.Type, "customer.subscription.") || strings.HasPrefix(e.Type, "invoice.") || strings.HasPrefix(e.Type, "checkout.session.") || strings.HasPrefix(e.Type, "charge.dispute.") || e.Type == "charge.refunded" || strings.HasPrefix(e.Type, "refund.")
 }
