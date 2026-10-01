@@ -1576,7 +1576,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			string(AutoPromoteReasonCodexReviewMissing), string(AutoPromoteReasonCodexReviewMissing), "Waiting for current-head review: ")
 		return true
 	}
-	missingChecks := mergeWorkerMissingRequiredChecks(issue)
+	missingChecks := mergeWorkerMissingRequiredChecks(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)
 	streaks := o.evaluateMergeRequiredCheckStreaks(ctx, issue, missingChecks, event.CompletedAt)
 	if persistent := persistentMissingRequiredCheckStreaks(streaks); len(persistent) > 0 {
 		o.blockPersistentlyMissingRequiredChecks(ctx, state, event, running, issue, persistent)
@@ -1611,7 +1611,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		}
 		if len(missingChecks) > 0 {
 			triggerPending := o.scheduleCITriggerLabel(ctx, issue, missingChecks, running.Attempt, false, false)
-			if triggerPending || mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt) {
+			if triggerPending || mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus) {
 				o.waitForMergeWorkerRequiredCheckPropagation(ctx, state, event, running, issue)
 				return true
 			}
@@ -1764,7 +1764,7 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	if attempt < 1 {
 		attempt = 1
 	}
-	retryError := mergeWorkerCurrentHeadCIWaitReason(issue)
+	retryError := mergeWorkerCurrentHeadCIWaitReason(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)
 	exceeded := o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue, event.CompletedAt)
 	reservation := o.recordMergeReservationWait(state, issue, event.CompletedAt)
 	running.Issue = issue
@@ -1778,7 +1778,7 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 		Kind:                  retryWaitCurrentHeadCI,
 		StartedAt:             state.MergeTimings[strings.TrimSpace(issue.ID)].CIWaitStartedAt,
 		PollCount:             1,
-		PendingChecks:         mergeWorkerCurrentHeadCIPendingChecks(issue),
+		PendingChecks:         mergeWorkerCurrentHeadCIPendingChecks(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus),
 		WorkspaceCreateCount:  1,
 		WorkspaceDestroyCount: 1,
 	}
@@ -1812,13 +1812,13 @@ func (o *Orchestrator) pollMergeWorkerCurrentHeadCI(
 
 	timing := reconcileMergeWorkerCurrentHeadCIWait(state, issue, now)
 	retry.Issue = cloneIssue(issue)
-	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue)
+	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)
 	if retry.Wait.StartedAt.IsZero() || !retry.Wait.StartedAt.Equal(timing.CIWaitStartedAt) {
 		retry.Wait.StartedAt = timing.CIWaitStartedAt
 		retry.Wait.PollCount = 0
 	}
 	retry.Wait.PollCount++
-	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue)
+	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)
 	retry.DueAt = mergeWorkerCurrentHeadCINextPollAt(retry.Wait.StartedAt, now, o.cfg.ContinuationRetryDelay)
 	state.Retry[issue.ID] = retry
 	o.logMergeWorkerCurrentHeadCIWait(state, issue, retry, now)
@@ -2006,7 +2006,7 @@ func (o *Orchestrator) mergeWorkerCurrentHeadCIWaitExceeded(state *State, issue 
 	return !completedAt.Before(timing.CIWaitStartedAt.Add(mergeWorkerCurrentHeadCIWaitTimeout))
 }
 
-func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue) string {
+func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue, localStatus string) string {
 	const reason = "waiting for current-head CI"
 	if issue.PullRequest == nil {
 		return reason
@@ -2016,7 +2016,7 @@ func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue) string {
 	}
 	pendingRequiredChecks := make([]string, 0, len(issue.PullRequest.RequiredCheckFailures))
 	for _, check := range issue.PullRequest.RequiredCheckFailures {
-		if autoPromoteCheckPending(check) && strings.TrimSpace(check.Name) != "" {
+		if !check.IsMissingLocalStatus(localStatus) && autoPromoteCheckPending(check) && strings.TrimSpace(check.Name) != "" {
 			pendingRequiredChecks = append(pendingRequiredChecks, check.Name)
 		}
 	}
@@ -2029,8 +2029,8 @@ func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue) string {
 	return reason
 }
 
-func mergeWorkerCurrentHeadCIPendingChecks(issue connector.Issue) []string {
-	return autoPromotePendingChecksFromPullRequest(issue.PullRequest)
+func mergeWorkerCurrentHeadCIPendingChecks(issue connector.Issue, localStatus string) []string {
+	return autoPromotePendingChecksFromPullRequest(issue.PullRequest, localStatus)
 }
 
 func (o *Orchestrator) refreshMergeWorkerBase(
@@ -2193,13 +2193,16 @@ func currentHeadCIStatusPending(status string) bool {
 	}
 }
 
-func mergeWorkerMissingRequiredChecks(issue connector.Issue) []string {
+func mergeWorkerMissingRequiredChecks(issue connector.Issue, localStatus string) []string {
 	if issue.PullRequest == nil {
 		return nil
 	}
 	checks := make([]string, 0, len(issue.PullRequest.RequiredCheckFailures))
 	seen := map[string]struct{}{}
 	for _, check := range issue.PullRequest.RequiredCheckFailures {
+		if check.IsMissingLocalStatus(localStatus) {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(check.Status), "missing") &&
 			!strings.EqualFold(strings.TrimSpace(check.Conclusion), "missing") {
 			continue
@@ -2217,8 +2220,8 @@ func mergeWorkerMissingRequiredChecks(issue connector.Issue) []string {
 	return checks
 }
 
-func mergeWorkerMissingRequiredChecksPropagating(issue connector.Issue, attempt int) bool {
-	if len(mergeWorkerMissingRequiredChecks(issue)) == 0 || attempt >= maxMergeWorkerRunnerFailures {
+func mergeWorkerMissingRequiredChecksPropagating(issue connector.Issue, attempt int, localStatus string) bool {
+	if len(mergeWorkerMissingRequiredChecks(issue, localStatus)) == 0 || attempt >= maxMergeWorkerRunnerFailures {
 		return false
 	}
 	if issue.PullRequest == nil {

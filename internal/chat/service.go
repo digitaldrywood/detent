@@ -268,6 +268,8 @@ func (s *Service) resolveExecution(current *session, index int, result ActionExe
 		current.actions[index].IssueID = result.ResourceID
 		current.actions[index].Identifier = result.Identifier
 		current.actions[index].ResourceURL = result.URL
+		current.actions[index].Revision = result.Revision
+		current.actions[index].CommentID = result.CommentID
 	}
 	return s.resolveAction(current, index, result.Message, actionErr)
 }
@@ -359,6 +361,26 @@ func cloneActions(actions []Action) []Action {
 	for index := range out {
 		out[index].Labels = append([]string(nil), out[index].Labels...)
 		out[index].Arguments = append(json.RawMessage(nil), out[index].Arguments...)
+		if out[index].Work != nil {
+			work := *out[index].Work
+			if work.Title != nil {
+				title := *work.Title
+				work.Title = &title
+			}
+			if work.Body != nil {
+				body := *work.Body
+				work.Body = &body
+			}
+			if work.Priority != nil {
+				priority := *work.Priority
+				work.Priority = &priority
+			}
+			if work.Labels != nil {
+				labels := append([]string{}, (*work.Labels)...)
+				work.Labels = &labels
+			}
+			out[index].Work = &work
+		}
 	}
 	return out
 }

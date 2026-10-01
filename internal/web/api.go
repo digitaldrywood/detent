@@ -608,7 +608,7 @@ func (s *Server) apiUsage(c echo.Context) error {
 		}
 	}
 
-	report, err := s.store.UsageReport(c.Request().Context(), query)
+	report, err := s.readUsageReport(c.Request().Context(), query)
 	if err != nil {
 		s.logger.Error("usage report failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("usage_report_failed", "Usage report failed"))
@@ -630,12 +630,12 @@ func (s *Server) apiWorkflowTimeline(c echo.Context) error {
 	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
 		return c.JSON(http.StatusBadRequest, errorResponse("missing_issue_identity", "issue_id, identifier, or issue_url is required"))
 	}
-	timeline, err := s.store.IssueWorkflowTimeline(c.Request().Context(), identity)
+	timeline, err := s.workTimeline(c.Request().Context(), identity)
 	if err != nil {
 		s.logger.Error("workflow timeline failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("workflow_timeline_failed", "Workflow timeline failed"))
 	}
-	return c.JSON(http.StatusOK, workflowTimelineResponse(timeline))
+	return c.JSON(http.StatusOK, timeline)
 }
 
 func (s *Server) methodNotAllowed(c echo.Context) error {
@@ -1238,17 +1238,21 @@ func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
 }
 
 func usageReportQuery(c echo.Context) (store.UsageReportQuery, *apiErrorResponse, int) {
-	group, ok := usageReportGroup(c.QueryParam("by"))
+	return usageReportQueryValues(c.QueryParam("by"), c.QueryParam("from"), c.QueryParam("to"))
+}
+
+func usageReportQueryValues(by, fromValue, toValue string) (store.UsageReportQuery, *apiErrorResponse, int) {
+	group, ok := usageReportGroup(by)
 	if !ok {
 		response := errorResponse("invalid_usage_group", "by must be one of day, project, issue, pr, model")
 		return store.UsageReportQuery{}, &response, http.StatusBadRequest
 	}
 
-	from, response, status := usageDate("from", c.QueryParam("from"))
+	from, response, status := usageDate("from", fromValue)
 	if response != nil {
 		return store.UsageReportQuery{}, response, status
 	}
-	to, response, status := usageDate("to", c.QueryParam("to"))
+	to, response, status := usageDate("to", toValue)
 	if response != nil {
 		return store.UsageReportQuery{}, response, status
 	}

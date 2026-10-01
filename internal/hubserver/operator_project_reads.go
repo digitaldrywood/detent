@@ -25,9 +25,9 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	scope, ok := ctx.Value(hubOperatorScopeKey{}).(nativeScope)
-	if !ok {
-		return operatortool.Result{}, operatortool.ErrAccessDenied
+	scope, err := e.projectScope(ctx)
+	if err != nil {
+		return operatortool.Result{}, err
 	}
 	scope.project = tracker.ProjectID(r.ProjectID)
 	s := e.service
@@ -39,6 +39,12 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		value, err = readNativeProject(ctx, s.database.db, scope)
 	case "get_onboarding":
 		value, err = s.projectOnboarding(ctx, scope)
+	case "get_git_hub_batch":
+		var view githubBatchView
+		view, err = s.projectGitHubBatch(ctx, scope)
+		if err == nil {
+			value, err = boundedProjectBatch(view, r)
+		}
 	case "get_project_integration":
 		value, err = readProjectIntegration(ctx, s.database.db, scope)
 	case "get_cutover_receipt":
@@ -105,6 +111,47 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 type operatorProjectPage struct {
 	Projects   []tracker.NativeProject `json:"projects"`
 	NextCursor string                  `json:"next_cursor,omitempty"`
+}
+
+type projectBatchPage struct {
+	githubBatchView
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
+// Stored runner diagnostics are provider text. Keep the application's checkpoint
+// and status while returning a bounded page and opaque transport diagnostics.
+func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadRequest) (projectBatchPage, error) {
+	page := projectBatchPage{githubBatchView: view}
+	after := 0
+	if request.After != "" {
+		var err error
+		after, err = strconv.Atoi(request.After)
+		if err != nil || after < 0 || after > 1000 {
+			return page, operatortool.ErrInvalidArguments
+		}
+	}
+	if view.Batch == nil {
+		return page, nil
+	}
+	batch := view.Batch
+	if batch.Error != "" {
+		batch.Error = "Import transport is unavailable"
+	}
+	for i := range batch.Items {
+		if batch.Items[i].Error != "" {
+			batch.Items[i].Error = "Import transport is unavailable"
+		}
+	}
+	limit := request.Limit
+	if limit == 0 {
+		limit = 100
+	}
+	if max(len(batch.Page.Issues), len(batch.Items)) > after+limit {
+		page.NextCursor = strconv.Itoa(after + limit)
+	}
+	batch.Page.Issues = batch.Page.Issues[min(after, len(batch.Page.Issues)):min(after+limit, len(batch.Page.Issues))]
+	batch.Items = batch.Items[min(after, len(batch.Items)):min(after+limit, len(batch.Items))]
+	return page, nil
 }
 
 func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r operatortool.ProjectReadRequest) (operatorProjectPage, error) {

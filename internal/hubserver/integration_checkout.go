@@ -61,7 +61,7 @@ func (s *Service) bindRunnerCheckoutCommand(ctx context.Context, scope nativeSco
 		Repository       string           `json:"repository"`
 		Source           string           `json:"source"`
 	}{command, revision, repository, "runner_checkout"}
-	return s.runNativeCommand(ctx, scope, options, command, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeMutation(ctx, scope, options, command, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		current, err := readProjectIntegration(ctx, tx, scope)
 		if err != nil {
 			return nil, err

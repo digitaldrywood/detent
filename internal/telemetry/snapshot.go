@@ -15,6 +15,10 @@ import (
 )
 
 type Snapshot struct {
+	// Shipped is the dashboard projection of durable lane-writer deliveries.
+	// Completed and Counts remain runtime session observations.
+	Shipped []Completed `json:"-"`
+
 	WorkspaceRetention []workspace.RetentionTotals `json:"workspace_retention,omitempty"`
 	HostCache          *toolcache.Report           `json:"host_cache,omitempty"`
 

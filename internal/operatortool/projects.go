@@ -56,6 +56,16 @@ type ImportAdvanceInput struct {
 	ImportID         string           `json:"import_id"`
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 }
+type GitHubBatchInput struct {
+	Revision      int64    `json:"revision"`
+	Action        string   `json:"action"`
+	RunnerID      string   `json:"runner_id"`
+	Labels        []string `json:"labels,omitempty"`
+	IncludeClosed bool     `json:"include_closed"`
+	Numbers       []int    `json:"numbers,omitempty"`
+	Destination   string   `json:"destination"`
+	AllowDispatch bool     `json:"allow_dispatch"`
+}
 type CutoverInput struct {
 	ClosedState    string                `json:"closed_state"`
 	DryRun         bool                  `json:"dry_run"`
@@ -85,22 +95,16 @@ type SummaryInput struct {
 	ItemID string `json:"item_id"`
 	Body   string `json:"body"`
 }
-type BudgetInput struct {
-	PerDayMaxUSD   *float64 `json:"per_day_max_usd,omitempty"`
-	PerIssueMaxUSD *float64 `json:"per_issue_max_usd,omitempty"`
-	Duration       string   `json:"duration"`
-	Reason         string   `json:"reason"`
-}
 
 // ProjectCatalog includes only named, typed operations. Browser setup tools
 // return navigation and requirements without accepting credentials or file paths.
 func ProjectCatalog() []Definition {
-	reads := []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "get_cutover_receipt", "get_git_hub_import", "list_git_hub_import_records", "get_project_policy", "get_change_review_policy", "project_secret_metadata", "repository_freshness", "project_settings", "project_setup"}
+	reads := []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "get_cutover_receipt", "get_git_hub_import", "list_git_hub_import_records", "get_git_hub_batch", "get_project_policy", "get_change_review_policy", "project_secret_metadata", "repository_freshness", "project_settings", "project_setup", "demo_setup_scenarios"}
 	out := make([]Definition, 0, len(reads)+14)
 	for _, name := range reads {
 		schema := projectSchema(reflect.TypeFor[ProjectReadRequest]())
 		required := []string{"project_id"}
-		if name == "list_projects" || name == "project_setup" {
+		if name == "list_projects" || name == "project_setup" || name == "demo_setup_scenarios" {
 			required = []string{}
 		}
 		if name == "get_git_hub_import" || name == "list_git_hub_import_records" {
@@ -118,14 +122,13 @@ func ProjectCatalog() []Definition {
 		projectWrite[RepositoryInput]("bind_native_repository", true, true),
 		projectWrite[ImportStartInput]("start_git_hub_import", true, true),
 		projectWrite[ImportAdvanceInput]("advance_git_hub_import", false, true),
+		projectWrite[GitHubBatchInput]("command_git_hub_batch", true, true),
 		projectWrite[CutoverInput]("cutover_project", true, true),
 		projectWrite[PolicyApprovalInput]("approve_project_policy", true, false),
 		projectWrite[PolicyRevokeInput]("revoke_project_policy", true, false),
 		projectWrite[ChangeReviewPolicyInput]("approve_change_review_policy", true, false),
 		projectWrite[SummaryInput]("project_native_summary", true, true),
 		projectWrite[struct{}]("remove_project_secret", true, false),
-		projectWrite[BudgetInput]("set_budget_override", true, false),
-		projectWrite[struct{}]("clear_budget_override", false, false),
 	)
 	return out
 }
@@ -188,7 +191,7 @@ func projectSchema(t reflect.Type) map[string]any {
 // action handling remains fail closed for unknown tools.
 func ProjectConfirmation(name string, raw json.RawMessage) (bool, bool) {
 	switch name {
-	case "create_native_project", "save_onboarding", "advance_git_hub_import", "clear_budget_override":
+	case "create_native_project", "save_onboarding", "advance_git_hub_import":
 		return false, true
 	case "start_git_hub_import":
 		var r ProjectRequest[ImportStartInput]
@@ -208,7 +211,21 @@ func ProjectConfirmation(name string, raw json.RawMessage) (bool, bool) {
 			return true, true
 		}
 		return r.Input.Projection != "disabled" || r.Input.RepositoryEnabled, true
-	case "create_hosted_project", "bind_native_repository", "approve_change_review_policy", "approve_project_policy", "revoke_project_policy", "project_native_summary", "remove_project_secret", "set_budget_override":
+	case "command_git_hub_batch":
+		var r ProjectRequest[GitHubBatchInput]
+		if DecodeProjectArguments(raw, &r) != nil {
+			return true, true
+		}
+		switch r.Input.Action {
+		case "discover", "more":
+			return false, true
+		case "apply":
+			return r.Input.AllowDispatch, true
+		default:
+			// Retry can resume an already approved dispatchable intake.
+			return true, true
+		}
+	case "create_hosted_project", "bind_native_repository", "approve_change_review_policy", "approve_project_policy", "revoke_project_policy", "project_native_summary", "remove_project_secret":
 		return true, true
 	default:
 		return false, false
@@ -249,9 +266,6 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 		case float64:
 			if key == "limit" {
 				return x >= 1 && x <= 200
-			}
-			if key == "per_day_max_usd" || key == "per_issue_max_usd" {
-				return x > 0 && x <= 1e9
 			}
 			return x >= 0 && x <= 2147483647
 		case nil:

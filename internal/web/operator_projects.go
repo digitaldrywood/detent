@@ -2,15 +2,12 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -18,7 +15,11 @@ func (s *Server) dashboardProjectTools(ctx context.Context) []operatortool.Defin
 	out := []operatortool.Definition{}
 	for _, d := range operatortool.ProjectCatalog() {
 		switch d.Name {
-		case "list_projects", "project_settings", "project_setup", "set_budget_override", "clear_budget_override":
+		case "demo_setup_scenarios":
+			if s.demo == nil {
+				continue
+			}
+		case "list_projects", "project_settings", "project_setup":
 		default:
 			continue
 		}
@@ -43,6 +44,12 @@ func (s *Server) dashboardProjectRead(ctx context.Context, call operatortool.Cal
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: r.ProjectID})
 	if err != nil {
 		return operatortool.Result{}, err
+	}
+	if call.Name == "demo_setup_scenarios" {
+		if s.demo == nil {
+			return operatortool.Result{}, errOperatorCommandUnavailable
+		}
+		return operatorResult(s.demoSetupScenarios())
 	}
 	if call.Name == "project_setup" {
 		// Local setup writes workflow files and uses interactive credential/provider
@@ -90,7 +97,7 @@ func (s *Server) dashboardProjectRead(ctx context.Context, call operatortool.Cal
 		ObservedAt time.Time                  `json:"observed_at"`
 		Projects   []dashboardProjectSettings `json:"projects"`
 		NextCursor string                     `json:"next_cursor,omitempty"`
-	}{time.Now().UTC(), projects, next})
+	}{s.now().UTC(), projects, next})
 }
 
 type dashboardProjectSettings struct {
@@ -104,35 +111,4 @@ type dashboardProjectSettings struct {
 	PerDayMaxUSD   float64 `json:"per_day_max_usd"`
 	PerIssueMaxUSD float64 `json:"per_issue_max_usd"`
 	SetupURL       string  `json:"setup_url"`
-}
-
-func (s *Server) budgetActionProposal(ctx context.Context, name string, raw json.RawMessage) (chatpkg.Action, error) {
-	var r operatortool.ProjectRequest[operatortool.BudgetInput]
-	if name == "clear_budget_override" {
-		var clear operatortool.ProjectRequest[struct{}]
-		if operatortool.DecodeProjectArguments(raw, &clear) != nil {
-			return chatpkg.Action{}, operatortool.ErrInvalidArguments
-		}
-		r.ProjectID = clear.ProjectID
-	} else if operatortool.DecodeProjectArguments(raw, &r) != nil {
-		return chatpkg.Action{}, operatortool.ErrInvalidArguments
-	}
-	if s.registry == nil {
-		return chatpkg.Action{}, errOperatorCommandUnavailable
-	}
-	if _, ok := s.registry.Get(project.ID(r.ProjectID)); !ok {
-		return chatpkg.Action{}, errOperatorCommandUnavailable
-	}
-	return chatpkg.Action{Kind: chatpkg.ActionKind(name), ProjectID: r.ProjectID, Title: strings.ReplaceAll(name, "_", " ")}, nil
-}
-func (s *Server) executeBudgetAction(ctx context.Context, action chatpkg.Action) (string, error) {
-	if action.Kind == "clear_budget_override" {
-		return "Budget override cleared.", s.clearProjectBudgetOverride(ctx, action.ProjectID)
-	}
-	var r operatortool.ProjectRequest[operatortool.BudgetInput]
-	if operatortool.DecodeProjectArguments(action.Arguments, &r) != nil {
-		return "", operatortool.ErrInvalidArguments
-	}
-	_, err := s.setProjectBudgetOverride(ctx, action.ProjectID, r.Input)
-	return "Budget override updated.", err
 }

@@ -4,8 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
-	"strings"
+	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -48,32 +47,11 @@ func (s *Service) createNativeComment(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, _, err := readNativeIssue(ctx, tx, scope, c.Param("item"))
-		if err != nil {
-			return nil, err
-		}
-		if issue.Profile != "native" {
-			return nil, nativeInvalid("Compatibility project discussion is externally owned")
-		}
-		if strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10 {
-			return nil, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
-		}
-		if err := validateNativeProvenance(scope, request.Provenance); err != nil {
-			return nil, err
-		}
-		if request.Provenance != nil {
-			var existing string
-			err := tx.QueryRowContext(ctx, "SELECT id FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND source_key = ?", scope.organization, scope.project, issue.WorkItemID, request.Provenance.Provider+":"+request.Provenance.ExternalID).Scan(&existing)
-			if err == nil {
-				return readNativeComment(ctx, tx, scope, string(issue.WorkItemID), existing)
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return nil, err
-			}
-		}
-		return insertNativeComment(ctx, tx, scope, issue, request.Body, request.Provenance, now)
-	})
+	result, err := s.createNativeCommentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
 }
 
 // insertNativeComment appends a comment by the request's actor to a native
@@ -111,39 +89,9 @@ func (s *Service) updateNativeComment(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		comment, err := readNativeComment(ctx, tx, scope, c.Param("item"), c.Param("comment"))
-		if err != nil {
-			return nil, err
-		}
-		if comment.Actor.PrincipalID != scope.credential.ID && scope.credential.Scope == apiScopeWorker {
-			return nil, nativeNotFound()
-		}
-		if request.ExpectedRevision <= 0 {
-			return nil, nativeInvalid("Expected revision must be positive")
-		}
-		if comment.Revision != request.ExpectedRevision {
-			return nil, nativeConflict(comment.Revision)
-		}
-		if strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10 {
-			return nil, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
-		}
-		comment.Body = request.Body
-		comment.Revision++
-		comment.UpdatedAt = now
-		editor := scope.actor()
-		comment.EditedBy = &editor
-		editedBy, err := marshalNative(editor)
-		if err != nil {
-			return nil, err
-		}
-		_, err = tx.ExecContext(ctx, "UPDATE native_comments SET body = ?, revision = ?, edited_by_json = ?, updated_at = ? WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?", comment.Body, comment.Revision, editedBy, formatHubTime(now), scope.organization, scope.project, comment.WorkItemID, comment.ID)
-		if err != nil {
-			return nil, err
-		}
-		if err := recordNativeChange(ctx, tx, scope, comment, string(comment.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {
-			return nil, err
-		}
-		return comment, nil
-	})
+	result, err := s.updateNativeCommentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("comment"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
 }

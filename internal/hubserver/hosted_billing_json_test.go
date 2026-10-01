@@ -18,6 +18,22 @@ func (f *browserHostedFixture) billingAPI(t *testing.T, account, method, path, b
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", f.server.URL)
+	if path == "/mcp" {
+		var envelope struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("MCP-Protocol-Version", "2026-07-28")
+		request.Header.Set("Mcp-Method", envelope.Method)
+		if envelope.Params.Name != "" {
+			request.Header.Set("Mcp-Name", envelope.Params.Name)
+		}
+	}
 	response := httptest.NewRecorder()
 	f.service.Handler().ServeHTTP(response, request)
 	return response

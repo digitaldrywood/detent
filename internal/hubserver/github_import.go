@@ -189,8 +189,8 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeSc
 	input := struct {
 		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 	}{revision}
-	options := nativeCommandOptions{Operation: projectOperationID(scope, "POST", "/imports/"+id+"/advance"), Feature: "github_integration"}
-	if replay, found, err := s.nativeCommandReplay(ctx, scope, options.Operation, key, input); found || err != nil {
+	options := nativeCommandOptions{OperationID: projectOperationID(scope, "POST", "/imports/"+id+"/advance"), Feature: "github_integration"}
+	if replay, found, err := s.nativeCommandReplay(ctx, scope, options.OperationID, key, input); found || err != nil {
 		return replay, err
 	}
 
@@ -218,7 +218,7 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeSc
 		return nil, nativeInvalid("Manual intake is disabled")
 	}
 	page, fetchErr := s.fetchImportPage(ctx, integration, current)
-	return s.runNativeCommand(ctx, scope, options, tracker.Mutation{IdempotencyKey: key}, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeMutation(ctx, scope, options, tracker.Mutation{IdempotencyKey: key}, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		latest, err := readGitHubImport(ctx, tx, scope, current.ID)
 		if err != nil {
 			return nil, err

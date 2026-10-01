@@ -88,7 +88,8 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			return providercapacity.Load(clientConfig.ProviderCapacityFile)
 		}
 	}
-	if err := reportRunnerSetup(ctx, cfg, version); err != nil {
+	localChecks, err := collectRunnerSetupReports(ctx, cfg, client)
+	if err != nil {
 		return nil, err
 	}
 	tokenSource := githubconnector.StaticTokenSource("")
@@ -104,6 +105,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		reportProblems = options[0].problems
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		LocalChecks:     localChecks,
 		GitHubIntake:    github.FetchIssueSnapshot,
 		GitHubDiscovery: github.DiscoverIssues,
 		Problems:        reportProblems,

@@ -66,7 +66,7 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 	defer cancel()
 	cmd := b.options.CommandFactory(ctx, args)
 	if cmd == nil {
-		return result, &infrastructureError{err: errors.New("Pi command factory returned nil"), startup: true}
+		return result, &infrastructureError{err: errors.New("pi command factory returned nil"), startup: true}
 	}
 	cmd.Dir = req.Workspace
 	procgroup.SetEnvironment(cmd, req.Environment)
@@ -138,7 +138,7 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 				turnErr = errors.Join(turnErr, waitErr)
 			}
 		} else if waitErr != nil {
-			turnErr = errors.Join(turnErr, &infrastructureError{err: fmt.Errorf("Pi RPC process exit: %w", waitErr)})
+			turnErr = errors.Join(turnErr, &infrastructureError{err: fmt.Errorf("pi RPC process exit: %w", waitErr)})
 		}
 		cancel()
 		// Cleanup failures must not leave drains blocked on foreign descriptors.

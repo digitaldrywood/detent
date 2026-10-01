@@ -25,7 +25,7 @@ func (s *Service) bindNativeRepository(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	result, err := s.bindNativeRepositoryCommand(c.Request().Context(), nativeRequestScope(c), nativeCommandOptions{Operation: c.Request().Method + " " + c.Request().URL.EscapedPath(), Feature: "github_integration"}, request)
+	result, err := s.bindNativeRepositoryCommand(c.Request().Context(), nativeRequestScope(c), nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Feature: hostedMutationFeature(c)}, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -33,7 +33,7 @@ func (s *Service) bindNativeRepository(c echo.Context) error {
 }
 func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeScope, options nativeCommandOptions, request bindNativeRepositoryRequest) (json.RawMessage, error) {
 	if request.Source == "" {
-		if replay, found, err := s.nativeCommandReplay(ctx, scope, options.Operation, request.IdempotencyKey, request); found || err != nil {
+		if replay, found, err := s.nativeCommandReplay(ctx, scope, options.OperationID, request.IdempotencyKey, request); found || err != nil {
 			return replay, err
 		}
 	}
@@ -71,7 +71,7 @@ func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeS
 	if err := validateReconcileSnapshot(ReconcileSnapshot{Repository: snapshot.Repository}); err != nil {
 		return nil, err
 	}
-	return s.runNativeCommand(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		current, err := readProjectIntegration(ctx, tx, scope)
 		if err != nil {
 			return nil, err

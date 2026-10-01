@@ -690,6 +690,9 @@ func OperationalCompletion(signal *Signal) (string, bool) {
 // place of pre-dispatch operational authorization. Acceptance results remain in
 // completion_evidence; attempt identity is checked by the completion handler.
 func MergedCompletionEvidence(signal *Signal) bool {
+	if signal == nil {
+		return false
+	}
 	if _, ok := OperationalCompletion(signal); !ok {
 		return false
 	}

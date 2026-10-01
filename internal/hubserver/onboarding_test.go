@@ -443,6 +443,7 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 		name, checkout, doctor, provider string
 		valid                            bool
 	}{
+		{"missing report", "", "", "", true},
 		{"missing checkout", "failed", "pending", "pending", true},
 		{"failed doctor", "passed", "failed", "passed", true},
 		{"missing auth", "passed", "passed", "failed", true},
@@ -451,7 +452,11 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			checks := runnerauth.LocalChecks{Checkout: tt.checkout, Doctor: tt.doctor, Provider: tt.provider, ProviderKinds: []string{"codex"}}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": 1, "version": "test", "local_checks": checks})
+			body := map[string]any{"capacity": 1, "version": "test"}
+			if tt.checkout != "" {
+				body["local_checks"] = checks
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, body)
 			expected := http.StatusOK
 			if !tt.valid {
 				expected = http.StatusUnprocessableEntity
@@ -464,8 +469,14 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 			if setup.Policy != nil || setup.Steps[0].State != "ready" {
 				t.Fatalf("enrollment depends on policy: %+v", setup)
 			}
-			if tt.valid && (setup.Runners[0].LocalChecks == nil || setup.Runners[0].LocalChecks.Doctor != tt.doctor || setup.Runners[0].LocalChecks.ObservedAt.IsZero()) {
+			if tt.valid && tt.checkout != "" && (setup.Runners[0].LocalChecks == nil || setup.Runners[0].LocalChecks.Doctor != tt.doctor || setup.Runners[0].LocalChecks.ObservedAt.IsZero()) {
 				t.Fatalf("report=%+v", setup)
+			}
+			if tt.valid && (setup.Steps[1].State == "ready") != (tt.checkout != "" && checks.Passed()) {
+				t.Fatalf("local validation forged success or lost passed evidence: %+v", setup)
+			}
+			if tt.checkout == "" && setup.Runners[0].LocalChecks != nil {
+				t.Fatal("missing report became diagnostic evidence")
 			}
 			if strings.Contains(response.Body.String(), r.redemption.Credential) || strings.Contains(response.Body.String(), "secret-token") {
 				t.Fatal("sensitive report exposed")

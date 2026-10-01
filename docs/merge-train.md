@@ -31,6 +31,15 @@ requirements, do not authorize this refresh fallback. If a refreshed head
 is missing required contexts, Detent routes the issue to `Rework` instead of
 retrying an incomplete merge worker.
 
+When `gate.local_status` is configured, Detent is its only producer. A missing
+Detent-owned status is work for Detent to produce and is never waited on as CI.
+Todo and Rework workers remain dispatchable, and the merge worker validates the
+head and posts that status through the existing local-gate path. The missing
+context remains required-check evidence until it is produced; it does not feed
+missing-check streaks, parks, or park-recovery waits. Other missing required
+contexts still wait for their CI producers. Manually posting `local-gate=failure`
+to unblock dispatch is no longer needed.
+
 A selected merge worker reserves its repository across CI waits for at most
 one hour from initial selection. Other same-repository retries cannot refresh
 or merge ahead of it during that reservation. Waiting releases the worker and

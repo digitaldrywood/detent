@@ -1,14 +1,22 @@
 package hubserver
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
 )
 
 type batchFixture struct {
@@ -120,11 +128,74 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 		name      string
 		closed    bool
 		rateLimit bool
-	}{{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}} {
+		mcp       bool
+	}{{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}, {name: "MCP bounded intake receipts and authority", mcp: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)
 			f.preview(t, test.closed)
+			if test.mcp {
+				var captured context.Context
+				f.service.echo.GET("/api/v2/organizations/:organization/mcp-batch-fixture", func(c echo.Context) error { captured = c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+				path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp-batch-fixture"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusOK)
+				connect := func(id string) context.Context {
+					ctx := operatortool.BindConnection(captured, id, "batch fixture")
+					if err := (hostedOperatorExecutor{f.service}).OpenConnection(ctx); err != nil {
+						t.Fatal(err)
+					}
+					return ctx
+				}
+				ctx := connect("batch-tools")
+				e := hubProjectExecutor{f.service}
+				f.batch.Error = "provider credential-secret"
+				raw, err := json.Marshal(f.batch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET request_json=? WHERE project_id=?", raw, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				input := operatortool.GitHubBatchInput{Revision: f.batch.Revision, Action: "apply", Numbers: []int{12, 13, 14}, Destination: "Backlog"}
+				call := projectCall(t, "command_git_hub_batch", string(f.project.ID), "batch-apply", input)
+				a := projectAction(t, e, ctx, call)
+				if a.Status != chatpkg.ActionSucceeded || strings.Contains(a.Result, "credential-secret") {
+					t.Fatalf("batch apply=%+v", a)
+				}
+				if replay := projectAction(t, e, connect("batch-reconnected"), call); replay.Result != a.Result {
+					t.Fatalf("batch replay=%+v", replay)
+				}
+				input.Numbers = []int{12}
+				if _, err := e.Execute(connect("batch-conflict"), projectCall(t, "command_git_hub_batch", string(f.project.ID), "batch-apply", input)); !errors.Is(err, mutation.ErrConflict) {
+					t.Fatalf("changed batch replay=%v", err)
+				}
+				read := operatortool.Call{Name: "get_git_hub_batch", Arguments: json.RawMessage(`{"project_id":"` + string(f.project.ID) + `","limit":1}`)}
+				result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read)
+				if err != nil || strings.Contains(string(result.Content), "credential-secret") || !strings.Contains(string(result.Content), `"next_cursor":"1"`) {
+					t.Fatalf("batch page=%s %v", result.Content, err)
+				}
+				var envelope struct {
+					Data projectBatchPage `json:"data"`
+				}
+				if json.Unmarshal(result.Content, &envelope) != nil || len(envelope.Data.Batch.Items) != 1 || len(envelope.Data.Batch.Page.Issues) != 1 {
+					t.Fatalf("batch bounds=%s", result.Content)
+				}
+				input.Action, input.AllowDispatch = "apply", true
+				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "dispatch-preview", input)); !errors.Is(err, errProjectServiceUnavailable) {
+					t.Fatalf("unapproved dispatch=%v", err)
+				}
+				input.AllowDispatch = false
+				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "stale-batch", input)); !errors.Is(err, mutation.ErrConflict) {
+					t.Fatalf("stale batch=%v", err)
+				}
+				other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-batch")
+				read.Arguments = json.RawMessage(`{"project_id":"` + string(other.project.ID) + `"}`)
+				result, err = e.Execute(ctx, read)
+				if err != nil || strings.Contains(string(result.Content), f.batch.ID) {
+					t.Fatalf("cross-project batch=%s %v", result.Content, err)
+				}
+				return
+			}
 			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 12, 13, 14}, Destination: "Todo"}, http.StatusUnprocessableEntity)
 			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 12, 13, 14}}, http.StatusOK)
 			if len(f.batch.Items) != 3 || f.batch.Destination != "Backlog" {

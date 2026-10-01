@@ -3012,44 +3012,70 @@ func TestProjectKanbanBoardShowsRecentTerminalCompletion(t *testing.T) {
 	}
 }
 
-func TestProjectKanbanBoardRestoresRecentTerminalCompletionFromWorkAttempt(t *testing.T) {
+// Catches durable timestamps being replaced by session timestamps, cross-project
+// deduplication, and incorrect inclusion at either edge of the 48-hour window.
+func TestProjectKanbanBoardRestoresRecentCompletions(t *testing.T) {
 	t.Parallel()
-
 	now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
 	completedAt := now.Add(-25 * time.Hour)
-	board := projectKanbanBoardView(DashboardData{
-		Kanban: KanbanData{
-			States:         []string{"Todo", "Done"},
-			TerminalStates: []string{"Done"},
-		},
-		Snapshot: telemetry.Snapshot{
-			GeneratedAt: now,
-			WorkAttempts: []telemetry.WorkAttempt{{
-				AttemptID:     1385,
-				ProjectID:     "detent",
-				IssueID:       "issue-1385",
-				Identifier:    "digitaldrywood/detent#1385",
-				IssueURL:      "https://github.com/digitaldrywood/detent/issues/1385",
-				Status:        "terminal",
-				CompletedAt:   &completedAt,
-				TerminalState: "success",
-				Phase:         "completed",
-				StatusMessage: "worker reached terminal state",
-			}},
-		},
-	})
-
-	if len(board.AllLanes) != 2 || len(board.AllLanes[1].Cards) != 1 {
-		t.Fatalf("lanes = %#v, want durable Done card", board.AllLanes)
+	legacy := telemetry.WorkAttempt{
+		AttemptID: 1385, ProjectID: "detent", IssueID: "issue-1385",
+		Identifier: "digitaldrywood/detent#1385", IssueURL: "https://github.com/digitaldrywood/detent/issues/1385",
+		Status: "terminal", CompletedAt: &completedAt, TerminalState: "success",
+		Phase: "completed", StatusMessage: "worker reached terminal state",
 	}
-	if got := board.AllLanes[1].Cards[0].Identifier; got != "digitaldrywood/detent#1385" {
-		t.Fatalf("Done card identifier = %q", got)
+	shipped := func(project, state string, at time.Time) telemetry.Completed {
+		return telemetry.Completed{Issue: telemetry.Issue{ID: legacy.IssueID, Identifier: legacy.Identifier, ProjectID: project, State: state, Title: "Durable completion"}, CompletedAt: at, FinalState: state}
 	}
-	if got := board.AllLanes[1].Cards[0].IssueNumber; got != "#1385" {
-		t.Fatalf("Done card issue number = %q, want #1385", got)
-	}
-	if !board.AllLanes[1].Cards[0].RecentCompletion {
-		t.Fatalf("Done card should be marked as a recent completion")
+	for _, tt := range []struct {
+		name, selected   string
+		shipped, runtime []telemetry.Completed
+		attempts         []telemetry.WorkAttempt
+		want             int
+		wantAt           time.Time
+	}{
+		{name: "legacy terminal attempt", attempts: []telemetry.WorkAttempt{legacy}, want: 1, wantAt: completedAt},
+		{name: "native merge without terminal attempt", shipped: []telemetry.Completed{shipped("detent", "Done", completedAt)}, want: 1, wantAt: completedAt},
+		{name: "runtime terminal completion", runtime: []telemetry.Completed{shipped("detent", "Done", completedAt)}, want: 1, wantAt: completedAt},
+		{name: "durable timestamp wins over runtime and repeated sessions", shipped: []telemetry.Completed{shipped("detent", "Done", now.Add(-26*time.Hour))}, runtime: []telemetry.Completed{shipped("detent", "Done", now)}, attempts: []telemetry.WorkAttempt{legacy, legacy}, want: 1, wantAt: now.Add(-26 * time.Hour)},
+		{name: "same issue ID in different projects", shipped: []telemetry.Completed{shipped("detent", "Done", completedAt), shipped("docs", "Released", completedAt)}, want: 2, wantAt: completedAt},
+		{name: "selected project", selected: "detent", shipped: []telemetry.Completed{shipped("detent", "Done", completedAt), shipped("docs", "Released", completedAt)}, want: 1, wantAt: completedAt},
+		{name: "inclusive cutoff", shipped: []telemetry.Completed{shipped("detent", "Done", now.Add(-48*time.Hour))}, want: 1, wantAt: now.Add(-48 * time.Hour)},
+		{name: "before cutoff", shipped: []telemetry.Completed{shipped("detent", "Done", now.Add(-48*time.Hour-time.Nanosecond))}},
+		{name: "inclusive observation time", shipped: []telemetry.Completed{shipped("detent", "Done", now)}, want: 1, wantAt: now},
+		{name: "future completion", shipped: []telemetry.Completed{shipped("detent", "Done", now.Add(time.Nanosecond))}},
+		{name: "nonterminal target", shipped: []telemetry.Completed{shipped("detent", "Merging", completedAt)}},
+		{name: "old durable delivery cannot be refreshed by a session", shipped: []telemetry.Completed{shipped("detent", "Done", now.Add(-49*time.Hour))}, attempts: []telemetry.WorkAttempt{legacy}},
+		{name: "legacy runtime inherits single project for deduplication", shipped: []telemetry.Completed{shipped("detent", "Done", completedAt)}, runtime: []telemetry.Completed{shipped("", "Done", now)}, want: 1, wantAt: completedAt},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := DashboardData{
+				ProjectID: tt.selected,
+				Kanban:    KanbanData{States: []string{"Todo", "Done", "Released"}, TerminalStates: []string{"Done"}, TerminalStatesByProject: map[string][]string{"docs": {"Released"}}},
+				Snapshot:  telemetry.Snapshot{GeneratedAt: now, Project: telemetry.Project{ID: "detent"}, Shipped: tt.shipped, Completed: tt.runtime, WorkAttempts: tt.attempts},
+			}
+			rows := projectKanbanRecentCompletions(data)
+			if len(rows) != tt.want || boardFiguresFromDashboard(data)[4].Value != strconv.Itoa(tt.want) {
+				t.Fatalf("recent completions = %+v, want %d", rows, tt.want)
+			}
+			for _, row := range rows {
+				if !row.completedAt.Equal(tt.wantAt) {
+					t.Fatalf("completion time = %s, want %s", row.completedAt, tt.wantAt)
+				}
+			}
+			var cards []projectKanbanCard
+			for _, lane := range projectKanbanBoardView(data).AllLanes {
+				cards = append(cards, lane.Cards...)
+			}
+			if len(cards) != tt.want {
+				t.Fatalf("cards = %+v, want %d durable cards", cards, tt.want)
+			}
+			for _, card := range cards {
+				if !card.RecentCompletion || card.Movable || card.IssueNumber != "#1385" {
+					t.Fatalf("completion card = %+v, want immovable recent issue #1385", card)
+				}
+			}
+		})
 	}
 }
 

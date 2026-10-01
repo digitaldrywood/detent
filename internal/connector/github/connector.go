@@ -94,6 +94,7 @@ type Config struct {
 	StateMap                   map[string]string
 	PriorityMap                map[string]*int
 	RequiredStatusChecks       []string
+	LocalStatus                string
 	TokenSource                TokenSource
 	HTTPClient                 HTTPClient
 	HTTPTransport              HTTPTransportConfig
@@ -128,11 +129,11 @@ type Connector struct {
 	terminalStates      []string
 	stateMap            map[string]string
 	priorityMap         map[string]*int
+	localStatus         string
 	requiredChecks      []string
 	unstartedThreshold  time.Duration
 	dependencySource    string
 	dependencyCaps      map[string]nativeDependencyCapability
-	dependencyComments  map[issueRef]dependencyCommentEvidence
 	statusCache         *statusCache
 	issueFields         *issueFieldCache
 	projectCache        *projectCache
@@ -253,6 +254,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		stateMap:           cloneStateMap(cfg.StateMap),
 		priorityMap:        clonePriorityMapWithDefault(cfg.PriorityMap),
 		requiredChecks:     normalizeRequiredStatusChecks(cfg.RequiredStatusChecks),
+		localStatus:        strings.TrimSpace(cfg.LocalStatus),
 		unstartedThreshold: unstartedThreshold,
 		dependencySource:   normalizeDependencySource(cfg.DependencySource),
 		dependencyCaps:     map[string]nativeDependencyCapability{},

@@ -23,10 +23,7 @@ func TestProjectArgumentBounds(t *testing.T) {
 		{"null input", `{"input":null}`, func() any { return &ProjectRequest[struct{}]{} }, true},
 		{"negative issue", `{"input":{"issue_number":-1}}`, func() any { return &ProjectRequest[ImportStartInput]{} }, true},
 		{"too many states", `{"input":{"states":[` + strings.TrimSuffix(strings.Repeat(`{},`, 201), ",") + `]}}`, func() any { return &ProjectRequest[ProjectCreateInput]{} }, true},
-		{"long reason", `{"input":{"reason":"` + strings.Repeat("x", 1121) + `"}}`, func() any { return &ProjectRequest[BudgetInput]{} }, true},
-		{"negative budget", `{"input":{"per_day_max_usd":-1}}`, func() any { return &ProjectRequest[BudgetInput]{} }, true},
-		{"oversized budget", `{"input":{"per_day_max_usd":1e10}}`, func() any { return &ProjectRequest[BudgetInput]{} }, true},
-		{"bounded budget", `{"input":{"per_day_max_usd":100,"duration":"4h","reason":"release"}}`, func() any { return &ProjectRequest[BudgetInput]{} }, false},
+		{"too many intake numbers", `{"input":{"numbers":[` + strings.TrimSuffix(strings.Repeat(`1,`, 201), ",") + `]}}`, func() any { return &ProjectRequest[GitHubBatchInput]{} }, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := DecodeProjectArguments(json.RawMessage(tt.raw), tt.target())

@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activity"
+	"github.com/digitaldrywood/detent/internal/apikey"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	web "github.com/digitaldrywood/detent/internal/web"
@@ -299,14 +302,31 @@ func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
 	}
 
 	deps := testDeps(t)
+	workflow := workflowconfig.Default()
+	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflow.Tracker.Repository = "example/repo"
+	workflow.Tracker.APIKey = "fixture"
+	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "detent", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: workflow}}, project.Dependencies{Connector: deps.Connector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Registry.Set(tracked); err != nil {
+		t.Fatal(err)
+	}
+
 	deps.Store = backend
 	deps.History = fixedHistoryReader{page: activity.HistoryPage{
 		Events:  []activity.Event{{At: at, Kind: "assistant", Title: "Agent", Content: "rollout output"}},
 		Limit:   50,
 		HasMore: true,
 	}}
-	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}}); err != nil {
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: at, BoardIssues: []telemetry.Issue{issue}}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
+	}
+	readKey, err := apikey.NewService(backend).Create(t.Context(), apikey.CreateRequest{Name: "Rollout read", Scopes: []string{"read"}, ProjectIDs: []string{"detent"}, ExpiresIn: "90d"})
+	if err != nil {
+		t.Fatal(err)
 	}
 	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
 	if err != nil {
@@ -326,6 +346,17 @@ func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
 	for _, want := range []string{"Provider rollout history", "rollout output", "Load older rollout events", "min-w-max whitespace-pre text-left", "display=full"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("rollout history missing %q:\n%s", want, body)
+		}
+	}
+
+	// The operator tools expose the same persisted session and rollout model.
+	for _, test := range []struct{ tool, want string }{
+		{"board_session", "thread-1156"},
+		{"board_session_history", "rollout output"},
+	} {
+		response := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/"+test.tool, `{"project_id":"detent","reference":"issue-1156"}`, map[string]string{"Authorization": "Bearer " + readKey.Token})
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), test.want) {
+			t.Fatalf("%s=%d %s", test.tool, response.Code, response.Body)
 		}
 	}
 }

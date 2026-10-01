@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/operatortool/capability"
 	"os"
 	"path/filepath"
+
+	"github.com/digitaldrywood/detent/internal/operatortool/capability"
 )
 
 func main() {

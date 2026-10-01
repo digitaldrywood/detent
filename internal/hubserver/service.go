@@ -18,7 +18,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
-	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -29,8 +29,8 @@ const (
 )
 
 type Service struct {
-	operatorChat      *chatpkg.Service
 	mcpHTTP           *mcp.HTTPHandler
+	operatorChat      *chat.Service
 	billing           *hostedBillingWorker
 	hostedMutationMu  sync.Mutex
 	hostedAuthLogger  *slog.Logger

@@ -131,3 +131,69 @@ func (s *sqliteStore) RecordLaneWriteAction(ctx context.Context, token uint64, o
 	}
 	return requireAffected(rows, "lane write", int64(token))
 }
+
+// ShippedOutcome is a verified delivery recorded by the existing lane writer.
+// It does not imply that a worker session ended successfully.
+type ShippedOutcome struct {
+	IssueIdentity
+	State       string
+	CompletedAt time.Time
+	PRNumber    int64
+}
+
+// ShippedOutcomeStore projects deliveries from the lane ledger without creating
+// another completion owner or requiring a worker attempt.
+type ShippedOutcomeStore interface {
+	ShippedOutcomes(context.Context) ([]ShippedOutcome, error)
+}
+
+// The applied writer ledger records verified deliverables, unlike observed Done
+// cards or successful sessions. Keep the first such outcome for an issue across
+// all history so a repeated/imported observation cannot move it to another day.
+func (s *sqliteStore) ShippedOutcomes(ctx context.Context) ([]ShippedOutcome, error) {
+	rows, err := s.db.QueryContext(ctx, `
+WITH outcomes AS (
+ SELECT id, project_id, issue_id, to_state, written_at,
+   ROW_NUMBER() OVER (PARTITION BY project_id, issue_id ORDER BY julianday(written_at), id) AS ordinal
+ FROM lane_ledger AS lane
+ WHERE result = 'applied' AND (
+   reason IN ('merge_worker_programmatic_merge', 'pull_request_merged',
+     'closed_completed_running_done', 'issue_closed_completed', 'operational_completion')
+   OR (reason = 'ready' AND EXISTS (
+     SELECT 1 FROM workflow_phase_events AS phase
+     WHERE phase.project_id = lane.project_id AND phase.issue_id = lane.issue_id
+       AND phase.phase_type = 'lane' AND phase.status = 'entered'
+       AND phase.phase_name = lane.to_state AND phase.started_at = lane.written_at
+       AND json_extract(phase.metadata_json, '$.terminal_outcome') = 'artifact'
+   ))
+ )
+)
+SELECT outcome.project_id, outcome.issue_id, outcome.to_state, outcome.written_at,
+ COALESCE(phase.identifier, ''), COALESCE(phase.issue_url, ''), COALESCE(phase.pr_number, 0)
+FROM outcomes AS outcome
+LEFT JOIN workflow_phase_events AS phase ON phase.id = (
+ SELECT id FROM workflow_phase_events
+ WHERE project_id = outcome.project_id AND issue_id = outcome.issue_id
+ ORDER BY id DESC LIMIT 1
+)
+WHERE outcome.ordinal = 1
+ORDER BY outcome.project_id, outcome.issue_id`)
+	if err != nil {
+		return nil, fmt.Errorf("read shipped outcomes: %w", err)
+	}
+	defer rows.Close()
+	var outcomes []ShippedOutcome
+	for rows.Next() {
+		var outcome ShippedOutcome
+		var at string
+		if err := rows.Scan(&outcome.ProjectID, &outcome.IssueID, &outcome.State, &at, &outcome.Identifier, &outcome.IssueURL, &outcome.PRNumber); err != nil {
+			return nil, err
+		}
+		outcome.CompletedAt, err = parseStoredTime(at)
+		if err != nil {
+			return nil, err
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes, rows.Err()
+}

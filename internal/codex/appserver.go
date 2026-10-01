@@ -2075,9 +2075,12 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		ThreadID string `json:"threadId"`
 		TurnID   string `json:"turnId"`
 		Item     struct {
-			ID               string          `json:"id"`
-			Type             string          `json:"type"`
-			Command          string          `json:"command"`
+			ID             string `json:"id"`
+			Type           string `json:"type"`
+			Command        string `json:"command"`
+			CommandActions []struct {
+				Command string `json:"command"`
+			} `json:"commandActions"`
 			Arguments        json.RawMessage `json:"arguments"`
 			Status           string          `json:"status"`
 			ExitCode         *int            `json:"exitCode"`
@@ -2104,6 +2107,19 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		params.Item.Command,
 		compactNonNullJSON(params.Item.Arguments),
 	)
+	if msg.Method == "item/started" && params.Item.Type == "commandExecution" && len(params.Item.CommandActions) > 0 {
+		commands := make([]string, 0, len(params.Item.CommandActions))
+		for _, action := range params.Item.CommandActions {
+			if strings.TrimSpace(action.Command) == "" {
+				commands = nil
+				break
+			}
+			commands = append(commands, action.Command)
+		}
+		if len(commands) > 0 {
+			content = strings.Join(commands, "; ")
+		}
+	}
 	errorBody := ""
 	errorMessage := ""
 	updateType := UpdateToolStarted

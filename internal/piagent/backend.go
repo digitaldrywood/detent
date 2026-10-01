@@ -35,7 +35,7 @@ var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
 func NewAgentBackend(options Options) (*AgentBackend, error) {
 	if options.CommandFactory == nil {
 		options.CommandFactory = func(ctx context.Context, args []string) *exec.Cmd {
-			return exec.CommandContext(ctx, "pi", args...)
+			return exec.CommandContext(ctx, "pi", args...) // #nosec G204 -- the fixed Pi executable receives backend-built RPC arguments directly without a shell.
 		}
 	}
 	return &AgentBackend{options: options}, nil
@@ -80,7 +80,7 @@ func (b *AgentBackend) argv(ctx context.Context, req runner.AgentTurnRequest) ([
 		return nil, runner.ErrAgentResumeUnsupported
 	}
 	if req.ReadOnly {
-		return nil, &infrastructureError{err: errors.New("Pi backend cannot enforce read-only execution")}
+		return nil, &infrastructureError{err: errors.New("pi backend cannot enforce read-only execution")}
 	}
 	policy, pinned := isolation.FromContext(ctx)
 	if !pinned && b.options.IsolationPolicy != nil {
@@ -92,13 +92,13 @@ func (b *AgentBackend) argv(ctx context.Context, req runner.AgentTurnRequest) ([
 		pinned = true
 	}
 	if pinned && policy.Tier != isolation.NativeTrusted {
-		return nil, &infrastructureError{err: fmt.Errorf("Pi backend requires native-trusted isolation: %w", isolation.ErrSandboxUnavailable)}
+		return nil, &infrastructureError{err: fmt.Errorf("pi backend requires native-trusted isolation: %w", isolation.ErrSandboxUnavailable)}
 	}
 	if req.RequireSubscriptionAuth {
 		return nil, runner.ErrSubscriptionAuthRequired
 	}
 	if req.SupplementalTools {
-		return nil, &infrastructureError{err: errors.New("Pi backend does not support Detent dynamic tools")}
+		return nil, &infrastructureError{err: errors.New("pi backend does not support Detent dynamic tools")}
 	}
 	args := []string{"--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-approve"}
 	provider := b.options.Provider

@@ -36,6 +36,14 @@ func ActionSummary(action Action) string {
 		return summary
 	case ActionFileIssue:
 		return fmt.Sprintf("File %q on %s", action.Title, action.ProjectID)
+	case ActionKind(operatortool.BillingCheckout):
+		return "Create subscription checkout for " + action.Identifier
+	case ActionKind(operatortool.BillingPortal):
+		return "Open billing portal for " + action.Identifier
+	case ActionKind(operatortool.BudgetOverrideSet):
+		return "Set budget override for " + action.ProjectID
+	case ActionKind(operatortool.BudgetOverrideClear):
+		return "Clear budget override for " + action.ProjectID
 	default:
 		if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" && !definition.Annotations.ReadOnly {
 			summary := strings.ReplaceAll(string(action.Kind), "_", " ")
@@ -43,6 +51,9 @@ func ActionSummary(action Action) string {
 				summary += " for project " + action.ProjectID
 			}
 			return summary
+		}
+		if operatortool.IsWorkTool(string(action.Kind)) {
+			return fmt.Sprintf("%s on %s", strings.ReplaceAll(string(action.Kind), "_", " "), actionLabel(action))
 		}
 		return "Unknown operator action"
 	}

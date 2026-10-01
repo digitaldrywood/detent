@@ -1,13 +1,13 @@
 package hubserver
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
@@ -26,7 +26,7 @@ func (s *Service) operatorProjectBrowser(next echo.HandlerFunc) echo.HandlerFunc
 		}
 		if c.Request().Method == http.MethodPost {
 			c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
-			if !hmac.Equal([]byte(c.FormValue("form_token")), []byte(s.projectDecisionToken(c, c.FormValue("connection_id"), c.FormValue("action_id")))) {
+			if !hmac.Equal([]byte(c.FormValue("form_token")), []byte(s.billingDecisionToken(c, c.FormValue("connection_id"), c.FormValue("action_id")))) {
 				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 			}
 		}
@@ -46,17 +46,14 @@ func (s *Service) operatorProjectBrowser(next echo.HandlerFunc) echo.HandlerFunc
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 		}
 		for _, action := range conversation.Actions {
-			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), ProjectID: action.ProjectID}); err != nil {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-			}
-			if err := (hubProjectExecutor{s}).authorizeCreatedProjectResult(c.Request().Context(), string(action.Kind), json.RawMessage(action.Result), action.Status); err != nil {
+			if err := s.authorizeOperatorPreview(c.Request().Context(), action); err != nil {
 				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 			}
 		}
 		return next(c)
 	})
 }
-func (s *Service) projectDecisionToken(c echo.Context, id, actionID string) string {
+func (s *Service) billingDecisionToken(c echo.Context, id, actionID string) string {
 	conversation := s.operatorChat.Conversation(id)
 	if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
 		return ""
@@ -86,7 +83,7 @@ func (s *Service) projectDecisionToken(c echo.Context, id, actionID string) stri
 	mac.Write(payload)
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
-func (s *Service) projectApprovalPage(c echo.Context) error {
+func (s *Service) hostedOperatorApproval(c echo.Context) error {
 	id := c.QueryParam("connection_id")
 	conversation := s.operatorChat.Conversation(id)
 	if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
@@ -94,15 +91,15 @@ func (s *Service) projectApprovalPage(c echo.Context) error {
 	}
 	tokens := map[string]string{}
 	for _, action := range conversation.Actions {
-		tokens[action.ID] = s.projectDecisionToken(c, id, action.ID)
+		tokens[action.ID] = s.billingDecisionToken(c, id, action.ID)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
-	return templates.ChatApproval(templates.ChatData{Conversation: conversation, FormToken: s.projectDecisionToken(c, id, ""), ActionTokens: tokens, ApprovalCSRF: s.hostedPageCSRF(c), ApprovalBasePath: s.hostedBase()}).Render(c.Request().Context(), c.Response())
+	return templates.ChatApproval(templates.ChatData{Conversation: conversation, FormToken: s.billingDecisionToken(c, id, ""), ActionTokens: tokens, CSRF: s.hostedPageCSRF(c), ApprovalPath: s.hostedPath("/chat/approval"), ApprovalBasePath: s.hostedBase()}).Render(c.Request().Context(), c.Response())
 }
-func (s *Service) projectApprovalDecision(c echo.Context) error {
+func (s *Service) hostedOperatorDecision(c echo.Context) error {
 	id, actionID := c.FormValue("connection_id"), c.FormValue("action_id")
-	if token := s.projectDecisionToken(c, id, actionID); token == "" || !hmac.Equal([]byte(c.FormValue("form_token")), []byte(token)) {
+	if token := s.billingDecisionToken(c, id, actionID); token == "" || !hmac.Equal([]byte(c.FormValue("form_token")), []byte(token)) {
 		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 	}
 	ctx := c.Request().Context()
@@ -111,7 +108,7 @@ func (s *Service) projectApprovalDecision(c echo.Context) error {
 		if !ok {
 			return echo.NewHTTPError(http.StatusNotFound, "Action is unavailable")
 		}
-		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), ProjectID: action.ProjectID}); err != nil {
+		if err := s.authorizeOperatorPreview(ctx, action); err != nil {
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 		}
 	}
@@ -133,9 +130,20 @@ func (s *Service) projectApprovalDecision(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/chat/approval")+"?connection_id="+url.QueryEscape(id))
 }
 
-func (s *Service) projectApprovalBaseURL() string {
-	if s.config.Hosted == nil {
-		return ""
+func (s *Service) authorizeOperatorPreview(ctx context.Context, action chatpkg.Action) error {
+	definition, ok := operatortool.Lookup(string(action.Kind))
+	if !ok {
+		return operatortool.ErrAccessDenied
 	}
-	return strings.TrimRight(s.config.Hosted.PublicURL, "/") + s.hostedBase()
+	if definition.Meta.Toolset == "projects" && !definition.Annotations.ReadOnly {
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), ProjectID: action.ProjectID}); err != nil {
+			return err
+		}
+		return (hubProjectExecutor{s}).authorizeCreatedProjectResult(ctx, string(action.Kind), json.RawMessage(action.Result), action.Status)
+	}
+	if string(action.Kind) == operatortool.BillingCheckout || string(action.Kind) == operatortool.BillingPortal {
+		_, err := s.operatorBillingCredential(ctx, "billing", true)
+		return err
+	}
+	return operatortool.ErrAccessDenied
 }

@@ -88,16 +88,32 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 			switch path {
 			case "":
 				response = tracker.NativeProject{ID: "prj_example", OrganizationID: "org_example", Profile: "native", States: []tracker.NativeState{{Name: "Todo", Transitions: []string{"In Progress"}}, {Name: "In Progress"}}}
+			case "/labels":
+				response = map[string]any{"items": []tracker.NativeLabel{{Name: "bug", Count: 1}}}
+			case "/work-items":
+				response = tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{fixture.issue}}
 			case "/work-items/wi_example":
 				response = fixture.issue
+			case "/work-items/wi_visible":
+				response = tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_visible", OrganizationID: "org_example", ProjectID: "prj_example"}, Title: "Visible peer"}
 			case "/work-items/wi_example/history":
-				response = tracker.Page[tracker.CollaborationEvent]{}
+				page := tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{}}
+				for _, id := range fixture.issue.Dependencies {
+					page.Items = append(page.Items, tracker.CollaborationEvent{Data: tracker.CollaborationData{RelatedWorkItemID: id}})
+				}
+				response = page
 			case "/work-items/wi_example/comments":
 				response = tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{{ID: "cmt_example", Revision: 7, Body: "Discussion <img src=x onerror=unsafe()>", Provenance: &tracker.Provenance{Provider: "github", AuthorID: "contributor"}}}, NextCursor: "next-page"}
 			case "/work-items/wi_example/attempts":
 				response = tracker.Page[tracker.NativeAttempt]{}
 			case "/work-items/wi_example/changes":
 				response = []tracker.ChangeRequest{}
+			case "/work-items/wi_example/artifacts":
+				response = []map[string]any{{"artifact_id": "artifact_example", "version_id": "version_example", "availability": "available", "kind": "diff", "revision": 1, "expires_at": "2099-01-01T00:00:00Z"}}
+			case "/work-items/wi_example/pull-requests":
+				response = []hubclient.NativePullRequestReference{{Number: 10, URL: "https://github.com/example/repo/pull/10"}}
+			case "/work-items/wi_example/versions/7":
+				response = fixture.issue
 			default:
 				w.WriteHeader(http.StatusNotFound)
 				response = map[string]string{"code": "not_found"}

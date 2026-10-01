@@ -19,7 +19,6 @@ import (
 
 var errProjectServiceUnavailable = errors.New("project operation is unavailable")
 
-type hubOperatorScopeKey struct{}
 type hubProjectExecutor struct{ service *Service }
 
 func (e hubProjectExecutor) OpenConnection(ctx context.Context) error {
@@ -33,7 +32,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "approve_change_review_policy", "revoke_project_policy", "remove_project_secret":
+	case "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "approve_change_review_policy", "revoke_project_policy", "remove_project_secret":
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -44,7 +43,7 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 	}
 	defs := []operatortool.Definition{}
 	for _, d := range operatortool.ProjectCatalog() {
-		if d.Name == "project_settings" || d.Name == "set_budget_override" || d.Name == "clear_budget_override" {
+		if d.Name == "project_settings" || d.Name == "demo_setup_scenarios" {
 			continue
 		}
 		if e.service.config.Hosted == nil && d.Name == "create_hosted_project" || e.service.config.Hosted != nil && d.Name == "create_native_project" {
@@ -148,12 +147,11 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 	return e.actionResult(action)
 }
 func (e hubProjectExecutor) actionResult(action chatpkg.Action) (operatortool.Result, error) {
-	base := e.service.operatorChat.Conversation(action.ConnectionID).ApprovalBaseURL
 	return hubProjectResult(struct {
 		chatpkg.Action
 		ApprovalURL string `json:"approval_url"`
 		ResultTool  string `json:"result_tool"`
-	}{action, base + "/chat/approval?connection_id=" + url.QueryEscape(action.ConnectionID), operatortool.ActionResult})
+	}{action, e.service.billingApprovalURL(action.ConnectionID), operatortool.ActionResult})
 }
 
 func hubProjectResult(value any) (operatortool.Result, error) {
@@ -229,7 +227,7 @@ func (e hubProjectExecutor) connectionRead(ctx context.Context, call operatortoo
 			ConnectionID string                 `json:"connection_id"`
 			Mode         chatpkg.ConnectionMode `json:"mode"`
 			SetupURL     string                 `json:"setup_url"`
-		}{c.ID, e.service.operatorChat.Conversation(c.ID).Mode, e.service.projectApprovalBaseURL() + "/chat/approval?connection_id=" + url.QueryEscape(c.ID)})
+		}{c.ID, e.service.operatorChat.Conversation(c.ID).Mode, e.service.operatorDashboardURL() + "/chat/approval?connection_id=" + url.QueryEscape(c.ID)})
 	}
 	if request.ActionID == "" {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -263,9 +261,9 @@ const (
 
 func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call, mode projectCommandMode) (json.RawMessage, error) {
 	s := e.service
-	scope, ok := ctx.Value(hubOperatorScopeKey{}).(nativeScope)
-	if !ok {
-		return nil, operatortool.ErrAccessDenied
+	scope, err := e.projectScope(ctx)
+	if err != nil {
+		return nil, err
 	}
 	var operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)
 	var input any
@@ -350,6 +348,18 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		request := CutoverRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ClosedState: r.Input.ClosedState, DryRun: r.Input.DryRun, Checkpoint: r.Input.Checkpoint, AcceptPartial: r.Input.AcceptPartial, CloseSource: r.Input.CloseSource, DestinationURL: r.Input.DestinationURL, States: r.Input.States, InitialState: r.Input.InitialState}
 		input = request
 		operation = s.cutoverProjectOperation(request)
+	case "command_git_hub_batch":
+		r, err := projectCommandInput[operatortool.GitHubBatchInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if r.Input.Action != "discover" && r.Input.Action != "more" && r.Input.Action != "apply" && r.Input.Action != "retry" {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		request := tracker.GitHubBatchCommand{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Revision: r.Input.Revision, Action: r.Input.Action, RunnerID: r.Input.RunnerID, Labels: r.Input.Labels, IncludeClosed: r.Input.IncludeClosed, Numbers: r.Input.Numbers, Destination: r.Input.Destination, AllowDispatch: r.Input.AllowDispatch}
+		input = request
+		operation = s.commandGitHubBatchOperation(request)
 	case "approve_project_policy":
 		r, err := projectCommandInput[operatortool.PolicyApprovalInput](call.Arguments)
 		if err != nil {
@@ -430,11 +440,16 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		scope.project = tracker.ProjectID(r.ProjectID)
 		scope.requireHostedAdmin = true
 		request := bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Repository: r.Input.Repository, Source: r.Input.Source}
+		suffix, feature := "/integration/repository", "github_integration"
+		if r.Input.Source == "runner_checkout" {
+			suffix, feature = "/onboarding/repository", "collaboration"
+		}
+		options := nativeCommandOptions{OperationID: projectOperationID(scope, "POST", suffix), Feature: feature}
 		if mode == projectCommandReplay {
-			raw, _, err := s.nativeCommandReplay(ctx, scope, projectOperationID(scope, "POST", "/integration/repository"), r.RequestID, request)
+			raw, _, err := s.nativeCommandReplay(ctx, scope, options.OperationID, r.RequestID, request)
 			return raw, err
 		}
-		return s.bindNativeRepositoryCommand(ctx, scope, nativeCommandOptions{Operation: projectOperationID(scope, "POST", "/integration/repository"), Feature: "github_integration"}, request)
+		return s.bindNativeRepositoryCommand(ctx, scope, options, request)
 	case "advance_git_hub_import":
 		r, err := projectCommandInput[operatortool.ImportAdvanceInput](call.Arguments)
 		if err != nil {
@@ -463,7 +478,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 	}
 	scope.project = tracker.ProjectID(projectID)
 	scope.requireHostedAdmin = projectToolScope(call.Name, false) == apikey.ScopeAdmin
-	suffix := map[string]string{"create_native_project": "", "create_hosted_project": "", "save_onboarding": "/onboarding", "update_project_integration": "/integration", "start_git_hub_import": "/imports", "cutover_project": "/integration/cutover", "approve_project_policy": "/policy", "approve_change_review_policy": "/change-review-policy", "revoke_project_policy": "/policy", "remove_project_secret": "/secrets/" + flySpritesToken, "project_native_summary": "/work-items/" + resourceID + "/projection"}[call.Name]
+	suffix := map[string]string{"command_git_hub_batch": "/onboarding/issue-intake", "create_native_project": "", "create_hosted_project": "", "save_onboarding": "/onboarding", "update_project_integration": "/integration", "start_git_hub_import": "/imports", "cutover_project": "/integration/cutover", "approve_project_policy": "/policy", "approve_change_review_policy": "/change-review-policy", "revoke_project_policy": "/policy", "remove_project_secret": "/secrets/" + flySpritesToken, "project_native_summary": "/work-items/" + resourceID + "/projection"}[call.Name]
 	method := "POST"
 	switch call.Name {
 	case "save_onboarding", "update_project_integration", "approve_project_policy", "approve_change_review_policy":
@@ -475,7 +490,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		raw, _, err := s.nativeCommandReplay(ctx, scope, projectOperationID(scope, method, suffix), requestID, input)
 		return raw, err
 	}
-	return s.runNativeCommand(ctx, scope, nativeCommandOptions{Operation: projectOperationID(scope, method, suffix), Feature: feature}, tracker.Mutation{IdempotencyKey: requestID}, input, operation)
+	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: projectOperationID(scope, method, suffix), Feature: feature}, tracker.Mutation{IdempotencyKey: requestID}, input, operation)
 }
 func projectOperationID(scope nativeScope, method, suffix string) string {
 	path := "/api/v2/organizations/" + string(scope.organization) + "/projects"
@@ -486,6 +501,17 @@ func projectOperationID(scope nativeScope, method, suffix string) string {
 }
 
 func safeProjectCommandResult(name string, raw json.RawMessage) (json.RawMessage, error) {
+	if name == "command_git_hub_batch" {
+		var view githubBatchView
+		if json.Unmarshal(raw, &view) != nil {
+			return nil, errProjectServiceUnavailable
+		}
+		page, err := boundedProjectBatch(view, operatortool.ProjectReadRequest{Limit: 200})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(page)
+	}
 	if name != "advance_git_hub_import" && name != "start_git_hub_import" {
 		return raw, nil
 	}
@@ -509,4 +535,16 @@ func (e hubProjectExecutor) authorizeCreatedProjectResult(ctx context.Context, n
 	}
 	_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(project.ID)})
 	return err
+}
+
+func (e hubProjectExecutor) projectScope(ctx context.Context) (nativeScope, error) {
+	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	if !ok {
+		return nativeScope{}, operatortool.ErrAccessDenied
+	}
+	scope, err := resolve(ctx)
+	if err != nil {
+		return nativeScope{}, operatortool.ErrAccessDenied
+	}
+	return scope, nil
 }

@@ -109,6 +109,14 @@ func (s *Service) changeWorkItemPriority(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
+	result, err := s.workItemPriorityCommand(c.Request().Context(), id, request)
+	if err != nil {
+		return operatorAPIError(c, err)
+	}
+	return c.JSON(http.StatusAccepted, result)
+}
+
+func (s *Service) workItemPriorityCommand(ctx context.Context, id tracker.WorkItemID, request priorityMutationRequest) (mutationResponse, error) {
 	request.Scope = strings.TrimSpace(request.Scope)
 	request.State = strings.TrimSpace(request.State)
 	request.Priority = strings.ToLower(strings.TrimSpace(request.Priority))
@@ -122,11 +130,11 @@ func (s *Service) changeWorkItemPriority(c echo.Context) error {
 		priority = &level
 	}
 	if request.Scope == "" || request.State == "" || (!ok && !removing) {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_priority", Message: "Scope, state, and a valid priority are required"})
+		return mutationResponse{}, nativeInvalid("Scope, state, and a valid priority are required")
 	}
-	repositoryID, err := s.database.workItemRepositoryID(c.Request().Context(), id)
+	repositoryID, err := s.database.workItemRepositoryID(ctx, id)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return mutationResponse{}, err
 	}
 	mutation := WorkflowLabelMutation{
 		IdempotencyKey: request.IdempotencyKey,
@@ -141,15 +149,15 @@ func (s *Service) changeWorkItemPriority(c echo.Context) error {
 	}
 	record, err := mutation.outboxRecord()
 	if err != nil {
-		return operatorAPIError(c, err)
+		return mutationResponse{}, err
 	}
-	item, err := s.commitOutbox(c.Request().Context(), record, func(tx *sql.Tx, now string) error {
-		return upsertQueueEntry(c.Request().Context(), tx, id, request.Scope, request.State, "", priority, removing, now)
+	item, err := s.commitOutbox(ctx, record, func(tx *sql.Tx, now string) error {
+		return upsertQueueEntry(ctx, tx, id, request.Scope, request.State, "", priority, removing, now)
 	})
 	if err != nil {
-		return operatorAPIError(c, err)
+		return mutationResponse{}, err
 	}
-	return c.JSON(http.StatusAccepted, mutationResponse{WorkItemID: id, Kind: "priority", Status: "pending", OutboxID: item.ID})
+	return mutationResponse{WorkItemID: id, Kind: "priority", Status: "pending", OutboxID: item.ID}, nil
 }
 
 func (s *Service) changeWorkItemOrder(c echo.Context) error {
@@ -209,44 +217,11 @@ func (d *database) changeDependency(ctx context.Context, id tracker.WorkItemID, 
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
-	if err := requireWorkItem(ctx, tx, id); err != nil {
-		return err
-	}
-	if err := authorizeClaimItem(ctx, tx, request.BlockerWorkItemID, nil); err != nil {
-		return err
-	}
 	now, err := d.currentTime()
 	if err != nil {
 		return err
 	}
-	if request.Action == "add" {
-		var createsCycle bool
-		if err := tx.QueryRowContext(ctx, `
-WITH RECURSIVE descendants(id) AS (
-  SELECT dependent_issue_id FROM issue_dependencies WHERE blocker_issue_id = ?
-  UNION
-  SELECT dependency.dependent_issue_id
-  FROM issue_dependencies dependency
-  JOIN descendants ON dependency.blocker_issue_id = descendants.id
-)
-SELECT EXISTS(SELECT 1 FROM descendants WHERE id = ?)`, id, request.BlockerWorkItemID).Scan(&createsCycle); err != nil {
-			return fmt.Errorf("validate hub dependency graph: %w", err)
-		}
-		if createsCycle {
-			return errors.New("dependency would create a cycle")
-		}
-		_, err = tx.ExecContext(ctx, `
-INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(blocker_issue_id, dependent_issue_id) DO UPDATE SET provenance = excluded.provenance, updated_at = excluded.updated_at`,
-			request.BlockerWorkItemID, id, request.Provenance, formatHubTime(now), formatHubTime(now))
-	} else {
-		_, err = tx.ExecContext(ctx, "DELETE FROM issue_dependencies WHERE blocker_issue_id = ? AND dependent_issue_id = ?", request.BlockerWorkItemID, id)
-	}
-	if err != nil {
-		return fmt.Errorf("apply hub dependency mutation: %w", err)
-	}
-	if err := insertOperatorEvent(ctx, tx, id, "dependency_"+request.Action, map[string]any{"blocker_work_item_id": request.BlockerWorkItemID, "provenance": request.Provenance}, now); err != nil {
+	if err := changeDependencyTx(ctx, tx, id, request, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -269,10 +244,7 @@ func (d *database) changeQueueOrder(ctx context.Context, id tracker.WorkItemID, 
 	if err != nil {
 		return err
 	}
-	if err := upsertQueueEntry(ctx, tx, id, request.Scope, request.State, request.Rank, nil, false, formatHubTime(now)); err != nil {
-		return err
-	}
-	if err := insertOperatorEvent(ctx, tx, id, "queue_order_changed", map[string]any{"scope": request.Scope, "state": request.State, "rank": request.Rank}, now); err != nil {
+	if err := changeQueueOrderTx(ctx, tx, id, request, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -359,4 +331,55 @@ func queuePriority(value string) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func changeDependencyTx(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, request dependencyMutationRequest, now time.Time) error {
+	if err := requireWorkItem(ctx, tx, id); err != nil {
+		return err
+	}
+	if err := authorizeClaimItem(ctx, tx, request.BlockerWorkItemID, nil); err != nil {
+		return err
+	}
+	var err error
+	if request.Action == "add" {
+		var createsCycle bool
+		if err := tx.QueryRowContext(ctx, `
+WITH RECURSIVE descendants(id) AS (
+  SELECT dependent_issue_id FROM issue_dependencies WHERE blocker_issue_id = ?
+  UNION
+  SELECT dependency.dependent_issue_id
+  FROM issue_dependencies dependency
+  JOIN descendants ON dependency.blocker_issue_id = descendants.id
+)
+SELECT EXISTS(SELECT 1 FROM descendants WHERE id = ?)`, id, request.BlockerWorkItemID).Scan(&createsCycle); err != nil {
+			return fmt.Errorf("validate hub dependency graph: %w", err)
+		}
+		if createsCycle {
+			return errors.New("dependency would create a cycle")
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(blocker_issue_id, dependent_issue_id) DO UPDATE SET provenance = excluded.provenance, updated_at = excluded.updated_at`,
+			request.BlockerWorkItemID, id, request.Provenance, formatHubTime(now), formatHubTime(now))
+	} else {
+		_, err = tx.ExecContext(ctx, "DELETE FROM issue_dependencies WHERE blocker_issue_id = ? AND dependent_issue_id = ?", request.BlockerWorkItemID, id)
+	}
+	if err != nil {
+		return fmt.Errorf("apply hub dependency mutation: %w", err)
+	}
+	if err := insertOperatorEvent(ctx, tx, id, "dependency_"+request.Action, map[string]any{"blocker_work_item_id": request.BlockerWorkItemID, "provenance": request.Provenance}, now); err != nil {
+		return err
+	}
+	return nil
+}
+
+func changeQueueOrderTx(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, request orderMutationRequest, now time.Time) error {
+	if err := upsertQueueEntry(ctx, tx, id, request.Scope, request.State, request.Rank, nil, false, formatHubTime(now)); err != nil {
+		return err
+	}
+	if err := insertOperatorEvent(ctx, tx, id, "queue_order_changed", map[string]any{"scope": request.Scope, "state": request.State, "rank": request.Rank}, now); err != nil {
+		return err
+	}
+	return nil
 }

@@ -51,15 +51,19 @@ func saveGitHubBatch(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *
 func (s *Service) getGitHubBatch(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
-	batch, err := readGitHubBatch(ctx, s.database.db, scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	view, err := githubBatchResponse(ctx, s.database.db, scope, batch)
+	view, err := s.projectGitHubBatch(ctx, scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, view)
+}
+
+func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (githubBatchView, error) {
+	batch, err := readGitHubBatch(ctx, s.database.db, scope)
+	if err != nil {
+		return githubBatchView{}, err
+	}
+	return githubBatchResponse(ctx, s.database.db, scope, batch)
 }
 
 func batchHasPending(batch *tracker.GitHubBatch) bool {
@@ -93,7 +97,11 @@ func (s *Service) commandGitHubBatch(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, s.commandGitHubBatchOperation(request))
+}
+
+func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		batch, err := readGitHubBatch(ctx, tx, scope)
 		if err != nil {
 			return nil, err
@@ -235,7 +243,7 @@ func (s *Service) commandGitHubBatch(c echo.Context) error {
 			return nil, err
 		}
 		return githubBatchResponse(ctx, tx, scope, batch)
-	})
+	}
 }
 
 func findBatchLane(states []tracker.NativeState, name string) (tracker.NativeState, bool) {
