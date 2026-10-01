@@ -643,8 +643,36 @@ func (command hostedCommand) forContext(ctx context.Context) hostedCommand {
 }
 
 func (s *Service) commandOrganization(ctx context.Context, command hostedCommand) string {
+	if m, ok := mutation.FromContext(ctx); ok && m.OrganizationID != "" {
+		return m.OrganizationID
+	}
 	if s.config.Hosted != nil {
 		return s.config.Hosted.OrganizationID
 	}
 	return command.organization
+}
+
+// readHostedOperation is the read-only application receipt lookup. It never
+// claims a missing command; action_result must remain a read operation.
+func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand) (json.RawMessage, bool, error) {
+	command = command.forContext(ctx)
+	hash, err := command.hash()
+	if err != nil {
+		return nil, false, err
+	}
+	var storedHash, raw string
+	err = s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if storedHash != hash {
+		return nil, true, mutation.ErrConflict
+	}
+	if raw == hostedPendingCommand {
+		return nil, true, mutation.ErrUncertain
+	}
+	return json.RawMessage(raw), true, nil
 }

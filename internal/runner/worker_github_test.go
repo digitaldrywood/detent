@@ -625,6 +625,104 @@ func TestWorkerGitHubCredentialPrincipalClassification(t *testing.T) {
 	}
 }
 
+func TestRunnerWorkerGitHubBudgetRecoveryOwnership(t *testing.T) {
+	t.Parallel()
+	var identityReads, budgetReads atomic.Int64
+	var actor atomic.Int64
+	var remaining atomic.Int64
+	remaining.Store(4900)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("Authorization") == "Bearer revoked-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.URL.Path {
+		case "/graphql":
+			identityReads.Add(1)
+			_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"databaseId":42,"login":%q,"__typename":"User"}}}`, fmt.Sprintf("current-user-%d", actor.Load()))
+		case "/rate_limit":
+			budgetReads.Add(1)
+			_, _ = fmt.Fprintf(w, `{"resources":{"core":{"limit":5000,"used":100,"remaining":%d,"reset":2000000000}}}`, remaining.Load())
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(server.Close)
+	cfg := config.Config{}
+	cfg.Tracker.Kind = config.TrackerGitHub
+	cfg.Tracker.Endpoint = server.URL + "/graphql"
+	cfg.Tracker.APIKey = "shared-token"
+	cfg.Tracker.GitHubRESTMinReserve = 300
+	cfg.Worker.GitHubToken = "shared-token"
+	cfg.Worker.GitHubRESTMinReserve = 500
+	cfg.Worker.GitHubRESTPollIntervalMS = 3600000
+	r := &Runner{workflow: config.Workflow{Config: cfg}}
+	for _, phase := range []string{"cold", "warm"} {
+		beforeIdentity, beforeBudget := identityReads.Load(), budgetReads.Load()
+		for number := range 10 {
+			identifier := fmt.Sprintf("fixture/detent#%d", number+1)
+			observed, supported, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{Identifier: identifier})
+			if err != nil || !supported || observed.Remaining != 4900 || observed.Consumer != telemetry.RESTConsumerSharedPool {
+				t.Fatalf("current shared budget = %+v, supported=%t, error=%v", observed, supported, err)
+			}
+			actor.Add(1)
+			policy, err := r.workerGitHubPolicy(t.Context(), cfg, identifier)
+			if err != nil || policy.PrincipalID != 42 || policy.Principal.Login != fmt.Sprintf("current-user-%d", actor.Load()) {
+				t.Fatalf("renamed launch principal = %+v, error=%v", policy.Principal, err)
+			}
+			_, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if ids, budgets := identityReads.Load()-beforeIdentity, budgetReads.Load()-beforeBudget; ids != 10 || budgets != 20 {
+			t.Fatalf("%s batch reads: identity=%d current_budget=%d, want10/20", phase, ids, budgets)
+		}
+	}
+	beforeIdentity, beforeBudget := identityReads.Load(), budgetReads.Load()
+	results := make(chan error, 10)
+	for range 10 {
+		go func() {
+			_, _, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{Identifier: "fixture/detent#1"})
+			results <- err
+		}()
+	}
+	for range 10 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if identityReads.Load() != beforeIdentity || budgetReads.Load()-beforeBudget != 10 {
+		t.Fatal("parallel recovery retained duplicate identity reads or lost current budgets")
+	}
+	cfg.Worker.GitHubToken = "other-token"
+	r.workflow.Config = cfg
+	beforeIdentity = identityReads.Load()
+	if budget, _, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{}); err != nil || budget.Consumer != telemetry.RESTConsumerSharedPool || identityReads.Load()-beforeIdentity != 2 {
+		t.Fatalf("different tokens for same principal: budget=%+v error=%v", budget, err)
+	}
+	cfg.Worker.GitHubToken = "shared-token"
+	cfg.Worker.GitHubRESTMinReserve = 300
+	r.workflow.Config = cfg
+	if _, _, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{}); !errors.Is(err, ErrWorkerGitHubSharedReserve) {
+		t.Fatalf("changed shared reserve = %v", err)
+	}
+	cfg.Worker.GitHubRESTMinReserve = 500
+	cfg.Worker.GitHubToken, cfg.Tracker.APIKey = "revoked-token", "revoked-token"
+	r.workflow.Config = cfg
+	var monitorErr *WorkerGitHubBudgetMonitorError
+	if _, supported, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{}); !supported || !errors.As(err, &monitorErr) || monitorErr.Operation != "recovery_probe" {
+		t.Fatalf("revoked recovery token: supported=%t error=%v", supported, err)
+	}
+	if _, err := r.workerGitHubPolicy(t.Context(), cfg, "fixture/detent#1"); !errors.As(err, &monitorErr) || monitorErr.Operation != "credential_classification_worker" {
+		t.Fatalf("revoked launch token = %v", err)
+	}
+}
+
 func TestWorkerGitHubSharedReserveValidation(t *testing.T) {
 	t.Parallel()
 

@@ -130,6 +130,27 @@ resource projection and entry/session binding. `TestConnectionActions` and
 `TestMCPActionApprovalBoundary` cover exact preview, replay, rejection, stale
 targets, closed protocol sessions, self-approval and operator-selected YOLO.
 
+Fleet/operator MCP adapters (#3343) share the dashboard refresh, availability
+clear, canary, update, progress-credit, warning-acknowledgment, recovery and
+runner administration commands. Runner display edits execute directly; capacity,
+scheduling, access, enrollment, revoke, stop and other material actions use the
+existing authenticated browser approval surface. Unknown action kinds still
+require confirmation. Fresh authority resolution binds application command
+credentials from the originating connection, including when another authorized
+browser approves. Hosted runner administration retains current all-project
+runner grants and transaction-time membership/credential checks. Browser previews
+containing fleet actions also require current runner grants, including for owners.
+Health and outbox reads retain dashboard deployment boundaries; AI debug projects
+its snapshot through current project grants. Missing runtime
+or approval services return opaque unavailable results; an unhosted hub bearer
+credential cannot stand in for a human. Worker enrollment redemption, credential
+renewal/rotation, claims, leases and heartbeat protocols remain worker-only.
+`TestMCPFleetReads`, `TestMCPFleetMutation`, `TestMCPOperatorControls`,
+`TestMCPStopExactRun`, `TestHostedMCPFleetControls`, `TestHubMCPFleetBoundary`
+and `TestFleetArgumentBoundary` cover current authority, bounded calls, exact
+targets, confirmation and safe retries. No adapter writes tracker lanes or adds
+a protection/recovery mechanism (INV-3); recovery/stop use existing services.
+
 SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
 
 Hub-native SSH runs capture Git artifacts and attempt diffs on the selected
@@ -681,6 +702,18 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+GitHub budget recovery resolves current credentials and reserves through the
+existing policy constructor. Exact identical worker/orchestrator tokens already
+establish shared-pool ownership without a duplicate principal lookup; recovery
+only reads current budget evidence. Different-token principal comparisons and
+fresh launch identity remain unchanged. The shared reserve check has one owner.
+`TestRunnerWorkerGitHubBudgetRecoveryOwnership` covers ten recovery/launch pairs,
+parallel current-budget reads, reserve reload, revoked credentials, and mutable
+GitHub login names. It removes ten of twenty principal reads per batch while
+retaining all twenty budget observations, without a retained identity cache,
+configuration, or recovery mechanism. Post-deployment timings are separate
+acceptance evidence, not implied by request counts.
+
 Fallback dependency hydration uses the existing fresh comment reader when comment
 or Workpad evidence is missing. The former issue-timestamp comment cache is
 removed because its diagnostic comments also became Workpad decision authority.
@@ -689,6 +722,17 @@ comment and cleared human action in Todo, including unchanged, missing, and zero
 issue timestamps. Native dependency relations remain authoritative and fresh;
 comment references remain diagnostic notes. No replacement cache or recovery
 mechanism is added.
+
+Epic completion (#3639) defers a parent when current tick evidence already
+contains a nonterminal child, before reading that parent's linked children and
+unresolved checklist references. This removes the duplicate completion scan for
+an epic that cannot close. Tick evidence is negative authority only: terminal
+tick evidence never replaces the existing fresh linked-child and identifier
+reads used to close a parent. Unknown children and lookup failures retain the
+existing completion and retry owners. `TestCloseCompletedEpics` covers a large
+unresolved checklist, a later child reopen, and independent parent completion;
+the existing affected-epic retry tests retain transient failure behavior. No
+cache, timer, configuration, or recovery mechanism is added.
 
 Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
 existing optional feature negotiation. The `runner_local_checks` capability

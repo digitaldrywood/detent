@@ -16,10 +16,16 @@ import (
 )
 
 func (s *Service) hostedOperatorBrowser(c echo.Context, next echo.HandlerFunc) error {
-	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
+	if s.config.Hosted == nil || c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 	}
-	return s.operatorAuthority(next)(c)
+	return s.operatorAuthority(func(c echo.Context) error {
+		credential, err := currentHubOperator(c.Request().Context())
+		if err != nil || credential.SessionHash == "" || credential.Hosted == nil || s.operatorFormCSRF(c) == "" {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+		return next(c)
+	})(c)
 }
 
 func (s *Service) operatorFormCSRF(c echo.Context) string {
@@ -133,6 +139,10 @@ func (s *Service) authorizeOperatorBrowserActions(c echo.Context, id string, act
 				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 			}
 			if err := s.administration.App.Authorize(c.Request().Context(), string(action.Kind), in, ""); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if hubFleetTool(string(action.Kind)) {
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(string(action.Kind))); err != nil {
 				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 			}
 		} else if _, err := s.hostedBillingOwner(c); err != nil {

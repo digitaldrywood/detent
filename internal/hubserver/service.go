@@ -416,26 +416,31 @@ func (s *Service) stopGitHubWebhookMaintenance() error {
 }
 
 func (s *Service) health(c echo.Context) error {
-	if !s.ready.Load() || s.database.health(c.Request().Context()) != nil {
-		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+	response, status := s.readInstanceHealth(c.Request().Context())
+	return c.JSON(status, response)
+}
+
+func (s *Service) readInstanceHealth(ctx context.Context) (healthResponse, int) {
+	if !s.ready.Load() || s.database.health(ctx) != nil {
+		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
 	}
-	outbox, err := s.OutboxHealth(c.Request().Context())
+	outbox, err := s.OutboxHealth(ctx)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
 	}
-	repositories, err := s.database.repositoryFreshness(c.Request().Context(), s.config.now().UTC(), s.config.ReconcileInterval)
+	repositories, err := s.database.repositoryFreshness(ctx, s.config.now().UTC(), s.config.ReconcileInterval)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
 	}
 	status := "ok"
 	if repositories.Summary.Stale > 0 || repositories.Summary.Error > 0 {
 		status = "degraded"
 	}
-	return c.JSON(http.StatusOK, healthResponse{
+	return healthResponse{
 		Status:        status,
 		SchemaVersion: s.database.schemaVersion,
 		Version:       s.config.Version,
 		Outbox:        outbox,
 		Repositories:  repositories.Summary,
-	})
+	}, http.StatusOK
 }
