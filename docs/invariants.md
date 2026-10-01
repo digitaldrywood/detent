@@ -600,7 +600,11 @@ allowance or tracker mutations (#3575). Existing human, operator, dependency,
 and genuine-failure holds remain authoritative. The SQLite restart matrix in
 `TestConfiguredTerminalRetryAfterStoreRestart` covers both corrected legacy
 parks and genuine failure cooldowns; completion cases cover configured zero
-limits, unavailable stores, and active provider retries.
+limits, unavailable stores, and active provider retries. Existing restart and
+provider resumption eligibility remains independent of issue-failure accounting;
+the shared infrastructure attribution applies at the existing counting and
+issue-demotion callers, preserving resumability without charging or parking an
+issue for an instance interruption.
 
 Merged-completion ownership (#3529) resolves stale closed associations through
 existing native reference lookup and the existing merged-PR owner. Completion

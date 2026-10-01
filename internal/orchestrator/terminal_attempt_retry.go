@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -502,7 +503,10 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 			}
 			continue
 		}
-		if !terminalAttemptRetryableFailure(attempt) {
+		if allowanceInfrastructureAttempt(store.WorkAttempt{
+			TerminalState: store.WorkAttemptTerminalState(attempt.TerminalState), ErrorClass: attempt.ErrorClass,
+			Phase: attempt.Phase, MetricsJSON: attempt.MetricsJSON, WorkerMetadataJSON: attempt.WorkerMetadataJSON,
+		}) || !terminalAttemptRetryableFailure(attempt) {
 			continue
 		}
 		updated, changed, _ := o.demoteTerminalAttemptRetry(
@@ -583,10 +587,7 @@ func terminalAttemptRetryableFailure(attempt telemetry.WorkAttempt) bool {
 		return false
 	}
 	errorClass := strings.TrimSpace(attempt.ErrorClass)
-	if allowanceInfrastructureAttempt(store.WorkAttempt{
-		TerminalState: store.WorkAttemptTerminalState(attempt.TerminalState), ErrorClass: errorClass,
-		Phase: attempt.Phase, MetricsJSON: attempt.MetricsJSON, WorkerMetadataJSON: attempt.WorkerMetadataJSON,
-	}) || errorClass == workspaceBranchHoldErrorClass || errorClass == "worker_github_budget_monitor_unavailable" || errorClass == workerGitHubTokenResolutionErrorClass {
+	if errorClass == backendcapacity.ErrorClass || errorClass == forgeUnavailableErrorClass || errorClass == workspaceBranchHoldErrorClass || errorClass == "worker_github_budget_monitor_unavailable" || errorClass == workerGitHubTokenResolutionErrorClass {
 		return false
 	}
 	if errorClass == githubRESTCapacityError {

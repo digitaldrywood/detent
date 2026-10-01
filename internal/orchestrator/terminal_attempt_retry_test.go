@@ -191,6 +191,8 @@ func TestTerminalAttemptRetryableFailureExcludesBackendCapacity(t *testing.T) {
 		wantRetryable bool
 	}{
 		{name: "service restart remains resumable", terminal: store.WorkAttemptTerminalAbandoned, errorClass: "service_restart", wantRetryable: true},
+		{name: "transient provider failure remains resumable", terminal: store.WorkAttemptTerminalFailure, errorClass: backendcapacity.TransientOverloadErrorClass, wantRetryable: true},
+		{name: "protocol interruption remains resumable", terminal: store.WorkAttemptTerminalFailure, errorClass: "backend_protocol_error", wantRetryable: true},
 		{name: "ordinary failure", terminal: store.WorkAttemptTerminalFailure, errorClass: workAttemptErrorRunner, wantRetryable: true},
 		{name: "provider capacity", terminal: store.WorkAttemptTerminalCapacity, errorClass: backendcapacity.ErrorClass},
 	}
