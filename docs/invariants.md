@@ -671,6 +671,17 @@ issue timestamps. Native dependency relations remain authoritative and fresh;
 comment references remain diagnostic notes. No replacement cache or recovery
 mechanism is added.
 
+Epic completion (#3639) defers a parent when current tick evidence already
+contains a nonterminal child, before reading that parent's linked children and
+unresolved checklist references. This removes the duplicate completion scan for
+an epic that cannot close. Tick evidence is negative authority only: terminal
+tick evidence never replaces the existing fresh linked-child and identifier
+reads used to close a parent. Unknown children and lookup failures retain the
+existing completion and retry owners. `TestCloseCompletedEpics` covers a large
+unresolved checklist, a later child reopen, and independent parent completion;
+the existing affected-epic retry tests retain transient failure behavior. No
+cache, timer, configuration, or recovery mechanism is added.
+
 Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
 existing optional feature negotiation. The `runner_local_checks` capability
 permits `local_checks`; older Hubs receive the original heartbeat without that

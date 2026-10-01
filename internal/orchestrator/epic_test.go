@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -91,6 +92,8 @@ func TestCloseCompletedEpics(t *testing.T) {
 		wantUpdates  []epicStateUpdate
 		wantClosed   []string
 		wantComments []string
+		wantReads    [][]string
+		transition   bool
 	}{
 		{
 			name: "completed active epic is commented closed and moved to done",
@@ -104,6 +107,7 @@ func TestCloseCompletedEpics(t *testing.T) {
 			wantUpdates:  []epicStateUpdate{{issueID: "epic-258", state: "Done"}},
 			wantClosed:   []string{"epic-258"},
 			wantComments: []string{"Auto-closing completed epic: 2 child issues are Done."},
+			wantReads:    [][]string{{"digitaldrywood/detent#251", "digitaldrywood/detent#252"}},
 		},
 		{
 			name: "partial epic is untouched",
@@ -114,6 +118,51 @@ func TestCloseCompletedEpics(t *testing.T) {
 			resolved: []connector.Issue{
 				epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
 			},
+			wantReads: [][]string{{"digitaldrywood/detent#251"}},
+		},
+		{
+			name:       "known open child avoids resolving a large unrelated checklist",
+			transition: true,
+			candidates: []connector.Issue{
+				func() connector.Issue {
+					issue := epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "")
+					issue.ChildIssues = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#251"}, {Identifier: "digitaldrywood/detent#252"}}
+					for number := 1000; number < 2000; number++ {
+						issue.ChildIssues = append(issue.ChildIssues, connector.BlockedRef{Identifier: "digitaldrywood/detent#" + strconv.Itoa(number)})
+					}
+					return issue
+				}(),
+				epicTestIssue("child-251", "In Progress", false, "Current child", nil, ""),
+				epicTestIssue("child-252", "Done", false, "Completed child", nil, ""),
+			},
+		},
+		{
+			name:       "later linked reopen overrides an earlier terminal tick read",
+			transition: true,
+			candidates: []connector.Issue{
+				epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "- [ ] #251"),
+				epicTestIssue("child-251", "Done", false, "Completed child", nil, ""),
+			},
+			linked: map[string][]connector.BlockedRef{
+				"epic-258": {{Identifier: "digitaldrywood/detent#251", State: "In Progress"}},
+			},
+		},
+		{
+			name:       "known open parent does not suppress an independent completed parent",
+			transition: true,
+			candidates: []connector.Issue{
+				epicTestIssue("epic-258", "Todo", false, "Epic: Incomplete", []string{"epic"}, "- [ ] #251\n- [ ] #252\n- [ ] #1000"),
+				epicTestIssue("epic-259", "Todo", false, "Epic: Complete", []string{"epic"}, "- [ ] #253"),
+				epicTestIssue("child-251", "In Progress", false, "Current child", nil, ""),
+				epicTestIssue("child-252", "Done", false, "Completed child", nil, ""),
+				epicTestIssue("child-253", "Done", false, "Independent child", nil, ""),
+			},
+			linked: map[string][]connector.BlockedRef{
+				"epic-259": {{Identifier: "digitaldrywood/detent#253", State: "Done"}},
+			},
+			wantUpdates:  []epicStateUpdate{{issueID: "epic-259", state: "Done"}},
+			wantClosed:   []string{"epic-259"},
+			wantComments: []string{"Auto-closing completed epic: 1 child issue is Done."},
 		},
 		{
 			name: "paginated linked child keeps epic open",
@@ -195,7 +244,24 @@ func TestCloseCompletedEpics(t *testing.T) {
 			}
 
 			issues := append(cloneIssues(tt.candidates), tt.stateIssues...)
-			orch.closeCompletedEpics(context.Background(), &state, issues)
+			if tt.transition {
+				tracker.parents = map[string][]connector.Issue{}
+				previous := cloneIssues(issues)
+				for index, issue := range issues {
+					if !epicIssue(issue) && terminalIssue(issue, cfg.TerminalStates) {
+						for _, parent := range tt.candidates {
+							if epicIssue(parent) {
+								tracker.parents[issue.ID] = append(tracker.parents[issue.ID], parent)
+							}
+						}
+						previous[index].State = "In Progress"
+						previous[index].Closed = false
+					}
+				}
+				orch.closeCompletedEpicsForTerminalTransitions(context.Background(), &state, issues, previous, time.Time{}, nil)
+			} else {
+				orch.closeCompletedEpics(context.Background(), &state, issues)
+			}
 
 			if got := tracker.stateUpdates(); !reflect.DeepEqual(got, tt.wantUpdates) {
 				t.Fatalf("state updates = %#v, want %#v", got, tt.wantUpdates)
@@ -205,6 +271,9 @@ func TestCloseCompletedEpics(t *testing.T) {
 			}
 			if got := tracker.commentBodies(); !reflect.DeepEqual(got, tt.wantComments) {
 				t.Fatalf("comments = %#v, want %#v", got, tt.wantComments)
+			}
+			if got := tracker.identifierReads; !reflect.DeepEqual(got, tt.wantReads) {
+				t.Fatalf("identifier reads = %#v, want %#v", got, tt.wantReads)
 			}
 		})
 	}
@@ -639,10 +708,11 @@ func TestTickRetriesAffectedEpicChildStateResolutionFailure(t *testing.T) {
 		},
 		resolved: []connector.Issue{
 			epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+			epicTestIssue("child-252", "Done", false, "Child 252", nil, ""),
 		},
 		parents: map[string][]connector.Issue{
 			"child-251": {
-				epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "- [ ] #251"),
+				epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "- [ ] #251\n- [ ] #252"),
 			},
 		},
 		identifierErrors: []error{errors.New("temporary child state resolution failure")},
@@ -728,6 +798,7 @@ type epicConnector struct {
 	parentErrors     map[string][]error
 	childErrors      map[string][]error
 	identifierErrors []error
+	identifierReads  [][]string
 	updates          []epicStateUpdate
 	closed           []string
 	comments         []string
@@ -788,6 +859,7 @@ func (c *epicConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) (
 func (c *epicConnector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.identifierReads = append(c.identifierReads, append([]string(nil), identifiers...))
 
 	if len(c.identifierErrors) > 0 {
 		err := c.identifierErrors[0]
