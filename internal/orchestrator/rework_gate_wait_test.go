@@ -56,26 +56,64 @@ func TestReworkGateWaitHistoryCannotResurrectSupersededWait(t *testing.T) {
 	failed := valid
 	failed.TerminalState = store.WorkAttemptTerminalNoProgress
 	for _, tt := range []struct {
-		name    string
-		history []store.WorkAttempt
-		err     error
-		want    bool
+		name       string
+		history    []store.WorkAttempt
+		err        error
+		refreshErr error
+		commentErr error
+		status     string
+		want       bool
+		cachedWant bool
+		nilStore   bool
 	}{
-		{name: "newer no progress supersedes wait", history: []store.WorkAttempt{failed, valid}},
-		{name: "ignore unrelated failed plan", history: []store.WorkAttempt{{TerminalState: store.WorkAttemptTerminalFailure}, valid}, want: true},
-		{name: "history unavailable", err: errors.New("history unavailable")},
+		{name: "newer no progress supersedes wait", history: []store.WorkAttempt{failed, valid}, cachedWant: true},
+		{name: "ignore unrelated failed plan", history: []store.WorkAttempt{{TerminalState: store.WorkAttemptTerminalFailure}, valid}, want: true, cachedWant: true},
+		{name: "history unavailable", err: errors.New("history unavailable"), cachedWant: true},
+		{name: "tracker state unavailable", history: []store.WorkAttempt{valid}, refreshErr: errors.New("state unavailable")},
+		{name: "workpad comments unavailable", history: []store.WorkAttempt{valid}, commentErr: errors.New("comments unavailable")},
+		{name: "fresh blocked Workpad supersedes snapshot", history: []store.WorkAttempt{valid}, status: workpad.StatusBlocked},
+		{name: "fresh blocked Workpad without durable store", status: workpad.StatusBlocked, cachedWant: true, nilStore: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			orch := &Orchestrator{cfg: normalizeConfig(Config{ActiveStates: []string{"Rework"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}}}), connector: &implementProgressConnector{refreshed: issue}, workAttempts: &recordingWorkAttemptStore{history: tt.history, historyErr: tt.err}, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			refreshed := cloneIssue(issue)
+			if tt.status != "" {
+				refreshed.Comments = reworkGateWaitTestIssue(tt.status).Comments
+			}
+			tracker := &implementProgressConnector{refreshed: refreshed, refreshErr: tt.refreshErr, commentErr: tt.commentErr}
+			orch := &Orchestrator{cfg: normalizeConfig(Config{ActiveStates: []string{"Rework"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}}}), connector: tracker, workAttempts: &recordingWorkAttemptStore{history: tt.history, historyErr: tt.err}, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			if tt.nilStore {
+				orch.workAttempts = nil
+			}
 			_, ok, err := orch.latestSuccessfulGateWaitAttempt(t.Context(), issue)
 			if ok != tt.want || !errors.Is(err, tt.err) {
 				t.Fatalf("found=%t err=%v, want=%t/%v", ok, err, tt.want, tt.err)
 			}
-			state := State{}
-			orch.restoreDurableGateWaitCompletions(t.Context(), &state, []connector.Issue{{}, issue})
-			if _, restored := state.Completed[issue.ID]; restored != tt.want {
-				t.Fatalf("restored=%t, want=%t", restored, tt.want)
+			for _, cached := range []bool{false, true} {
+				tracker.stateReads = 0
+				tracker.commentReads = 0
+				state := newState(orch.cfg)
+				if cached {
+					state.Completed[issue.ID] = completedFromGateWaitAttempt(issue, valid)
+				}
+				restored := orch.restoreDurableGateWaitCompletionState(t.Context(), &state, []connector.Issue{{}, issue})
+				want := tt.want
+				if cached {
+					want = tt.cachedWant
+				}
+				if _, exists := state.Completed[issue.ID]; exists != want {
+					t.Fatalf("cached=%t restored=%t, want=%t", cached, exists, want)
+				}
+				wantComments := 1
+				if tt.refreshErr != nil {
+					wantComments = 0
+				}
+				if tracker.stateReads != 1 || tracker.commentReads != wantComments {
+					t.Fatalf("cached=%t state reads=%d comment reads=%d, want 1/%d", cached, tracker.stateReads, tracker.commentReads, wantComments)
+				}
+				if tt.status != "" && !reworkGateWaitWorkpadBlocked(restored.issues[1]) {
+					t.Fatal("fresh Workpad blocker was not carried into later tick owners")
+				}
 			}
 		})
 	}
