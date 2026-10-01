@@ -83,7 +83,7 @@ func (d *database) recordConversationUsage(ctx context.Context, tx *sql.Tx, usag
 		return err
 	}
 	if count == 1 && d.aiCreditMode != "" && usage.Provider == "openai" && cost != nil {
-		micros := int64(math.Ceil(cost.(float64) * 1000000))
+		micros := int64(math.Ceil(cost.(float64) * 1000000 * d.aiCreditCostMultiplier))
 		if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,?,?,?,'usage',?)", usage.OrganizationID, d.aiCreditMode, "usage:"+usage.TurnID, -micros, at.UnixMicro()); err != nil {
 			return err
 		}

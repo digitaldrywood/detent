@@ -214,7 +214,7 @@ func TestCloudBillingConfiguration(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
 	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
-	allocation := "allocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n  entitlements:\n    base: {id: free, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: free, version: 1, features: [collaboration], allowances: {projects: 3}}\n      - {id: team, version: 1, features: [collaboration], allowances: {projects: 30}}\n  billing:\n    mode: MODE\n    account_id: acct_fixture\n    portal_configuration_id: bpc_fixture\n    api_key_env: DETENT_STRIPE_TEST_KEY\n    webhook_secret_env: DETENT_STRIPE_TEST_WEBHOOK_SECRET\n    grace_seconds: 3600\n    reconcile_seconds: 120\n    prices:\n      - {price_id: price_team, label: Team, plan: {id: team, version: 1}}\n"
+	allocation := "allocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n  entitlements:\n    base: {id: free, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: free, version: 1, features: [collaboration], allowances: {projects: 3}}\n      - {id: team, version: 1, features: [collaboration], allowances: {projects: 30}}\n  billing:\n    mode: MODE\n    account_id: acct_fixture\n    portal_configuration_id: bpc_fixture\n    api_key_env: DETENT_STRIPE_TEST_KEY\n    webhook_secret_env: DETENT_STRIPE_TEST_WEBHOOK_SECRET\n    grace_seconds: 3600\n    reconcile_seconds: 120\n    credit_cost_multiplier: 2\n    prices:\n      - {price_id: price_team, label: Team, plan: {id: team, version: 1}}\n"
 	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_STRIPE_TEST_KEY": "sk_test_fixture_value", "DETENT_STRIPE_TEST_WEBHOOK_SECRET": "whsec_fixture_secret_value", "DETENT_STRIPE_LIVE_KEY": "sk_live_fixture_value"}
 	for _, test := range []struct {
 		name, body string
@@ -260,7 +260,7 @@ func TestCloudBillingConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			tenant, _, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
-			if err != nil || tenant.Billing == nil || tenant.Billing.Mode != "test" || tenant.Billing.CustomerID != "" {
+			if err != nil || tenant.Billing == nil || tenant.Billing.Mode != "test" || tenant.Billing.CustomerID != "" || tenant.Billing.CreditCostMultiplier != 2 {
 				t.Fatalf("tenant billing = %+v, %v\n%s", tenant, err, raw)
 			}
 		})

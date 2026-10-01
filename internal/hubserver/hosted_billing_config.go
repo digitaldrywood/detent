@@ -4,10 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/billing"
 )
+
+const defaultAICreditCostMultiplier = 1.5
 
 type HostedBillingPrice struct {
 	PriceID string        `yaml:"price_id"`
@@ -31,6 +34,7 @@ type HostedBillingConfig struct {
 	GraceSeconds          int64
 	ReconcileSeconds      int64
 	CreditPacks           []HostedCreditPack
+	CreditCostMultiplier  float64
 	Prices                []HostedBillingPrice
 	Provider              billing.Provider
 }
@@ -38,6 +42,12 @@ type HostedBillingConfig struct {
 func (c *HostedBillingConfig) validate(plans *HostedPlansConfig) error {
 	if c == nil {
 		return nil
+	}
+	if c.CreditCostMultiplier == 0 {
+		c.CreditCostMultiplier = defaultAICreditCostMultiplier
+	}
+	if c.CreditCostMultiplier < 0 || math.IsNaN(c.CreditCostMultiplier) || math.IsInf(c.CreditCostMultiplier, 0) {
+		return errors.New("AI credit cost multiplier must be finite and positive")
 	}
 	if c.Mode == "" {
 		c.Mode = billing.ModeTest
@@ -187,6 +197,7 @@ func (d *database) configureHostedBilling(ctx context.Context, cfg *HostedConfig
 	}
 	if creditAccounts > 0 {
 		d.aiCreditMode = c.mode()
+		d.aiCreditCostMultiplier = c.CreditCostMultiplier
 	} else {
 		d.aiCreditMode = ""
 	}
