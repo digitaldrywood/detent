@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -139,6 +140,10 @@ func (s *Service) authorizeOperatorBrowserActions(c echo.Context, id string, act
 				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 			}
 			if err := s.administration.App.Authorize(c.Request().Context(), string(action.Kind), in, ""); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID}); err != nil {
 				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 			}
 		} else if hubFleetTool(string(action.Kind)) {

@@ -461,6 +461,10 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			execution, executionErr = s.executeWorkAction(ctx, action)
 			return execution, executionErr
 		}
+		if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+			execution, executionErr = s.executeChangeAction(ctx, action)
+			return execution, executionErr
+		}
 		if dashboardFleetTool(string(action.Kind)) {
 			result, err = s.executeFleetAction(ctx, action)
 		} else {
