@@ -1286,6 +1286,10 @@ existing immediate probe notification. This replaces the deadline precedence fro
 `TestBackendCapacityProbeFailureRefreshesProviderWindow` cover future reset
 metadata, early restored capacity, single-probe ownership, retry release, backoff,
 reset boundaries, and operator clear; safety fuzz seeds retain resume arithmetic.
+`TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike` also asserts the
+typed `usageLimitExceeded` completion keeps its provider reset and jittered
+resume timestamps while scheduling the earlier bounded probe, without issue
+failure strikes or a Blocked transition (#3680).
 
 Workspace cleanup (#2913) uses one cancellable background execution of the existing
 reaper instead of synchronous tick and completion sweeps. Each pass bounds tracker

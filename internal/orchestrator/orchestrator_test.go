@@ -1555,9 +1555,22 @@ func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	if retry.Attempt != 0 {
 		t.Fatalf("Retry[%q].Attempt = %d, want unchanged initial attempt", issue.ID, retry.Attempt)
 	}
-	probeAt := resetAt.Add(5 * time.Second)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	outage, ok := state.BackendOutages[scope.Key()]
+	if !ok {
+		t.Fatalf("BackendOutages[%q] missing after quota error", scope.Key())
+	}
+	if !outage.ResetAt.Equal(resetAt) || !outage.ResumeAt.Equal(resetAt.Add(5*time.Second)) {
+		t.Fatalf("provider window = reset %s resume %s, want reset %s resume %s", outage.ResetAt, outage.ResumeAt, resetAt, resetAt.Add(5*time.Second))
+	}
+	// Bounded probes can recover early after an external quota reset (#3638).
+	// The provider reset remains evidence, rather than delaying the first probe.
+	probeAt := outage.LastObservedAt.Add(5 * time.Minute)
+	if !outage.NextProbeAt.Equal(probeAt) {
+		t.Fatalf("NextProbeAt = %s, want bounded probe %s", outage.NextProbeAt, probeAt)
+	}
 	if !retry.DueAt.Equal(probeAt) {
-		t.Fatalf("Retry[%q].DueAt = %s, want provider resume %s", issue.ID, retry.DueAt, probeAt)
+		t.Fatalf("Retry[%q].DueAt = %s, want bounded probe %s", issue.ID, retry.DueAt, probeAt)
 	}
 	updates := tracker.stateUpdateCalls()
 	if len(updates) < 2 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Todo"}) {
