@@ -35,11 +35,13 @@ import { AccountBootstrap } from "../../src/contracts/account.ts";
 import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
 import { SettingsRoute } from "../../src/app/settings/Settings.tsx";
 import { organizationMCPEndpoint } from "../../src/app/settings/MCPSettings.tsx";
+import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  resetHubPaths();
 });
 
 if (typeof globalThis.PointerEvent === "undefined") {
@@ -144,14 +146,22 @@ describe("MCP setup", () => {
   const account = accountFixture as unknown as AccountBootstrap;
 
   it.each([
-    ["dedicated", "https://threefold.detent.cloud/", "https://threefold.detent.cloud/mcp"],
-    ["shared entry", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["HTTP", "http://threefold.detent.cloud", null],
-    ["credentials in URL", "https://user:secret@threefold.detent.cloud", null],
-    ["query credential", "https://threefold.detent.cloud?token=secret", null],
-    ["fragment", "https://threefold.detent.cloud#secret", null],
-    ["malformed", "not a URL", null],
-  ])("uses only a safe canonical %s organization endpoint", (_name, publicURL, expected) => {
+    ["dedicated", "", "https://threefold.detent.cloud/", "https://threefold.detent.cloud/mcp"],
+    ["shared origin", "/organizations/org_threefold", "https://app.detent.cloud", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["shared entry", "/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["shared trailing slash", "/organizations/org_threefold/", "https://app.detent.cloud/organizations/org_threefold/", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["mounted public URL without runtime mount", "", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["another organization's URL", "/organizations/org_threefold", "https://app.detent.cloud/organizations/org_parable", null],
+    ["another organization's URL without runtime mount", "", "https://app.detent.cloud/organizations/org_parable", null],
+    ["another organization's mount", "/organizations/org_parable", "https://app.detent.cloud", null],
+    ["conflicting public path", "/organizations/org_threefold", "https://app.detent.cloud/projects/proj_parable", null],
+    ["HTTP", "", "http://threefold.detent.cloud", null],
+    ["credentials in URL", "/organizations/org_threefold", "https://user:secret@threefold.detent.cloud", null],
+    ["query credential", "/organizations/org_threefold", "https://threefold.detent.cloud?token=secret", null],
+    ["fragment", "/organizations/org_threefold", "https://threefold.detent.cloud#secret", null],
+    ["malformed", "", "not a URL", null],
+  ])("uses only a safe canonical %s organization endpoint", (_name, mount, publicURL, expected) => {
+    applyHubPaths({ base_path: mount });
     const decoded = Schema.decodeUnknownSync(AccountBootstrap)({ ...account, organization: { ...account.organization, public_url: publicURL }, organizations: [] });
     expect(organizationMCPEndpoint(decoded)).toBe(expected);
   });
@@ -162,13 +172,19 @@ describe("MCP setup", () => {
     expect(organizationMCPEndpoint(null)).toBeNull();
   });
 
-  it("routes a viewer to setup and copies only the organization URL or placeholder examples without requesting credentials", async () => {
+  it.each([
+    ["", "https://threefold.detent.cloud", "https://threefold.detent.cloud/mcp"],
+    ["/organizations/org_threefold", "https://app.detent.cloud", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_parable", null],
+  ])("routes a viewer to setup at %j and copies only a matching organization URL or placeholder examples without requesting credentials", async (mount, publicURL, expected) => {
+    applyHubPaths({ base_path: mount });
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     const fetch = vi.spyOn(globalThis, "fetch");
     const activeAccount = {
       ...account,
-      organization: { ...account.organization, public_url: "https://app.detent.cloud/organizations/org_threefold" },
+      organization: { ...account.organization, public_url: publicURL },
       actor: { ...account.actor, can_manage: false, role: "viewer" },
       csrf_token: "private-csrf-credential",
       token: "private-api-credential",
@@ -178,13 +194,19 @@ describe("MCP setup", () => {
     expect(screen.getByRole("button", { name: "MCP" }).getAttribute("aria-current")).toBe("true");
     expect(document.body.textContent).not.toContain("private-csrf-credential");
     expect(document.body.textContent).not.toContain("private-api-credential");
-    fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
-    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("https://app.detent.cloud/organizations/org_threefold/mcp"));
-    expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("copied");
+    if (expected) {
+      fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(expected));
+      expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("copied");
+    } else {
+      expect(screen.queryByRole("button", { name: "Copy Organization MCP endpoint" })).toBeNull();
+      expect(screen.getByText(/The organization HTTPS URL is unavailable/)).toBeTruthy();
+      expect(writeText).not.toHaveBeenCalled();
+    }
     fireEvent.click(screen.getByText("Connect to your own Detent daemon"));
     fireEvent.click(screen.getByRole("button", { name: "Copy Local stdio configuration" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
-    expect(JSON.parse(writeText.mock.calls[1]![0]).mcpServers.detent.env.DETENT_API_TOKEN).toBe("YOUR_DETENT_API_TOKEN");
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(expected ? 2 : 1));
+    expect(JSON.parse(writeText.mock.lastCall![0]).mcpServers.detent.env.DETENT_API_TOKEN).toBe("YOUR_DETENT_API_TOKEN");
     for (const [url, options] of fetch.mock.calls) {
       expect(String(url)).not.toMatch(/tokens|credentials/);
       expect(options?.method ?? "GET").toBe("GET");

@@ -4,6 +4,7 @@ import { CheckIcon, CopyIcon, PlugIcon } from "lucide-react";
 import type { AccountBootstrap } from "../../contracts/account.ts";
 import { Button } from "../../components/ui/button.tsx";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard.ts";
+import { basePath } from "../../runtime/basePath.ts";
 import { useAccountBootstrap } from "../account/context.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
 
@@ -16,7 +17,12 @@ export function organizationMCPEndpoint(account: AccountBootstrap | null): strin
   try {
     const url = new URL(publicURL);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) return null;
-    url.pathname = `${url.pathname.replace(/\/+$/, "")}/mcp`;
+    const mount = basePath();
+    const publicPath = url.pathname.replace(/\/+$/, "");
+    if (mount && publicPath && publicPath !== mount) return null;
+    const endpointPath = mount || publicPath;
+    if (endpointPath.startsWith("/organizations/") && endpointPath !== `/organizations/${encodeURIComponent(account.organization.id)}`) return null;
+    url.pathname = `${endpointPath}/mcp`;
     return url.href;
   } catch {
     return null;
