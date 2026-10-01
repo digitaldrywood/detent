@@ -17,9 +17,8 @@ import (
 )
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
-	// Hosted hubs expose their own billing/usage application operations.
-	// Daemon telemetry/explanation services remain absent, with unavailable
-	// calls rather than a compatibility proxy or a separate runtime DB.
+	// Hubs expose native work commands and hosted billing/usage operations.
+	// Daemon-only telemetry and lane commands remain unavailable here.
 	s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now))
 	executor := hostedOperatorExecutor{s}
 	s.mcpHTTP = mcp.NewHTTPHandler(executor, s.config.Version, mcp.HTTPConfig{
@@ -96,6 +95,13 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			return s.operatorCurrentAuthority(ctx, current, organization)
 		}}
 		ctx := operatortool.WithConnection(context.WithValue(c.Request().Context(), operatorCredentialKey{}, billingAuthorization(resolve)), connection)
+		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(ctx context.Context) (nativeScope, error) {
+			current, err := resolve(ctx)
+			if err != nil {
+				return nativeScope{}, err
+			}
+			return nativeScope{organization: tracker.OrganizationID(organization), credential: current}, nil
+		})
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}

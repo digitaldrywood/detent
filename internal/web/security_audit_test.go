@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -109,6 +111,39 @@ func TestSecurityAuditDispositionAcceptsProjectScopedWorkerCredential(t *testing
 		t.Fatalf("stale token status = %d, want %d; body = %s", stale.Code, http.StatusUnauthorized, stale.Body.String())
 	}
 
+	// The MCP path must enforce exact-head evidence and return a real pending
+	// approval, without accepting model-supplied confirmation or writing a disposition.
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: now, BoardIssues: []telemetry.Issue{{ProjectID: "detent", ID: "issue-2005", Identifier: "digitaldrywood/detent#2005", State: "Todo"}}}); err != nil {
+		t.Fatal(err)
+	}
+	mcpHeaders := map[string]string{"Authorization": "Bearer current-operator-token"}
+	connection := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-connections", `{}`, mcpHeaders)
+	var setup struct {
+		ID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(connection.Body.Bytes(), &setup); err != nil || setup.ID == "" {
+		t.Fatalf("connection=%s %v", connection.Body, err)
+	}
+	mcpHeaders["X-Detent-Connection-ID"] = setup.ID
+	for _, tt := range []struct {
+		name, head string
+		pending    bool
+	}{{"untrusted head", "other", false}, {"exact trusted head", key.HeadSHA, true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			input := map[string]any{"project_id": "detent", "identifier": "digitaldrywood/detent#2005", "request_id": tt.name, "repository": key.Repository, "pull_request": key.PRNumber, "base_sha": key.BaseSHA, "head_sha": tt.head, "finding_id": "auth-2", "evidence": "Verified false positive"}
+			raw, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/dispose_security_finding", string(raw), mcpHeaders)
+			if strings.Contains(response.Body.String(), `"status":"pending"`) != tt.pending {
+				t.Fatalf("disposition=%d %s", response.Code, response.Body)
+			}
+			if dispositions, err := deps.Store.ListSecurityAuditDispositions(t.Context(), run.ID); err != nil || len(dispositions) != 0 {
+				t.Fatalf("unapproved effect=%+v %v", dispositions, err)
+			}
+		})
+	}
 	workerToken := workerCredentials.Token("detent")
 	capacity := httptest.NewRecorder()
 	capacityRequest := httptest.NewRequest(http.MethodPost, "/api/v1/capacity/clear", nil)

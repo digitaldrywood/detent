@@ -185,49 +185,59 @@ func queryParkSummaries(ctx context.Context, db ParkSummaryQuerier, projectID st
 	return out, nil
 }
 
-func parkSummaryFilter(prefix, projectID string, identities []IssueIdentity, includeIssueURL bool) (string, []any) {
+func parkSummaryFilter(prefix, table, projectID string, identities []IssueIdentity, includeIssueURL bool) (string, []any, error) {
 	if len(identities) == 0 {
 		if projectID == "" {
-			return "", nil
+			return "", nil, nil
 		}
-		return " " + prefix + " project_id = ?", []any{projectID}
+		return " " + prefix + " project_id = ?", []any{projectID}, nil
 	}
-	clauses := make([]string, 0, len(identities))
-	args := make([]any, 0, len(identities)*4)
+	requested := make([]IssueIdentity, 0, len(identities))
 	for _, rawIdentity := range identities {
 		identity := normalizeParkIdentity(rawIdentity)
-		if identity.ProjectID == "" {
+		if identity.ProjectID == "" || identity.IssueID == "" && identity.Identifier == "" && (!includeIssueURL || identity.IssueURL == "") {
 			continue
 		}
-		aliases := []string{}
-		aliasArgs := []any{}
-		if identity.IssueID != "" {
-			aliases = append(aliases, "issue_id = ?")
-			aliasArgs = append(aliasArgs, identity.IssueID)
-		}
-		if identity.Identifier != "" {
-			aliases = append(aliases, "identifier = ?")
-			aliasArgs = append(aliasArgs, identity.Identifier)
-		}
-		if includeIssueURL && identity.IssueURL != "" {
-			aliases = append(aliases, "issue_url = ?")
-			aliasArgs = append(aliasArgs, identity.IssueURL)
-		}
-		if len(aliases) == 0 {
-			continue
-		}
-		clauses = append(clauses, "(project_id = ? AND ("+strings.Join(aliases, " OR ")+"))")
-		args = append(args, identity.ProjectID)
-		args = append(args, aliasArgs...)
+		requested = append(requested, identity)
 	}
-	if len(clauses) == 0 {
-		return " " + prefix + " 1 = 0", nil
+	if len(requested) == 0 {
+		return " " + prefix + " 1 = 0", nil, nil
 	}
-	return " " + prefix + " (" + strings.Join(clauses, " OR ") + ")", args
+	raw, err := json.Marshal(requested)
+	if err != nil {
+		return "", nil, fmt.Errorf("encoding park summary identities: %w", err)
+	}
+	issueIndex := map[string]string{
+		"work_attempts":               "work_attempts_issue_idx",
+		"workflow_phase_events":       "workflow_phase_events_issue_idx",
+		"usage_events":                "usage_events_project_issue_day_idx",
+		"issue_park_acknowledgements": "issue_park_acknowledgements_identity_idx",
+	}[table]
+	columns := []string{"issue_id", "identifier"}
+	fields := []string{"IssueID", "Identifier"}
+	if includeIssueURL {
+		columns = append(columns, "issue_url")
+		fields = append(fields, "IssueURL")
+	}
+	clauses := make([]string, 0, len(columns))
+	for index, column := range columns {
+		indexHint := ""
+		if index == 0 {
+			indexHint = " INDEXED BY " + issueIndex
+		}
+		clauses = append(clauses, "SELECT matched.rowid FROM requested CROSS JOIN "+table+" AS matched"+indexHint+
+			" WHERE matched.project_id = json_extract(requested.value, '$.ProjectID') AND matched."+column+
+			" = NULLIF(json_extract(requested.value, '$."+fields[index]+"'), '')")
+	}
+	filter := " " + prefix + " rowid IN (WITH requested AS (SELECT value FROM json_each(?)) " + strings.Join(clauses, " UNION ALL ") + ")"
+	return filter, []any{string(raw)}, nil
 }
 
 func queryParkEvents(ctx context.Context, db ParkSummaryQuerier, projectID string, identities []IssueIdentity) ([]parkEvent, error) {
-	filter, args := parkSummaryFilter("WHERE", projectID, identities, true)
+	filter, args, err := parkSummaryFilter("WHERE", "work_attempts", projectID, identities, true)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.QueryContext(ctx, `
 SELECT id, project_id, COALESCE(issue_id, ''), COALESCE(identifier, ''), COALESCE(issue_url, ''),
        status, COALESCE(terminal_state, ''), COALESCE(error_class, ''),
@@ -259,16 +269,16 @@ ORDER BY project_id, completed_at, id`, args...)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating work attempt park summaries: %w", err)
 	}
+	workflowFilter, workflowArgs, err := parkSummaryFilter("AND", "workflow_phase_events", projectID, identities, true)
+	if err != nil {
+		return nil, err
+	}
 	workflowRows, err := db.QueryContext(ctx, `
 SELECT id, project_id, COALESCE(issue_id, ''), COALESCE(identifier, ''), COALESCE(issue_url, ''),
        COALESCE(reason, ''), started_at, COALESCE(metadata_json, '{}')
 FROM workflow_phase_events
-WHERE phase_type = 'lane' AND lower(trim(phase_name)) = 'blocked' AND lower(trim(COALESCE(status, 'entered'))) = 'entered'`+
-		func() string {
-			workflowFilter, _ := parkSummaryFilter("AND", projectID, identities, true)
-			return workflowFilter
-		}()+`
-ORDER BY project_id, started_at, id`, args...)
+WHERE phase_type = 'lane' AND lower(trim(phase_name)) = 'blocked' AND lower(trim(COALESCE(status, 'entered'))) = 'entered'`+workflowFilter+`
+ORDER BY project_id, started_at, id`, workflowArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("querying workflow parks: %w", err)
 	}
@@ -308,7 +318,10 @@ func queryParkUsage(ctx context.Context, db ParkSummaryQuerier, projectID string
 CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER), CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER),
 CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER), CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER)
 FROM usage_events`
-	filter, args := parkSummaryFilter("WHERE", projectID, identities, false)
+	filter, args, err := parkSummaryFilter("WHERE", "usage_events", projectID, identities, false)
+	if err != nil {
+		return err
+	}
 	query += filter
 	query += " GROUP BY project_id, issue_id, identifier"
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -333,7 +346,10 @@ FROM usage_events`
 
 func queryParkAcknowledgements(ctx context.Context, db ParkSummaryQuerier, projectID string, identities []IssueIdentity, summaries map[string]*ParkSummary) error {
 	query := `SELECT project_id, COALESCE(issue_id, ''), COALESCE(identifier, ''), COALESCE(issue_url, ''), park_sequence, acknowledged_at FROM issue_park_acknowledgements`
-	filter, args := parkSummaryFilter("WHERE", projectID, identities, true)
+	filter, args, err := parkSummaryFilter("WHERE", "issue_park_acknowledgements", projectID, identities, true)
+	if err != nil {
+		return err
+	}
 	query += filter
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {

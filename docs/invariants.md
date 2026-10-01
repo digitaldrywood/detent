@@ -32,6 +32,24 @@ introduced. `TestHostedBillingMCP`, `TestBillingCommandResponseLoss`,
 `TestUsageReportAggregates`, `TestHostedArtifactAllowanceBoundary`, and
 `TestPlatformComplimentaryPlansThroughTenantHub` cover these boundaries.
 
+Work-item MCP parity (#3341) reuses the dashboard work creation, discussion,
+priority, native collaboration, park acknowledgement and security-disposition
+commands. Native edits keep expected revisions and workflow authority; connection
+approval and YOLO cannot bypass them. Compatibility dependencies, ordering and
+priority use the hub's existing application commands. Board removal now delegates
+project removal or lane-field clearing to `ReconcileOperatorMove`, consolidating
+the former dashboard tracker writes under the orchestrator. Hub-only deployments
+without a daemon lane owner or approval service return opaque unavailable results
+for those commands. No tracker capability or lane writer is added to MCP.
+The reviewed `applyOperatorMove` source digest changes for this consolidation;
+the existing move reasons are unchanged and no mechanism or reason code is added
+(INV-3).
+`TestMCPNativeWorkCommands`, `TestHubMCPWorkCommands`,
+`TestHubMCPCompatibilityCommands`, `TestMCPActionApprovalBoundary`,
+`TestOperatorRemovalCommand` and `TestWorkArgumentsDirectCallBounds` cover
+replay, native revisions, workflow refusal, ownership, bounded direct calls,
+real approval/rejection, authorized YOLO and orchestrator-owned removal.
+
 MCP transport parity (#3339) uses one permission-filtered, paginated typed
 registry with toolset metadata. The `2026-07-28` stateless protocol validates
 per-request metadata and mirrored HTTP headers; older handshakes retain their
@@ -583,9 +601,10 @@ writes followed by successful persistence and normal turn completion.
 Dispatch Workpad comment-read failures use the existing tracker availability observer
 and tracker-unavailable dispatch reason; they never become issue dependency evidence.
 
-Worker credential classification uses the connector's shared GraphQL secondary
-cooldown, including Retry-After. A failed `GET /rate_limit` observation now
-logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
+Worker credential classification reads `GET /user` and uses the connector's shared REST
+cooldown, including Retry-After (#3002). Shared/distinct principal classification
+and bounded probes are unchanged; no GraphQL identity query is sent.
+A failed `GET /rate_limit` observation now logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
 A successful response still enforces the configured worker reserve. The old
 credential-wide monitor condition, canary, retry restoration, and scheduler
 skip reason are retired. Historical monitor attempts remain visible in attempt
@@ -626,6 +645,24 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Rework-breaker recovery reads its historical park only for a current Blocked
+issue with automatic promotion enabled. Current-cause recovery remains the
+first owner for every Blocked issue, including when promotion is disabled.
+Configured recovery source lanes retain their existing maintenance behavior
+without loading breaker history they cannot consume.
+`TestRecoverBlockedIssuesReworkBreakerGuards` covers omitted history reads and
+retained current park decisions. This consolidates the existing eligibility
+condition before its read without a cache or recovery mechanism.
+
+Scoped park summaries select physical rows through the existing identity
+indexes before aggregating history. A fixed two or three `json_each` identity
+branches serve any batch size; `rowid IN` deduplicates rows matching several
+aliases without collapsing distinct usage rows. Project boundaries, one-hop
+alias matching, list and invalid-identity behavior, park provenance, and
+acknowledgment receipts remain unchanged. The existing park summary, bridging,
+and acknowledgment tests cover these contracts, including a board-sized batch.
+This consolidates scoped readers without a new index, cache, or mechanism.
 
 Missing `gate.local_status` evidence is unproduced Detent-owned work (#3172).
 The connector shares the ownership predicate with current-head CI telemetry and

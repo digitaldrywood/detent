@@ -35,7 +35,21 @@ func (w testLaneWriter) ReconcileOperatorMove(ctx context.Context, request orche
 		}
 	}
 	var err error
-	if request.StateFieldID > 0 {
+	if request.Remove {
+		if request.StateFieldID > 0 {
+			clearer, ok := tracker.(connector.IssueFieldClearer)
+			if !ok {
+				return orchestrator.OperatorMoveResult{}, connector.ErrNotImplemented
+			}
+			err = clearer.ClearIssueField(ctx, request.IssueID, request.StateFieldID)
+		} else {
+			remover, ok := tracker.(connector.ProjectRemover)
+			if !ok {
+				return orchestrator.OperatorMoveResult{}, connector.ErrNotImplemented
+			}
+			err = remover.RemoveIssueFromProject(ctx, request.IssueID)
+		}
+	} else if request.StateFieldID > 0 {
 		setter, ok := tracker.(connector.IssueFieldSetter)
 		if !ok {
 			return orchestrator.OperatorMoveResult{}, connector.ErrNotImplemented

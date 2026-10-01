@@ -59,10 +59,10 @@ func (e hostedOperatorExecutor) OpenConnection(ctx context.Context) error {
 }
 
 func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
-	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+	definitions, err := (nativeOperatorExecutor{service: e.service}).ListTools(ctx)
+	if err != nil {
 		return nil, err
 	}
-	var definitions []operatortool.Definition
 	if e.service.config.Hosted == nil {
 		return definitions, nil
 	}
@@ -109,6 +109,9 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	if call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) {
+		return (nativeOperatorExecutor{service: e.service}).Execute(ctx, call)
+	}
 	defer func() {
 		if err != nil {
 			err = safeBillingError(err)

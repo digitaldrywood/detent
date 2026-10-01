@@ -18,6 +18,7 @@ import (
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
@@ -30,12 +31,12 @@ const modernOperatorMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-
 // targets, and request metadata/header attempts to enable YOLO.
 func TestMCPActionApprovalBoundary(t *testing.T) {
 	for _, transport := range []string{"remote", "remote modern", "stdio"} {
-		for _, scenario := range []string{"ordinary", "different credential", "reconnect retry", "concurrent retry", "application failure", "approve", "approve after YOLO", "pending reconnect conflict", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard"} {
+		for _, scenario := range []string{"ordinary", "different credential", "reconnect retry", "concurrent retry", "application failure", "approve", "approve after YOLO", "pending reconnect conflict", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard", "comment add", "comment edit", "comment delete", "comment delete approve", "comment delete reject", "comment delete YOLO", "comment replay", "comment pr", "comment pr ownership", "work create", "work priority", "work remove", "work remove YOLO", "work unsupported edit"} {
 			if transport != "remote" && scenario == "closed connection" || transport == "remote modern" && scenario == "pending reconnect conflict" {
 				continue // Modern HTTP has no protocol session to close or replace.
 			}
 			t.Run(transport+"/"+scenario, func(t *testing.T) {
-				conn := &kanbanActionConnector{name: "memory"}
+				conn := &kanbanActionConnector{name: "memory", issueComments: map[string][]connector.IssueComment{"issue": {{ID: "comment", Body: "Original"}}}}
 				if scenario == "application failure" {
 					conn.updateErr = errors.New("credential-sensitive-value-sentinel")
 				}
@@ -47,8 +48,9 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 
 				clock := time.Now()
 
-				mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}, conn)
-				snapshot := telemetry.Snapshot{GeneratedAt: time.Now().UTC(), BoardIssues: []telemetry.Issue{{ID: "issue", Identifier: "digitaldrywood/detent#3337", ProjectID: "detent", State: "Backlog"}}}
+				workConn := &mcpWorkConnector{kanbanActionConnector: conn}
+				mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}, workConn)
+				snapshot := telemetry.Snapshot{GeneratedAt: time.Now().UTC(), BoardIssues: []telemetry.Issue{{ID: "issue", Identifier: "digitaldrywood/detent#3337", ProjectID: "detent", State: "Backlog", PullRequest: &telemetry.PullRequest{Number: 42, URL: "https://github.com/digitaldrywood/detent/pull/42"}, Comments: []telemetry.IssueComment{{ID: "comment", Body: "Original", Local: true, CanEdit: true, CanDelete: true}}}}}
 				if err := deps.Hub.Publish(snapshot); err != nil {
 					t.Fatal(err)
 				}
@@ -82,7 +84,8 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					headers["Authorization"], keyID = "Bearer "+token, key
 				}
 				var id string
-				if transport == "remote modern" {
+				switch transport {
+				case "remote modern":
 					headers["Mcp-Protocol-Version"] = "2026-07-28"
 					headers["Mcp-Method"] = "tools/call"
 					headers["Mcp-Name"] = "connection_info"
@@ -102,7 +105,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					if id == "" || setup.Header().Get("Mcp-Session-Id") != "" || !strings.Contains(setup.Body.String(), `"mode":"confirmation"`) {
 						t.Fatalf("modern setup=%d %s", setup.Code, setup.Body.String())
 					}
-				} else if transport == "remote" {
+				case "remote":
 					initialize := strings.Replace(mcpInitializeRequest, `"capabilities":{}`, `"capabilities":{"yolo":true},"_meta":{"yolo":true}`, 1)
 					reply := performJSON(t, server.Handler(), http.MethodPost, "/mcp", initialize, headers)
 					id = reply.Header().Get("Mcp-Session-Id")
@@ -111,7 +114,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					}
 					headers["Mcp-Session-Id"], headers["Mcp-Protocol-Version"] = id, "2025-11-25"
 					performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, headers)
-				} else {
+				default:
 					reply := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-connections", `{"yolo":true}`, headers)
 					var setup struct {
 						ID string `json:"connection_id"`
@@ -186,7 +189,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					}
 					return response
 				}
-				if scenario == "YOLO" || scenario == "read scope" || scenario == "project grant" {
+				if scenario == "YOLO" || scenario == "comment delete YOLO" || scenario == "work remove YOLO" || scenario == "read scope" || scenario == "project grant" {
 					if reply := decision("", "mode", "yolo", false); reply.Code != 200 {
 						t.Fatalf("YOLO setup=%d %s", reply.Code, reply.Body.String())
 					}
@@ -208,7 +211,52 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 						t.Fatalf("untrusted mode=%s", reply.Body.String())
 					}
 				}
-				reply := call("move_item", args)
+				commandName := "move_item"
+				if strings.HasPrefix(scenario, "comment ") {
+					commandName = "add_comment"
+					args = `{"project_id":"detent","identifier":"digitaldrywood/detent#3337","body":"New comment","request_id":"comment-request"}`
+					if scenario == "comment pr" || scenario == "comment pr ownership" {
+						args = strings.TrimSuffix(args, "}") + `,"target":"pr","repository":"digitaldrywood/detent","pull_request":42}`
+						if scenario == "comment pr ownership" {
+							args = strings.Replace(args, "digitaldrywood/detent\",\"pull_request", "foreign/repo\",\"pull_request", 1)
+						}
+					}
+					if scenario == "comment edit" {
+						commandName = "edit_comment"
+						args = strings.TrimSuffix(args, "}") + `,"comment_id":"comment"}`
+					}
+					if strings.HasPrefix(scenario, "comment delete") {
+						commandName = "delete_comment"
+						args = `{"project_id":"detent","identifier":"digitaldrywood/detent#3337","comment_id":"comment","request_id":"comment-request"}`
+					}
+				}
+				if strings.HasPrefix(scenario, "work ") {
+					switch scenario {
+					case "work create":
+						commandName = "file_issue"
+						args = `{"project_id":"detent","title":"Created","description":"Body","state":"Backlog","request_id":"create"}`
+					case "work priority":
+						commandName = "set_priority"
+						args = `{"project_id":"detent","identifier":"digitaldrywood/detent#3337","priority":"High","request_id":"priority"}`
+					case "work unsupported edit":
+						commandName = "edit_item"
+						args = `{"project_id":"detent","identifier":"digitaldrywood/detent#3337","title":"Edited","expected_revision":1,"request_id":"edit"}`
+					default:
+						commandName = "remove_item"
+						args = `{"project_id":"detent","identifier":"digitaldrywood/detent#3337","request_id":"remove"}`
+					}
+				}
+				reply := call(commandName, args)
+				if scenario == "work unsupported edit" || scenario == "comment pr ownership" {
+					if strings.Contains(reply.Body.String(), `"status":"succeeded"`) || strings.Contains(reply.Body.String(), `"status":"pending"`) {
+						t.Fatalf("unsupported/foreign write=%s", reply.Body)
+					}
+					if len(conn.prComments()) != 0 || len(conn.stateUpdates()) != 0 {
+						t.Fatal("unsupported write had effects")
+					}
+					return
+				}
+
 				if scenario == "read scope" || scenario == "project grant" {
 					if strings.Contains(reply.Body.String(), `"status":"succeeded"`) || strings.Contains(reply.Body.String(), `"status":"pending"`) || len(conn.stateUpdates()) != 0 {
 						t.Fatalf("YOLO expanded authority: %s", reply.Body.String())
@@ -243,10 +291,11 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 						return c.ID
 					}
 					connectionID := connect()
-					if transport == "remote" {
+					switch transport {
+					case "remote":
 						headers["Mcp-Session-Id"] = connectionID
 						performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, headers)
-					} else if transport == "stdio" {
+					case "stdio":
 						headers["X-Detent-Connection-ID"] = connectionID
 					}
 					if scenario == "concurrent retry" {
@@ -302,6 +351,89 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 				}
 				if receipt.ID == "" {
 					t.Fatalf("no receipt=%s", reply.Body.String())
+				}
+
+				if strings.HasPrefix(scenario, "work ") {
+					switch scenario {
+					case "work create":
+						if receipt.Status != chatpkg.ActionSucceeded || len(workConn.created) != 1 {
+							t.Fatalf("create=%s", reply.Body)
+						}
+						call(commandName, args)
+						if len(workConn.created) != 1 {
+							t.Fatal("creation replay duplicated issue")
+						}
+					case "work priority":
+						if receipt.Status != chatpkg.ActionSucceeded || len(workConn.priorities) != 1 {
+							t.Fatalf("priority=%s", reply.Body)
+						}
+					default:
+						if scenario == "work remove" {
+							if receipt.Status != chatpkg.ActionPending || len(conn.removals()) != 0 {
+								t.Fatal("removal escaped approval")
+							}
+							decision(receipt.ID, "confirm", "", false)
+						}
+						if len(conn.removals()) != 1 {
+							t.Fatalf("removals=%v", conn.removals())
+						}
+					}
+					return
+				}
+				if strings.HasPrefix(scenario, "comment ") {
+					switch scenario {
+					case "comment pr":
+						if receipt.Status != chatpkg.ActionSucceeded || len(conn.prComments()) != 1 {
+							t.Fatalf("PR comment=%s", reply.Body)
+						}
+					case "comment add", "comment replay":
+						if receipt.Status != chatpkg.ActionSucceeded || len(conn.comments()) != 1 {
+							t.Fatalf("comment=%s effects=%v", reply.Body.String(), conn.comments())
+						}
+						if scenario == "comment replay" {
+							call(commandName, args)
+							fresh := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-connections", `{}`, map[string]string{"Authorization": headers["Authorization"]})
+							var setup struct {
+								ID string `json:"connection_id"`
+							}
+							if err := json.Unmarshal(fresh.Body.Bytes(), &setup); err != nil {
+								t.Fatal(err)
+							}
+							replay := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/add_comment", args, map[string]string{"Authorization": headers["Authorization"], "X-Detent-Connection-ID": setup.ID})
+							if !strings.Contains(replay.Body.String(), `"status":"succeeded"`) || len(conn.comments()) != 1 {
+								t.Fatalf("replay=%s effects=%v", replay.Body.String(), conn.comments())
+							}
+						}
+					case "comment edit":
+						if receipt.Status != chatpkg.ActionSucceeded || len(conn.commentUpdates()) != 1 {
+							t.Fatalf("edit=%s effects=%v", reply.Body.String(), conn.commentUpdates())
+						}
+					default:
+						want := 0
+						if scenario == "comment delete YOLO" {
+							want = 1
+						} else {
+							if receipt.Status != chatpkg.ActionPending || len(conn.commentRemovals()) != 0 {
+								t.Fatalf("delete escaped approval=%s", reply.Body.String())
+							}
+							call(commandName, args)
+							if len(conn.commentRemovals()) != 0 {
+								t.Fatal("replay approved deletion")
+							}
+							if scenario == "comment delete approve" {
+								decision(receipt.ID, "confirm", "", false)
+								want = 1
+							}
+							if scenario == "comment delete reject" {
+								decision(receipt.ID, "reject", "", false)
+								decision(receipt.ID, "confirm", "", false)
+							}
+						}
+						if len(conn.commentRemovals()) != want {
+							t.Fatalf("deletions=%v want=%d", conn.commentRemovals(), want)
+						}
+					}
+					return
 				}
 				if scenario == "different credential" {
 					otherToken, _ := createRemoteMCPKey(t, server, "Other connection", []string{"write"}, nil)
@@ -481,4 +613,20 @@ func hasMutationAudit(logs, outcome string) bool {
 		}
 	}
 	return false
+}
+
+// These implement the dashboard's existing tracker boundaries and record effects.
+type mcpWorkConnector struct {
+	*kanbanActionConnector
+	created    []connector.Issue
+	priorities []string
+}
+
+func (c *mcpWorkConnector) UpsertIssues(_ context.Context, issues []connector.Issue) error {
+	c.created = append(c.created, issues...)
+	return nil
+}
+func (c *mcpWorkConnector) SetField(_ context.Context, id, field, value string) error {
+	c.priorities = append(c.priorities, id+" "+field+" "+value)
+	return nil
 }

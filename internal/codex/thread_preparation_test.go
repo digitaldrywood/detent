@@ -18,9 +18,10 @@ func TestAppServerThreadPreparation(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				requestID, method := threadResumeRequestID, "thread/resume"
-				if mode == "verify" {
+				switch mode {
+				case "verify":
 					requestID, method = threadReadRequestID, "thread/read"
-				} else if mode == "fresh" {
+				case "fresh":
 					requestID, method = threadStartRequestID, "thread/start"
 				}
 				messages := []Message{
