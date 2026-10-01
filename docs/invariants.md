@@ -612,6 +612,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Rework-breaker recovery reads its historical park only for a current Blocked
+issue with automatic promotion enabled. Current-cause recovery remains the
+first owner for every Blocked issue, including when promotion is disabled.
+Configured recovery source lanes retain their existing maintenance behavior
+without loading breaker history they cannot consume.
+`TestRecoverBlockedIssuesReworkBreakerGuards` covers omitted history reads and
+retained current park decisions. This consolidates the existing eligibility
+condition before its read without a cache or recovery mechanism.
+
 Missing `gate.local_status` evidence is unproduced Detent-owned work (#3172).
 The connector shares the ownership predicate with current-head CI telemetry and
 merge missing-check accounting, removing that context from pending-CI suppression,

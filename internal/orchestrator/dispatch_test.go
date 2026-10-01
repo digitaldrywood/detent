@@ -3217,8 +3217,8 @@ func TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle(t *testing.T) {
 
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
 	cfg := normalizeConfig(Config{
-		// Ready work ranks ahead of running issues; leave a slot after dispatch
-		// so the running issue reports already_running rather than capacity full.
+		// Keep a slot free after selection so the running candidate reaches
+		// its eligibility decision instead of the project-capacity refusal.
 		MaxConcurrentAgents: 3,
 		ActiveStates:        []string{"Todo", "In Progress"},
 		TerminalStates:      []string{"Done"},

@@ -159,10 +159,10 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 			}
 			return ctx.Err()
 		case <-stall:
-			return &infrastructureError{err: errors.New("Pi RPC stream stalled"), startup: !ready}
+			return &infrastructureError{err: errors.New("pi RPC stream stalled"), startup: !ready}
 		case item, ok := <-records:
 			if !ok {
-				return &infrastructureError{err: fmt.Errorf("Pi RPC exited before completion: %w", io.EOF), startup: !ready}
+				return &infrastructureError{err: fmt.Errorf("pi RPC exited before completion: %w", io.EOF), startup: !ready}
 			}
 			if timer != nil {
 				timer.Reset(b.options.StallTimeout)
@@ -180,7 +180,7 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 					return &infrastructureError{err: fmt.Errorf("unexpected Pi RPC response %q for %q", r.ID, r.Command), startup: !ready}
 				}
 				if !*r.Success {
-					err := fmt.Errorf("Pi %s rejected: %s", r.Command, r.Error)
+					err := fmt.Errorf("pi %s rejected: %s", r.Command, r.Error)
 					if !ready {
 						return &infrastructureError{err: err, startup: true}
 					}
@@ -214,13 +214,13 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 						return &infrastructureError{err: fmt.Errorf("invalid Pi prompt response: %w", err)}
 					}
 					if data.Disposition != "started" {
-						return &infrastructureError{err: fmt.Errorf("Pi prompt did not start a run: %q", data.Disposition)}
+						return &infrastructureError{err: fmt.Errorf("pi prompt did not start a run: %q", data.Disposition)}
 					}
 					accepted = true
 				}
 			} else if r.Type == "agent_settled" {
 				if !ready {
-					return &infrastructureError{err: errors.New("Pi settled before prompt dispatch"), startup: true}
+					return &infrastructureError{err: errors.New("pi settled before prompt dispatch"), startup: true}
 				}
 				settled = true
 			} else if ready {
@@ -248,14 +248,14 @@ func (s *turnState) setState(data json.RawMessage) error {
 		return fmt.Errorf("invalid Pi state: %w", err)
 	}
 	if state.SessionID == "" || state.Model.ID == "" {
-		return errors.New("Pi state omitted session or model identity")
+		return errors.New("pi state omitted session or model identity")
 	}
 	// Do not silently execute with a different provider/model than the route.
 	if s.req.Model != "" && state.Model.ID != s.req.Model {
-		return errors.New("Pi resolved model differs from requested route model")
+		return errors.New("pi resolved model differs from requested route model")
 	}
 	if s.req.ModelProvider != "" && state.Model.Provider != s.req.ModelProvider {
-		return errors.New("Pi resolved provider differs from requested provider")
+		return errors.New("pi resolved provider differs from requested provider")
 	}
 	s.sessionID = state.SessionID
 	s.identity = agentidentity.RuntimeUpdate(state.Model.ID, state.Model.Provider, state.ThinkingLevel, "", time.Time{})
@@ -293,7 +293,7 @@ func (s *turnState) event(r rpcRecord) error {
 		m := r.Message
 		s.lastError = nil
 		if m.StopReason == "error" || m.StopReason == "aborted" {
-			s.lastError = fmt.Errorf("Pi assistant %s: %s", m.StopReason, m.ErrorMessage)
+			s.lastError = fmt.Errorf("pi assistant %s: %s", m.StopReason, m.ErrorMessage)
 		}
 		model := m.Model
 		if m.ResponseModel != "" {
@@ -340,7 +340,7 @@ func (s *turnState) event(r rpcRecord) error {
 			return s.update(runner.AgentUpdate{Type: runner.AgentUpdateToolCompleted, ItemID: r.ToolCallID, Tool: r.ToolName, Status: status})
 		}
 	case "extension_ui_request":
-		return &infrastructureError{err: errors.New("Pi extension UI is unsupported; extensions must remain disabled")}
+		return &infrastructureError{err: errors.New("pi extension UI is unsupported; extensions must remain disabled")}
 	}
 	return nil
 }
