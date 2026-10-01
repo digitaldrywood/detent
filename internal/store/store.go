@@ -311,8 +311,7 @@ type AdmissionStore interface {
 	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
 	AdmissionCandidateHistory(context.Context, string) (map[string]admissionmodel.IssueRecord, error)
 	RecentAdmissionRuns(context.Context, string, int) ([]admissionmodel.RunRecord, error)
-	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult, int) (admissionmodel.MalformedResult, error)
-	BlockedAdmissionMalformedResult(context.Context, string, string) (admissionmodel.MalformedResult, bool, error)
+	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult) (admissionmodel.MalformedResult, error)
 	ResolveAdmissionMalformedResults(context.Context, string, string, time.Time) error
 }
 

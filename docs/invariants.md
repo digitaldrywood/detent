@@ -2081,13 +2081,22 @@ authoritative. This removes a disconnected ranking path (#3519).
 
 Backlog admission selection uses the existing run issue records for evaluation
 identity, fingerprints, and stale verdicts. Unchanged stale candidates join the
-existing epic and malformed-result exclusions before the window is capped;
-remaining candidates rotate by last evaluation time. This replaces the fixed
-evaluation window with selection from run/skip bookkeeping, without a
-new routine, reason code, or suppression table (#2568).
-Saved stale verdicts and new evaluations share the same point-lookup revalidation;
-a candidate returning to its original eligible snapshot can re-enter the window.
-This removes unconditional historical suppression across eligibility cycles.
+existing epic exclusions before the window is capped; remaining candidates rotate
+by last evaluation time. This replaces the fixed evaluation window with selection
+from run/skip bookkeeping, without a new routine, reason code, or suppression table
+(#2568). Saved stale verdicts and new evaluations share the same point-lookup
+revalidation; a candidate returning to its original eligible snapshot can re-enter
+the window. This removes unconditional historical suppression across eligibility
+cycles.
+
+Malformed output has no lifetime eligibility veto (#3739). Unchanged candidates
+remain eligible for scheduled reevaluation through the same rotation, window cap,
+capacity and live budget checks. New unresolved observations stay retryable beyond
+four attempts, retaining counts, fingerprints, redacted error metadata,
+deduplication and timestamps. Legacy blocked observations remain readable as
+historical evidence; valid evaluations resolve them through the existing success
+owner. Malformed evidence grants no proposal or lane write, and valid evaluations
+retain every current admission requirement.
 
 Deliverable recovery opens a draft pull request when a worker already pushed an
 exact-head branch but failed before creating the PR, and returns a missing remote

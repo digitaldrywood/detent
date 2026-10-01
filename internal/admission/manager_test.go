@@ -3,6 +3,7 @@ package admission
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -331,7 +332,6 @@ func TestManagerPropagatesCandidateDeclineStoreErrors(t *testing.T) {
 				1,
 				now,
 				1,
-				nil,
 			)
 			if !errors.Is(err, wantErr) {
 				t.Fatalf("unproposedCandidates() error = %v, want %v", err, wantErr)
@@ -3272,67 +3272,96 @@ func TestManagerPersistsDeclinedCandidateEvaluation(t *testing.T) {
 
 func TestManagerBoundsMalformedAdmissionAcrossRestart(t *testing.T) {
 	t.Parallel()
+	for _, legacyBlocked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy blocked %t", legacyBlocked), func(t *testing.T) {
+			t.Parallel()
 
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
-	backend := openManagerTestStore(t)
-	agent := &malformedAdmissionRunner{malformedCalls: 4}
-	clock := now
-	settings := admissionTestSettings(tracker, agent)
-	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
+			now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			path := filepath.Join(t.TempDir(), "runtime.db")
+			backend, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := backend.Close(); err != nil {
+					t.Fatal(err)
+				}
+			})
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+			})
+			agent := &malformedAdmissionRunner{malformedCalls: 4}
+			clock := now
+			settings := admissionTestSettings(tracker, agent)
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
 
-	for attempt := 1; attempt <= 4; attempt++ {
-		result, err := manager.RunOnce(t.Context())
-		if err != nil || len(result.Proposals) != 0 {
-			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
-		}
-		clock = clock.Add(time.Minute)
-	}
-	runs, err := backend.RecentAdmissionRuns(t.Context(), "detent", 4)
-	if err != nil || len(runs) != 4 {
-		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
-	}
-	for index, run := range runs {
-		wantAttempt := 4 - index
-		if len(run.Malformed) != 1 || run.Malformed[0].AttemptCount != wantAttempt ||
-			run.Malformed[0].ErrorClass != "parse" || run.Malformed[0].ErrorCode != "invalid_json" ||
-			run.Malformed[0].OutputExcerpt != "{" || run.Malformed[0].CandidateFingerprint == "" ||
-			run.Malformed[0].PromptFingerprint == "" || run.Malformed[0].ProposalFingerprint == "" ||
-			run.Malformed[0].ErrorFingerprint == "" {
-			t.Fatalf("run %d malformed evidence = %#v", index, run.Malformed)
-		}
-		if run.Malformed[0].ErrorFingerprint != runs[0].Malformed[0].ErrorFingerprint {
-			t.Fatalf("run %d error fingerprint = %q, want %q", index, run.Malformed[0].ErrorFingerprint, runs[0].Malformed[0].ErrorFingerprint)
-		}
-	}
-	if runs[0].Malformed[0].Status != admissionmodel.MalformedBlocked {
-		t.Fatalf("fourth malformed status = %q, want blocked", runs[0].Malformed[0].Status)
-	}
+			for attempt := 1; attempt <= 4; attempt++ {
+				result, err := manager.RunOnce(t.Context())
+				if err != nil || len(result.Proposals) != 0 || result.Skipped["malformed_output_retryable"] != 1 || countAdmissionStateUpdates(tracker.Events(), "Todo") != 0 {
+					t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+				}
+				clock = clock.Add(time.Minute)
+			}
+			runs, err := backend.RecentAdmissionRuns(t.Context(), "detent", 4)
+			if err != nil || len(runs) != 4 {
+				t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+			}
+			for index, run := range runs {
+				wantAttempt := 4 - index
+				if len(run.Malformed) != 1 || run.Malformed[0].AttemptCount != wantAttempt ||
+					run.Malformed[0].ErrorClass != "parse" || run.Malformed[0].ErrorCode != "invalid_json" ||
+					run.Malformed[0].OutputExcerpt != "{" || run.Malformed[0].CandidateFingerprint == "" ||
+					run.Malformed[0].PromptFingerprint == "" || run.Malformed[0].ProposalFingerprint == "" ||
+					run.Malformed[0].ErrorFingerprint == "" || run.Malformed[0].Status != admissionmodel.MalformedRetryable {
+					t.Fatalf("run %d malformed evidence = %#v", index, run.Malformed)
+				}
+				if run.Malformed[0].ErrorFingerprint != runs[0].Malformed[0].ErrorFingerprint {
+					t.Fatalf("run %d error fingerprint = %q, want %q", index, run.Malformed[0].ErrorFingerprint, runs[0].Malformed[0].ErrorFingerprint)
+				}
+			}
+			if legacyBlocked {
+				if _, err := db.ExecContext(t.Context(), "UPDATE backlog_admission_malformed_results SET status = 'blocked'"); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	manager = newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
-	result, err := manager.RunOnce(t.Context())
-	if err != nil || len(result.Proposals) != 0 || result.Skipped["malformed_output_blocked"] != 1 {
-		t.Fatalf("RunOnce() after restart = %#v, %v", result, err)
-	}
-	if agent.calls != 4 {
-		t.Fatalf("runner calls = %d, want 4", agent.calls)
-	}
-
-	if err := tracker.UpdateIssueBody(t.Context(), issue.ID, issue.Description+"\n\nCorrected scope."); err != nil {
-		t.Fatalf("UpdateIssueBody() error = %v", err)
-	}
-	clock = clock.Add(time.Minute)
-	result, err = manager.RunOnce(t.Context())
-	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID {
-		t.Fatalf("RunOnce() after candidate change = %#v, %v", result, err)
-	}
-	if agent.calls != 5 {
-		t.Fatalf("runner calls = %d, want 5", agent.calls)
+			recovered := &malformedAdmissionRunner{}
+			settings.Runner = recovered
+			manager = newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
+			result, err := manager.RunOnce(t.Context())
+			if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID {
+				t.Fatalf("RunOnce() after restart with recovered runner = %#v, %v", result, err)
+			}
+			if agent.calls != 4 || recovered.calls != 1 {
+				t.Fatalf("runner calls = %d malformed, %d recovered, want 4 and 1", agent.calls, recovered.calls)
+			}
+			fingerprints := admissionEvaluationFingerprints(settings, issue)
+			if fingerprints.proposal != runs[0].Malformed[0].ProposalFingerprint ||
+				fingerprints.candidate != runs[0].Malformed[0].CandidateFingerprint ||
+				fingerprints.prompt != runs[0].Malformed[0].PromptFingerprint {
+				t.Fatal("candidate or prompt changed before recovery")
+			}
+			var status, resolvedAt string
+			var attempts int
+			if err := db.QueryRowContext(t.Context(), "SELECT status, attempt_count, resolved_at FROM backlog_admission_malformed_results WHERE proposal_fingerprint = ?", fingerprints.proposal).Scan(&status, &attempts, &resolvedAt); err != nil {
+				t.Fatal(err)
+			}
+			if status != string(admissionmodel.MalformedResolved) || attempts != 4 || resolvedAt != clock.Format(time.RFC3339Nano) {
+				t.Fatalf("prior observations = %s, %d, %s", status, attempts, resolvedAt)
+			}
+		})
 	}
 }
 
-func TestManagerAcceptsCorrectedAdmissionBeforeMalformedLimit(t *testing.T) {
+func TestManagerAcceptsCorrectedAdmissionAfterMalformedOutput(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 12, 30, 0, 0, time.UTC)
@@ -3370,6 +3399,8 @@ func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
 		`[`,
 		`{"evaluations":`,
 		`{"evaluations":[`,
+		`{"evaluations":[{`,
+		`{"evaluations":[{"issue_id":`,
 	}}
 	manager := newAdmissionTestManager(
 		t,
@@ -3378,15 +3409,16 @@ func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
 		func() time.Time { return now },
 	)
 
-	for attempt := 1; attempt <= 4; attempt++ {
+	for attempt := 1; attempt <= len(agent.malformedOutputs); attempt++ {
 		result, err := manager.RunOnce(t.Context())
-		if err != nil || len(result.Malformed) != 1 || result.Malformed[0].AttemptCount != attempt {
+		if err != nil || len(result.Malformed) != 1 || result.Malformed[0].AttemptCount != attempt ||
+			result.Malformed[0].Status != admissionmodel.MalformedRetryable || result.Skipped["malformed_output_retryable"] != 1 ||
+			len(result.Proposals) != 0 || countAdmissionStateUpdates(tracker.Events(), "Todo") != 0 {
 			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
 		}
 	}
-	result, err := manager.RunOnce(t.Context())
-	if err != nil || result.Skipped["malformed_output_blocked"] != 1 || agent.calls != 4 {
-		t.Fatalf("RunOnce() after bound = %#v, %v; runner calls = %d", result, err, agent.calls)
+	if agent.calls != len(agent.malformedOutputs) {
+		t.Fatalf("runner calls = %d, want %d", agent.calls, len(agent.malformedOutputs))
 	}
 }
 
@@ -3477,12 +3509,27 @@ func TestManagerContinuesMixedMalformedAdmissionCandidates(t *testing.T) {
 		func() time.Time { return now },
 	)
 
-	result, err := manager.RunOnce(t.Context())
-	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issues[1].ID {
-		t.Fatalf("RunOnce() = %#v, %v", result, err)
-	}
-	if result.Skipped["malformed_output_retryable"] != 1 || agent.calls != 2 {
-		t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
+	validIssue := issues[1]
+	for attempt := 1; attempt <= 6; attempt++ {
+		if attempt > 1 {
+			var err error
+			validIssue, err = tracker.CreateIssue(t.Context(), connector.IssueDraft{Title: "Independent candidate", Body: "Actionable problem statement"})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		result, err := manager.RunOnce(t.Context())
+		if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != validIssue.ID {
+			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+		}
+		if result.Skipped["malformed_output_retryable"] != 1 || len(result.Malformed) != 1 ||
+			result.Malformed[0].AttemptCount != attempt || result.Malformed[0].Status != admissionmodel.MalformedRetryable || agent.calls != 2*attempt {
+			t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
+		}
+		if countAdmissionStateUpdates(tracker.Events(), "Todo") != 0 {
+			t.Fatal("malformed output caused a lane write")
+		}
+		now = now.Add(time.Minute)
 	}
 }
 
@@ -4030,8 +4077,8 @@ type admissionIssueStoreWithoutCommentReader struct {
 	IssueStore
 }
 
-func (s *faultAdmissionStore) RecordAdmissionMalformedResult(ctx context.Context, record admissionmodel.MalformedResult, limit int) (admissionmodel.MalformedResult, error) {
-	stored, err := s.Store.RecordAdmissionMalformedResult(ctx, record, limit)
+func (s *faultAdmissionStore) RecordAdmissionMalformedResult(ctx context.Context, record admissionmodel.MalformedResult) (admissionmodel.MalformedResult, error) {
+	stored, err := s.Store.RecordAdmissionMalformedResult(ctx, record)
 	if err == nil {
 		s.malformed = append(s.malformed, stored)
 	}

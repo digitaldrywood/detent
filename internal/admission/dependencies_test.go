@@ -447,7 +447,7 @@ func TestAdmissionDependencyResolutionBounds(t *testing.T) {
 	tracker.IssueStore = memory.New(memory.Config{})
 	settings = admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
 	manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
-	candidates, _, truncated, err := manager.unproposedCandidates(t.Context(), settings, []connector.Issue{issue}, map[string]int{}, 1, now, 0, nil)
+	candidates, _, truncated, err := manager.unproposedCandidates(t.Context(), settings, []connector.Issue{issue}, map[string]int{}, 1, now, 0)
 	if err != nil || len(candidates) != 0 || truncated != 1 || tracker.calls != 2 {
 		t.Fatalf("candidates=%+v, truncated=%d, err=%v, calls=%d", candidates, truncated, err, tracker.calls)
 	}
