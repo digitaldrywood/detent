@@ -385,6 +385,13 @@ func TestRecoverBlockedIssuesRequiresConfiguredBlockedReasonAndCurrentCondition(
 			wantTarget: autoPromoteReworkState,
 		},
 		{
+			name:       "missing dependency cannot reuse closed snapshot for conflict repair",
+			reasonCode: blockedRecoveryReasonMergeConflict,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#404", State: "Done", TrackerState: connector.BlockedRefTrackerStateClosed}}
+			},
+		},
+		{
 			name:       "stale base reason still behind",
 			reasonCode: blockedRecoveryReasonStaleBase,
 			mutateIssue: func(issue *connector.Issue) {

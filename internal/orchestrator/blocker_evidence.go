@@ -57,6 +57,7 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 	issue connector.Issue,
 	resolvedReferences map[string]connector.Issue,
 	now time.Time,
+	referencesAttempted ...bool,
 ) recordedBlockerEvaluation {
 	signal, _ := rawIssueWorkpadSignal(issue)
 	if signal == nil {
@@ -91,7 +92,7 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 		issue:           issue,
 		state:           state,
 		now:             now,
-		references:      o.resolveBlockerPredicateReferences(ctx, issue, issue.WithNativeWorkpadAuthority().WorkpadSignal.Blockers, resolvedReferences),
+		references:      o.resolveBlockerPredicateReferences(ctx, issue, issue.WithNativeWorkpadAuthority().WorkpadSignal.Blockers, resolvedReferences, len(referencesAttempted) > 0 && referencesAttempted[0]),
 		hydrated:        map[string]connector.Issue{},
 		hydrationErrors: map[string]error{},
 	}
@@ -319,6 +320,7 @@ func (o *Orchestrator) resolveBlockerPredicateReferences(
 	issue connector.Issue,
 	blockers []workpad.Blocker,
 	seed map[string]connector.Issue,
+	attempted bool,
 ) map[string]connector.Issue {
 	resolved := map[string]connector.Issue{}
 	for identifier, resolvedIssue := range seed {
@@ -327,6 +329,11 @@ func (o *Orchestrator) resolveBlockerPredicateReferences(
 	self := normalizedIssueIdentifier(issue.Identifier)
 	if self != "" {
 		resolved[self] = issue
+	}
+	if attempted {
+		// The phase already attempted the whole cohort. Missing results remain
+		// unknown instead of triggering another per-root resolver call.
+		return resolved
 	}
 	refs := []connector.BlockedRef{}
 	seen := map[string]struct{}{}

@@ -861,6 +861,10 @@ func (o *Orchestrator) resolveDependencyBlockersWithError(ctx context.Context, i
 		return blockers, err
 	}
 
+	return dependencyBlockersWithIssues(blockers, issues), nil
+}
+
+func dependencyBlockersWithIssues(blockers []dependencyBlocker, issues []connector.Issue) []dependencyBlocker {
 	byIdentifier := make(map[string]connector.Issue, len(issues))
 	for _, blocker := range issues {
 		identifier := strings.ToLower(strings.TrimSpace(blocker.Identifier))
@@ -887,7 +891,7 @@ func (o *Orchestrator) resolveDependencyBlockersWithError(ctx context.Context, i
 			blockers[index].Ref.TrackerState = connector.BlockedRefTrackerStateClosed
 		}
 	}
-	return blockers, nil
+	return blockers
 }
 
 func dependencyResolvedBlockerRefs(blockers []dependencyBlocker) []connector.BlockedRef {
