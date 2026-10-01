@@ -1922,6 +1922,15 @@ facts from its operation-owned candidate evidence (#3730). Each candidate retain
 its own observation clock, readiness projection and fingerprint; missing or
 failed references and unqualified local aliases are resolved independently.
 Final candidate and dependency revalidation still reads fresh tracker evidence.
+GitHub admission source reads preserve own-issue hydration and canonical native/body
+prerequisite identities without final external state enrichment (#3737). Already-present
+native facts survive the source read but do not establish readiness. Admission's
+existing resolver owns current state, merged PR, and human completion authority
+before history, ranking, and fingerprints, and independently revalidates after
+model work. Missing, inaccessible, ambiguous, and failed references remain nonready.
+Normal tracker candidate, observed, and state refresh enrichment and local tracker
+delegation retain their existing behavior. `TestCandidateBodyDependencyRefresh`
+checks this intentionally narrower reader contract and normal refresh controls.
 This consolidates duplicate reference hydration without a separate cache or reader.
 `TestManagerAdmissionUsesAcceptedDependencyFrontier` covers shared-reference reads
 and unchanged evidence; `TestAdmissionRevalidatesDependenciesDuringEvaluation`
