@@ -2680,6 +2680,10 @@ only diagnostics matching both location and source-line hash are accepted.
 required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
 checks every workflow for forbidden pull-request and merge-group events.
 `TestWorkflowViolations` rejects trigger and coverage regressions.
+`TestScheduledCIDocumentationMatchesWorkflow` checks the documented no-op gate
+and optional diagnostics. `TestGolangCILintUsesRepositoryPinnedVersion` and
+`TestMakeLintIgnoresAmbientBinary` verify pinned lint execution with concurrent
+runners, including installation and cached-binary paths.
 
 The obsolete portability-stress configuration-text test is removed (#3547) per
 the test-suite audit policy. It encoded the retired single-job layout instead of

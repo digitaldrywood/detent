@@ -107,8 +107,8 @@ artifact workflows. GitHub PR delivery remains the default.
 - The CI lint job keeps the project-pinned golangci-lint version and caches its
   binary so cache hits avoid a per-run `go install` without changing lint
   coverage.
-- `GoReleaser Snapshot` validates integration on pushes to `main` and manual
-  workflow dispatch; it is not a PR-required check.
+- `GoReleaser Snapshot` validates packaging of the pinned `develop` commit in
+  scheduled and manual full-suite runs; it is not a PR-required check.
 
 ### Detent Repository Branch Protection
 
@@ -117,10 +117,13 @@ choose their own CI and branch protection policies, including PR-triggered CI,
 merge-group CI, required checks, and strict freshness. The orchestrator honors
 each project's configured gate and repository rules.
 
-Pull requests run `make check-fast` in their own worktree before merge. The
-command has no shared validation lock. No GitHub Actions workflow starts on a
-pull request and no branch ruleset requires a status check. Every `develop`
-push deploys to staging even when the scheduled full suite later fails.
+Pull requests use the no-op command `true` and have no local validation gate
+before push or merge. `make check-fast`, focused tests, and vet remain available
+for optional diagnostics. These commands have no shared validation lock; lint
+uses `--allow-parallel-runners` so concurrent worktrees can run it independently.
+No GitHub Actions workflow starts on a pull request and no branch ruleset
+requires a status check. Every `develop` push deploys to staging even when the
+scheduled full suite later fails.
 
 GitHub Actions runs the complete suite hourly on one pinned `develop` SHA when
 new commits exist since the last validated tag. A green run posts
