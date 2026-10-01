@@ -823,6 +823,26 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Retired-park recovery (#3687) consolidates its dependency and typed-predicate
+reference reads into one fresh phase cohort through the existing identifier
+resolver. Identifiers are deduplicated in first-request order, and GitHub's
+existing resolver groups PR discovery once per repository. The former per-root
+resolver/discovery owner and the repeat predicate lookup for absent evidence
+are removed from this phase. Each root retains its dependency provenance,
+human/operator holds, predicate evidence and completion decisions. Missing or
+failed cohort authority remains unknown; partial results accompanying an error
+cannot release a hold. The existing request cap, reserve and first-read rules
+still apply. A successful lane write discards the cohort for remaining roots,
+which return to ordinary fresh reads; evidence never survives a phase or
+operation. Root body/comments, exact-head PR/status/reviews and operational
+receipt verification retain their existing owners. Dispatch's capacity/lookahead
+bound and rotating dependency-priority scan remain unchanged.
+`TestRetiredParkReferenceCohort` exercises repeated references/repositories,
+failure/absence, cancellation, finite cap/reserve, human holds, fresh subsequent
+phases and post-write reads; the existing capped dependency-progress fixture
+records the requests made available by this consolidation. No persistent cache,
+remote reader, recovery path, configuration or lane writer is introduced.
+
 Refresh dispatch (#3674) runs the existing retired-park and dependency-maintenance
 owners after unrelated active work has passed current authorization, dependency,
 human/operator, review and visual gates. One rotating dependency priority read remains before

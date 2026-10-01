@@ -308,6 +308,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	state *State,
 	issue connector.Issue,
 	now time.Time,
+	cohort ...*blockedRecoveryDependencyEvidence,
 ) bool {
 	if normalizeState(issue.State) != normalizeState(blockedStatusState) {
 		return false
@@ -329,19 +330,27 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if !currentParkFound {
 		park, currentParkFound, derivedLaneReason, derivationFailure = o.deriveCurrentBreakerRecoveryPark(ctx, state, issue)
 	}
-	withDependencies := o.issueWithDependencyRefs(issue)
-	withDependencies, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
-	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
-	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
-	references := make(map[string]connector.Issue, len(blockers))
-	for _, blocker := range blockers {
-		if blocker.Resolved {
-			references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
-		}
+	var evidence *blockedRecoveryDependencyEvidence
+	if len(cohort) > 0 {
+		evidence = cohort[0]
 	}
+	if evidence == nil {
+		withDependencies, workpadRefs, current := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
+		blockers := o.resolveDependencyBlockers(ctx, withDependencies)
+		references := make(map[string]connector.Issue, len(blockers))
+		for _, blocker := range blockers {
+			if blocker.Resolved {
+				references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
+			}
+		}
+		evidence = &blockedRecoveryDependencyEvidence{issue: withDependencies, workpadRefs: workpadRefs, workpadCurrent: current, blockers: blockers, references: references}
+	}
+	withDependencies, workpadRefs, workpadCurrent := evidence.issue, evidence.workpadRefs, evidence.workpadCurrent
+	blockers := evidence.blockers
+	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
 	recorded := recordedBlockerEvaluation{}
 	if issue.WorkpadSignal == nil || len(issue.WorkpadSignal.Blockers) == 0 || workpadCurrent {
-		recorded = o.evaluateRecordedBlockers(ctx, state, issue, references, now)
+		recorded = o.evaluateRecordedBlockers(ctx, state, issue, evidence.references, now, len(cohort) > 0 && cohort[0] != nil)
 	}
 	if recorded.Found {
 		if recorded.Unverifiable {

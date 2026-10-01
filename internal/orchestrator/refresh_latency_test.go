@@ -3,15 +3,22 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/store/storetest"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 // Replay the actual authorization and blocked owners with many excluded active
@@ -257,4 +264,177 @@ func TestDispatchCandidateStatusBeforeMaintenance(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Catch duplicate shared-reference hydration and per-root repository discovery.
+// Missing, failed, cancelled and budget-deferred cohorts must keep each hold.
+func TestRetiredParkReferenceCohort(t *testing.T) {
+	for _, mode := range []string{"fresh", "missing", "failure", "partial failure", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
+		t.Run(mode, func(t *testing.T) {
+			paths := map[string]int{}
+			var requestMu sync.Mutex
+			closed := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestMu.Lock()
+				defer requestMu.Unlock()
+				paths[r.URL.Path]++
+				w.Header().Set("Content-Type", "application/json")
+				if mode == "reserve" {
+					w.Header().Set("X-RateLimit-Limit", "5000")
+					w.Header().Set("X-RateLimit-Remaining", "1")
+					w.Header().Set("X-RateLimit-Resource", "core")
+					w.Header().Set("X-RateLimit-Reset", fmt.Sprint(time.Now().Add(time.Hour).Unix()))
+				}
+				switch {
+				case strings.Contains(r.URL.Path, "/dependencies/blocked_by"), strings.HasSuffix(r.URL.Path, "/pulls"):
+					if mode == "discovery failure" && strings.HasSuffix(r.URL.Path, "/pulls") {
+						w.WriteHeader(http.StatusInternalServerError)
+						fmt.Fprint(w, `{"message":"unavailable"}`)
+						return
+					}
+					fmt.Fprint(w, `[]`)
+				case strings.Contains(r.URL.Path, "/issues/"):
+					if mode == "missing identity" && strings.HasSuffix(r.URL.Path, "/issues/2") {
+						fmt.Fprint(w, `{}`)
+						return
+					}
+					if mode == "failure" || mode == "partial failure" && strings.HasSuffix(r.URL.Path, "/issues/2") {
+						w.WriteHeader(http.StatusInternalServerError)
+						fmt.Fprint(w, `{"message":"unavailable"}`)
+						return
+					}
+					if mode == "missing" {
+						w.WriteHeader(http.StatusNotFound)
+						fmt.Fprint(w, `{"message":"not found"}`)
+						return
+					}
+					number := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+					state := "open"
+					if closed || mode == "human" {
+						state = "closed"
+					}
+					labels := `[{"name":"detent:in-progress"}]`
+					if mode == "human" {
+						labels = `[{"name":"human-owned"}]`
+					}
+					fmt.Fprintf(w, `{"node_id":%q,"number":%s,"state":%q,"body":"fresh body","html_url":%q,"labels":%s}`, r.URL.Path, number, state, "https://github.com/"+strings.TrimPrefix(r.URL.Path, "/repos/"), labels)
+				default:
+					t.Errorf("unexpected authority read %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(server.Close)
+			cap := 50
+			if mode == "budget" {
+				cap = 2
+			}
+			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL, APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tracker := &phaseReferenceConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, resolver: github}
+			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			var roots []connector.Issue
+			for i, refs := range [][]string{{"owner/repo#1"}, {"owner/repo#1", "owner/repo#2"}, {"owner/other#1"}} {
+				issue := connector.Issue{ID: fmt.Sprint("root-", i), Identifier: fmt.Sprintf("owner/repo#%d", i+100), State: "Blocked", DependencySource: connector.BlockedRefSourceNative}
+				for _, ref := range refs {
+					issue.BlockedBy = append(issue.BlockedBy, connector.BlockedRef{Identifier: ref, State: "Done", TrackerState: connector.BlockedRefTrackerStateClosed, HumanOwned: true, HumanCompletionReady: true, Source: connector.BlockedRefSourceNative})
+				}
+				roots = append(roots, issue)
+			}
+			// A typed predicate can share a native dependency without issuing another
+			// resolver call; absent phase evidence must stay unverifiable.
+			roots[0].WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Identifier: "owner/repo#1", Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: "owner/repo#1", States: []string{"open"}}}}}
+			// A PR predicate absent from the native issue-dependency list still
+			// requires reference authority. It shares the phase read of #2.
+			roots[2].WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Identifier: "owner/repo#2", Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicatePullRequestState, Identifier: "owner/repo#2", States: []string{"missing"}}}}}
+			ctx := t.Context()
+			if mode == "cancelled" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			state := newState(cfg)
+			if got := orch.operatorReturnRetiredParks(ctx, &state, roots, time.Now()); len(got) != 0 || len(tracker.updates) != 0 {
+				t.Fatalf("unavailable/open reference advanced roots: %v %v", got, tracker.updates)
+			}
+			requestMu.Lock()
+			requests := maps.Clone(paths)
+			requestMu.Unlock()
+			want := []string{"owner/repo#1", "owner/repo#2", "owner/other#1"}
+			if len(tracker.fetchIdentifiers) != 1 || fmt.Sprint(tracker.fetchIdentifiers[0]) != fmt.Sprint(want) {
+				t.Fatalf("resolver calls = %v, requests = %v; want one ordered deduplicated cohort %v", tracker.fetchIdentifiers, requests, want)
+			}
+			if mode == "fresh" {
+				if len(requests) != 8 {
+					t.Fatalf("requests = %v, want 3 issues + 3 dependencies + 2 repository lists", requests)
+				}
+				for path, count := range requests {
+					if count != 1 {
+						t.Fatalf("repeated %s: %d", path, count)
+					}
+				}
+				for _, root := range roots {
+					if held, ok := state.Blocked[root.ID]; !ok || held.RecoveryAction == "transition" {
+						t.Fatalf("missing per-root hold for %s: %+v", root.ID, held)
+					}
+				}
+				// The next phase reads fresh authority again, including changed bodies and
+				// closure; neither a result nor a failure is retained across invocations.
+				requestMu.Lock()
+				closed = true
+				requestMu.Unlock()
+				orch.operatorReturnRetiredParks(ctx, &state, roots, time.Now())
+				if len(tracker.fetchIdentifiers) != 5 || len(tracker.updates) != 1 || tracker.updates[0].issueID != roots[0].ID {
+					t.Fatalf("expected fresh phase plus per-root reads after first lane write: %v, updates %v", tracker.fetchIdentifiers, tracker.updates)
+				}
+				for _, root := range roots[1:] {
+					for _, ref := range state.Blocked[root.ID].Issue.BlockedBy {
+						if ref.TrackerState != connector.BlockedRefTrackerStateClosed || ref.Source != connector.BlockedRefSourceNative {
+							t.Fatalf("stale mapping for %s: %+v", root.ID, ref)
+						}
+					}
+				}
+			} else if mode != "human" {
+				for _, root := range roots {
+					held, ok := state.Blocked[root.ID]
+					if !ok {
+						t.Fatalf("lost hold for %s", root.ID)
+					}
+					for _, ref := range held.Issue.BlockedBy {
+						if ref.State == "Done" || ref.TrackerState == connector.BlockedRefTrackerStateClosed || ref.HumanCompletionReady {
+							t.Fatalf("retained stale passable evidence for %s: %+v", root.ID, ref)
+						}
+					}
+				}
+				if mode == "budget" || mode == "reserve" {
+					if mode == "reserve" {
+						// The existing budget permits the first read of each endpoint family.
+						cap = 2
+					}
+					total := 0
+					for _, count := range requests {
+						total += count
+					}
+					if total != cap {
+						t.Fatalf("request cap changed: %v", requests)
+					}
+				}
+				if mode == "cancelled" && len(requests) != 0 {
+					t.Fatalf("cancelled phase read remote: %v", requests)
+				}
+			}
+		})
+	}
+}
+
+type phaseReferenceConnector struct {
+	*autoPromoteTickConnector
+	resolver connector.IssueReferenceResolver
+}
+
+func (c *phaseReferenceConnector) FetchIssueStatesByIdentifiers(ctx context.Context, refs []string) ([]connector.Issue, error) {
+	c.fetchIdentifiers = append(c.fetchIdentifiers, append([]string(nil), refs...))
+	return c.resolver.FetchIssueStatesByIdentifiers(ctx, refs)
 }

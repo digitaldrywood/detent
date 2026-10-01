@@ -52,7 +52,9 @@ func TestDependencyAutoUnblockRESTBudgetProgress(t *testing.T) {
 					}
 					want := 0
 					if competingReads == 4 {
-						want = 1
+						// The retired-park phase now resolves its shared blocker once.
+						// Its saved requests remain available to the dependency owner.
+						want = 2
 					}
 					if len(tracker.updates) != want {
 						t.Fatalf("first refresh transitions = %d, want %d: %s", len(tracker.updates), want, logs.String())

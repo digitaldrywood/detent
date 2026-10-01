@@ -189,15 +189,24 @@ func (o *Orchestrator) recoverBlockedIssues(
 	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
 	sourceStates := mergeStateLists([]string{blockedStatusState}, recoveryCfg.SourceStates)
-	for _, issue := range issuesInStates(issues, sourceStates) {
+	issues = issuesInStates(issues, sourceStates)
+	dependencies := o.resolveBlockedRecoveryDependencies(ctx, state, issues)
+	for _, issue := range issues {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
 		}
 		if normalizeState(issue.State) == normalizeState(blockedStatusState) &&
-			o.recoverCauseBlockedIssue(ctx, state, issue, now) {
+			o.recoverCauseBlockedIssue(ctx, state, issue, now, dependencies[issue.ID]) {
 			transitioned[issueID] = struct{}{}
+			// A lane write changes tracker authority. Remaining roots use their
+			// ordinary fresh reads instead of the pre-write cohort.
+			dependencies = nil
 			continue
+		}
+		if evidence := dependencies[issue.ID]; evidence != nil {
+			issue = evidence.issue
+			issue.BlockedBy = dependencyResolvedBlockerRefs(evidence.blockers)
 		}
 		if normalizeState(issue.State) == normalizeState(blockedStatusState) && autoPromoteCfg.Enabled {
 			if park, ok := o.latestReworkBreakerPark(ctx, issue); ok {
@@ -210,6 +219,7 @@ func (o *Orchestrator) recoverBlockedIssues(
 					continue
 				}
 				transitioned[issueID] = struct{}{}
+				dependencies = nil
 				continue
 			}
 		}
@@ -246,12 +256,90 @@ func (o *Orchestrator) recoverBlockedIssues(
 			continue
 		}
 		transitioned[issueID] = struct{}{}
+		dependencies = nil
 	}
 	attributeHeldBlockedRecoveryRoots(state)
 	if len(transitioned) == 0 {
 		return nil
 	}
 	return transitioned
+}
+
+// This evidence belongs only to one retired-park phase. It is discarded before
+// any later recovery/dispatch phase or operation can consume it.
+type blockedRecoveryDependencyEvidence struct {
+	issue          connector.Issue
+	workpadRefs    []connector.BlockedRef
+	workpadCurrent bool
+	blockers       []dependencyBlocker
+	references     map[string]connector.Issue
+}
+
+func (o *Orchestrator) resolveBlockedRecoveryDependencies(ctx context.Context, state *State, issues []connector.Issue) map[string]*blockedRecoveryDependencyEvidence {
+	if _, ok := o.connector.(connector.IssueReferenceResolver); !ok {
+		return nil
+	}
+	cohort := make(map[string]*blockedRecoveryDependencyEvidence)
+	var refs []connector.BlockedRef
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) == "" || normalizeState(issue.State) != normalizeState(blockedStatusState) || o.currentBlockedOperatorStop(ctx, state, issue) {
+			continue
+		}
+		original := issue
+		issue, workpadRefs, current := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
+		cohort[issue.ID] = &blockedRecoveryDependencyEvidence{issue: issue, workpadRefs: workpadRefs, workpadCurrent: current}
+		refs = append(refs, issue.BlockedBy...)
+		if signal, _ := rawIssueWorkpadSignal(issue); signal != nil && signal.Invalid == nil && signal.Status == workpad.StatusBlocked && (original.WorkpadSignal == nil || len(original.WorkpadSignal.Blockers) == 0 || current) {
+			authority := issue
+			authority.WorkpadSignal = signal
+			for _, blocker := range authority.WithNativeWorkpadAuthority().WorkpadSignal.Blockers {
+				if blocker.Predicate != nil && normalizedIssueIdentifier(blocker.Predicate.Identifier) != normalizedIssueIdentifier(issue.Identifier) {
+					refs = append(refs, connector.BlockedRef{Identifier: blocker.Predicate.Identifier})
+				}
+			}
+		}
+	}
+	// The existing resolver deduplicates identifiers and groups PR discovery by
+	// repository. Start with identity only: failed/absent results cannot inherit
+	// a stale terminal state or human-completion signal from another root.
+	pending := connector.Issue{}
+	for _, ref := range refs {
+		if identifier := strings.TrimSpace(ref.Identifier); identifier != "" {
+			pending.BlockedBy = append(pending.BlockedBy, connector.BlockedRef{Identifier: identifier})
+		}
+	}
+	resolved, err := o.resolveDependencyBlockersWithError(ctx, pending)
+	var fresh []connector.Issue
+	references := make(map[string]connector.Issue)
+	for _, blocker := range resolved {
+		if blocker.Resolved {
+			fresh = append(fresh, blocker.Issue)
+			references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
+		}
+	}
+	for _, evidence := range cohort {
+		if err != nil && o.logger != nil {
+			o.logger.Warn("resolve dependency blockers failed", "issue_id", evidence.issue.ID, "identifier", evidence.issue.Identifier, "error", err)
+		}
+		evidence.references = references
+		for _, ref := range evidence.issue.BlockedBy {
+			ref.Identifier = strings.TrimSpace(ref.Identifier)
+			ref.ID = strings.TrimSpace(ref.ID)
+			ref.State = strings.TrimSpace(ref.State)
+			if strings.TrimSpace(ref.Identifier) == "" && strings.TrimSpace(ref.ID) == "" {
+				continue
+			}
+			// ID-only refs remain with their existing authority; the identifier
+			// resolver cannot refresh them.
+			if strings.TrimSpace(ref.Identifier) != "" {
+				ref.State, ref.TrackerState = "", ""
+				ref.HumanCompletionReady = false
+			}
+			evidence.blockers = append(evidence.blockers, dependencyBlocker{Ref: ref})
+		}
+		evidence.blockers = dependencyBlockersWithIssues(evidence.blockers, fresh)
+	}
+	return cohort
 }
 
 func attributeHeldBlockedRecoveryRoots(state *State) {
