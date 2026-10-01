@@ -615,6 +615,14 @@ The existing park retainer recognizes that receipt across refresh and restart;
 it does not acknowledge unrelated or later human parks. Scheduler skips retain
 the stored cause and recovery reason instead of reporting an opaque Blocked
 hold. The Workpad clearance regression also checks retained-park replay.
+Older native `recorded_blocker_recovery` receipts may omit the duplicated park
+metadata. The same park owner recognizes their authorized Workpad clearance
+after a known fingerprinted human-action park. A later completed Workpad can
+preserve an earlier explicit `in_progress` clearance, but cannot authorize one
+by itself. Missing provenance, mismatched supplied park metadata, newer human
+requests, unauthorized or invalid Workpads, and current dependencies retain
+their holds. `TestLegacyRecordedHumanClearanceRetainsNativeAuthority` replays
+these receipts through SQLite before and after restarting the in-memory state.
 
 Session token ceilings record their existing typed outcome, usage, and agent
 session phase in the database without writing a repository lesson. Removing the
