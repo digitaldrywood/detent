@@ -112,13 +112,9 @@ func (p dispatchPlanner) plan(
 		_, deferred := state.deferredCompletions[issue.ID]
 		_, retry := state.Retry[issue.ID]
 		_, claimed := state.Claimed[issue.ID]
-		_, blocked := state.Blocked[issue.ID]
-		knownWaits[issue.ID] = running || deferred || retry || claimed || blocked ||
-			(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, p.cfg.TerminalStates)) ||
-			(normalizeState(issue.State) == normalizeState(p.cfg.AutoPromote.ReworkState) && issue.PullRequest != nil &&
-				(currentHeadCIStatusPending(issue.PullRequest.CIStatus) || len(mergeWorkerCurrentHeadCIPendingChecks(issue)) > 0)) ||
-			artifactGateWaitStatusBlocksDispatch(issue, p.cfg.AutoPromote.Gate) ||
-			autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote)
+		blocked, parked := state.Blocked[issue.ID]
+		knownWaits[issue.ID] = running || deferred || retry || claimed || (parked && !blockedFromDependency(blocked)) ||
+			(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, p.cfg.TerminalStates))
 	}
 	slices.SortStableFunc(plannedCandidates, func(a, b connector.Issue) int {
 		waitingA, waitingB := knownWaits[a.ID], knownWaits[b.ID]

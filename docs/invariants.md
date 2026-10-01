@@ -2023,14 +2023,19 @@ Project dispatch evaluates candidates in the existing priority order, with at
 most the initial free project slots plus eight candidates of lookahead per pass
 (#3190). Failed hydration, dependency waits, due retries, and rejected dispatches
 consume that same evaluation allowance; they cannot trigger a full-queue tracker
-scan. Existing native dependency waits, running or claimed work, parked work,
-deferred completions, future retries, and existing CI or artifact gate waits are
+scan. Existing native dependency waits, running or claimed work, parked work
+from non-dependency owners, deferred completions, and future retries are
 ordered behind candidates without known waits before bounded hydration,
 preserving priority within each group after merge ordering (#3570).
-Partitioning reads existing in-memory state and pure gate evidence; it does not
-call eligibility callbacks or replace the fresh dispatch decision.
+Partitioning reads existing in-memory state; it does not call eligibility
+callbacks or replace the fresh dispatch decision. Dependency-derived Blocked
+entries retain their source provenance: only native dependency snapshots may
+change their ordering. Cached CI, artifact and completed-gate evidence retains
+fresh hydration and operator-rejection evaluation before refusal.
 `TestDispatchPlannerFindsReadyTailBeyondKnownWaits` covers each owner and a
 mixed front of unavailable candidates with six ready slots.
+`TestDispatchPlannerDependencyWaitProvenanceAcrossTicks` covers list-derived
+holds and fresh dependency clearance over consecutive scheduler passes.
 Due retries retain their polling order, and every admitted candidate still uses
 fresh dispatch hydration. Local label rejections and project-capacity skips need
 no evaluation.
