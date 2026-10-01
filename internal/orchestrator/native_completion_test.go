@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -69,6 +70,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	accepted := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, Files: 2}
 	for _, test := range []struct {
 		name         string
+		finalState   string
+		finalMessage string
+		runErr       error
+		wantHuman    bool
+		noUsage      bool
 		change       *runpkg.NativeChange
 		states       []connector.WorkflowState
 		statesErr    error
@@ -91,6 +97,13 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "a run that published no version never lands an earlier reviewed one", change: opened, states: landing, reviewed: &yes, wantState: "In Review", wantComment: "No version was published for review"},
 		{name: "a version that lost its acceptance goes to review", change: accepted, states: landing, reviewed: &no, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version never goes to a landing lane that does not dispatch", change: accepted, states: undispatched, wantState: "In Review", wantComment: "so it waits in In Review"},
+		{name: "unchanged work with final approval question needs human", change: &runpkg.NativeChange{}, states: workflow, finalMessage: "May I merge?", wantHuman: true},
+		{name: "unchanged work with final structured blocker needs human", change: &runpkg.NativeChange{}, states: workflow, finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true},
+		{name: "human attention without a produced change", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Choose the storage architecture", wantHuman: true},
+		{name: "human attention without final text", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, wantHuman: true, noUsage: true},
+		{name: "human attention with synthetic unchanged change", change: &runpkg.NativeChange{}, states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", wantHuman: true},
+		{name: "human attention with failed producer and no change", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.New("worker needs human attention"), wantHuman: true},
+		{name: "human attention defers a refused lane write", states: workflow, finalMessage: "May I merge?", updateErr: errors.New("stale fencing token"), wantDeferred: true},
 		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "Done", wantComment: "nothing to review"},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
 		{name: "a workflow without the review lane is handed off, never ended", change: opened, states: hosted, wantDeferred: true},
@@ -98,6 +111,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "an unreadable workflow is handed off", change: opened, statesErr: errors.New("hub unavailable"), wantDeferred: true},
 		{name: "a refused lane write is handed off", change: opened, states: workflow, updateErr: errors.New("stale fencing token"), wantDeferred: true},
 		{name: "no native change keeps the ordinary path", states: workflow, wantContinue: true},
+		{name: "non-native final question keeps the ordinary path", finalMessage: "May I merge?", plain: true, wantContinue: true},
 		{name: "a connector without a workflow keeps the ordinary path", change: &runpkg.NativeChange{}, plain: true, wantContinue: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -116,12 +130,20 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
 			state := newState(cfg)
 			now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
-			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeImplement, DispatchSourceState: "In Progress", StartedAt: now.Add(-time.Minute)}
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: TokenTotals{TotalTokens: 42}, Mode: runpkg.RunModeImplement, DispatchSourceState: "In Progress", StartedAt: now.Add(-time.Minute)}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+			finalState := test.finalState
+			if finalState == "" {
+				finalState = FinalStateCompleted
+			}
+			tokens := TokenTotals{TotalTokens: 42}
+			if test.noUsage {
+				tokens = TokenTotals{}
+			}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
-				IssueID: issue.ID, CompletedAt: now,
-				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement},
-				Result:  runpkg.RunResult{FinalState: FinalStateCompleted, NativeChange: test.change},
+				IssueID: issue.ID, CompletedAt: now, Err: test.runErr,
+				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement, WorkAttemptID: 42, Generation: 7},
+				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: DiffStats{Status: "clean", HeadSHA: head}},
 			})
 			retry, retried := state.Retry[issue.ID]
 			_, deferred := state.deferredCompletions[issue.ID]
@@ -131,16 +153,47 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if continued := retried && !retry.CompletionDeferred; continued != test.wantContinue {
 				t.Fatalf("continuation scheduled = %t, want %t", continued, test.wantContinue)
 			}
+			if test.wantHuman {
+				blocked, ok := state.Blocked[issue.ID]
+				if !ok || blocked.Reason != permissionWaitReason || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.Recovery.WorkAttemptID != 42 {
+					t.Fatalf("human outcome = %#v, present = %t", blocked, ok)
+				}
+				if _, completed := state.Completed[issue.ID]; completed || len(tick.updates) != 1 || tick.updates[0].state != "Blocked" {
+					t.Fatalf("human attention completed = %t; updates = %#v", completed, tick.updates)
+				}
+				if _, claimed := state.Claimed[issue.ID]; claimed || scheduling.releases < 1 {
+					t.Fatalf("claim retained = %t, releases = %d", claimed, scheduling.releases)
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalNoProgress || attempts.completions[0].ErrorClass != permissionWaitReason {
+					t.Fatalf("attempt completions = %#v", attempts.completions)
+				}
+				var metadata struct {
+					PermissionWait permissionWaitRecord `json:"permission_wait"`
+				}
+				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
+					t.Fatal(err)
+				}
+				if metadata.PermissionWait.WorkAttemptID != 42 || metadata.PermissionWait.SessionID != "native-session" || metadata.PermissionWait.Question == "" {
+					t.Fatalf("human outcome provenance = %#v", metadata.PermissionWait)
+				}
+				if state.TokenTotals.TotalTokens != 42 || state.DiffStats[issue.ID].HeadSHA != head {
+					t.Fatalf("telemetry lost: tokens = %#v, diff = %#v", state.TokenTotals, state.DiffStats[issue.ID])
+				}
+				if orch.recoverCauseBlockedIssue(t.Context(), &state, blocked.Issue, now.Add(24*time.Hour)) {
+					t.Fatal("human outcome automatically recovered")
+				}
+				return
+			}
 			if test.wantContinue || test.wantDeferred {
 				for _, update := range tick.updates {
 					if test.updateErr == nil {
 						t.Fatalf("the item was moved: %#v", tick.updates)
 					}
-					if update.state != "In Review" {
+					if update.state != "In Review" && !(test.finalMessage != "" && update.state == "Blocked") {
 						t.Fatalf("refused write targeted %s", update.state)
 					}
 				}
-				if test.wantDeferred && len(tick.comments) != 0 {
+				if test.wantDeferred && test.finalMessage == "" && len(tick.comments) != 0 {
 					t.Fatalf("a handed-off item was commented on: %#v", tick.comments)
 				}
 				return
