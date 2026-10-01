@@ -4881,7 +4881,7 @@ func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
 			}
 			fingerprints := make(map[string]bool)
 			for i, criterion := range outcome.Criteria {
-				matched := !tt.declined && !(tt.failCriteria && i == 0) && !(tt.dependency && i == 1)
+				matched := !tt.declined && (!tt.failCriteria || i != 0) && (!tt.dependency || i != 1)
 				if criterion.Index != i || criterion.Matched != matched || len(criterion.Fingerprint) != 64 || fingerprints[criterion.Fingerprint] {
 					t.Fatalf("criterion[%d]=%+v", i, criterion)
 				}
