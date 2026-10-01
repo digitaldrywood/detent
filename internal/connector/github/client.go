@@ -246,6 +246,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		"live_connections", c.LiveConnections(),
 	)
 
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(resp.Body)
 	finishHTTP.BodyConsumed(err)
 	if err != nil {
@@ -373,9 +374,10 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 		}
 	}()
 
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
-		finishHTTP.BodyConsumed(err)
 		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
 	connector.ReportProgress(ctx)
@@ -383,7 +385,6 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	c.recordRESTRateLimitFromHeaders(ctx, backoffKey, credentialIdentity, http.MethodGet, path, resp.StatusCode, resp.Header, raw, receivedAt, false)
 	c.logRESTResponse(ctx, "github rest text response", http.MethodGet, path, family, resp.StatusCode)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		finishHTTP.BodyConsumed(nil)
 		responseErr := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		c.logRESTStatusError(ctx, http.MethodGet, path, family, resp.StatusCode, responseErr)
 		if c.refreshAfterAuthFailure(ctx, responseErr, allowTokenRefresh) {
@@ -394,14 +395,14 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	truncated := len(raw) > maxBytes
 	size := len(raw)
 	if truncated && countSize {
+		finishHTTP.BeginBody()
 		rest, err := io.Copy(io.Discard, resp.Body)
+		finishHTTP.BodyConsumed(err)
 		if err != nil {
-			finishHTTP.BodyConsumed(err)
 			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: count response: %w", ErrTransient, err))
 		}
 		size += int(rest)
 	}
-	finishHTTP.BodyConsumed(nil)
 	if truncated {
 		raw = raw[:maxBytes]
 	}
@@ -466,6 +467,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 		}
 	}()
 
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(resp.Body)
 	finishHTTP.BodyConsumed(err)
 	if err != nil {
@@ -577,6 +579,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}()
 
 	c.logRESTResponse(ctx, "github rest response", method, path, family, resp.StatusCode)
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(resp.Body)
 	finishHTTP.BodyConsumed(err)
 	if err != nil {

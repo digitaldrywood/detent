@@ -32,19 +32,24 @@ type httpAttemptTiming struct {
 func timedHTTPAttempt(attribution connector.RESTScopeAttribution, client HTTPClient, req *http.Request, rest bool, drain bool) (*http.Response, error, *httpAttemptTiming) {
 	started := time.Now()
 	resp, err := client.Do(req)
+	elapsed := time.Since(started)
 	outcome := classifyRESTScopeOutcome(resp, err)
 	if rest {
 		attribution.Record(outcome)
 	}
 	if err != nil {
-		attribution.Observe("http_transport", outcome, time.Since(started))
+		attribution.Observe("http_transport", outcome, elapsed)
 		return resp, err, nil
 	}
-	return resp, nil, &httpAttemptTiming{attribution: attribution, response: resp, started: started, outcome: outcome, drain: drain}
+	return resp, nil, &httpAttemptTiming{attribution: attribution, response: resp, elapsed: elapsed, outcome: outcome, drain: drain}
+}
+
+func (t *httpAttemptTiming) BeginBody() {
+	t.started = time.Now()
 }
 
 func (t *httpAttemptTiming) BodyConsumed(err error) {
-	t.elapsed = time.Since(t.started)
+	t.elapsed += time.Since(t.started)
 	if err != nil {
 		t.outcome = "error"
 	}
@@ -58,10 +63,11 @@ func (t *httpAttemptTiming) Close() error {
 	} else {
 		err = t.response.Body.Close()
 	}
+	t.elapsed += time.Since(started)
 	if err != nil {
 		t.outcome = "error"
 	}
-	t.attribution.Observe("http_transport", t.outcome, t.elapsed+time.Since(started))
+	t.attribution.Observe("http_transport", t.outcome, t.elapsed)
 	return err
 }
 

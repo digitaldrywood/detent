@@ -87,6 +87,41 @@ func TestRESTScopeOutcomeClassification(t *testing.T) {
 		}},
 	} {
 		t.Run(variant.name, func(t *testing.T) {
+			t.Run("exclude response bookkeeping", func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					scope := &connector.RESTScope{Name: "refresh"}
+					ctx := connector.WithProgressReporter(connector.WithRESTScope(t.Context(), scope), func() {
+						time.Sleep(7 * time.Second)
+					})
+					logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug, ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+						if attr.Key == slog.MessageKey && strings.HasSuffix(attr.Value.String(), "response") {
+							time.Sleep(5 * time.Second)
+						}
+						return attr
+					}}))
+					calls := 0
+					client, err := NewClient(ClientConfig{Endpoint: "https://segments.test/graphql", TokenSource: StaticTokenSource("segments-token"), Logger: logger, RESTDebugLogging: true, HTTPClient: staticHTTPClient{do: func(_ *http.Request) (*http.Response, error) {
+						calls++
+						time.Sleep(time.Second)
+						return &http.Response{StatusCode: 200, Header: make(http.Header), Body: &scopeTimingBody{Reader: strings.NewReader(`{"data":{}}`), closeDelay: 3 * time.Second}}, nil
+					}}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					started := time.Now()
+					if err := variant.run(ctx, client); err != nil {
+						t.Fatal(err)
+					}
+					family := restEndpointFamily(http.MethodGet, "/user")
+					if variant.name == "GraphQL" {
+						family = "graphql"
+					}
+					timing := assertScopeTiming(t, scope, "http_transport", family, "200", 1)
+					if calls != 1 || timing.ElapsedSumNS != int64(4*time.Second) || timing.ElapsedMaxNS != int64(4*time.Second) || time.Since(started) != 16*time.Second {
+						t.Fatalf("calls=%d timing=%#v wall=%v, want one 4s HTTP attempt and 16s wall", calls, timing, time.Since(started))
+					}
+				})
+			})
 			t.Run("overlapping body and close", func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					scope := &connector.RESTScope{Name: "refresh"}
@@ -349,10 +384,11 @@ func assertScopeTiming(t *testing.T, scope *connector.RESTScope, boundary, famil
 
 type scopeTimingBody struct {
 	io.Reader
-	readGate  <-chan struct{}
-	closeGate <-chan struct{}
-	readErr   error
-	closeErr  error
+	readGate   <-chan struct{}
+	closeGate  <-chan struct{}
+	readErr    error
+	closeErr   error
+	closeDelay time.Duration
 }
 
 func (b *scopeTimingBody) Read(p []byte) (int, error) {
@@ -366,6 +402,7 @@ func (b *scopeTimingBody) Read(p []byte) (int, error) {
 }
 
 func (b *scopeTimingBody) Close() error {
+	time.Sleep(b.closeDelay)
 	if b.closeGate != nil {
 		<-b.closeGate
 	}
