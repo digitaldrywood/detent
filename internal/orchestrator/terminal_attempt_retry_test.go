@@ -1720,7 +1720,7 @@ func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
 		{name: "pushed restart resets", sequence: "FFRPRF", wantCount: 1, wantLatest: 6},
 		{name: "linked PR restart resets", sequence: "FFRLRF", wantCount: 1, wantLatest: 6},
 		{name: "workspace failures straddle restarts", sequence: "WRWRW", cause: workspacePreparationRetryLimitCause},
-		{name: "workspace failure resets terminal", sequence: "FFRWRF", wantCount: 1, wantLatest: 6},
+		{name: "workspace interruption preserves terminal failures", sequence: "FFRWRF", wantCount: 3, wantLatest: 6},
 		{name: "implementation resets workspace", sequence: "WWRFRW", cause: workspacePreparationRetryLimitCause},
 	}
 	for _, tt := range tests {
