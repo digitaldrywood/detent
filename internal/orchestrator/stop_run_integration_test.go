@@ -459,10 +459,11 @@ func TestStopRunHoldsItemWhenTrackerTransitionFails(t *testing.T) {
 	if err != nil || result.Outcome != "succeeded" || !result.AlreadyStopped {
 		t.Fatalf("retry StopRun() = %#v, %v, want success", result, err)
 	}
-	state, err = orch.State(t.Context())
-	if err != nil {
-		t.Fatalf("State() error = %v", err)
-	}
+	state = waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
+		attempt, ok := workAttemptSnapshot(state, running.WorkAttemptID)
+		_, held := state.Blocked[issue.ID]
+		return !held && ok && attempt.Phase == "operator_stop_succeeded"
+	})
 	if attempt, ok := workAttemptSnapshot(state, running.WorkAttemptID); !ok || attempt.Phase != "operator_stop_succeeded" || attempt.NextAction != "await operator resume" {
 		t.Fatalf("work attempt snapshot = %#v, %v, want successful operator stop retry", attempt, ok)
 	}
