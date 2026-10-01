@@ -544,7 +544,7 @@ func (c *Connector) fetchLabelRefreshIssues(ctx context.Context, candidateStates
 			nodes = append(nodes, githubIssueNode{ID: issue.ID, Number: ref.Number, CandidateState: issue.State, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}})
 		}
 	}
-	evidence := c.candidateEvidence(ctx, nodes, true)
+	evidence := c.labelRefreshEvidence(ctx, nodes, issues)
 	for i, issue := range selected {
 		if node, ok := evidence[issue.ID]; ok {
 			selected[i], err = c.applySchedulerEvidence(issue, node)
