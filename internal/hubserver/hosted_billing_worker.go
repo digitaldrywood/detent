@@ -67,12 +67,12 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	type pendingEvent struct{ id, kind string }
 	var events []pendingEvent
 	for rows.Next() {
 		var event pendingEvent
 		if err := rows.Scan(&event.id, &event.kind); err != nil {
-			rows.Close()
 			return err
 		}
 		events = append(events, event)

@@ -584,10 +584,16 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 		threads                                         []connector.PullRequestReviewThread
 		requiredChecks                                  []connector.PullRequestCheck
 		unavailable                                     string
+		receipt                                         string
 		wantErr                                         bool
 		merged, validator, audit, auditRunning, pending bool
 	}{
 		{name: "merge discovered during hydration", merged: true, ci: "green", mergeable: "clean", want: "Done"},
+		{name: "fresh corrected merged receipt", receipt: "valid", ci: "green", mergeable: "clean", want: "Done"},
+		{name: "merged receipt preserves observed lane", receipt: "valid", preserve: true, ci: "green", mergeable: "clean"},
+		{name: "wrong receipt integration branch remains held", receipt: "wrong branch", ci: "green", mergeable: "clean", want: "Blocked"},
+		{name: "missing merged reference remains held", receipt: "missing reference", ci: "green", mergeable: "clean", want: "Blocked"},
+		{name: "current human action remains held", receipt: "human action", ci: "green", mergeable: "clean", want: "Blocked"},
 		{name: "validator pending", validator: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "audit missing starts before merging", audit: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "audit missing for non-merging destination", audit: true, pending: true, ci: "green", mergeable: "clean", passState: "Done"},
@@ -623,6 +629,22 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 				live.PullRequest.HeadSHA = "replacement"
 			}
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: live}}
+			if tt.receipt != "" {
+				tracker.hydrated.PullRequest.State = "closed"
+				body := strings.ReplaceAll(mergedCompletionWorkpadBody(), "example/repo", "owner/repo")
+				if tt.receipt == "wrong branch" {
+					body = strings.ReplaceAll(body, "origin/main", "origin/feature")
+				}
+				if tt.receipt == "human action" {
+					body = strings.ReplaceAll(body, "human_action: null", "human_action: approve release")
+				}
+				tracker.refreshed.Comments = []connector.IssueComment{{Body: body, CreatedAt: &now, UpdatedAt: &now, AuthorAuthorized: true}}
+				merged := &connector.PullRequest{Number: 12, URL: "https://github.com/owner/repo/pull/12", State: "merged", HeadSHA: "merged-head", BaseRef: "main", CIStatus: "success"}
+				tracker.resolvedBlockers = []connector.Issue{{Identifier: "owner/repo#12", PullRequest: merged}, {Identifier: "owner/repo#2", PullRequest: tracker.hydrated.PullRequest}}
+				if tt.receipt == "missing reference" {
+					tracker.resolvedBlockers = nil
+				}
+			}
 			cfg := laneMutationTestConfig()
 			cfg.AutoPromote.Enabled = !tt.disabled
 			if tt.passState != "" {

@@ -37,16 +37,6 @@ jobs:
           develop_sha="$(git ls-remote origin refs/heads/develop | cut -f1)"
           test -n "$develop_sha"
           echo "develop_sha=$develop_sha" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            echo should_run=true >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          for tag in $(git tag --points-at "$develop_sha" --list 'v*'); do
-            if git for-each-ref --format='%(contents)' "refs/tags/$tag" | rg -q 'detent-release-provenance:'; then
-              echo should_run=false >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
           echo should_run=true >> "$GITHUB_OUTPUT"
 
   invariants:

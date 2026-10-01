@@ -246,7 +246,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	deliverableLookup := deliverableRecoveryLookupResult{}
 	var deliverableRecoveryErr *runpkg.DeliverableRecoveryError
-	if _, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err); deliveryFailure && errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
+	if commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err); deliveryFailure && commandErr != nil && errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
 		if diffStatsPresent(event.Result.DiffStats) {
 			running.DiffStats = event.Result.DiffStats
 		}

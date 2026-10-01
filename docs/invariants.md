@@ -871,6 +871,18 @@ are unchanged. Existing report fixtures check large activity exclusion, report
 equivalence, optional bounds, strict overlap boundaries and the actual lower
 index-seek operand. No index, cache, configuration or schema is added.
 
+The existing workflow-history UPDATE trigger invalidates cached projections on
+every non-activity update and on activity changes to event/project/issue
+identity, identifier, URL, PR number or completion time. Activity checkpoints
+that change only fields absent from those projections do not invalidate them.
+INSERT/DELETE invalidation and the revision counter remain unchanged. Runtime
+evidence retains table counts and completion bounds; detailed activity timelines
+read fresh checkpoints directly. The forward migration replaces only this
+trigger, and its rollback restores unconditional UPDATE invalidation.
+`TestWorkflowHistoryRevision` checks current timeline payloads, unchanged
+checkpoint evidence, NULL transitions, projected identity changes, other phase
+updates and both migration directions.
+
 GitHub usage timing (#3767) extends the existing `RESTScope` owner, mutex,
 fixed stage/step/family/outcome aggregation and single aggregate log event.
 GraphQL timing adds only allowlisted existing query purposes, with unknown
@@ -1842,6 +1854,13 @@ publication pending. A merge discovered during hydration uses the existing merge
 lifecycle; missing or running audit and validator stages leave publication pending
 while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
 no new lane reason, allowance reset, or recovery mechanism is introduced.
+The same fresh publication owner resolves an already-merged operational receipt
+against current forge references before applying that merged lifecycle, including
+a different merging PR from a closed draft. Its freshly read canonical comments
+remain authoritative through PR hydration. The existing fixture covers corrected
+receipts, wrong integration branches, missing references, current human action
+and preserved lanes. An invalid receipt remains unverified; this does not repair
+its ancestry assertion or erase historical failed attempts.
 Ready In Progress PRs also enter the existing repair evaluation before worker
 completion (#2976). Unresolved review threads and failing CI reuse the existing
 Rework decisions and audit comments, including during the final running attempt.
@@ -2640,6 +2659,14 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — Local pull-request validation and scheduled release evidence
 
+Scheduled and manual full validation always inspect the pinned current
+`develop` commit, including one carrying a release-provenance tag. Release
+annotations are not proof that the scheduled suite passed and do not suppress
+its run. The existing full-suite finalizer alone publishes scheduled success,
+creates a validated tag and closes scheduled repair issues; ordinary shipping
+does not wait for that run. `TestRepositoryWorkflow` executes the preflight
+with an emergency provenance annotation for both event types.
+
 **Scope:** This is the Detent repository's development policy. Managed projects
 choose their own workflow triggers, required checks, validation commands, and
 release policies. Detent honors each project's configuration and branch rules;
@@ -2679,9 +2706,9 @@ inside its own worktree. The pinned-linter tests also require the parallel-runne
 flag (#3253).
 
 GitHub Actions schedules the full suite hourly from the repository's default branch.
-Preflight pins the current `develop` SHA and skips when that commit already has
-a validated release tag. Every full-suite job runs on the pinned commit. A green
-run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
+Preflight pins the current `develop` SHA for every scheduled or manual run,
+independently of existing release tags. Every full-suite job runs on the pinned
+commit. A green run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
 exact status evidence, and dispatches the release workflow. It does not merge
 to `main` or deploy production. A failing run opens or updates one fingerprinted
 Todo hotfix issue per concrete failed test or source diagnostic, attaching each
@@ -3002,11 +3029,11 @@ candidate dispatch behavior.
 **Change:** Edit INV-10 and its tests in the same PR before changing priority or
 capacity semantics. New names or indirect equivalents remain a review boundary.
 
-## INV-11 — Human scope approval before Todo
+## INV-11 — Human mechanism scope approval before Todo
 
-**Statement:** No feature and no new or expanded operational mechanism enters
-Todo without a human's explicit approval of that scope, regardless of who filed
-the issue or how its title is typed. Only a fix with recorded runtime evidence
+**Statement:** No new or expanded operational mechanism enters Todo without a
+human's explicit approval of that scope, regardless of who filed the issue or
+how its title is typed. Only a mechanism fix with recorded runtime evidence
 whose remedy removes or consolidates may reach Todo without a human.
 
 **Why:** The operator's September 14, 2026 audit of 253 PRs merged between
@@ -3019,20 +3046,27 @@ orchestrator code. Non-test orchestrator code grew from 23,828 lines at v0.44.0
 to 51,369 at v0.114.8. The growth came through unapproved scope, not machine
 self-filing.
 
-**Enforcement:** Admission Criteria rule 9 in the operator-managed
-`detent-orchestration/WORKFLOW.md` leaves features and new or expanded mechanisms
-in Backlog until a human approves their scope by moving them. Assistants file
-that work to Backlog only. The rule applies regardless of title type or author;
-only evidenced fixes that remove or consolidate qualify for automatic admission.
-That workflow is outside this repository and was updated by the operator.
+On October 1, 2026, the operator removed the feature scope gate. Features that
+do not add or expand mechanisms may be filed straight to Todo. Human scope
+approval remains required for new or expanded mechanisms, and the rest of the
+mechanism moratorium remains in effect. The operator also updated Admission
+Criteria rule 9 in the out-of-repo `detent-orchestration/WORKFLOW.md` to gate only
+new or expanded mechanisms. This invariant and its doctor enforcement record
+the in-repo half of that decision.
+
+**Enforcement:** Admission Criteria rule 9 leaves new or expanded mechanisms in
+Backlog until a human approves their scope by moving them. Assistants file that
+work to Backlog only. The rule applies regardless of title type or author; only
+evidenced mechanism fixes that remove or consolidate qualify for automatic
+admission without human scope approval.
 
 The doctor check `INV-11 human scope approval` inspects every applied Todo
 ledger entry in the last seven days, including repeat entries. It fetches current
 issue titles and bodies by ID in batches of at most 100 so GitHub's identity
-lookup can audit busy projects. Conventional `feat`, `perf`, and `refactor` titles
-and declarations in either titles or bodies adding or expanding config keys,
-reason codes, brakes, breakers, leases, parks, recovery paths, or reservations
-require a human move. Each
+lookup can audit busy projects. Declarations in either titles or bodies adding
+or expanding config keys, reason codes, brakes, breakers, leases, parks, recovery
+paths, or reservations require a human move. Conventional `feat`, `perf`, and
+`refactor` title prefixes alone do not require scope approval. Each
 violation reports the issue, ledger origin, reason, and timestamp. Declaration
 clauses are separated at punctuation and coordinating words so removal or
 negation of one mechanism does not hide a later addition in the same sentence.
@@ -3051,8 +3085,8 @@ store/schema/tracker/issue evidence warns rather than passing silently. This is
 a diagnostic, not an admission gate: body classification is a conservative
 natural-language heuristic, current issue text can differ from admission-time
 scope, and historical tracker moves absent from the ledger cannot be audited.
-It does not prove that every ordinary fix contains sufficient runtime evidence;
-admission rule 9 and review enforce that broader requirement.
+It does not prove that every mechanism fix contains sufficient runtime evidence;
+admission rule 9 and review enforce that requirement.
 
 **Change:** Editing INV-11 requires updating the doctor check and the admission
 criteria in the same PR. Identify INV-11 in the PR template and record the

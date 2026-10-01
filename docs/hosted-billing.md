@@ -208,6 +208,7 @@ included. Add operator-created, active, one-time USD prices to the tenant's
 tenants):
 
 ```yaml
+credit_cost_multiplier: 1.5
 credit_packs:
   - price_id: price_ai_credit_example
     label: AI credit pack
@@ -240,7 +241,17 @@ the same purchase identity, and are never retried after the Stripe idempotency
 window can have expired; unresolved payments need billing review.
 
 Priced operator-funded OpenAI chat usage debits credits atomically with its usage
-record, once per turn. Purchased credits do not expire at period boundaries.
+record, once per turn. The debit is raw provider cost multiplied by
+`billing.credit_cost_multiplier`, defaulting to `1.5` (cost plus 50%), rounded up
+to the next whole microdollar ($0.000001). A $0.10 turn charges $0.15 in credits.
+Configure a finite positive multiplier next to `credit_packs`; an omitted or zero
+value uses the default. For newly provisioned tenants, set
+`allocation.billing.credit_cost_multiplier`; update existing tenant billing
+configuration to change their pricing without a new release. Stored
+`conversation_usage.cost_usd`, usage reports, and cache savings retain raw
+provider cost. Credit transactions and billing settings history show the charged
+amount, and exhaustion and auto-fund checks use the charged balance.
+Purchased credits do not expire at period boundaries.
 Chat can use a positive purchased balance even on Free; no sponsored usage is
 introduced. When credits are exhausted, new chat turns stop and direct the user
 to an owner or billing settings. In-flight usage is still recorded, including
