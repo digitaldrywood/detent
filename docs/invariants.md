@@ -588,6 +588,20 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Provider transport overload remains instance-owned after a worker has started.
+Its completion no longer invokes the competing issue demotion/parking path;
+the existing provider retry keeps the current lane. Terminal failure counting
+and classification share the existing infrastructure attribution used by the
+failed-session allowance. Infrastructure interruptions neither count as issue
+failures nor reset earlier genuine failures. The existing terminal-limit
+recovery owner evaluates that same cause before applying its cooldown, so a
+historical instance-only park returns to its durable prior lane without manual
+allowance or tracker mutations (#3575). Existing human, operator, dependency,
+and genuine-failure holds remain authoritative. The SQLite restart matrix in
+`TestConfiguredTerminalRetryAfterStoreRestart` covers both corrected legacy
+parks and genuine failure cooldowns; completion cases cover configured zero
+limits, unavailable stores, and active provider retries.
+
 Merged-completion ownership (#3529) resolves stale closed associations through
 existing native reference lookup and the existing merged-PR owner. Completion
 classification uses that same decision instead of a separate post-merge CI wait;

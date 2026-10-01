@@ -526,7 +526,16 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			return false
 		}
 		cooldown := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
-		if now.Before(parkedAt.Add(cooldown)) {
+		causeActive := true
+		if park.Cause == terminalAttemptRetryLimitCause {
+			count, _, known := o.consecutiveRetryCycleCount(ctx, state, issue, park.Cause, now)
+			if !known {
+				o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, &park, park.CauseFingerprint)
+				return false
+			}
+			causeActive = count >= o.retryCycleFailureLimit(park.Cause)
+		}
+		if causeActive && now.Before(parkedAt.Add(cooldown)) {
 			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedRecoveryReasonBreakerCooldownActive, &park, park.CauseFingerprint)
 			return false
 		}
