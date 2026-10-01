@@ -75,6 +75,67 @@ events supply no instruction-origin provenance, so `causal_attribution` remains
 partial coverage. Older profiles lack structured actions and cannot be repaired
 from discarded evidence; absent causal attribution is unknown.
 
+## GitHub usage timing and privacy
+
+The existing `github rest scope usage` event now includes a bounded `timings`
+aggregate alongside its unchanged REST `request_count`, `reserve_refused`,
+`fanout_deferred` and `steps`. Correlate existing project/refresh/scope identity
+with `project refresh timing` and sub-step completion events for wall elapsed.
+GraphQL HTTP attempts are separate from REST requests and quota queries/points;
+request count alone cannot establish latency or a saving.
+
+Each timing key uses the existing fixed stage, step, endpoint family and outcome,
+plus `Boundary` and an allowlisted GraphQL `QueryPurpose`. Unknown GraphQL purpose
+or operation names become `graphql` in this aggregate without changing quota
+accounting. Each completed observed boundary reports `AttemptCount`, `TimedCount`,
+`ElapsedSumNS` and `ElapsedMaxNS`; elapsed values are nanoseconds. Coverage is
+`TimedCount / AttemptCount` within that observed key, never inferred coverage of
+all local work. An unavailable timing observation has an attempt but no timed
+count or duration. Current instrumented completed attempts are all timed;
+in-flight attempts are published when their boundary finishes. Drain clears
+counts and timings together; a completion after a drain belongs to the next
+outside-refresh cohort. No per-request intervals or rows are retained.
+
+| Boundary | Observed entry paths | Meaning |
+| --- | --- | --- |
+| `http_transport` | REST/RESTPage, RESTText/RESTTextWithSize, batch REST probe, GraphQL/GraphQLWithType, installation-token mint | `Do` through body consumption, plus existing deferred drain/close duration. Includes transport and body/close failures, 304 and canceled attempts reaching `Do`. |
+| `token_resolution_inclusive` | Existing `Token` invocation in regular REST, REST text/size, batch REST probe and GraphQL request entries, including auth retries | Inclusive resolution with resolver locks/fallback and any nested installation-token HTTP. A cached token creates no HTTP attempt. |
+
+The HTTP clock excludes decoding/auth retries between body consumption and the
+existing deferred close, preserving resource cleanup and request sequencing.
+Bounded text reads time only the consumption/close they actually perform;
+RESTTextWithSize includes its full-body counting pass. HTTP outcome is the
+existing fixed HTTP status classification (`200`, `304`, `429`, `error`), with
+body/close failures recorded as timing `error` without rewriting legacy REST
+outcomes. HTTP 200 does not prove GraphQL logical success. Token `200` means a
+nonempty token was resolved, not that a later HTTP request succeeded. Token
+failures or local budget/backoff refusal create no fabricated HTTP observation.
+
+Direct token retrieval outside these request entries, JWT preparation, JSON
+encoding/decoding, actor queues and other local work are unmeasured. There is no
+independent connection-pool/actor-queue owner. `Do` can include connection-pool
+wait, DNS/TLS and server time, so this elapsed is HTTP/transport time, not pure
+network time. Sums are overlapping work: two concurrent requests can sum to more
+than wall elapsed, and inclusive token resolution can contain installation HTTP.
+Never add token and HTTP as disjoint elapsed, subtract their sums from stage wall,
+or infer critical path, busy-wall, savings or percentage attribution.
+
+Timing is automatic in the existing aggregate event and requires no detailed
+request logs, extra API call, configuration, persistence table or polling.
+Persist/log only existing project/refresh/scope identity, fixed names and numeric
+aggregates. Raw URLs, query/variables, bodies, headers, credentials/hashes,
+command/environment, prompts and private operator criteria are excluded.
+Existing unrelated debug behavior is unchanged; it is not needed for timing.
+
+Runtime acceptance belongs to Detent integration and the existing release owner
+after a normal authorized rollout. Record the deployed version/integration SHA
+and one naturally completed refresh's scope aggregate together with its stage
+and whole-refresh wall elapsed. Report REST and GraphQL HTTP/token attempt and
+timed counts, sums/maxima by fixed key, installation HTTP if observed, and any
+absent/unobserved boundaries. Explicitly leave actor queue, local work and pure
+network components unknown. Until that completed refresh is recorded, runtime
+acceptance remains pending; source diagnostics do not establish rollout evidence.
+
 ## Token spend
 
 The operator health metric is **tokens per merged PR per project per UTC day,

@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestClientRESTConditionalRequestUsesCachedResponseBelowReserve(t *testing.T) {
@@ -49,21 +51,29 @@ func TestClientRESTConditionalRequestUsesCachedResponseBelowReserve(t *testing.T
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
 	path := "/repos/digitaldrywood/detent/issues?state=open"
 	var first []restIssue
-	if err := client.REST(context.Background(), http.MethodGet, path, nil, &first); err != nil {
+	if err := client.REST(ctx, http.MethodGet, path, nil, &first); err != nil {
 		t.Fatalf("first REST() error = %v", err)
 	}
 	client.FlushRESTRateLimitUsage()
 
 	var second []restIssue
-	if err := client.REST(context.Background(), http.MethodGet, path, nil, &second); err != nil {
+	if err := client.REST(ctx, http.MethodGet, path, nil, &second); err != nil {
 		t.Fatalf("conditional REST() error = %v", err)
 	}
 	if len(second) != 1 || second[0].Number != 1133 || second[0].Title != "Fresh board" {
 		t.Fatalf("conditional REST() response = %#v, want cached issue", second)
 	}
 
+	assertScopeTiming(t, scope, "http_transport", "repository issues", "200", 1)
+	assertScopeTiming(t, scope, "http_transport", "repository issues", "304", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "repository issues", "200", 2)
+	if calls.Load() != 2 {
+		t.Fatalf("requests = %d, want 2", calls.Load())
+	}
 	usage := client.FlushRESTRateLimitUsage()
 	if usage.TotalRequests != 1 || usage.ConditionalRequests != 1 || usage.NotModifiedRequests != 1 || usage.BillableRequests != 0 {
 		t.Fatalf("conditional usage = %#v, want one free not-modified request", usage)

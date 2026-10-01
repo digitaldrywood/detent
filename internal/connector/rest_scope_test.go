@@ -3,6 +3,7 @@ package connector
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestRESTScopeAttribution(t *testing.T) {
@@ -20,10 +21,30 @@ func TestRESTScopeAttribution(t *testing.T) {
 			scope := &RESTScope{Name: tt.name}
 			ctx := WithRESTScope(t.Context(), scope)
 			RESTScopeFromContext(ctx).Set(tt.stage, tt.step)
-			RESTScopeFromContext(ctx).Record("issue comments", tt.outcome)
+			attribution := RESTScopeFromContext(ctx).Attribution("issue comments", "")
+			RESTScopeFromContext(ctx).Set("later", "later")
+			attribution.Record(tt.outcome)
+			attribution.Observe("http_transport", tt.outcome, 2*time.Millisecond)
+			attribution.Observe("http_transport", tt.outcome, 3*time.Millisecond)
+			attribution.Observe("http_transport", tt.outcome, -1)
+			wantTiming := []GitHubTiming{{GitHubTimingKey: GitHubTimingKey{RESTScopeKey: RESTScopeKey{tt.stage, tt.step, "issue comments", tt.outcome}, Boundary: "http_transport"}, AttemptCount: 3, TimedCount: 2, ElapsedSumNS: int64(5 * time.Millisecond), ElapsedMaxNS: int64(3 * time.Millisecond)}}
 			want := []RESTScopeCount{{RESTScopeKey{tt.stage, tt.step, "issue comments", tt.outcome}, 1}}
-			if got := scope.Drain().Counts(); !reflect.DeepEqual(got, want) {
+			drained := scope.Drain()
+			if got := drained.Timings(); !reflect.DeepEqual(got, wantTiming) {
+				t.Fatalf("timings = %#v, want %#v", got, wantTiming)
+			}
+			if got := drained.Counts(); !reflect.DeepEqual(got, want) {
 				t.Fatalf("Drain().Counts() = %#v, want %#v", got, want)
+			}
+			if got := scope.Timings(); len(got) != 0 {
+				t.Fatalf("timings after drain = %#v", got)
+			}
+			if scope.Drain() != nil {
+				t.Fatal("empty drain retained a cohort")
+			}
+			attribution.Observe("token_resolution_inclusive", "200", time.Millisecond)
+			if got := scope.Drain(); got == nil || len(got.Counts()) != 0 || len(got.Timings()) != 1 {
+				t.Fatalf("timing-only drain = %#v", got)
 			}
 			if got := scope.Counts(); len(got) != 0 {
 				t.Fatalf("Counts() after drain = %#v", got)
