@@ -839,6 +839,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Workflow duration reports exclude `agent_activity` in their existing SQL owner
+before loading or converting the activity payloads that report aggregation does
+not use. A finite report window searches both inclusive-start/exclusive-end
+`finished_at` bounds through the existing index; absent bounds retain the
+optional query contract. Timeline/activity readers, history revision, flow,
+trends and representatives are unchanged. The existing report roundtrip fixture
+checks large activity exclusion, report equivalence, optional bounds and the
+actual bounded query plan. No index, cache, configuration or schema is added.
+
 GitHub usage timing (#3767) extends the existing `RESTScope` owner, mutex,
 fixed stage/step/family/outcome aggregation and single aggregate log event.
 GraphQL timing adds only allowlisted existing query purposes, with unknown

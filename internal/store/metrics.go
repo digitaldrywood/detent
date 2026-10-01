@@ -130,11 +130,20 @@ func (s *sqliteStore) WorkflowMetricsReport(ctx context.Context, query WorkflowM
 		return WorkflowMetricsReport{}, errors.New("from must be before to")
 	}
 
-	rows, err := s.queries.WorkflowPhaseDurationRows(ctx, sqlc.WorkflowPhaseDurationRowsParams{
-		ProjectID: nullString(query.ProjectID),
-		FromTime:  from,
-		ToTime:    to,
-	})
+	var rows []sqlc.WorkflowPhaseEvent
+	if from.Valid && to.Valid {
+		rows, err = s.queries.WorkflowPhaseDurationRowsWithinWindow(ctx, sqlc.WorkflowPhaseDurationRowsWithinWindowParams{
+			ProjectID: nullString(query.ProjectID),
+			FromTime:  from,
+			ToTime:    to,
+		})
+	} else {
+		rows, err = s.queries.WorkflowPhaseDurationRows(ctx, sqlc.WorkflowPhaseDurationRowsParams{
+			ProjectID: nullString(query.ProjectID),
+			FromTime:  from,
+			ToTime:    to,
+		})
+	}
 	if err != nil {
 		return WorkflowMetricsReport{}, fmt.Errorf("reading workflow metrics report: %w", err)
 	}

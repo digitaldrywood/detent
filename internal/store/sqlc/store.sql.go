@@ -5629,6 +5629,7 @@ const workflowPhaseDurationRows = `-- name: WorkflowPhaseDurationRows :many
 SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
 FROM workflow_phase_events INDEXED BY workflow_phase_events_finished_at_idx
 WHERE finished_at IS NOT NULL
+  AND phase_type <> 'agent_activity'
   AND (?1 IS NULL OR project_id = ?1)
   AND (?2 IS NULL OR finished_at >= ?2)
   AND (?3 IS NULL OR finished_at < ?3)
@@ -5642,6 +5643,73 @@ type WorkflowPhaseDurationRowsParams struct {
 
 func (q *Queries) WorkflowPhaseDurationRows(ctx context.Context, arg WorkflowPhaseDurationRowsParams) ([]WorkflowPhaseEvent, error) {
 	rows, err := q.db.QueryContext(ctx, workflowPhaseDurationRows, arg.ProjectID, arg.FromTime, arg.ToTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkflowPhaseEvent{}
+	for rows.Next() {
+		var i WorkflowPhaseEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.RunID,
+			&i.SessionID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.PhaseType,
+			&i.PhaseName,
+			&i.PreviousPhaseName,
+			&i.Reason,
+			&i.Status,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.DurationSeconds,
+			&i.EventDay,
+			&i.CommandName,
+			&i.ExitCode,
+			&i.Turns,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.EndpointFamily,
+			&i.MetadataJson,
+			&i.CachedInputTokens,
+			&i.ReasoningOutputTokens,
+			&i.ModelContextWindow,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const workflowPhaseDurationRowsWithinWindow = `-- name: WorkflowPhaseDurationRowsWithinWindow :many
+SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
+FROM workflow_phase_events INDEXED BY workflow_phase_events_finished_at_idx
+WHERE finished_at >= ?1
+  AND finished_at < ?2
+  AND phase_type <> 'agent_activity'
+  AND (?3 IS NULL OR project_id = ?3)
+`
+
+type WorkflowPhaseDurationRowsWithinWindowParams struct {
+	FromTime  sql.NullString `json:"from_time"`
+	ToTime    sql.NullString `json:"to_time"`
+	ProjectID interface{}    `json:"project_id"`
+}
+
+func (q *Queries) WorkflowPhaseDurationRowsWithinWindow(ctx context.Context, arg WorkflowPhaseDurationRowsWithinWindowParams) ([]WorkflowPhaseEvent, error) {
+	rows, err := q.db.QueryContext(ctx, workflowPhaseDurationRowsWithinWindow, arg.FromTime, arg.ToTime, arg.ProjectID)
 	if err != nil {
 		return nil, err
 	}
