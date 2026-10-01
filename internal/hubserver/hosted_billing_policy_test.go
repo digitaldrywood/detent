@@ -278,6 +278,20 @@ func TestHostedBillingPageStates(t *testing.T) {
 			if p.calls != calls {
 				t.Fatal("page read called Stripe")
 			}
+			if test.name == "complimentary base" {
+				price := f.service.config.Hosted.Billing.Prices[0]
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plans SET record_json=json_set(record_json,'$.monthly_usd_cents',1200) WHERE id=? AND version=?", price.Plan.ID, price.Plan.Version); err != nil {
+					t.Fatal(err)
+				}
+				if label := f.service.hostedPriceLabel(t.Context(), price); label == price.Label {
+					t.Fatal("active price lookup did not read the paid plan")
+				}
+				canceled, cancel := context.WithCancel(t.Context())
+				cancel()
+				if label := f.service.hostedPriceLabel(canceled, price); label != price.Label {
+					t.Fatalf("canceled price lookup = %q, want fallback %q", label, price.Label)
+				}
+			}
 			if strings.Contains(response.Body.String(), "card-sentinel") {
 				t.Fatal("webhook private data reached the page")
 			}

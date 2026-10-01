@@ -1347,7 +1347,7 @@ func (s *Service) readConversationMessages(ctx context.Context, scope nativeScop
 	if err != nil {
 		return nil, err
 	}
-	messages, err := s.conversations.store.listMessages(ctx, s.database.db, record.ID, before, int(limit))
+	messages, err := s.conversations.store.listMessages(ctx, s.database.db, record.ID, before, limit)
 	if err != nil {
 		return nil, err
 	}

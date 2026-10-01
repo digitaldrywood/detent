@@ -11,8 +11,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // The project's label catalogue (decisions section 19.1).

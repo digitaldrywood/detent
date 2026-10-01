@@ -136,20 +136,24 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 	}
 	other := workspaceOperatorContext(t, f.service, f.other, string(f.project.OrganizationID), "other")
 	for _, test := range []struct {
-		name string
-		ctx  context.Context
-		args map[string]any
-		want error
+		name  string
+		other bool
+		args  map[string]any
+		want  error
 	}{
-		{"get_conversation", other, map[string]any{"project_id": f.project.ID, "conversation_id": id}, operatortool.ErrAccessDenied},
-		{"get_conversation", ctx, map[string]any{"project_id": "foreign", "conversation_id": id}, operatortool.ErrAccessDenied},
-		{"post_conversation_command", ctx, map[string]any{"project_id": f.project.ID, "conversation_id": id, "request_id": "forged", "input": map[string]any{"kind": "confirm"}}, operatortool.ErrInvalidArguments},
-		{"create_conversation", ctx, map[string]any{"project_id": f.project.ID, "request_id": "forged", "yolo": true, "input": map[string]any{}}, operatortool.ErrInvalidArguments},
-		{"list_conversation_messages", ctx, map[string]any{"project_id": f.project.ID, "conversation_id": id, "limit": 201}, operatortool.ErrInvalidArguments},
-		{"list_conversation_messages", ctx, map[string]any{"project_id": f.project.ID, "conversation_id": id, "before": -1}, operatortool.ErrInvalidArguments},
+		{"get_conversation", true, map[string]any{"project_id": f.project.ID, "conversation_id": id}, operatortool.ErrAccessDenied},
+		{"get_conversation", false, map[string]any{"project_id": "foreign", "conversation_id": id}, operatortool.ErrAccessDenied},
+		{"post_conversation_command", false, map[string]any{"project_id": f.project.ID, "conversation_id": id, "request_id": "forged", "input": map[string]any{"kind": "confirm"}}, operatortool.ErrInvalidArguments},
+		{"create_conversation", false, map[string]any{"project_id": f.project.ID, "request_id": "forged", "yolo": true, "input": map[string]any{}}, operatortool.ErrInvalidArguments},
+		{"list_conversation_messages", false, map[string]any{"project_id": f.project.ID, "conversation_id": id, "limit": 201}, operatortool.ErrInvalidArguments},
+		{"list_conversation_messages", false, map[string]any{"project_id": f.project.ID, "conversation_id": id, "before": -1}, operatortool.ErrInvalidArguments},
 	} {
-		t.Run(test.name+"/"+string(test.want.Error()), func(t *testing.T) {
-			_, err := workspaceOperatorCall(t, f.service, test.ctx, test.name, test.args)
+		t.Run(test.name+"/"+test.want.Error(), func(t *testing.T) {
+			callContext := ctx
+			if test.other {
+				callContext = other
+			}
+			_, err := workspaceOperatorCall(t, f.service, callContext, test.name, test.args)
 			if !errors.Is(err, test.want) {
 				t.Fatalf("call=%v want %v", err, test.want)
 			}
@@ -405,14 +409,14 @@ func TestWorkspaceOperatorRunnerAuthority(t *testing.T) {
 			} else {
 				f = newHostedSecurityFixture(t)
 			}
-			var connectionContext context.Context
+			connectionContexts := make(chan context.Context, 1)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			f.service.echo.POST("/operator-context", func(c echo.Context) error {
 				ctx := operatortool.BindConnection(c.Request().Context(), "runner-test", "grant test")
 				if err := (workspaceOperatorExecutor{server: f.service}).OpenConnection(ctx); err != nil {
 					return err
 				}
-				connectionContext = ctx
+				connectionContexts <- ctx
 				return c.NoContent(http.StatusOK)
 			}, f.service.operatorAuthority)
 			// The fixture's middleware creates the real current-session resolver.
@@ -423,7 +427,7 @@ func TestWorkspaceOperatorRunnerAuthority(t *testing.T) {
 				response = f.request(t, owner, http.MethodPost, "/operator-context", nil)
 			}
 			requireNativeStatus(t, response, http.StatusOK)
-			ctx := connectionContext
+			ctx := <-connectionContexts
 			args := map[string]any{"project_id": f.project, "request_id": "configure", "input": map[string]any{"name": "Test", "command": "true"}}
 			if _, err := workspaceOperatorCall(t, f.service, ctx, "create_project_action", args); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("missing runner grant=%v", err)
@@ -504,15 +508,17 @@ func TestWorkspaceOperatorBrowserApproval(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	f.grant(t, owner, true, true)
-	var ctx context.Context
+	contexts := make(chan context.Context, 1)
 	f.service.echo.POST("/browser-connection", func(c echo.Context) error {
-		ctx = operatortool.BindConnection(c.Request().Context(), "browser", "approval regression")
+		ctx := operatortool.BindConnection(c.Request().Context(), "browser", "approval regression")
 		if err := (workspaceOperatorExecutor{server: f.service}).OpenConnection(ctx); err != nil {
 			return err
 		}
+		contexts <- ctx
 		return c.NoContent(http.StatusOK)
 	}, f.service.operatorAuthority)
 	requireNativeStatus(t, f.request(t, owner, http.MethodPost, "/browser-connection", nil), http.StatusOK)
+	ctx := <-contexts
 	executor := hostedOperatorExecutor{service: f.service}
 	definitions, err := executor.ListTools(ctx)
 	if err != nil {

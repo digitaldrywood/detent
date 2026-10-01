@@ -139,7 +139,7 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 		data.BillingEnabled = true
 		data.BillingCanPurchase = report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
 		for _, price := range cfg.Prices {
-			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: s.hostedPriceLabel(price)})
+			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: s.hostedPriceLabel(c.Request().Context(), price)})
 		}
 	}
 	return s.renderHosted(c, http.StatusOK, data)
@@ -206,8 +206,8 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	return c.JSON(http.StatusOK, view)
 }
 
-func (s *Service) hostedPriceLabel(price HostedBillingPrice) string {
-	plan, err := readHostedPlan(context.Background(), s.database.db, price.Plan)
+func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice) string {
+	plan, err := readHostedPlan(ctx, s.database.db, price.Plan)
 	if err != nil || plan.MonthlyUSDCents == nil {
 		return price.Label
 	}
@@ -223,7 +223,7 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
 	if cfg := s.config.Hosted.Billing; cfg != nil {
 		for _, price := range cfg.Prices {
-			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: s.hostedPriceLabel(price)})
+			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: s.hostedPriceLabel(ctx, price)})
 		}
 		view.CanCheckout = !cfg.CheckoutDisabled && report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
 		if _, err := s.database.hostedBillingBinding(ctx, cfg); err == nil {

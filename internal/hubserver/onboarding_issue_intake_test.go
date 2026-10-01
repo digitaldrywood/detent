@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 type batchFixture struct {
@@ -135,10 +136,11 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			f := newBatchFixture(t)
 			f.preview(t, test.closed)
 			if test.mcp {
-				var captured context.Context
-				f.service.echo.GET("/api/v2/organizations/:organization/mcp-batch-fixture", func(c echo.Context) error { captured = c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+				captureds := make(chan context.Context, 1)
+				f.service.echo.GET("/api/v2/organizations/:organization/mcp-batch-fixture", func(c echo.Context) error { captureds <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 				path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp-batch-fixture"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusOK)
+				captured := <-captureds
 				connect := func(id string) context.Context {
 					ctx := operatortool.BindConnection(captured, id, "batch fixture")
 					if err := (hostedOperatorExecutor{f.service}).OpenConnection(ctx); err != nil {

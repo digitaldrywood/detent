@@ -12,12 +12,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/labstack/echo/v4"
 )
 
 func (p *hostedSecurityProvider) InvitationByID(ctx context.Context, id string) (auth.Invitation, error) {
@@ -36,14 +37,15 @@ func TestHostedAdministrationAuthority(t *testing.T) {
 			u := f.user(t, "operator", role, "operator@example.test", "write", "")
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			member := f.user(t, "member", "member", "member@example.test", "write", "")
-			var ctx context.Context
+			ctxs := make(chan context.Context, 1)
 			f.service.echo.POST("/administration-test", func(c echo.Context) error {
-				ctx = operatortool.BindConnection(c.Request().Context(), "test", "test")
+				ctxs <- operatortool.BindConnection(c.Request().Context(), "test", "test")
 				return c.NoContent(http.StatusOK)
 			}, f.service.operatorAuthority)
 			if response := f.request(t, u, http.MethodPost, "/administration-test", nil); response.Code != http.StatusOK {
 				t.Fatalf("entry=%d %s", response.Code, response.Body)
 			}
+			ctx := <-ctxs
 			e := f.service.administration
 			dispatch := hostedOperatorExecutor{f.service}
 			if err := dispatch.OpenConnection(ctx); err != nil {
@@ -111,7 +113,7 @@ func TestHostedAdministrationAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			var count int
-			if err := f.service.database.db.QueryRow("SELECT count(*) FROM hosted_invitations WHERE email='new@example.test'").Scan(&count); err != nil || count != 1 {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_invitations WHERE email='new@example.test'").Scan(&count); err != nil || count != 1 {
 				t.Fatalf("invite retries=%d %v", count, err)
 			}
 			operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", u.identity.Subject)
@@ -124,12 +126,13 @@ func TestHostedAdministrationAuthority(t *testing.T) {
 
 func TestNativeCredentialAdministration(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "administration")
-	var ctx context.Context
+	ctxs := make(chan context.Context, 1)
 	f.service.echo.POST("/api/v2/organizations/:organization/administration-test", func(c echo.Context) error {
-		ctx = operatortool.BindConnection(c.Request().Context(), "native-admin", "fixture")
+		ctxs <- operatortool.BindConnection(c.Request().Context(), "native-admin", "fixture")
 		return c.NoContent(http.StatusOK)
 	}, f.service.operatorAuthority)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/administration-test", testHubAdminToken, nil), http.StatusOK)
+	ctx := <-ctxs
 	e := f.service.administration
 	dispatch := hostedOperatorExecutor{f.service}
 	if err := dispatch.OpenConnection(ctx); err != nil {
@@ -153,6 +156,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 	}
 	// The newly scoped token has write powers on its project, no administration.
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/administration-test", token.Token, nil), http.StatusOK)
+	ctx = <-ctxs
 	if err := e.App.Authorize(ctx, operatortool.CredentialCreate, operatoradmin.Input{}, ""); !errors.Is(err, operatortool.ErrAccessDenied) {
 		t.Fatalf("scoped admin=%v", err)
 	}
@@ -200,14 +204,15 @@ func TestDedicatedAdministrationSetup(t *testing.T) {
 					operatorSQL(t, f, "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES(?,?,?,?,?)", invitation.ID, email, "org_security", "member", formatHubTime(f.service.config.now()))
 				}
 			}
-			var ctx context.Context
+			ctxs := make(chan context.Context, 1)
 			f.service.echo.POST("/setup-administration-test", func(c echo.Context) error {
-				ctx = operatortool.BindConnection(c.Request().Context(), "setup", "fixture")
+				ctxs <- operatortool.BindConnection(c.Request().Context(), "setup", "fixture")
 				return c.NoContent(http.StatusOK)
 			}, f.service.operatorAuthority)
 			if response := f.request(t, u, http.MethodPost, "/setup-administration-test", nil); response.Code != http.StatusOK {
 				t.Fatalf("account entry=%d %s", response.Code, response.Body)
 			}
+			ctx := <-ctxs
 			e := f.service.administration
 			dispatch := hostedOperatorExecutor{f.service}
 			if err := dispatch.OpenConnection(ctx); err != nil {
@@ -271,14 +276,15 @@ func TestHostedAccountSessionOperations(t *testing.T) {
 			u := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 			var audit bytes.Buffer
 			f.service.config.Logger = slog.New(slog.NewJSONHandler(&audit, nil))
-			var ctx context.Context
+			ctxs := make(chan context.Context, 1)
 			f.service.echo.POST("/session-operation-test", func(c echo.Context) error {
-				ctx = operatortool.BindConnection(c.Request().Context(), "session-test", "fixture")
+				ctxs <- operatortool.BindConnection(c.Request().Context(), "session-test", "fixture")
 				return c.NoContent(http.StatusOK)
 			}, f.service.operatorAuthority)
 			if response := f.request(t, u, http.MethodPost, "/session-operation-test", nil); response.Code != http.StatusOK {
 				t.Fatalf("context=%d %s", response.Code, response.Body)
 			}
+			ctx := <-ctxs
 			e := f.service.administration
 			dispatch := hostedOperatorExecutor{f.service}
 			if err := dispatch.OpenConnection(ctx); err != nil {

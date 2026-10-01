@@ -48,7 +48,9 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 	if !api {
 		request.Price = c.FormValue("price")
 	}
-	authorize := func(context.Context) (apiCredential, error) { return s.hostedBillingOwner(c) }
+	authorize := func(context.Context) (apiCredential, error) {
+		return s.hostedBillingOwner(c) //nolint:contextcheck // Browser authorization resolves the original Echo request, including cookies and shared-entry claims.
+	}
 	result, err := s.checkoutBilling(c.Request().Context(), authorize, request.Price, request.IdempotencyKey)
 	if err != nil {
 		var failure *nativeError
@@ -129,7 +131,9 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 		}
 	}
 
-	authorize := func(context.Context) (apiCredential, error) { return s.hostedBillingOwner(c) }
+	authorize := func(context.Context) (apiCredential, error) {
+		return s.hostedBillingOwner(c) //nolint:contextcheck // Browser authorization resolves the original Echo request, including cookies and shared-entry claims.
+	}
 	result, err := s.portalBilling(c.Request().Context(), authorize, request.IdempotencyKey)
 	if err != nil {
 		var failure *nativeError

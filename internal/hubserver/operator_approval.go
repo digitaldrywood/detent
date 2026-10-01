@@ -10,12 +10,13 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
-	"github.com/labstack/echo/v4"
 )
 
 // Reuse the existing portable chat approval form and hosted browser session /

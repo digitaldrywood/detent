@@ -15,13 +15,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func changeOperatorContext(t *testing.T, s *Service, token, organization string) context.Context {
@@ -191,12 +192,13 @@ func TestOperatorArtifactResults(t *testing.T) {
 			u := f.user(t, "download", role, "download@example.test", grant, "")
 			var logs bytes.Buffer
 			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
-			var ctx context.Context
+			ctxs := make(chan context.Context, 1)
 			f.service.echo.GET("/capture-authority", func(c echo.Context) error {
-				ctx = operatortool.BindConnection(c.Request().Context(), "download-connection", "generic-client")
+				ctxs <- operatortool.BindConnection(c.Request().Context(), "download-connection", "generic-client")
 				return c.NoContent(http.StatusOK)
 			}, f.service.operatorAuthority)
 			requireNativeStatus(t, f.request(t, u, http.MethodGet, "/capture-authority", nil), http.StatusOK)
+			ctx := <-ctxs
 			if scenario == "historical revision" {
 				next := ref
 				next.Revision++
@@ -290,12 +292,13 @@ func TestHostedOperatorPolicyApproval(t *testing.T) {
 				t.Run(scenario, func(t *testing.T) {
 					f := newHostedSecurityFixture(t)
 					u := f.user(t, "approver", "owner", "approver@example.test", "write", "")
-					var ctx context.Context
+					ctxs := make(chan context.Context, 1)
 					f.service.echo.GET("/capture-authority", func(c echo.Context) error {
-						ctx = operatortool.BindConnection(c.Request().Context(), "policy-connection", "generic-client")
+						ctxs <- operatortool.BindConnection(c.Request().Context(), "policy-connection", "generic-client")
 						return c.NoContent(http.StatusOK)
 					}, f.service.operatorAuthority)
 					requireNativeStatus(t, f.request(t, u, http.MethodGet, "/capture-authority", nil), http.StatusOK)
+					ctx := <-ctxs
 					ex := hubOperatorExecutor{f.service}
 					if err := ex.OpenConnection(ctx); err != nil {
 						t.Fatal(err)

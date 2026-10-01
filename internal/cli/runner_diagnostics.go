@@ -128,7 +128,7 @@ func reportRunnerSetup(ctx context.Context, cfg globalconfig.Config, version str
 // a second startup heartbeat or repeating local probes at each heartbeat tick.
 func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, client *hubclient.Client) (map[string]runnerauth.LocalChecks, error) {
 	if cfg.Client.IdentityFile == "" || cfg.Path == "" {
-		return nil, nil
+		return map[string]runnerauth.LocalChecks{}, nil
 	}
 	file, err := runnerauth.Load(cfg.Client.IdentityFile)
 	if err != nil {

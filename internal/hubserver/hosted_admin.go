@@ -82,10 +82,6 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
-func (s *Service) hostedManagedMember(c echo.Context, credential apiCredential, removingOwner bool) (auth.Membership, error) {
-	return s.hostedManagedMemberFor(c.Request().Context(), credential, c.Param("member"), removingOwner)
-}
-
 func (s *Service) hostedManagedMemberFor(ctx context.Context, credential apiCredential, id string, removingOwner bool) (auth.Membership, error) {
 	members, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {

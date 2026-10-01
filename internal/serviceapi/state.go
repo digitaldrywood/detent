@@ -3,6 +3,7 @@ package serviceapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -57,9 +58,9 @@ func BoundedState(response any) (map[string]any, error) {
 	delete(payload, "board_issues")
 	node, ok := boundStateValue(payload, "", StateResponseBytes)
 	if !ok {
-		return nil, fmt.Errorf("state summary exceeds projection budget")
+		return nil, errors.New("state summary exceeds projection budget")
 	}
-	payload = node.value.(map[string]any)
+	payload = node.value.(map[string]any) //nolint:errcheck // A map input always produces a map projection.
 	if node.collections == nil {
 		node.collections = []StateCollectionTruncation{}
 	}
@@ -81,9 +82,9 @@ type stateNode struct {
 
 func (n stateNode) size() int {
 	// Values originate from decoded JSON; marshaling them cannot fail.
-	value, _ := json.Marshal(n.value)
-	collections, _ := json.Marshal(n.collections)
-	fields, _ := json.Marshal(n.fields)
+	value, _ := json.Marshal(n.value)             //nolint:errcheck // Values are decoded JSON with no custom marshalers.
+	collections, _ := json.Marshal(n.collections) //nolint:errcheck // Collection metadata contains only strings and integers.
+	fields, _ := json.Marshal(n.fields)           //nolint:errcheck // Omission metadata contains only strings and integer pointers.
 	// Includes the envelope's keys, limits, punctuation and booleans.
 	return len(value) + len(collections) + len(fields) + 256
 }
@@ -163,18 +164,19 @@ func boundStateValue(value any, path string, budget int) (stateNode, bool) {
 		if node.size() > budget {
 			return stateNode{}, false
 		}
-		for i := 0; i < min(len(value), StateCollectionLimit); i++ {
+		for i := range min(len(value), StateCollectionLimit) {
 			child, ok := boundStateValue(value[i], path+"/"+strconv.Itoa(i), budget-node.size())
 			if !ok {
 				break
 			}
-			candidate := stateNode{value: append(out, child.value), collections: slices.Concat(node.collections, child.collections), fields: slices.Concat(node.fields, child.fields)}
+			candidateValues := append(out, child.value)
+			candidate := stateNode{value: candidateValues, collections: slices.Concat(node.collections, child.collections), fields: slices.Concat(node.fields, child.fields)}
 			candidate.collections[0].Returned = i + 1
 			candidate.collections[0].Omitted = len(value) - i - 1
 			if candidate.size() > budget {
 				break
 			}
-			out = candidate.value.([]any)
+			out = candidateValues
 			node = candidate
 		}
 		if len(out) == len(value) {

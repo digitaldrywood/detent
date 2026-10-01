@@ -10,6 +10,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -17,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
-	"github.com/labstack/echo/v4"
 )
 
 type entryAdministration struct{ service *Service }

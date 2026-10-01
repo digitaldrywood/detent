@@ -366,17 +366,21 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{GitHubRequestCounts: func() []GitHubRequestCount { return []GitHubRequestCount{} }})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
 	r.enroll(t)
-	var ctx context.Context
+	contexts := make(chan context.Context, 1)
 	// Non-hosted organization is bound by the application route parameter.
-	f.service.echo.GET("/api/v2/organizations/:organization/fleet-context-test", func(c echo.Context) error { ctx = c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+	f.service.echo.GET("/api/v2/organizations/:organization/fleet-context-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 	for _, tt := range []struct {
 		name, token string
 		authorized  bool
 	}{{"administrator", testHubAdminToken, true}, {"operator", f.token, false}, {"worker", r.redemption.Credential, false}} {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx = nil
 			path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/fleet-context-test"
 			response := performHubAPIRequest(t, f.service, http.MethodGet, path, tt.token, nil)
+			var ctx context.Context
+			select {
+			case ctx = <-contexts:
+			default:
+			}
 			if ctx == nil {
 				if tt.name != "worker" || response.Code != http.StatusForbidden {
 					t.Fatalf("context status=%d", response.Code)

@@ -61,7 +61,7 @@ func TestChangeDiffPages(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			diff := &tracker.AttemptDiff{ID: "diff_a", AttemptID: "attempt_a", FileCount: test.count}
-			for i := 0; i < test.count; i++ {
+			for range test.count {
 				diff.Files = append(diff.Files, tracker.AttemptDiffFile{Path: test.path, Patch: test.patch})
 			}
 			offset := 0

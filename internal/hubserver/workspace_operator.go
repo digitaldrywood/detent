@@ -165,7 +165,7 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		outcome = "denied"
 		return operatortool.Result{}, err
 	}
-	scope := ctx.Value(operatorScopeKey{}).(nativeScope)
+	scope := ctx.Value(operatorScopeKey{}).(nativeScope) //nolint:errcheck // Successful workspace authorization binds the application scope.
 	scope.project = tracker.ProjectID(request.ProjectID)
 	if !write {
 		value, err := e.server.readWorkspaceTool(ctx, scope, call.Name, request)
@@ -271,18 +271,20 @@ func (e workspaceOperatorExecutor) ExecuteAction(ctx context.Context, action cha
 		return chat.ActionExecution{}, operatortool.ErrInvalidArguments
 	}
 	request.RequestID = action.RequestID
-	var raw json.RawMessage
 	// Validate original schema: omit zero selectors absent from the original.
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(action.Arguments, &fields) != nil {
 		return chat.ActionExecution{}, operatortool.ErrInvalidArguments
 	}
-	fields["request_id"], _ = json.Marshal(action.RequestID)
-	raw, _ = json.Marshal(fields)
+	requestID, _ := json.Marshal(action.RequestID) //nolint:errcheck // A string cannot fail JSON encoding.
+	fields["request_id"] = requestID
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return chat.ActionExecution{}, operatortool.ErrInvalidArguments
+	}
 	if err := operatortool.ValidateWorkspaceArguments(operatortool.Call{Name: string(action.Kind), Arguments: raw}); err != nil {
 		return chat.ActionExecution{}, err
 	}
-	var err error
 	ctx, err = operatortool.AuthorizeCurrent(ctx, workspaceRequirement(string(action.Kind), request, true))
 	if err != nil {
 		return chat.ActionExecution{}, err
@@ -293,7 +295,7 @@ func (e workspaceOperatorExecutor) ExecuteAction(ctx context.Context, action cha
 	if err != nil || m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.ProjectID != request.ProjectID || m.Action != string(action.Kind) || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
-	scope := ctx.Value(operatorScopeKey{}).(nativeScope)
+	scope := ctx.Value(operatorScopeKey{}).(nativeScope) //nolint:errcheck // Successful workspace authorization binds the application scope.
 	scope.project = tracker.ProjectID(request.ProjectID)
 	ctx = mutation.WithContext(ctx, m)
 	command := hostedCommand{actor: identity.PrincipalID, operation: "mcp " + string(action.Kind), key: m.RetryIdentity, input: action.Arguments}

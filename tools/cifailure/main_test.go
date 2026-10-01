@@ -210,9 +210,11 @@ func TestReport(t *testing.T) {
 				}
 			} else {
 				all := strings.Join(comments, "\n")
+				var bodies strings.Builder
 				for _, issue := range gh.created {
-					all += issue.Body
+					bodies.WriteString(issue.Body)
 				}
+				all += bodies.String()
 				if !strings.Contains(all, "race-job") || !strings.Contains(all, "coverage-job") {
 					t.Fatal("affected job evidence was lost")
 				}
