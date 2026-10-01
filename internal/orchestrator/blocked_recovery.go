@@ -199,8 +199,6 @@ func (o *Orchestrator) recoverBlockedIssues(
 		if normalizeState(issue.State) == normalizeState(blockedStatusState) &&
 			o.recoverCauseBlockedIssue(ctx, state, issue, now, dependencies[issue.ID]) {
 			transitioned[issueID] = struct{}{}
-			// A lane write changes tracker authority. Remaining roots use their
-			// ordinary fresh reads instead of the pre-write cohort.
 			dependencies = nil
 			continue
 		}
@@ -265,8 +263,6 @@ func (o *Orchestrator) recoverBlockedIssues(
 	return transitioned
 }
 
-// This evidence belongs only to one retired-park phase. It is discarded before
-// any later recovery/dispatch phase or operation can consume it.
 type blockedRecoveryDependencyEvidence struct {
 	issue          connector.Issue
 	workpadRefs    []connector.BlockedRef
@@ -299,9 +295,6 @@ func (o *Orchestrator) resolveBlockedRecoveryDependencies(ctx context.Context, s
 			}
 		}
 	}
-	// The existing resolver deduplicates identifiers and groups PR discovery by
-	// repository. Start with identity only: failed/absent results cannot inherit
-	// a stale terminal state or human-completion signal from another root.
 	pending := connector.Issue{}
 	for _, ref := range refs {
 		if identifier := strings.TrimSpace(ref.Identifier); identifier != "" {
@@ -309,6 +302,9 @@ func (o *Orchestrator) resolveBlockedRecoveryDependencies(ctx context.Context, s
 		}
 	}
 	resolved, err := o.resolveDependencyBlockersWithError(ctx, pending)
+	if err != nil {
+		return nil
+	}
 	var fresh []connector.Issue
 	references := make(map[string]connector.Issue)
 	for _, blocker := range resolved {
@@ -318,9 +314,6 @@ func (o *Orchestrator) resolveBlockedRecoveryDependencies(ctx context.Context, s
 		}
 	}
 	for _, evidence := range cohort {
-		if err != nil && o.logger != nil {
-			o.logger.Warn("resolve dependency blockers failed", "issue_id", evidence.issue.ID, "identifier", evidence.issue.Identifier, "error", err)
-		}
 		evidence.references = references
 		for _, ref := range evidence.issue.BlockedBy {
 			ref.Identifier = strings.TrimSpace(ref.Identifier)
@@ -328,12 +321,6 @@ func (o *Orchestrator) resolveBlockedRecoveryDependencies(ctx context.Context, s
 			ref.State = strings.TrimSpace(ref.State)
 			if strings.TrimSpace(ref.Identifier) == "" && strings.TrimSpace(ref.ID) == "" {
 				continue
-			}
-			// ID-only refs remain with their existing authority; the identifier
-			// resolver cannot refresh them.
-			if strings.TrimSpace(ref.Identifier) != "" {
-				ref.State, ref.TrackerState = "", ""
-				ref.HumanCompletionReady = false
 			}
 			evidence.blockers = append(evidence.blockers, dependencyBlocker{Ref: ref})
 		}

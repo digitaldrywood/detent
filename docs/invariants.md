@@ -826,22 +826,31 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 Retired-park recovery (#3687) consolidates its dependency and typed-predicate
 reference reads into one fresh phase cohort through the existing identifier
 resolver. Identifiers are deduplicated in first-request order, and GitHub's
-existing resolver groups PR discovery once per repository. The former per-root
-resolver/discovery owner and the repeat predicate lookup for absent evidence
-are removed from this phase. Each root retains its dependency provenance,
-human/operator holds, predicate evidence and completion decisions. Missing or
-failed cohort authority remains unknown; partial results accompanying an error
-cannot release a hold. The existing request cap, reserve and first-read rules
-still apply. A successful lane write discards the cohort for remaining roots,
-which return to ordinary fresh reads; evidence never survives a phase or
-operation. Root body/comments, exact-head PR/status/reviews and operational
-receipt verification retain their existing owners. Dispatch's capacity/lookahead
-bound and rotating dependency-priority scan remain unchanged.
-`TestRetiredParkReferenceCohort` exercises repeated references/repositories,
-failure/absence, cancellation, finite cap/reserve, human holds, fresh subsequent
-phases and post-write reads; the existing capped dependency-progress fixture
-records the requests made available by this consolidation. No persistent cache,
-remote reader, recovery path, configuration or lane writer is introduced.
+existing resolver groups PR discovery once per repository. A successful cohort
+replaces duplicate per-root resolver/discovery reads and repeat predicate
+lookups for absent evidence. Each root retains its dependency provenance,
+human/operator holds, predicate evidence and completion decisions. Missing
+results in a successful cohort remain unknown for their roots. A failed cohort
+is discarded, including any partial results, and the existing per-root recovery
+owner reads fresh authority independently. An unavailable reference therefore
+cannot hold an unrelated root whose predicate has cleared. Failed batches may
+add one bounded resolver attempt; the existing per-root owner retains error
+isolation without a new reader or recovery path. The existing dependency
+mapping owner clears identifier-addressable positive state and human-readiness
+fields before adopting fresh resolved authority; absent or failed reads cannot
+retain stale completion. ID-only refs and connectors without a reference
+resolver retain their existing inline authority. The existing request cap,
+reserve and first-read rules still apply. A successful lane write discards the
+cohort for remaining roots, which return to ordinary fresh reads; evidence
+never survives a phase or operation. Root body/comments, exact-head
+PR/status/reviews and operational receipt verification retain their existing
+owners. Dispatch's capacity/lookahead bound and rotating dependency-priority
+scan remain unchanged. `TestRetiredParkReferenceCohort` exercises repeated
+references/repositories, 500/403 failure isolation, absence, cancellation,
+finite cap/reserve, human holds, fresh subsequent phases and post-write reads;
+the existing capped dependency-progress fixture records the requests made
+available by this consolidation. No persistent cache, remote reader, recovery
+path, configuration or lane writer is introduced.
 
 Refresh dispatch (#3674) runs the existing retired-park and dependency-maintenance
 owners after unrelated active work has passed current authorization, dependency,
