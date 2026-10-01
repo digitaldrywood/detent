@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,12 +91,19 @@ func (f *fakeGH) command(_ context.Context, input string, args ...string) ([]byt
 		}
 		return []byte(out.String()), nil
 	}
-	if len(args) == 2 && strings.HasSuffix(args[1], "/logs") {
+	if len(args) >= 2 && strings.HasSuffix(args[1], "/logs") {
 		var id int64
 		if _, err := fmt.Sscanf(args[1], "repos/digitaldrywood/detent/actions/jobs/%d/logs", &id); err != nil {
 			return nil, err
 		}
-		return []byte(f.logs[id]), f.logErr
+		if f.logErr != nil {
+			return nil, f.logErr
+		}
+		log := f.logs[id]
+		if strings.Contains(log, "\x1b") && !slices.Contains(args, "--allow-escape-sequences") {
+			return nil, errors.New("the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway")
+		}
+		return []byte(log), nil
 	}
 	if len(args) < 4 || args[2] != "POST" {
 		return nil, fmt.Errorf("unexpected gh command: %v", args)
@@ -144,6 +152,7 @@ func scheduledEnv(key string) string {
 func TestReport(t *testing.T) {
 	t.Parallel()
 	const jobs = `[{"id":1,"name":"Test Coverage","conclusion":"failure","html_url":"coverage-job"},{"id":2,"name":"Verify race (1)","conclusion":"failure","html_url":"race-job"},{"id":3,"name":"Lint","conclusion":"success"},{"id":4,"name":"Finalize scheduled validation","conclusion":null}]`
+	const coloredProblem = "go-test:github.com/digitaldrywood/detent:TestScheduledCIFinalizerReportsAndTags"
 	for _, tt := range []struct {
 		name         string
 		logs         map[int64]string
@@ -156,6 +165,7 @@ func TestReport(t *testing.T) {
 		{"repository-wide existing machine problem", map[int64]string{1: fixture(t, "coverage"), 2: fixture(t, "race")}, true, nil, 0, 4},
 		{"distinct tests stay separate", map[int64]string{1: "--- FAIL: TestOne (0s)\n--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s", 2: "--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s"}, false, nil, 2, 4},
 		{"distinct tools consolidate across jobs", map[int64]string{1: "internal/one.go:12:3: first diagnostic\ninternal/two.go:20:7: second diagnostic", 2: "internal/one.go:12:3: first diagnostic"}, false, nil, 2, 4},
+		{"colored logs retain test identity", map[int64]string{1: fixture(t, "colored"), 2: fixture(t, "colored")}, false, nil, 1, 3},
 		{"unknown evidence keeps job identity", map[int64]string{1: "exit code 1", 2: "exit code 1"}, false, nil, 2, 2},
 		{"unreadable logs keep job identity", nil, false, errors.New("logs unavailable"), 2, 2},
 	} {
@@ -200,6 +210,9 @@ func TestReport(t *testing.T) {
 				if !ok || origin.Kind != "doctor" || origin.Instance != "github-actions" || !strings.Contains(issue.Body, scheduledEnv("CI_DEVELOP_SHA")) || !strings.Contains(origin.Source, "/attempts/1") || !strings.Contains(issue.Body, "effort: high") {
 					t.Fatalf("invalid machine issue: %+v", issue)
 				}
+				if tt.logErr != nil && (!strings.Contains(issue.Body, "Job logs could not be read: "+tt.logErr.Error()) || !strings.Contains(issue.Body, "network/download, and protocol failures belong to the CI instance")) {
+					t.Fatalf("log-read failure lost its diagnostics or CI-instance attribution: %s", issue.Body)
+				}
 			}
 			if strings.Contains(tt.name, "job identity") {
 				for i, j := range []string{"Test Coverage", "Verify race (1)"} {
@@ -220,6 +233,17 @@ func TestReport(t *testing.T) {
 				}
 				if tt.name == "coverage and race consolidate" && strings.Count(all, "skip_reason=already_running") != 4 {
 					t.Fatal("test diagnostics were lost from an occurrence")
+				}
+				if tt.name == "colored logs retain test identity" {
+					origin, _ := issueorigin.Parse(gh.created[0].Body)
+					if origin.Fingerprint != issueorigin.Fingerprint(coloredProblem) {
+						t.Fatal("colored logs lost the recorded test's fingerprint")
+					}
+					for _, body := range append(comments, gh.created[0].Body) {
+						if !strings.Contains(body, coloredProblem) || !strings.Contains(body, `scheduled finalizer script missing "detent:todo"`) || strings.Contains(body, "Job logs could not be read") || strings.Contains(body, "\x1b") {
+							t.Fatalf("colored-log diagnostics were lost or unreadable: %s", body)
+						}
+					}
 				}
 			}
 		})

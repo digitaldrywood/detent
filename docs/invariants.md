@@ -2521,6 +2521,10 @@ and race failures attach to one repair without a new coordination mechanism.
 `TestParseProblems` and `TestReport` in `tools/cifailure` exercise the recorded
 missing `skip_reason=already_running` diagnostic, separate tests and diagnostics,
 repeated runs, repository-wide matching, and conservative fallback.
+Job-log fetches allow terminal escape sequences so colored output reaches the
+existing ANSI-stripping parser (#3709). `TestReport` replays the recorded
+colored-log refusal and verifies test identity and occurrence consolidation;
+unreadable logs retain job identity and CI-instance attribution.
 
 **Change:** Edit INV-7 and origin/deduplication scenarios in the same PR before
 changing identity format or duplicate handling.
