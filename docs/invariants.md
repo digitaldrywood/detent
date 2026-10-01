@@ -662,6 +662,18 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+GitHub budget recovery resolves current credentials and reserves through the
+existing policy constructor. Exact identical worker/orchestrator tokens already
+establish shared-pool ownership without a duplicate principal lookup; recovery
+only reads current budget evidence. Different-token principal comparisons and
+fresh launch identity remain unchanged. The shared reserve check has one owner.
+`TestRunnerWorkerGitHubBudgetRecoveryOwnership` covers ten recovery/launch pairs,
+parallel current-budget reads, reserve reload, revoked credentials, and mutable
+GitHub login names. It removes ten of twenty principal reads per batch while
+retaining all twenty budget observations, without a retained identity cache,
+configuration, or recovery mechanism. Post-deployment timings are separate
+acceptance evidence, not implied by request counts.
+
 Fallback dependency hydration uses the existing fresh comment reader when comment
 or Workpad evidence is missing. The former issue-timestamp comment cache is
 removed because its diagnostic comments also became Workpad decision authority.
