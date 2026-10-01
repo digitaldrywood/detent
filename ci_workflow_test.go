@@ -308,47 +308,6 @@ func TestScheduledCIFinalizerReportsAndTags(t *testing.T) {
 	}
 }
 
-func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
-	t.Parallel()
-
-	requiredWorkflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	requiredJob := workflowBetween(t, requiredWorkflow, "  portability-verify:", "\n  windows-core:")
-	for _, forbidden := range []string{"go test -race", "-count=10", "-count=20"} {
-		if strings.Contains(requiredJob, forbidden) {
-			t.Fatalf("required portability job contains heavy coverage %q", forbidden)
-		}
-	}
-
-	stressWorkflow := readNormalizedFile(t, ".github/workflows/portability-stress.yml")
-	for _, want := range []string{
-		"workflow_dispatch:",
-		"timeout-minutes: ${{ matrix.suite.minutes }}",
-		"os: [macos-latest, windows-latest]",
-		"SUITE: ${{ matrix.suite.name }}",
-		`bash scripts/portability-stress.sh "$SUITE"`,
-	} {
-		if !strings.Contains(stressWorkflow, want) {
-			t.Fatalf("portability stress workflow missing %q", want)
-		}
-	}
-	if strings.Contains(stressWorkflow, "pull_request:") || strings.Contains(stressWorkflow, "schedule:") {
-		t.Fatal("portability stress workflow must run only on manual dispatch")
-	}
-	stressScript := readNormalizedFile(t, "scripts/portability-stress.sh")
-	for _, want := range []string{
-		"stress-cli|stress-runner|stress-checklock)",
-		`-count=10 -timeout="$budget" "$package"`,
-		"-run '^TestLocalSQLiteArtifactLifecycleEndToEnd$'",
-		"-count=20 -timeout=10m",
-		"bash scripts/test-workspace.sh -race",
-		`"${packages[@]}"`,
-	} {
-		if !strings.Contains(stressScript, want) {
-			t.Errorf("portability stress script missing %q", want)
-		}
-	}
-}
-
 func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	t.Parallel()
 

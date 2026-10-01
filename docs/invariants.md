@@ -801,7 +801,9 @@ terminal pending definitions even when the global project entry is unchanged, so
 corrected workflow path can recover without a restart. Runtime state-store failures
 remain instance-fatal.
 `TestStartupIsolatesWorkspacePathFailureAndReloads` covers both workspace and
-source paths, another running project, and correction on reconciliation.
+source paths, another running project, and correction on reconciliation. It
+asserts the failing backend stage and configured path across platforms rather
+than requiring POSIX filesystem error wording (#3551).
 `TestStartupIsolatesWorkflowLoadFailure` verifies healthy-project dispatch and
 unavailable-project dashboard snapshots in both project orders, including a paused
 project referencing the unavailable tracker. `TestStartupInfrastructureFailureRemainsFatal`
@@ -938,10 +940,10 @@ sessions-without-merge allowance. Draft PRs retain implementation routing so the
 author can finish. Repairs share the existing merge duration bound and treat
 unstarted CI like implementation runs (waiting only after push or in waiting_ci).
 The dispatch, CI parity, and duration regressions cover these boundaries (#2845).
-`TestRepairDurationBound` distinguishes bounded In Progress/Merging repair from
-Rework implementation, which does not receive the merge worker ceiling.
-`TestCompletionRebaseAfterRestart` restores merge-repair evidence from In Progress;
-Rework implementation routing remains covered by the dispatch regressions.
+`TestCompletionRebaseAfterRestart` preserves the persisted diff and conflict
+baseline through restart for both Rework implementation and In Progress merge
+repair. `TestRepairDurationBound` applies the merge duration ceiling only to
+merge-mode runs and verifies ordinary cancellation for Rework (#3548).
 
 Rework dispatch (#2800) reads the gate's live `AutomatedReviewPending()`
 predicate for clean, green PRs without actionable threads or findings. The existing
@@ -1146,6 +1148,11 @@ than adding another recovery loop or reason code (#3064).
 `TestAttemptAllowanceLiveHead` and
 `TestAttemptTriageParkRecoversOnCleanGreenHead` cover the wait and recovery.
 
+The scheduled coverage repair (#3545) refreshes the reviewed digest for
+`updateIssueStateByIDWithMetadataMode` after #3560 rewrote `!(A && B)` as
+`!A || !B`. The equivalent delivery-time condition preserves reason sources
+and ledger ownership; no lane-transition vocabulary or mechanism changes.
+
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
 Unknown constants, including concatenations, fail. Existing dynamic forwarding
@@ -1265,6 +1272,10 @@ failures while preserving earlier snapshots after partial deletion.
 Quarantine removal in this existing sweep makes read-only directories writable
 before deletion; persistent failures are warned once per path while later
 sweeps still retry (#3039). This does not add a sweep or recovery path.
+Warning deduplication uses native path separators on Windows as well as POSIX
+(#3551). `TestRetentionQuarantineWarningOncePerPath` replays repeated removal
+errors on every platform; the chmod-based filesystem fixture runs only on POSIX,
+where removing directory write permission prevents removal.
 `TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
 `TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
 lossless expiry, and repeated removal failures. See
@@ -1857,8 +1868,6 @@ only diagnostics matching both location and source-line hash are accepted.
 required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
 checks every workflow for forbidden pull-request and merge-group events.
 `TestWorkflowViolations` rejects trigger and coverage regressions.
-`TestPortabilityStressRunsOutsidePullRequestGate` checks manual-only dispatch,
-the per-suite timeout matrix, and the delegated script's existing stress selections.
 
 **Change:** Update this invariant and its workflow assertions in the same pull
 request when changing validation or release evidence.

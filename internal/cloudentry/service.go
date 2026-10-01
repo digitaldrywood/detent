@@ -348,12 +348,6 @@ func (s *Service) loginDenied(c echo.Context, status int, message string, denial
 	return s.denied(c, status, message)
 }
 
-func (s *Service) loginRefused(c echo.Context, status int, code, message string, denial auth.HostedDenial) error {
-	denial.Status = status
-	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
-	return s.refuse(c, status, code, message)
-}
-
 func (s *Service) home(c echo.Context) error {
 	if session, err := s.session(c); err == nil {
 		return c.Redirect(http.StatusSeeOther, s.landing(session.Email, session.Identity))

@@ -6,9 +6,10 @@ import (
 	"os/user"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
-	"github.com/spf13/cobra"
 )
 
 func newHubSecretsCommand(lookupEnv func(string) string) *cobra.Command {

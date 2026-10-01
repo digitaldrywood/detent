@@ -11,8 +11,8 @@ import (
 	"strconv"
 )
 
-var ErrUnavailable = errors.New("Hub secret master key version is unavailable")
-var ErrInvalid = errors.New("Hub secret envelope authentication failed")
+var ErrUnavailable = errors.New("hub secret master key version is unavailable")
+var ErrInvalid = errors.New("hub secret envelope authentication failed")
 
 // Keyring contains only operator-supplied keys, never database or file configuration.
 // Its fields are private so serializing or logging configuration cannot expose keys.
@@ -28,7 +28,7 @@ func (k *Keyring) String() string { return "[redacted Hub secret keys]" }
 func FromEnvironment(lookup func(string) string) (*Keyring, error) {
 	raw, active := lookup("DETENT_HUB_SECRET_KEYS"), lookup("DETENT_HUB_SECRET_KEY_VERSION")
 	if raw == "" && active == "" {
-		return nil, nil
+		return nil, nil //nolint:nilnil // An absent configuration intentionally disables secret storage.
 	}
 	version, err := strconv.Atoi(active)
 	if err != nil || version < 1 {
@@ -42,11 +42,11 @@ func FromEnvironment(lookup func(string) string) (*Keyring, error) {
 	for name, value := range encoded {
 		v, err := strconv.Atoi(name)
 		if err != nil || v < 1 || strconv.Itoa(v) != name {
-			return nil, errors.New("Hub secret key versions must be canonical positive integers")
+			return nil, errors.New("hub secret key versions must be canonical positive integers")
 		}
 		key, err := base64.StdEncoding.DecodeString(value)
 		if err != nil || len(key) != 32 {
-			return nil, errors.New("Hub secret master keys must be base64-encoded 32-byte values")
+			return nil, errors.New("hub secret master keys must be base64-encoded 32-byte values")
 		}
 		k.keys[v] = key
 	}
@@ -172,7 +172,7 @@ func (k *Keyring) Rewrap(e Envelope, aad []byte) (Envelope, error) {
 	if err != nil {
 		return Envelope{}, err
 	}
-	e.WrappedKey, e.Version = wrapped, k.version
+	e.WrappedKey, e.Version = wrapped, k.Version()
 	return e, nil
 }
 

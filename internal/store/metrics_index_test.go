@@ -158,6 +158,7 @@ func TestIssueWorkflowTimelineIndexedIdentityUnion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rows.Close()
 		var expected []int64
 		for rows.Next() {
 			var id int64

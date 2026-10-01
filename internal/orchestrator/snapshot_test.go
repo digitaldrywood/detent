@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -1961,7 +1962,7 @@ func (c *slowPromotionHydrator) HydratePullRequest(ctx context.Context, issue co
 	close(c.started)
 	select {
 	case <-c.release:
-		return issue, fmt.Errorf("profile read finished")
+		return issue, errors.New("profile read finished")
 	case <-ctx.Done():
 		return issue, ctx.Err()
 	}
@@ -1983,7 +1984,7 @@ func TestDependencyIssuesUsesPublishedCohortWithoutWaiting(t *testing.T) {
 	got[0].State = "Done"
 	got[0].BlockedBy[0].State = "Done"
 	retained := o.DependencyIssues()
-	if retained[0].State != "Rework" || retained[0].BlockedBy[0].State != "Backlog" {
+	if len(retained) != 1 || retained[0].State != "Rework" || len(retained[0].BlockedBy) != 1 || retained[0].BlockedBy[0].State != "Backlog" {
 		t.Fatalf("modified owner=%+v", retained)
 	}
 }

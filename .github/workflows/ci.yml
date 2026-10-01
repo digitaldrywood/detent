@@ -285,6 +285,7 @@ jobs:
       - name: Run full browser visual gate
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
+          TMPDIR: ${{ runner.temp }}
         run: npm run test:visual -- --shard=${{ matrix.shard }}/3
 
       - name: Upload browser visual evidence
@@ -292,7 +293,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: browser-visual-evidence-${{ matrix.shard }}
-          path: tmp/playwright-evidence
+          path: |
+            tmp/playwright-evidence
+            ${{ runner.temp }}/playwright-evidence
           if-no-files-found: ignore
           retention-days: 14
 

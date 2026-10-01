@@ -3932,10 +3932,10 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	backend := &sqliteStore{db: db, queries: sqlc.New(db)}
 	startedAt := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	// Seed the version-54 schema directly: RecordUsageEvent targets the current
+	// schema, including telemetry columns added after this migration.
 	for i := range cases {
-		// Seed the version-54 schema without using current-schema store methods.
 		if _, err := db.ExecContext(ctx, `INSERT INTO usage_events
 		(project_id, issue_id, session_id, cost_usd, input_tokens, total_tokens, started_at, finished_at, event_day, outcome)
 		VALUES ('detent', 'issue', ?, 50, 5000, 5000, '2026-09-07T10:00:00Z', '2026-09-07T11:00:00Z', '2026-09-07', 'completed')`, i+1); err != nil {
@@ -3956,6 +3956,7 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 			}
 		})
 	}
+	backend := &sqliteStore{db: db, queries: sqlc.New(db)}
 	spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{ProjectID: "detent", IssueID: "issue", Since: startedAt.Add(-time.Second)})
 	if err != nil {
 		t.Fatal(err)

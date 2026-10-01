@@ -111,7 +111,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		CheckoutRepository: func(project string) string {
-			return runnerCheckoutRepository(context.Background(), checkoutRoots[project])
+			return runnerCheckoutRepository(ctx, checkoutRoots[project])
 		},
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,

@@ -301,10 +301,10 @@ func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				kept.Projects[0].Workdir, err = filepath.Rel(cwd, workdir)
-				if err != nil {
-					t.Fatal(err)
-				}
+				// This case only inspects an absent checkout. Keep its relative path
+				// on the current drive when Windows scratch lives on another drive.
+				kept.Projects[0].Workdir = filepath.Join("missing-checkout", filepath.Base(filepath.Dir(root)))
+				workdir = filepath.Join(cwd, kept.Projects[0].Workdir)
 			}
 			if _, err := writeRunnerConfig(configPath, kept); err != nil {
 				t.Fatal(err)

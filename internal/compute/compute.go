@@ -2,7 +2,7 @@
 package compute
 
 import (
-	"fmt"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -34,7 +34,7 @@ func (r Rates) Validate() error {
 	cpu, memory := r.prices()
 	for _, price := range []float64{cpu, memory} {
 		if price < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
-			return fmt.Errorf("compute rates must be finite and nonnegative")
+			return errors.New("compute rates must be finite and nonnegative")
 		}
 	}
 	return nil
@@ -113,7 +113,7 @@ func readSample(read func(string) ([]byte, error), now func() time.Time) (sample
 		}
 	}
 	if !found {
-		return sample{}, fmt.Errorf("cpu.stat has no usage_usec")
+		return sample{}, errors.New("cpu.stat has no usage_usec")
 	}
 	data, err = read("memory.current")
 	if err != nil {
