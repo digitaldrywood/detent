@@ -799,7 +799,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			})
 			return
 		}
-		o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
+		o.transitionCompletedActiveIssuesToReview(ctx, state, []connector.Issue{running.Issue}, event.CompletedAt)
+		if _, claimed := state.Claimed[event.IssueID]; claimed {
+			o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
+		}
 		return
 	}
 	if spendProgress.Block && o.blockSpendProgress(ctx, state, running, spendProgress, event.CompletedAt) {

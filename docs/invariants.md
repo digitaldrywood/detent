@@ -1089,6 +1089,14 @@ setting; they add no reason code or recovery mechanism.
 
 Completed work remains active when both automatic promotion and human review
 are disabled; that combination must not create a false Blocked handoff.
+A persisted successful current-head completion invokes the existing completed
+review/promotion owner before releasing its gate-wait claim. Gate eligibility
+alone does not postpone a ready result until a later project refresh. Actual
+CI, native checks, automated review, validator, human and unknown-evidence holds
+retain that owner's decisions and the existing no-continuation claim release.
+The persistence-failure, dirty, draining, spend and dependency ownership order
+is unchanged. This consolidates INV-3 completion handoff on the existing owner,
+without another promotion path, polling loop, reason, configuration or bypass.
 The existing promotion owner re-evaluates its own completed-review Blocked
 receipts against a successful implementation receipt for the same fresh PR and
 head. Later lane entries, operator stops, changed heads, active workers, and
