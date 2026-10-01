@@ -1182,7 +1182,7 @@ func (r *Runner) runAgentTurn(
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
-		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsCheckedAt)
+		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
 		}
@@ -4418,6 +4418,7 @@ type agentRunProgress struct {
 	diffStats                 DiffStats
 	diffStatsCollected        bool
 	diffStatsCheckedAt        time.Time
+	diffStatsHeadObservedAt   time.Time
 	toolInvocations           map[string]deliverableToolInvocation
 	toolOutputTails           map[string]string
 	deliverableFailures       map[string]error
@@ -5373,6 +5374,7 @@ func (r *Runner) liveDiffStats(
 	diffStats := diffStatsFromWorkspace(stat)
 	diffStats.Status = "ok"
 	progress.diffStats = diffStats
+	progress.diffStatsHeadObservedAt = stat.HeadObservedAt
 	progress.diffStatsCollected = true
 	return diffStats, true
 }
@@ -5439,6 +5441,7 @@ func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
 		AddedLines:   stat.Added,
 		RemovedLines: stat.Removed,
 		Fingerprint:  strings.TrimSpace(stat.Fingerprint),
+		HeadSHA:      stat.HeadSHA,
 		Status:       status,
 	}
 }

@@ -244,8 +244,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			Branch: "detent/digitaldrywood_detent_22",
 		},
 		diffStats: []workspace.DiffStat{
-			{Files: 1, Added: 2, Fingerprint: "first-diff"},
-			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
+			{Files: 1, Added: 2, Fingerprint: "first-diff", HeadSHA: "first-physical-head", HeadObservedAt: startedAt},
+			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff", HeadSHA: "second-physical-head", HeadObservedAt: startedAt.Add(time.Second)},
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 		},
@@ -431,7 +431,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].LastEventAt.IsZero() {
 		t.Fatal("second usage update LastEventAt is zero")
 	}
-	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Fingerprint != "first-diff" || usageUpdates[1].DiffStats.Status != "ok" {
+	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Fingerprint != "first-diff" || usageUpdates[1].DiffStats.HeadSHA != "first-physical-head" || usageUpdates[1].DiffStats.Status != "ok" {
 		t.Fatalf("second usage update DiffStats = %#v, want live diff", usageUpdates[1].DiffStats)
 	}
 	if usageUpdates[2].TurnCount != 1 || usageUpdates[2].Tokens.TotalTokens != 125 {
@@ -443,7 +443,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if len(usageUpdates[2].RecentEvents) != 3 || usageUpdates[2].RecentEvents[2].Event != "token_usage" || usageUpdates[2].RecentEvents[2].Message != "125 total tokens (100 in, 25 out)" {
 		t.Fatalf("third usage update RecentEvents = %#v, want token-specific activity", usageUpdates[2].RecentEvents)
 	}
-	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 {
+	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 || usageUpdates[2].DiffStats.HeadSHA != "second-physical-head" {
 		t.Fatalf("third usage update DiffStats = %#v, want refreshed diff", usageUpdates[2].DiffStats)
 	}
 	if usageUpdates[3].RateLimits == nil || usageUpdates[3].RateLimits.LimitID != "codex-primary" {

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestActivityObservationAttributionAndGaps(t *testing.T) {
@@ -365,32 +366,96 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 			var offset atomic.Int64
 			probe := &activityCheckpointProbe{started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 4)}
 			close(probe.release)
-			workspace := t.TempDir()
-			instructions := "Private policy\nRun go test ./internal/fixture\n"
-			if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte(instructions), 0600); err != nil {
+			workspacePath := t.TempDir()
+			issue := workspace.Issue{Identifier: "activity-head", PullRequestHeadSHA: "remote-pr-head"}
+			var backend workspace.Backend
+			var info workspace.Info
+			var err error
+			physical := stage == "implementation" || stage == "rework"
+			if physical {
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: workspacePath, SourceRoot: initRunnerSourceRepo(t), AutoBranch: true})
+			} else {
+				backend, err = workspace.NewFilesystem(workspace.FilesystemOptions{Root: workspacePath})
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
-			r := &Runner{store: probe, projectID: "fixture", now: func() time.Time { return at.Add(time.Duration(offset.Load())) }, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-			recorder := r.startActivityProfile(t.Context(), RunRequest{Issue: connector.Issue{ID: "fixture-issue"}, WorkAttemptID: 42, Generation: 2}, 43, workspace, config.Workflow{Prompt: "Run go test ./internal/fixture"}, stage)
+			info, err = backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspacePath = info.Path
+			instructions := "Private policy\nRun go test ./internal/fixture\n"
+			if err := os.WriteFile(filepath.Join(workspacePath, "AGENTS.md"), []byte(instructions), 0600); err != nil {
+				t.Fatal(err)
+			}
+			r := &Runner{store: probe, projectID: "fixture", now: func() time.Time { return at.Add(time.Duration(offset.Load())) }, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), workspace: backend}
+			recorder := r.startActivityProfile(t.Context(), RunRequest{Issue: connector.Issue{ID: "fixture-issue"}, WorkAttemptID: 42, Generation: 2}, 43, workspacePath, config.Workflow{Prompt: "Run go test ./internal/fixture"}, stage)
 			<-probe.profiles // initial durable coverage boundary
+			progress := &agentRunProgress{}
+			heads := make([]string, 9)
+			headTimes := make([]time.Time, 9)
 			for i, command := range []string{"cat AGENTS.md", "go test ./internal/fixture", "go test ./internal/fixture", "git diff", "git rebase origin/develop", "gh api repos/fixture/repo/pulls/1/merge", "sleep 1"} {
+				refreshAt := at.Add(time.Duration(i*2+1) * time.Second)
+				if i == 3 && physical {
+					runRunnerGit(t, workspacePath, "commit", "--allow-empty", "-m", "change physical head")
+				}
+				if i == 4 || i == 6 {
+					refreshAt = progress.diffStatsCheckedAt.Add(time.Second)
+				}
+				if i == 5 {
+					if physical {
+						if err := os.Rename(filepath.Join(workspacePath, ".git"), filepath.Join(workspacePath, "hidden-git")); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						r.workspace = &fakeWorkspaceBackend{diffErr: workspace.ErrMissingWorkspace}
+					}
+				}
+				beforeRead := time.Now()
+				checkedAt := progress.diffStatsCheckedAt
+				if i == 0 || i >= 3 {
+					r.liveDiffStats(t.Context(), info, issue, progress, refreshAt)
+				}
+				if i == 0 || i == 3 || i == 5 {
+					checkedAt = refreshAt
+				}
+				if !progress.diffStatsCheckedAt.Equal(checkedAt) {
+					t.Fatalf("refresh cadence changed: %v, want %v", progress.diffStatsCheckedAt, checkedAt)
+				}
+				heads[i], headTimes[i] = progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt
+				if physical && (i == 0 || i == 3) {
+					want := strings.TrimSpace(runRunnerGit(t, workspacePath, "rev-parse", "HEAD"))
+					if heads[i] != want || headTimes[i].Before(beforeRead) || headTimes[i].After(time.Now()) {
+						t.Fatalf("physical head=%q at=%v, want %q", heads[i], headTimes[i], want)
+					}
+				}
+				if i >= 4 && (heads[i] != heads[3] || !headTimes[i].Equal(headTimes[3])) {
+					t.Fatalf("cached/failed refresh changed authority: %q at %v", heads[i], headTimes[i])
+				}
 				item := strconv.Itoa(i)
 				update := AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: item, Tool: "Bash", Command: command}
 				if i == 0 {
 					update.Tool = "commandExecution"
-					update.CWD = workspace
+					update.CWD = workspacePath
 					update.NativeActions = []NativeCommandAction{{Type: "read", Name: "AGENTS.md", Path: "AGENTS.md"}}
 				}
 				started := update
 				if stage == "validation" {
 					started.NativeActions = nil // Provider metadata first arrives on completion.
 				}
-				recorder.observe(started, at.Add(time.Duration(i*2+1)*time.Second), "fixture-head", at)
+				recorder.observe(started, at.Add(time.Duration(i*2+1)*time.Second), progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
 				recorder.observe(AgentUpdate{Type: AgentUpdateToolCompleted, TurnID: "turn", ItemID: item, Status: "completed", NativeActions: update.NativeActions, CWD: update.CWD}, at.Add(time.Duration(i*2+2)*time.Second), "", time.Time{})
 			}
-			recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "edit", Tool: "fileChange"}, at.Add(15*time.Second), "fixture-head", at)
+			recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "edit", Tool: "fileChange"}, at.Add(15*time.Second), progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
 			recorder.observe(AgentUpdate{Type: AgentUpdateToolCompleted, TurnID: "turn", ItemID: "edit", Status: "completed"}, at.Add(16*time.Second), "", time.Time{})
-			recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "lost", Tool: "Bash", Command: "go test ./internal/fixture"}, at.Add(17*time.Second), "fixture-head", at)
+			recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "lost", Tool: "Bash", Command: "go test ./internal/fixture"}, at.Add(17*time.Second), progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
+			for _, i := range []int{7, 8} {
+				heads[i], headTimes[i] = progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt
+			}
+			if physical && (heads[0] == heads[3] || !headTimes[3].After(headTimes[0])) {
+				t.Fatalf("second physical observation did not advance: %v, %v", heads, headTimes)
+			}
 			offset.Store(int64(20 * time.Second))
 			recorder.wake <- struct{}{} // advance the existing checkpoint without a wall-clock sleep
 			active := <-probe.profiles
@@ -401,6 +466,17 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 			for _, kind := range []string{"context_read", "implementation", "local_validation", "review", "rebase", "merge", "waiting"} {
 				if audits[0].Breakdown.ByKind[kind] == 0 {
 					t.Fatalf("missing %s: %+v", kind, audits[0])
+				}
+			}
+			for i, span := range audits[0].Profile.Spans {
+				if span.Head != heads[i] || !span.HeadObservedAt.Equal(headTimes[i]) || span.CausalAttribution != "unknown_provider_origin" {
+					t.Fatalf("span lost physical observation: %+v, want %q at %v", span, heads[i], headTimes[i])
+				}
+				if physical && span.HeadAttribution != "last_observed_workspace_snapshot" {
+					t.Fatalf("head attribution = %q", span.HeadAttribution)
+				}
+				if !physical && (span.Head != "" || !span.HeadObservedAt.IsZero() || span.HeadAttribution != "") {
+					t.Fatalf("Filesystem supplied head authority: %+v", span)
 				}
 			}
 			nativeRead := audits[0].Profile.Spans[0].Actions

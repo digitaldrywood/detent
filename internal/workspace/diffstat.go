@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const recoveryEvidenceLimit = 20
@@ -30,10 +31,16 @@ var detentHandoffDiffExcludes = []string{
 }
 
 type DiffStat struct {
-	Files       int    `json:"files"`
-	Added       int    `json:"added"`
-	Removed     int    `json:"removed"`
-	Fingerprint string `json:"fingerprint,omitempty"`
+	Files          int       `json:"files"`
+	Added          int       `json:"added"`
+	Removed        int       `json:"removed"`
+	Fingerprint    string    `json:"fingerprint,omitempty"`
+	HeadSHA        string    `json:"head_sha,omitempty"`
+	HeadObservedAt time.Time `json:"head_observed_at,omitzero"`
+}
+
+func (s DiffStat) IsEmpty() bool {
+	return s.Files == 0 && s.Added == 0 && s.Removed == 0 && s.Fingerprint == ""
 }
 
 type Diff struct {
@@ -280,7 +287,7 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 		return Diff{}, err
 	}
 	if maxBytes == 0 {
-		return Diff{Stat: stat, Truncated: stat != (DiffStat{})}, nil
+		return Diff{Stat: stat, Truncated: !stat.IsEmpty()}, nil
 	}
 
 	patch, truncated, err := gitDiffOutputWithinLimit(ctx, workspacePath, env, diffBase, maxBytes)
@@ -294,11 +301,11 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 }
 
 func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, error) {
-	indexPath, err := gitIndexPath(ctx, workspacePath)
+	index, err := gitIndexLookup(ctx, workspacePath, true)
 	if err != nil {
 		return DiffStat{}, err
 	}
-	tempIndex, cleanup, err := copyGitIndex(indexPath)
+	tempIndex, cleanup, err := copyGitIndex(index.Path)
 	if err != nil {
 		return DiffStat{}, err
 	}
@@ -308,7 +315,13 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, err
 	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
 		return DiffStat{}, fmt.Errorf("git add intent to add: %w", err)
 	}
-	return gitDiffStatWithEnv(ctx, workspacePath, env, "HEAD")
+	stat, err := gitDiffStatWithEnv(ctx, workspacePath, env, index.HeadSHA)
+	if err != nil {
+		return DiffStat{}, err
+	}
+	stat.HeadSHA = index.HeadSHA
+	stat.HeadObservedAt = index.HeadObservedAt
+	return stat, nil
 }
 
 func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string, base string) (int, []string, error) {
@@ -482,7 +495,7 @@ func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string,
 		return DiffStat{}, fmt.Errorf("git diff stat: %w", err)
 	}
 	stat, err := ParseDiffStat(output)
-	if err != nil || stat == (DiffStat{}) {
+	if err != nil || stat.IsEmpty() {
 		return stat, err
 	}
 	fingerprint, err := gitDiffFingerprint(ctx, workspacePath, env, diffBase)
@@ -625,19 +638,45 @@ func gitDiagnosticArgs(args ...string) []string {
 	return args
 }
 
+type gitIndexObservation struct {
+	Path           string
+	HeadSHA        string
+	HeadObservedAt time.Time
+}
+
 func gitIndexPath(ctx context.Context, workspacePath string) (string, error) {
-	output, err := runGitAt(ctx, workspacePath, "rev-parse", "--git-path", "index")
-	if err != nil {
-		return "", fmt.Errorf("git index path: %w", err)
+	index, err := gitIndexLookup(ctx, workspacePath, false)
+	return index.Path, err
+}
+
+func gitIndexLookup(ctx context.Context, workspacePath string, observeHead bool) (gitIndexObservation, error) {
+	args := []string{"rev-parse", "--git-path", "index"}
+	if observeHead {
+		args = append(args, "--verify", "HEAD")
 	}
-	indexPath := strings.TrimSpace(output)
+	output, err := runGitAt(ctx, workspacePath, args...)
+	if err != nil {
+		return gitIndexObservation{}, fmt.Errorf("git index path: %w", err)
+	}
+	index := gitIndexObservation{}
+	indexPath := strings.TrimSuffix(output, "\n")
+	if observeHead {
+		separator := strings.LastIndexByte(indexPath, '\n')
+		if separator < 0 || separator == len(indexPath)-1 {
+			return gitIndexObservation{}, errors.New("git index head is empty")
+		}
+		index.HeadSHA = indexPath[separator+1:]
+		index.HeadObservedAt = time.Now()
+		indexPath = indexPath[:separator]
+	}
 	if indexPath == "" {
-		return "", errors.New("git index path is empty")
+		return gitIndexObservation{}, errors.New("git index path is empty")
 	}
 	if !filepath.IsAbs(indexPath) {
 		indexPath = filepath.Join(workspacePath, indexPath)
 	}
-	return filepath.Clean(indexPath), nil
+	index.Path = filepath.Clean(indexPath)
+	return index, nil
 }
 
 func copyGitIndex(indexPath string) (string, func(), error) {
