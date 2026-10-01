@@ -161,8 +161,8 @@ func (o *Orchestrator) consecutiveRetryCycleCount(
 		count := 0
 		latest := telemetry.WorkAttempt{}
 		for _, attempt := range attempts {
-			if strings.TrimSpace(attempt.ErrorClass) == "service_restart" &&
-				terminalAttemptRetryableFailure(attempt) && !workAttemptHasPushedProduct(attempt) {
+			if terminalAttemptInfrastructureFailure(attempt) &&
+				terminalAttemptStateRetryDemotable(store.WorkAttemptTerminalState(strings.ToLower(strings.TrimSpace(attempt.TerminalState)))) && !workAttemptHasPushedProduct(attempt) {
 				continue
 			}
 			if !retryCycleAttemptMatches(attempt, cause) {
@@ -258,8 +258,7 @@ func retryCycleAttemptMatches(attempt telemetry.WorkAttempt, cause string) bool 
 	case workspacePreparationRetryLimitCause:
 		return false
 	case terminalAttemptRetryLimitCause:
-		return strings.TrimSpace(attempt.ErrorClass) != workAttemptErrorWorkspace &&
-			strings.TrimSpace(attempt.ErrorClass) != "service_restart" &&
+		return !terminalAttemptInfrastructureFailure(attempt) &&
 			terminalAttemptRetryableFailure(attempt) &&
 			!workAttemptHasPushedProduct(attempt)
 	default:
@@ -572,6 +571,17 @@ func workAttemptCompletedAfter(left telemetry.WorkAttempt, right telemetry.WorkA
 	return left.AttemptID > right.AttemptID
 }
 
+// Terminal retries and failed-session allowance share instance attribution.
+func terminalAttemptInfrastructureFailure(attempt telemetry.WorkAttempt) bool {
+	return allowanceInfrastructureAttempt(store.WorkAttempt{
+		TerminalState:      store.WorkAttemptTerminalState(strings.ToLower(strings.TrimSpace(attempt.TerminalState))),
+		ErrorClass:         attempt.ErrorClass,
+		Phase:              attempt.Phase,
+		MetricsJSON:        attempt.MetricsJSON,
+		WorkerMetadataJSON: attempt.WorkerMetadataJSON,
+	})
+}
+
 func terminalAttemptRetryableFailure(attempt telemetry.WorkAttempt) bool {
 	// A plan is a work product without a PR. Abandoning its local completion
 	// cannot revoke an operator's subsequent implementation handoff.
@@ -579,6 +589,12 @@ func terminalAttemptRetryableFailure(attempt telemetry.WorkAttempt) bool {
 		return false
 	}
 	errorClass := strings.TrimSpace(attempt.ErrorClass)
+	// Interrupted sessions and workspace preparation retain their existing
+	// restart/demotion behavior, but never count as issue failures.
+	if errorClass != "service_restart" && errorClass != workAttemptErrorWorkspace && errorClass != githubRESTCapacityError &&
+		!preTurnAttempt(attempt) && terminalAttemptInfrastructureFailure(attempt) {
+		return false
+	}
 	if errorClass == backendcapacity.ErrorClass || errorClass == forgeUnavailableErrorClass || errorClass == workspaceBranchHoldErrorClass || errorClass == "worker_github_budget_monitor_unavailable" || errorClass == workerGitHubTokenResolutionErrorClass {
 		return false
 	}

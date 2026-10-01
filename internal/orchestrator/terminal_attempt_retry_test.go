@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
@@ -46,12 +47,12 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 		{name: "zero parks failed persistence", limit: new(0), issue: terminalRetryTestIssue("zero-store-error"), runError: errors.New("runner failed"), completionErr: true, wantBlocked: true},
 		{name: "zero parks missing store", limit: new(0), issue: terminalRetryTestIssue("zero-no-store"), runError: errors.New("runner failed"), noStore: true, wantBlocked: true},
 		{name: "zero parks missing attempt ID", limit: new(0), issue: terminalRetryTestIssue("zero-no-id"), runError: errors.New("runner failed"), noAttemptID: true, wantBlocked: true},
-		{name: "zero parks overload without store", limit: new(0), issue: terminalRetryTestIssue("zero-overload-no-store"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")), noStore: true, wantBlocked: true},
+		{name: "zero retries overload without store", limit: new(0), issue: terminalRetryTestIssue("zero-overload-no-store"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")), noStore: true, wantState: "In Progress"},
 		{name: "zero preserves capacity without store", limit: new(0), issue: terminalRetryTestIssue("zero-capacity-no-store"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &capacityReset}, errors.New("provider usage limit reached")), noStore: true, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero preserves pushed work without store", limit: new(0), issue: terminalRetryTestIssue("zero-pushed-no-store"), result: runpkg.RunResult{PullRequestHeadPushed: true}, runError: errors.New("runner failed"), noStore: true, wantState: "In Progress"},
 		{name: "default preserves failed persistence retry", issue: terminalRetryTestIssue("default-store-error"), runError: errors.New("runner failed"), completionErr: true, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero parks runner failure", limit: new(0), issue: terminalRetryTestIssue("zero-failure"), runError: errors.New("runner failed"), wantBlocked: true},
-		{name: "zero parks transient overload", limit: new(0), issue: terminalRetryTestIssue("zero-overload"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")), wantBlocked: true},
+		{name: "zero retries transient overload", limit: new(0), issue: terminalRetryTestIssue("zero-overload"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")), wantState: "In Progress"},
 		{name: "zero preserves capacity wait", limit: new(0), issue: terminalRetryTestIssue("zero-capacity"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &capacityReset}, errors.New("provider usage limit reached")), wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero preserves pushed work", limit: new(0), issue: terminalRetryTestIssue("zero-pushed"), result: runpkg.RunResult{PullRequestHeadPushed: true}, runError: errors.New("runner failed"), wantState: "In Progress"},
 		{name: "zero preserves linked PR", limit: new(0), issue: terminalRetryTestIssueWithPullRequest("zero-pr"), runError: errors.New("runner failed"), wantState: "In Progress"},
@@ -63,18 +64,16 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 			wantTransitions: []string{"Todo"},
 		},
 		{
-			name:            "transient overload returns to todo",
-			issue:           terminalRetryTestIssue("overload"),
-			runError:        backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")),
-			wantState:       "Todo",
-			wantTransitions: []string{"Todo"},
+			name:      "transient overload retains active lane",
+			issue:     terminalRetryTestIssue("overload"),
+			runError:  backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")),
+			wantState: "In Progress",
 		},
 		{
-			name:            "startup timeout returns to todo",
-			issue:           terminalRetryTestIssue("startup-timeout"),
-			runError:        backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupTimeoutKind}, context.DeadlineExceeded),
-			wantState:       "Todo",
-			wantTransitions: []string{"Todo"},
+			name:      "startup timeout retains active lane",
+			issue:     terminalRetryTestIssue("startup-timeout"),
+			runError:  backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupTimeoutKind}, context.DeadlineExceeded),
+			wantState: "In Progress",
 		},
 		{
 			name:            "provider capacity returns to todo",
@@ -1174,6 +1173,12 @@ func TestRetryCycleAttemptMatches(t *testing.T) {
 			attempt.ErrorClass = "service_restart"
 			attempt.TerminalState = string(store.WorkAttemptTerminalAbandoned)
 		}},
+		{name: "provider overload is instance owned", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = backendcapacity.TransientOverloadErrorClass }},
+		{name: "transport is instance owned", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = "transport_error" }},
+		{name: "startup is instance owned", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = "backend_startup_timeout" }},
+		{name: "instance blocker evidence", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) {
+			attempt.WorkerMetadataJSON = `{"blocker_evidence":[{"owner":"instance"}]}`
+		}},
 		{name: "failure", cause: terminalAttemptRetryLimitCause, wantMatching: true},
 		{name: "timed out", cause: terminalAttemptRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) {
 			attempt.TerminalState = string(store.WorkAttemptTerminalTimedOut)
@@ -1181,7 +1186,7 @@ func TestRetryCycleAttemptMatches(t *testing.T) {
 		{name: "abandoned", cause: terminalAttemptRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) {
 			attempt.TerminalState = string(store.WorkAttemptTerminalAbandoned)
 		}},
-		{name: "capacity", cause: terminalAttemptRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) {
+		{name: "capacity", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) {
 			attempt.TerminalState = string(store.WorkAttemptTerminalCapacity)
 		}},
 		{name: "success resets terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.TerminalState = string(store.WorkAttemptTerminalSuccess) }},
@@ -1552,10 +1557,13 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 		{name: "zero GitHub wait", limit: new(0), sequence: "G", wantState: "In Progress"},
 		{name: "zero forge wait", limit: new(0), sequence: "A", wantState: "In Progress"},
 		{name: "zero service restart", limit: new(0), sequence: "RRR", wantState: "Todo"},
+		{name: "provider outage alone", limit: new(0), sequence: "OOT", wantState: "In Progress"},
+		{name: "provider outage preserves failures", sequence: "FOFTOF", wantState: "Blocked"},
+		{name: "provider history beyond snapshot window", sequence: "FF" + strings.Repeat("O", 60) + "F", wantState: "Blocked"},
 		{name: "capacity does not consume", limit: new(1), sequence: "CCF", wantState: "Todo"},
 		{name: "GitHub does not consume", limit: new(1), sequence: "GGF", wantState: "Todo"},
 		{name: "forge does not consume", limit: new(1), sequence: "AAF", wantState: "Todo"},
-		{name: "capacity retains reset behavior", limit: new(1), sequence: "FCF", wantState: "Todo"},
+		{name: "capacity preserves issue failures", limit: new(1), sequence: "FCF", wantState: "Blocked"},
 		{name: "success resets", limit: new(1), sequence: "FSF", wantState: "Todo"},
 		{name: "pushed work resets", limit: new(1), sequence: "FPF", wantState: "Todo"},
 		{name: "pushed work prevents retry", limit: new(0), sequence: "P", wantState: "In Progress"},
@@ -1598,6 +1606,11 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 				latestID = id
 				completion := store.WorkAttemptCompletion{AttemptID: id, CompletedAt: at, TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: workAttemptErrorRunner, ErrorMessage: "worker failed"}
 				switch kind {
+				case 'O':
+					completion.ErrorClass = backendcapacity.TransientOverloadErrorClass
+					completion.ErrorMessage = "read app-server response: EOF; app-server exited: signal: terminated"
+				case 'T':
+					completion.ErrorClass = "transport_error"
 				case 'R':
 					completion.TerminalState = store.WorkAttemptTerminalAbandoned
 					completion.ErrorClass = "service_restart"
@@ -1683,7 +1696,7 @@ func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
 		{name: "pushed restart resets", sequence: "FFRPRF", wantCount: 1, wantLatest: 6},
 		{name: "linked PR restart resets", sequence: "FFRLRF", wantCount: 1, wantLatest: 6},
 		{name: "workspace failures straddle restarts", sequence: "WRWRW", cause: workspacePreparationRetryLimitCause},
-		{name: "workspace failure resets terminal", sequence: "FFRWRF", wantCount: 1, wantLatest: 6},
+		{name: "workspace preserves issue failures", sequence: "FFRWRF", wantCount: 3, wantLatest: 6},
 		{name: "implementation resets workspace", sequence: "WWRFRW", cause: workspacePreparationRetryLimitCause},
 	}
 	for _, tt := range tests {
@@ -1911,6 +1924,129 @@ func TestTerminalRetryTransitionFailures(t *testing.T) {
 				if len(transitions) != 1 || tracker.issues[issue.ID].State != "Blocked" || len(state.Retry) != 0 {
 					t.Fatal("reconciliation did not complete the park without redispatch")
 				}
+			}
+		})
+	}
+}
+
+// Replay the EOF/terminated provider attempts from #3575 through SQLite, then
+// verify both live completion and recovery of a park written by an older build.
+func TestProviderTerminalRetryAttributionAfterRestart(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, hold   string
+		completion   bool
+		failures     int
+		wantRecovery bool
+	}{
+		{name: "completion retains retry", completion: true},
+		{name: "instance-only park clears before cooldown", wantRecovery: true},
+		{name: "real issue failures retain cooldown", failures: 3},
+		{name: "operator park remains", hold: "operator"},
+		{name: "operator stop remains", hold: "stop"},
+		{name: "human action remains", hold: "human"},
+		{name: "dependency remains", hold: "dependency"},
+		{name: "unavailable history remains", hold: "history"},
+		{name: "missing history store remains", hold: "no-store"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			at := time.Date(2026, 9, 30, 22, 13, 29, 0, time.UTC)
+			issue := terminalRetryTestIssue("provider-restart")
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, Recovery: workflowconfig.Recovery{TerminalAttemptRetryLimit: new(1)}, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			path := filepath.Join(t.TempDir(), "provider.db")
+			db, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			o := newLaneMutationTestOrchestrator(cfg, tracker, db, db, at)
+			state := newState(cfg)
+			for i := range tt.failures + 2 {
+				start := at.Add(time.Duration(i-10) * time.Minute)
+				id, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: issue.State, StartedAt: start})
+				if err != nil {
+					t.Fatal(err)
+				}
+				class, message := backendcapacity.TransientOverloadErrorClass, "read app-server response: EOF; app-server exited: signal: terminated"
+				if i < tt.failures {
+					class, message = workAttemptErrorRunner, "issue implementation failed"
+				}
+				if tt.completion && i == tt.failures+1 {
+					state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: id, Attempt: 2, Mode: RunModeImplement, StartedAt: start}
+					state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: start}
+					o.handleRunResult(ctx, &state, runpkg.Completion{IssueID: issue.ID, Result: runpkg.RunResult{TurnStarted: true}, Err: backendcapacity.NewError(backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "transport"}, errors.New(message)), CompletedAt: at, RetryAttempt: 2, RetryDelay: 45 * time.Second})
+					retry, ok := state.Retry[issue.ID]
+					if !ok || retry.Issue.State != "In Progress" || retry.Attempt != 2 || retry.Error != class || !retry.DueAt.Equal(at.Add(45*time.Second)) || len(state.Blocked) != 0 || len(state.Claimed) != 0 || len(tracker.transitionStates()) != 0 {
+						t.Fatalf("completion retry=%+v blocked=%+v transitions=%+v", retry, state.Blocked, tracker.transitionStates())
+					}
+				} else if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: id, CompletedAt: start.Add(time.Second), TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: class, ErrorMessage: message}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tt.completion {
+				metadata := o.newBlockedRecoveryMetadata(ctx, issue, RunModeImplement, terminalAttemptRetryLimitCause, blockedRecoveryPredicateFingerprintChange, "Todo", DiffStats{})
+				if tt.hold == "operator" {
+					metadata.BlockedRecovery.Owner = blockedRecoveryOwnerOperator
+					metadata.BlockedRecovery.HoldReason = "terminal_attempt_external_review"
+				}
+				o.recordLaneTransition(ctx, issue, blockedStatusState, at, terminalAttemptRetryLimitCause, metadata)
+				issue.State = blockedStatusState
+				issue.StageUpdatedAt = &at
+				tracker.issues[issue.ID] = cloneIssue(issue)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			o = newLaneMutationTestOrchestrator(cfg, tracker, db, db, at.Add(time.Minute))
+			state = newState(cfg)
+			switch tt.hold {
+			case "history":
+				o.workAttempts = &terminalRetryWorkAttemptStore{historyErr: errors.New("history unavailable")}
+			case "no-store":
+				o.workAttempts = nil
+			case "stop":
+				state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceOperatorStop, Reason: "operator stopped run"}
+			case "human":
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "approve restart"}
+			case "dependency":
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#59", State: "In Progress"}}
+			}
+			if tt.completion {
+				latest, err := db.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{ProjectID: cfg.Project.ID, IssueID: issue.ID, Limit: 1})
+				if err != nil || len(latest) != 1 || latest[0].ErrorClass != backendcapacity.TransientOverloadErrorClass {
+					t.Fatalf("persisted completion=%+v err=%v", latest, err)
+				}
+				state.WorkAttempts = []telemetry.WorkAttempt{telemetryWorkAttempt(latest[0], at)}
+				o.reconcileTerminalAttemptRetryStates(ctx, &state, []connector.Issue{issue}, at.Add(time.Minute))
+				if len(tracker.transitionStates()) != 0 {
+					t.Fatalf("restart demoted provider failure: %+v", tracker.transitionStates())
+				}
+				return
+			}
+			if recovered := o.recoverCauseBlockedIssue(ctx, &state, issue, at.Add(time.Minute)); recovered != tt.wantRecovery {
+				t.Fatalf("recovered=%v want=%v blocked=%+v", recovered, tt.wantRecovery, state.Blocked[issue.ID])
+			}
+			if tt.wantRecovery {
+				if got := tracker.issues[issue.ID].State; got != "In Progress" {
+					t.Fatalf("recovered lane=%q", got)
+				}
+				o.retainUnacknowledgedRecoveryParks(ctx, &state, []connector.Issue{tracker.issues[issue.ID]})
+				if _, held := state.Blocked[issue.ID]; held {
+					t.Fatal("native recovery park was retained")
+				}
+			} else if len(tracker.transitionStates()) != 0 {
+				t.Fatalf("hold changed lane: %+v", tracker.transitionStates())
 			}
 		})
 	}

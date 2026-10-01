@@ -518,7 +518,23 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		}
 		park = rebased
 	}
+	terminalTriggerCleared := false
 	var breakerParkedAt time.Time
+	if breakerPark && park.Cause == terminalAttemptRetryLimitCause {
+		if o.workAttempts == nil {
+			o.recordRetryCycleHistoryUnavailable(state, issue, park.Cause, now)
+			return false
+		}
+		count, _, known := o.consecutiveRetryCycleCount(ctx, state, issue, park.Cause, now)
+		if !known {
+			o.recordRetryCycleHistoryUnavailable(state, issue, park.Cause, now)
+			return false
+		}
+		// A historical instance-only trigger has cleared. The existing cause
+		// recovery owns its release; a real issue failure keeps the cooldown.
+		breakerPark = count >= o.retryCycleFailureLimit(park.Cause)
+		terminalTriggerCleared = !breakerPark
+	}
 	if breakerPark {
 		parkedAt, found := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
 		if !found {
@@ -536,7 +552,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 		currentFingerprint = blockedCauseFingerprint(park.Cause, signals)
 	}
-	if !breakerPark && park.Predicate == blockedRecoveryPredicateFingerprintChange && currentFingerprint == park.CauseFingerprint {
+	if !breakerPark && !terminalTriggerCleared && park.Predicate == blockedRecoveryPredicateFingerprintChange && currentFingerprint == park.CauseFingerprint {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, currentFingerprint)
 		return false
 	}

@@ -588,6 +588,20 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Terminal retry classification shares failed-session allowance's instance
+attribution (#3575). Provider transport/overload, startup, capacity, and other
+instance-owned failures do not consume the terminal issue failure limit or
+reset genuine failures around them. Transient-provider completion no longer
+owns issue demotion or parking; it retains its existing retry delay and attempt.
+Restart reconciliation preserves provider failures in their active lane. The
+existing current-cause recovery rechecks the terminal failure trigger before
+applying its cooldown, so an old instance-only park returns to its prior lane.
+Real issue failures, operator-owned parks/stops, human actions, and dependencies
+keep their authority. `TestProviderTerminalRetryAttributionAfterRestart` replays
+EOF/terminated provider failures through SQLite completion and database reopen;
+the configured retry fixture checks mixed failures and long instance histories.
+No new reason, configuration, recovery loop, or lane writer is introduced.
+
 Merged-completion ownership (#3529) resolves stale closed associations through
 existing native reference lookup and the existing merged-PR owner. Completion
 classification uses that same decision instead of a separate post-merge CI wait;
