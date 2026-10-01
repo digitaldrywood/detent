@@ -839,6 +839,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Workflow duration reports exclude `agent_activity` in their existing SQL owner
+before loading or converting the activity payloads that report aggregation does
+not use. A finite report window searches both inclusive-start/exclusive-end
+`finished_at` bounds through the existing index; absent bounds retain the
+optional query contract. Timeline/activity readers, history revision, flow,
+trends and representatives are unchanged. The existing report roundtrip fixture
+checks large activity exclusion, report equivalence, optional bounds and the
+actual bounded query plan. No index, cache, configuration or schema is added.
+
 GitHub usage timing (#3767) extends the existing `RESTScope` owner, mutex,
 fixed stage/step/family/outcome aggregation and single aggregate log event.
 GraphQL timing adds only allowlisted existing query purposes, with unknown
@@ -1868,6 +1877,17 @@ owner. Review confirms its fallback lane-reason selection is unchanged; the
 merged path reuses that owner's existing reasons and ledger. No mechanism,
 reason, or lane writer is added. `TestRepositorySources` still rejects further
 edits until reviewed.
+
+The scheduled source-invariant repair (#3771) refreshes two reviewed digests.
+`applyOperatorMove` now returns an outcome for the existing dispatch refill path
+(#3736); its reason remains the operator-supplied reason or `operator_move`,
+written through the same lane ledger. `blockDeliverableRecoveryFailure` now
+receives the delivery error classified by its caller (#3763), consolidating
+whole-error ownership there instead of extracting a nested error again. Its
+reason still comes from `deliverableRecoveryParkReason`, using the existing
+delivery hold reasons and evidence. Neither change adds a mechanism, lane
+writer, or reason source. The source check continues to reject further edits
+until reviewed; the reason vocabulary and enforcement logic are unchanged.
 
 The scheduled coverage repair (#3545) refreshes the reviewed digest for
 `updateIssueStateByIDWithMetadataMode` after #3560 rewrote `!(A && B)` as
