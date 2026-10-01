@@ -3217,7 +3217,9 @@ func TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle(t *testing.T) {
 
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
 	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 2,
+		// Ready work ranks ahead of running issues; leave a slot after dispatch
+		// so the running issue reports already_running rather than capacity full.
+		MaxConcurrentAgents: 3,
 		ActiveStates:        []string{"Todo", "In Progress"},
 		TerminalStates:      []string{"Done"},
 		Project:             scheduler.ProjectCandidate{ID: "detent", Weight: 2, Priority: 10},
