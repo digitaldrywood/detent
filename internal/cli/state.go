@@ -18,7 +18,7 @@ func newStateCommand(configPath *string, host *string, port *int, opts options) 
 	cmd := &cobra.Command{
 		Use:   "state",
 		Short: "Read the bounded fleet telemetry state",
-		Long:  "Read a bounded projection of the public telemetry state from the running Detent service. Every JSON array is limited to the first 100 entries in service order, and the truncation field reports omitted entries by JSON Pointer path.",
+		Long:  "Read a bounded projection of the public telemetry state from the running Detent service. Every state data array is limited to the first 100 entries in service order. The service also bounds response bytes and individual values; the truncation field reports omitted entries and fields by JSON Pointer path, with original collection totals.",
 		Example: strings.TrimSpace(`detent state
 detent state --project detent
 detent state --format json | jq '.running'`),
@@ -122,6 +122,9 @@ func writeStatePretty(writer io.Writer, state DashboardState) error {
 	lines = append(lines, fmt.Sprintf("Truncated: %t", state.Truncation.Truncated))
 	for _, collection := range state.Truncation.Collections {
 		lines = append(lines, fmt.Sprintf("Truncated %s: %d omitted", collection.Path, collection.Omitted))
+	}
+	for _, field := range state.Truncation.OmittedFields {
+		lines = append(lines, fmt.Sprintf("Omitted %s: %s", field.Path, field.Reason))
 	}
 	_, err := fmt.Fprintln(writer, strings.Join(lines, "\n"))
 	return err

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -221,18 +223,18 @@ func (s *Server) apiState(c echo.Context) error {
 		return err
 	} else if ok {
 		if scenario.ID == "api-state-no-snapshot" {
-			return c.JSON(http.StatusOK, snapshotErrorResponse(demoBaseTime, "snapshot_unavailable", "Snapshot unavailable"))
+			return writeStateResponse(c, snapshotErrorResponse(demoBaseTime, "snapshot_unavailable", "Snapshot unavailable"))
 		}
 		snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
 		if updateFields {
 			return c.JSON(http.StatusOK, updateStateResponse(snapshot))
 		}
-		return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
+		return writeStateResponse(c, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
 	}
 	now := s.now()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
+		return writeStateResponse(c, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
 	if updateFields {
 		return c.JSON(http.StatusOK, updateStateResponse(snapshot))
@@ -247,6 +249,22 @@ func (s *Server) apiState(c echo.Context) error {
 
 	response := stateResponse(snapshot, generatedAt(snapshot, now), now, s.instanceName(), s.build)
 	response.Enrichment = enrichment
+	return writeStateResponse(c, response)
+}
+
+func writeStateResponse(c echo.Context, response any) error {
+	if c.QueryParam("projection") == serviceapi.StateProjection {
+		projected, err := serviceapi.BoundedState(response)
+		if err != nil {
+			return err
+		}
+		data, err := json.Marshal(projected)
+		if err != nil {
+			return err
+		}
+		// Echo's optional pretty rendering must not expand the byte budget.
+		return c.JSONBlob(http.StatusOK, data)
+	}
 	return c.JSON(http.StatusOK, response)
 }
 
@@ -291,12 +309,12 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 		}
 		scoped := projectScopedSnapshotForProject(snapshot, telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Pool: project.Pool})
-		return c.JSON(http.StatusOK, stateResponse(scoped, generatedAt(scoped, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
+		return writeStateResponse(c, stateResponse(scoped, generatedAt(scoped, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
 	}
 	now := s.now()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
+		return writeStateResponse(c, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
 	var enrichment stateEnrichmentAPIResponse
 	if !snapshot.Shutdown.Draining {
@@ -319,7 +337,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 
 	response := stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), now, s.instanceName(), s.build)
 	response.Enrichment = enrichment
-	return c.JSON(http.StatusOK, response)
+	return writeStateResponse(c, response)
 }
 
 func (s *Server) stateSnapshot(snapshot telemetry.Snapshot) (telemetry.Snapshot, stateEnrichmentAPIResponse) {

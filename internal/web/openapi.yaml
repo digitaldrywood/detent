@@ -70,6 +70,7 @@ paths:
           schema:
             type: string
             enum: ["update,counts"]
+        - $ref: "#/components/parameters/StateProjection"
       tags: [telemetry]
       security:
         - bearerAuth: []
@@ -83,10 +84,11 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
+                anyOf:
                   - $ref: "#/components/schemas/State"
                   - $ref: "#/components/schemas/UpdateState"
                   - $ref: "#/components/schemas/SnapshotUnavailable"
+                  - $ref: "#/components/schemas/BoundedState"
         "401": {$ref: "#/components/responses/Problem"}
         "403": {$ref: "#/components/responses/Problem"}
         "429": {$ref: "#/components/responses/Problem"}
@@ -261,6 +263,8 @@ paths:
     get:
       operationId: getProjectState
       summary: Get a project telemetry snapshot
+      parameters:
+        - $ref: "#/components/parameters/StateProjection"
       tags: [projects, telemetry]
       security:
         - bearerAuth: []
@@ -274,9 +278,10 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
+                anyOf:
                   - $ref: "#/components/schemas/State"
                   - $ref: "#/components/schemas/SnapshotUnavailable"
+                  - $ref: "#/components/schemas/BoundedState"
         "404": {$ref: "#/components/responses/Problem"}
   /api/v1/projects/{project_id}/issues/explanation:
     parameters:
@@ -1167,6 +1172,11 @@ components:
       scheme: bearer
       description: Project intake secret, distinct from Detent API tokens and API keys.
   parameters:
+    StateProjection:
+      in: query
+      name: projection
+      description: The CLI projection bounds state data arrays to at most 100 entries, compact JSON including metadata to 768 KiB, and encoded scalar values to 16 KiB. Truncation metadata reports omitted fields and original collection totals. Counts and freshness use the complete scoped snapshot. The updater's fields projection takes precedence on the fleet route.
+      schema: {type: string, enum: [cli]}
     ProjectID:
       in: path
       name: project_id
@@ -1391,6 +1401,40 @@ components:
           items: {$ref: "#/components/schemas/GenericObject"}
         stats: {$ref: "#/components/schemas/GenericObject"}
         board: {$ref: "#/components/schemas/BoardState"}
+      additionalProperties: true
+    BoundedState:
+      type: object
+      description: CLI projection of State or SnapshotUnavailable. Collection and byte limits apply before transport; omitted data is explicit and aggregate counts use the original scoped snapshot.
+      required: [generated_at, truncation]
+      properties:
+        generated_at: {type: string, format: date-time}
+        truncation:
+          type: object
+          required: [limit, max_bytes, value_max_bytes, truncated, collections]
+          properties:
+            limit: {type: integer, enum: [100]}
+            max_bytes: {type: integer, enum: [786432]}
+            value_max_bytes: {type: integer, enum: [16384]}
+            truncated: {type: boolean}
+            collections:
+              type: array
+              items:
+                type: object
+                required: [path, omitted, total, returned]
+                properties:
+                  path: {type: string, description: JSON Pointer to the returned array.}
+                  omitted: {type: integer, minimum: 1}
+                  total: {type: integer, minimum: 1}
+                  returned: {type: integer, minimum: 0, maximum: 100}
+            omitted_fields:
+              type: array
+              items:
+                type: object
+                required: [path, reason]
+                properties:
+                  path: {type: string, description: JSON Pointer to the omitted field.}
+                  reason: {type: string, enum: [byte_limit]}
+                  total: {type: integer, minimum: 0, description: Original total when the omitted field is an array.}
       additionalProperties: true
     UpdateState:
       type: object

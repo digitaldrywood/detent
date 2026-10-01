@@ -505,19 +505,18 @@ func TestAPITokenAuthProtectsAPIRoutes(t *testing.T) {
 
 	server, err := newServerWithLaneWriter(web.Config{
 		GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"},
+		LookupEnv:    func(string) string { return "" },
 	}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
 	requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
-	requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusUnauthorized)
-	requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusUnauthorized, map[string]string{
-		"Authorization": "Bearer wrong",
-	})
-	requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusOK, map[string]string{
-		"X-API-Key": "detent_test_token",
-	})
+	for _, path := range []string{"/api/v1/state", "/api/v1/state?projection=cli", "/api/v1/projects/detent/state?projection=cli"} {
+		requestJSON(t, server, http.MethodGet, path, http.StatusUnauthorized)
+		requestJSONWithHeaders(t, server, http.MethodGet, path, http.StatusUnauthorized, map[string]string{"Authorization": "Bearer wrong"})
+		requestJSONWithHeaders(t, server, http.MethodGet, path, http.StatusOK, map[string]string{"X-API-Key": "detent_test_token"})
+	}
 }
 
 func TestAPITokenEnvOverride(t *testing.T) {
@@ -11532,6 +11531,14 @@ func TestServerAPIErrorRoutes(t *testing.T) {
 			path:       "/api/v1/state",
 			wantStatus: http.StatusOK,
 			wantCode:   "snapshot_unavailable",
+		},
+		{
+			name: "CLI fleet state unavailable", method: http.MethodGet,
+			path: "/api/v1/state?projection=cli", wantStatus: http.StatusOK, wantCode: "snapshot_unavailable",
+		},
+		{
+			name: "CLI project state unavailable", method: http.MethodGet,
+			path: "/api/v1/projects/detent/state?projection=cli", wantStatus: http.StatusOK, wantCode: "snapshot_unavailable",
 		},
 		{
 			name:       "refresh unavailable",
