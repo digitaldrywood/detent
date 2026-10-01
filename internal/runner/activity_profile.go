@@ -252,8 +252,10 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 		if command == "" {
 			command = activityInputCommand(u.Delta)
 		}
+		fingerprint := activityHash(u.Tool + "\x00" + command)
+		command = activityShellCommand(command)
 		kind, evidence := classifyActivity(u.Tool, command)
-		span := workflowmetrics.ActivitySpan{ID: key, ParentID: parent, Kind: kind, Evidence: evidence, Fingerprint: activityHash(u.Tool + "\x00" + command), StartedAt: observation.at, Outcome: "running", Attribution: "unattributed"}
+		span := workflowmetrics.ActivitySpan{ID: key, ParentID: parent, Kind: kind, Evidence: evidence, Fingerprint: fingerprint, StartedAt: observation.at, Outcome: "running", Attribution: "unattributed"}
 		if kind == "waiting" {
 			span.WaitReason = evidence
 		}
@@ -465,10 +467,18 @@ func activityInputCommand(input string) string {
 }
 
 func activityReadsSource(command string, source activityInstruction) bool {
-	for _, field := range strings.Fields(command) {
-		path := strings.Trim(field, "\"'")
-		if path == source.ref.Name || path == "./"+source.ref.Name || (source.path != "" && path == source.path) {
-			return true
+	if source.path != "" && command == source.path {
+		return true // A read tool can supply a path directly, including spaces.
+	}
+	for _, segment := range shellCommandSegments(command) {
+		fields, ok := activityLiteralWords(segment, 128)
+		if !ok {
+			continue
+		}
+		for _, path := range fields {
+			if path == source.ref.Name || path == "./"+source.ref.Name || (source.path != "" && path == source.path) {
+				return true
+			}
 		}
 	}
 	return false

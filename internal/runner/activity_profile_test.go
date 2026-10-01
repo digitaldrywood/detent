@@ -24,6 +24,41 @@ func TestActivityObservationAttributionAndGaps(t *testing.T) {
 	for _, tt := range []struct{ name, tool, command, kind, attribution string }{
 		{"instruction read", "commandExecution", "cat AGENTS.md", "context_read", "observed_read_request"},
 		{"validation", "commandExecution", "go test ./internal/foo", "local_validation", "inferred_text_match"},
+		{"native instruction read", "commandExecution", `/bin/zsh -lc 'cat "AGENTS.md"'`, "context_read", "observed_read_request"},
+		{"native private argument", "commandExecution", `/bin/zsh -lc 'cat AGENTS.md private-command-canary'`, "context_read", "observed_read_request"},
+		{"native json command", "Bash", `{"cmd":"/bin/zsh -lc 'go test ./internal/foo'"}`, "local_validation", "inferred_text_match"},
+		{"native quoted launcher", "commandExecution", `"/bin/zsh" '-lc' 'go test ./internal/foo'`, "local_validation", "inferred_text_match"},
+		{"native validation", "commandExecution", `/bin/zsh -lc 'go test ./internal/foo'`, "local_validation", "inferred_text_match"},
+		{"native vet", "commandExecution", `/bin/bash -c "go vet ./internal/foo"`, "local_validation", "unattributed"},
+		{"native review", "commandExecution", `/bin/sh -c 'git diff'`, "review", "unattributed"},
+		{"native wait", "commandExecution", `/bin/zsh -lc 'sleep 3'`, "waiting", "unattributed"},
+		{"native mixed", "commandExecution", `/bin/zsh -lc 'cat AGENTS.md; go test ./internal/foo'`, "unclassified", "unattributed"},
+		{"native opaque", "exec", `/bin/zsh -lc 'go test ./internal/foo'`, "unclassified", "unattributed"},
+		{"native extra argument", "commandExecution", `/bin/zsh -lc 'go test ./internal/foo' extra`, "unclassified", "unattributed"},
+		{"native expansion", "commandExecution", `/bin/zsh -lc "go test $PACKAGE"`, "unclassified", "unattributed"},
+		{"native malformed", "commandExecution", `/bin/zsh -lc 'go test ./internal/foo`, "unclassified", "unattributed"},
+		{"native quoted spaced path", "commandExecution", `/bin/zsh -lc 'cat "/private/fixture with spaces/AGENTS.md"'`, "context_read", "observed_read_request"},
+		{"native escaped quotes", "commandExecution", `/bin/zsh -lc 'cat '\''AGENTS.md'\'''`, "context_read", "observed_read_request"},
+		{"native double quoted read", "commandExecution", `/bin/zsh -lc "cat \"AGENTS.md\""`, "context_read", "observed_read_request"},
+		{"native build", "commandExecution", `/bin/bash -cl 'go build ./internal/foo'`, "local_validation", "unattributed"},
+		{"native check watch", "commandExecution", `/bin/zsh -lc 'gh pr checks 1 --watch'`, "waiting", "unattributed"},
+		{"native quoted decoy", "commandExecution", `/bin/zsh -lc 'cat "ignored AGENTS.md"'`, "context_read", "unattributed"},
+		{"native echoed validation", "commandExecution", `/bin/zsh -lc 'echo "go test ./internal/foo"'`, "tool_execution", "unattributed"},
+		{"native missing script", "commandExecution", `/bin/zsh -lc`, "unclassified", "unattributed"},
+		{"native unquoted script", "commandExecution", `/bin/zsh -lc go test ./internal/foo`, "unclassified", "unattributed"},
+		{"native wrong flags", "commandExecution", `/bin/zsh -ic 'go test ./internal/foo'`, "unclassified", "unattributed"},
+		{"native untrusted path", "commandExecution", `/private/zsh -lc 'go test ./internal/foo'`, "unclassified", "unattributed"},
+		{"native outer substitution", "commandExecution", `/bin/zsh -lc "$(cat AGENTS.md)"`, "unclassified", "unattributed"},
+		{"native inner substitution", "commandExecution", `/bin/zsh -lc 'go test $(cat AGENTS.md)'`, "unclassified", "unattributed"},
+		{"native inner expansion", "commandExecution", `/bin/zsh -lc 'go test $PACKAGE'`, "unclassified", "unattributed"},
+		{"native glob", "commandExecution", `/bin/zsh -lc 'cat *.md'`, "unclassified", "unattributed"},
+		{"native nested launcher", "commandExecution", `/bin/zsh -lc "bash -c 'go test ./internal/foo'"`, "unclassified", "unattributed"},
+		{"native suffix command", "commandExecution", `/bin/zsh -lc 'go test ./internal/foo'; git diff`, "unclassified", "unattributed"},
+		{"native trailing escape", "commandExecution", `/bin/zsh -lc \`, "unclassified", "unattributed"},
+		{"native nul", "commandExecution", "/bin/zsh -lc 'go test ./internal/foo\x00'", "unclassified", "unattributed"},
+		{"native ansi quoting", "commandExecution", `/bin/zsh -lc $'go test ./internal/foo'`, "unclassified", "unattributed"},
+		{"native literal quote expansion", "commandExecution", `/bin/zsh -lc 'cat "$(echo AGENTS.md)"'`, "unclassified", "unattributed"},
+		{"native oversized", "commandExecution", "/bin/zsh -lc 'go test " + strings.Repeat("x", 8192) + "'", "unclassified", "unattributed"},
 		{"json command", "Bash", `{"command":"go test ./internal/foo"}`, "local_validation", "inferred_text_match"},
 		{"json read", "Read", `{"file_path":"AGENTS.md"}`, "context_read", "observed_read_request"},
 		{"other directory", "Bash", "cat /private/other/AGENTS.md", "context_read", "unattributed"},
@@ -46,7 +81,8 @@ func TestActivityObservationAttributionAndGaps(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p := workflowmetrics.ActivityProfile{StartedAt: at, AsOf: at.Add(time.Minute)}
 			open, repeats := map[string]int{}, map[string]int{}
-			sources := []activityInstruction{{ref: workflowmetrics.InstructionRef{Name: "AGENTS.md", Hash: activityHash("instructions"), ObservedAt: at}, text: "Run go test ./internal/foo"}}
+			instructions := "Private instructions\nRun go test ./internal/foo"
+			sources := []activityInstruction{{ref: workflowmetrics.InstructionRef{Name: "AGENTS.md", Hash: activityHash(instructions), Version: "fixture-version", ObservedAt: at}, text: instructions, path: "/private/fixture with spaces/AGENTS.md"}}
 			for i := range 2 {
 				item := []string{"first", "second"}[i]
 				command, delta := tt.command, ""
@@ -58,6 +94,22 @@ func TestActivityObservationAttributionAndGaps(t *testing.T) {
 			}
 			if p.Spans[0].Kind != tt.kind || p.Spans[0].Attribution != tt.attribution || p.Spans[1].Repeat != 2 || p.Spans[1].Outcome != "completed" {
 				t.Fatalf("spans = %+v", p.Spans)
+			}
+			if tt.attribution != "unattributed" {
+				refs := p.Spans[0].Sources
+				if len(refs) != 1 || refs[0].Hash != sources[0].ref.Hash || refs[0].Version != "fixture-version" || !refs[0].ObservedAt.Equal(at) {
+					t.Fatalf("instruction identity lost: %+v", refs)
+				}
+				if tt.attribution == "inferred_text_match" && refs[0].MatchedLine != 2 {
+					t.Fatalf("inferred match lost its line: %+v", refs)
+				}
+			}
+			command := tt.command
+			if strings.HasPrefix(command, "{") {
+				command = activityInputCommand(command)
+			}
+			if p.Spans[0].Fingerprint != activityHash(tt.tool+"\x00"+command) {
+				t.Fatal("original command fingerprint changed")
 			}
 			applyActivityObservation(&p, open, repeats, sources, activityObservation{at: at, update: activityUpdate{Type: AgentUpdateToolCompleted, ItemID: "missing", TurnID: "turn"}})
 			start := activityUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "locked", Tool: "Bash", Command: "go test ./internal/foo"}
@@ -76,8 +128,10 @@ func TestActivityObservationAttributionAndGaps(t *testing.T) {
 				t.Fatalf("unpaired=%d", p.Unpaired)
 			}
 			data, _ := json.Marshal(p)
-			if (tt.command != "" && strings.Contains(string(data), tt.command)) || strings.Contains(string(data), "private patch") {
-				t.Fatalf("private input persisted: %s", data)
+			for _, private := range []string{tt.command, "private patch", "Private instructions", "go test ./internal/foo", "private-command-canary", sources[0].path} {
+				if private != "" && strings.Contains(string(data), private) {
+					t.Fatalf("private input persisted: %s", data)
+				}
 			}
 		})
 	}
@@ -176,7 +230,7 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 			<-probe.profiles // initial durable coverage boundary
 			for i, command := range []string{"cat AGENTS.md", "go test ./internal/fixture", "go test ./internal/fixture", "git diff", "git rebase origin/develop", "gh api repos/fixture/repo/pulls/1/merge", "sleep 1"} {
 				item := strconv.Itoa(i)
-				recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: item, Tool: "Bash", Command: command}, at.Add(time.Duration(i*2+1)*time.Second), "fixture-head", at)
+				recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: item, Tool: "commandExecution", Command: "/bin/zsh -lc '" + command + "'"}, at.Add(time.Duration(i*2+1)*time.Second), "fixture-head", at)
 				recorder.observe(AgentUpdate{Type: AgentUpdateToolCompleted, TurnID: "turn", ItemID: item, Status: "completed"}, at.Add(time.Duration(i*2+2)*time.Second), "", time.Time{})
 			}
 			recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "edit", Tool: "fileChange"}, at.Add(15*time.Second), "fixture-head", at)

@@ -168,3 +168,66 @@ serialization. Batching consumption, compacting queued updates, and serializing
 once reduced the final median concurrent throughput regression from the first
 experiment's 14.149% to 0.429%. That comparison spans different noisy runs and is
 not a statistically established optimization percentage.
+
+## Native shell launcher regression (#3586)
+
+Native command observations such as `/bin/zsh -lc 'go test ./internal/foo'`
+previously classified the launcher as generic tool execution. The background
+consumer now decodes one literal launcher before using the existing activity
+classifier and instruction matcher. The original tool/command digest remains
+the fingerprint, so repeat identity does not change.
+
+The accepted vocabulary is an absolute `/bin/` or `/usr/bin/` path to `sh`,
+`bash`, or `zsh`, followed by exactly one of `-c`, `-lc`, or `-cl` and one
+literal script argument. Parsing is bounded to the existing 8 KiB command
+limit, three launcher words and 128 words per script segment. It understands
+single/double quotes, adjacent quoted fragments and literal escapes; it does
+not evaluate shell text. Extra arguments, unsupported flags/paths, broken
+quotes, NULs, expanding arguments/scripts, redirects and nested launchers stay
+uncertain. Mixed literal scripts still use the existing compound classifier;
+opaque tool execution stays unclassified.
+
+Quoted instruction paths, including spaces, match the bounded startup snapshot.
+Read requests retain source hashes, versions and observation times; exact
+instruction-command matches retain `inferred_text_match` and source lines.
+Neither establishes successful reading or instruction causality. Decoded
+commands and private instruction contents are not persisted. Queueing,
+checkpoint cadence, retention, partial coverage and completion policy are
+unchanged. No model prompt, reporting token, shell execution or network read
+is added to activity collection.
+
+The extended `TestActivityObservationAttributionAndGaps` fixtures reproduced
+lost categories before the repair and now verify literal decoding, malformed
+and expanding inputs, source identity, original fingerprints, repeat counts,
+and private-text exclusion. `TestActivityRecorderAuditsActiveAndInterruptedRuns`
+now uses native wrappers through the existing asynchronous consumer/checkpoint
+fixture in every stage, retaining the same observed/unknown partition. These
+are controlled regressions, not a post-deployment audit of the live instance.
+
+### Pure parser overhead
+
+Measured on 2026-09-30, Darwin arm64, Apple M4 Max, Go 1.27.1,
+GOMAXPROCS=4. Three 200 ms samples per case; medians below. Run:
+
+```sh
+go test -p 4 ./internal/runner -run '^$' \
+  -bench '^BenchmarkActivityShellClassification$' \
+  -benchmem -benchtime=200ms -count=3
+```
+
+| Input | Existing classifier ns/op | Decoder + classifier ns/op | Added ns/op | Bytes/op, before / after | Allocs/op, before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Plain Go diagnostic | 165.2 | 178.3 | 13.1 | 136 / 136 | 4 / 4 |
+| Native quoted read | 147.9 | 402.5 | 254.6 | 144 / 344 | 3 / 13 |
+| Native Go diagnostic | 162.9 | 558.7 | 395.8 | 160 / 440 | 3 / 16 |
+| Rejected expansion | 155.4 | 202.4 | 47.0 | 160 / 104 | 3 / 5 |
+| Accepted 8 KiB launcher | 14139 | 89034 | 74895 | 160 / 68952 | 3 / 41 |
+
+The accepted-boundary case was measured separately with the same flags after
+correcting its fixture to exactly 8,192 bytes. The benchmark calls only parsing
+and classification: no commands execute, and no files, provider requests,
+recorder goroutines or persistence participate. The old classifier's wrapper
+results were incorrect; the comparison quantifies the added work to classify
+those observations. Typical wrappers add less than 0.4 microseconds here;
+the intentionally long boundary costs about 89 microseconds total. These are
+local parser measurements, not a production throughput or total CPU claim.
