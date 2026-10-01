@@ -36,7 +36,7 @@ func (s *session) catalog(ctx context.Context, cursor string) (catalogPage, erro
 		}
 	}
 	// Only the same typed registry that tools/call accepts can be advertised.
-	if len(definitions) > len(operatortool.Catalog())+len(operatortool.CommandCatalog()) {
+	if len(definitions) > len(operatortool.Catalog())+len(operatortool.WorkReadCatalog())+len(operatortool.CommandCatalog())+len(operatortool.ChangeCatalog()) {
 		return catalogPage{}, errors.New("invalid catalog")
 	}
 	seen := make(map[string]bool, len(definitions))
@@ -48,7 +48,7 @@ func (s *session) catalog(ctx context.Context, cursor string) (catalogPage, erro
 		}
 		seen[definition.Name] = true
 	}
-	for _, shared := range append(operatortool.Catalog(), operatortool.CommandCatalog()...) {
+	for _, shared := range append(append(append(operatortool.Catalog(), operatortool.WorkReadCatalog()...), operatortool.CommandCatalog()...), operatortool.ChangeCatalog()...) {
 		if seen[shared.Name] {
 			canonical = append(canonical, shared)
 		}

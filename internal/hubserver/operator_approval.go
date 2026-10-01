@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -18,7 +19,8 @@ func (s *Service) hostedOperatorBrowser(c echo.Context, next echo.HandlerFunc) e
 	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 	}
-	if _, err := s.hostedBillingOwner(c); err != nil {
+	credential, _, err := s.hostedCredential(c)
+	if err != nil || credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 	}
 	return s.operatorAuthority(next)(c)
@@ -90,6 +92,19 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 		}
 		ctx := chat.WithOperatorApproval(c.Request().Context(), operatortool.ConnectionIdentity(c.Request().Context()))
+		if actionID != "" {
+			action, ok := s.operatorChat.Action(id, actionID)
+			if !ok {
+				return echo.NewHTTPError(http.StatusNotFound)
+			}
+			if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+				if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID}); err != nil {
+					return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+				}
+			} else if _, err := s.operatorBillingCredential(ctx, "billing", true); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		}
 		var err error
 		switch c.FormValue("decision") {
 		case "confirm":

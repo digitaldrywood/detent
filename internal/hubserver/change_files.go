@@ -33,32 +33,38 @@ func validateReviewBundle(ctx context.Context, tx *sql.Tx, scope nativeScope, ch
 }
 
 func (s *Service) changeViewedFiles(c echo.Context) error {
-	ctx, scope := c.Request().Context(), nativeRequestScope(c)
-	change, err := readChange(ctx, s.database.db, scope, c.Param("item"), c.Param("change"))
+	result, err := s.changeViewedFilesCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	version, err := readChangeVersion(ctx, s.database.db, change.ID, c.Param("version"))
+	return c.JSON(http.StatusOK, result)
+}
+func (s *Service) changeViewedFilesCommand(ctx context.Context, scope nativeScope, item, changeID, versionID string) ([]tracker.ChangeViewedFile, error) {
+	change, err := readChange(ctx, s.database.db, scope, item, changeID)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
+	}
+	version, err := readChangeVersion(ctx, s.database.db, change.ID, versionID)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := s.database.db.QueryContext(ctx, "SELECT manifest_sha256, file_sha256, viewed FROM change_viewed_files WHERE version_id=? AND principal_id=? ORDER BY manifest_sha256, file_sha256 LIMIT 4096", version.ID, scope.credential.ID)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	defer rows.Close()
 	result := []tracker.ChangeViewedFile{}
 	for rows.Next() {
 		var value tracker.ChangeViewedFile
 		if err := rows.Scan(&value.ManifestSHA256, &value.FileSHA256, &value.Viewed); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		result = append(result, value)
 	}
 	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	return c.JSON(http.StatusOK, result)
+	return result, nil
 }
 
 func (s *Service) viewChangeFile(c echo.Context) error {
@@ -67,28 +73,32 @@ func (s *Service) viewChangeFile(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		change, err := readChange(ctx, tx, scope, c.Param("item"), c.Param("change"))
-		if err != nil {
-			return nil, err
-		}
-		version, err := readChangeVersion(ctx, tx, change.ID, c.Param("version"))
-		if err != nil {
-			return nil, err
-		}
-		if !artifact.ValidHash(request.FileSHA256, 64) {
-			return nil, nativeInvalid("An opaque file digest is required")
-		}
-		if err := validateReviewBundle(ctx, tx, scope, change, version, request.Bundle, now); err != nil {
-			return nil, err
-		}
-		var count int
-		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM change_viewed_files WHERE version_id=? AND principal_id=? AND NOT (manifest_sha256=? AND file_sha256=?)", version.ID, scope.credential.ID, request.Bundle.SHA256, request.FileSHA256).Scan(&count); err != nil {
-			return nil, err
-		}
-		if count >= 4096 {
-			return nil, nativeInvalid("Viewed file limit reached for this version")
-		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO change_viewed_files(version_id,principal_id,manifest_sha256,file_sha256,viewed) VALUES(?,?,?,?,?) ON CONFLICT(version_id,principal_id,manifest_sha256,file_sha256) DO UPDATE SET viewed=excluded.viewed", version.ID, scope.credential.ID, request.Bundle.SHA256, request.FileSHA256, request.Viewed)
-		return tracker.ChangeViewedFile{ManifestSHA256: request.Bundle.SHA256, FileSHA256: request.FileSHA256, Viewed: request.Viewed}, err
+		return s.viewChangeFileCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
 	})
+}
+
+func (s *Service) viewChangeFileCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ViewChangeFile, now time.Time) (any, error) {
+	change, err := readChange(ctx, tx, scope, item, changeID)
+	if err != nil {
+		return nil, err
+	}
+	version, err := readChangeVersion(ctx, tx, change.ID, versionID)
+	if err != nil {
+		return nil, err
+	}
+	if !artifact.ValidHash(request.FileSHA256, 64) {
+		return nil, nativeInvalid("An opaque file digest is required")
+	}
+	if err := validateReviewBundle(ctx, tx, scope, change, version, request.Bundle, now); err != nil {
+		return nil, err
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM change_viewed_files WHERE version_id=? AND principal_id=? AND NOT (manifest_sha256=? AND file_sha256=?)", version.ID, scope.credential.ID, request.Bundle.SHA256, request.FileSHA256).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count >= 4096 {
+		return nil, nativeInvalid("Viewed file limit reached for this version")
+	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO change_viewed_files(version_id,principal_id,manifest_sha256,file_sha256,viewed) VALUES(?,?,?,?,?) ON CONFLICT(version_id,principal_id,manifest_sha256,file_sha256) DO UPDATE SET viewed=excluded.viewed", version.ID, scope.credential.ID, request.Bundle.SHA256, request.FileSHA256, request.Viewed)
+	return tracker.ChangeViewedFile{ManifestSHA256: request.Bundle.SHA256, FileSHA256: request.FileSHA256, Viewed: request.Viewed}, err
 }

@@ -53,13 +53,18 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 	if err != nil {
 		return nil, err
 	}
-	for _, definition := range operatortool.CommandCatalog() {
+	for _, definition := range append(operatortool.CommandCatalog(), operatortool.ChangeCatalog()...) {
 		if definition.Meta.Toolset == "billing_usage" && definition.Name != operatortool.BudgetOverrideSet && definition.Name != operatortool.BudgetOverrideClear && definition.Name != operatortool.UsageReport && definition.Name != operatortool.IssueExplanation {
 			continue
 		}
-		if definition.Annotations.ReadOnly {
-			definitions = append(definitions, definition)
-		} else if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err == nil {
+		scope := apikey.ScopeRead
+		if !definition.Annotations.ReadOnly && definition.Name != operatortool.ArtifactAccess {
+			scope = apikey.ScopeWrite
+		}
+		if definition.Name == operatortool.ApproveChangeReviewPolicy {
+			scope = apikey.ScopeAdmin
+		}
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope}); err == nil {
 			definitions = append(definitions, definition)
 		}
 	}
@@ -68,6 +73,42 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 
 func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.server
+	if d, ok := operatortool.ChangeDefinition(call.Name); ok {
+		args, err := operatortool.DecodeChangeArguments(call.Name, call.Arguments)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		scope := apikey.ScopeRead
+		if !d.Annotations.ReadOnly && call.Name != operatortool.ArtifactAccess {
+			scope = apikey.ScopeWrite
+		}
+		if call.Name == operatortool.ApproveChangeReviewPolicy {
+			scope = apikey.ScopeAdmin
+		}
+		ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ProjectID: args.ProjectID})
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		app, err := operatortool.CurrentChanges(ctx)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		if d.Annotations.ReadOnly {
+			value, err := app.ReadChange(ctx, call.Name, args)
+			if err != nil {
+				return operatortool.Result{}, err
+			}
+			return operatortool.BoundedChangeResult(value)
+		}
+		if call.Name == operatortool.ArtifactAccess {
+			return s.executeOperatorArtifactAccess(ctx, app, args, call.Arguments)
+		}
+		result, err := s.executeOperatorMutation(ctx, call)
+		if err != nil {
+			return result, err
+		}
+		return result, nil
+	}
 	switch call.Name {
 	case operatortool.UsageReport:
 		return s.operatorUsageReport(ctx, call.Arguments)
@@ -171,6 +212,11 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 	}
 	if operatortool.IsWorkTool(call.Name) {
 		if _, err := operatortool.DecodeWorkArguments(call.Name, arguments); err != nil {
+			return operatortool.Result{}, err
+		}
+	}
+	if _, ok := operatortool.ChangeDefinition(call.Name); ok {
+		if _, err := s.operatorChangeProposal(ctx, call.Name, arguments); err != nil {
 			return operatortool.Result{}, err
 		}
 	}
@@ -294,6 +340,9 @@ func (s *Server) operatorActionProposal(ctx context.Context, name string, argume
 		if operatortool.IsWorkTool(name) {
 			return s.workActionProposal(ctx, name, arguments)
 		}
+		if _, ok := operatortool.ChangeDefinition(name); ok {
+			return s.operatorChangeProposal(ctx, name, arguments)
+		}
 		return chatpkg.Action{}, operatortool.ErrUnknownTool
 	}
 	if err != nil || result.Proposal == nil {
@@ -313,6 +362,13 @@ func (s *Server) validateOperatorAction(ctx context.Context, action chatpkg.Acti
 		return operatortool.ErrAccessDenied
 	}
 	name := string(action.Kind)
+	if name == operatortool.ApproveChangeReviewPolicy {
+		var err error
+		ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID})
+		if err != nil {
+			return err
+		}
+	}
 	current, err := s.operatorActionProposal(ctx, name, action.Arguments)
 	if err != nil {
 		return errOperatorCommandUnavailable

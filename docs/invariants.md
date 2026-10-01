@@ -64,6 +64,20 @@ the existing move reasons are unchanged and no mechanism or reason code is added
 `TestOperatorRemovalCommand` and `TestWorkArgumentsDirectCallBounds` cover
 replay, native revisions, workflow refusal, ownership, bounded direct calls,
 real approval/rejection, authorized YOLO and orchestrator-owned removal.
+Change/review/artifact MCP parity (#3347) binds shared application reads/commands
+to freshly resolved connection authority. Nested work-item/change/version and
+exact artifact receipt ownership are checked before effects and replay. Native
+HTTP and MCP reuse the same transaction, policy, revision/bundle, attribution
+and retry commands; the existing chat browser approval owns material review and
+policy decisions. Historical artifact downloads preserve read grants, retention,
+TTL and original session authority; tokens appear only in the usable client result,
+never in URLs, audit summaries or durable retry receipts. Publishing, expected CI
+attestation, publisher callbacks and landing reports remain producer/service
+operations, not operator MCP tools. No merger or tracker lane writer is introduced.
+`TestOperatorChangeCommands`, `TestOperatorArtifactResults`,
+`TestHostedOperatorPolicyApproval`, and the existing hosted artifact pilot cover
+these boundaries. This extracts application commands rather than adding a
+protection mechanism (INV-3).
 
 MCP transport parity (#3339) uses one permission-filtered, paginated typed
 registry with toolset metadata. The `2026-07-28` stateless protocol validates

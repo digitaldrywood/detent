@@ -156,6 +156,14 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 // Unknown action kinds fail closed, including future billing/access commands.
 func RequiresConfirmation(action Action) bool {
 	switch action.Kind {
+	case ActionKind(operatortool.CreateChange), ActionKind(operatortool.DiscussChange), ActionKind(operatortool.ViewChangeFile), ActionKind(operatortool.ArtifactAccess):
+		return false
+	case ActionKind(operatortool.ReviewChange):
+		var args operatortool.ChangeArguments
+		if json.Unmarshal(action.Arguments, &args) != nil {
+			return true
+		}
+		return args.Decision != "commented"
 	case ActionSetPriority, ActionKind(operatortool.SetQueuePriority), ActionKind(operatortool.AddComment), ActionKind(operatortool.EditComment), ActionKind(operatortool.SetDependency), ActionKind(operatortool.RestoreItem), ActionKind(operatortool.AcknowledgeParks), ActionKind(operatortool.OrderItem):
 		return false
 	case ActionKind(operatortool.EditItem):

@@ -296,6 +296,7 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 type nativeCommandOptions struct {
 	OperationID, Item, Feature               string
 	CheckPrincipal, RequireLease, Completion bool
+	ArtifactRead                             bool
 }
 
 // executeNativeMutation owns the shared transaction, current native authority,
@@ -320,7 +321,11 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+	if options.ArtifactRead {
+		if err := s.recheckHostedArtifactReader(ctx, tx, scope); err != nil {
+			return nil, err
+		}
+	} else if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
 		return nil, err
 	}
 	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && options.CheckPrincipal {
@@ -361,7 +366,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	completion := options.Completion
-	if !completion {
+	if !completion && !options.ArtifactRead {
 		if err := s.database.requireHostedFeature(ctx, tx, options.Feature, now); err != nil {
 			return nil, err
 		}

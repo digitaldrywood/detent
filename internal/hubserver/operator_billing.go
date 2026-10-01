@@ -63,6 +63,11 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	if err != nil {
 		return nil, err
 	}
+	changes, err := (hubOperatorExecutor{service: e.service}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	definitions = append(definitions, changes...)
 	if e.service.config.Hosted == nil {
 		return definitions, nil
 	}
@@ -109,6 +114,9 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	if _, ok := operatortool.ChangeDefinition(call.Name); ok {
+		return (hubOperatorExecutor{service: e.service}).Execute(ctx, call)
+	}
 	if call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) {
 		return (nativeOperatorExecutor{service: e.service}).Execute(ctx, call)
 	}
@@ -134,6 +142,9 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		action, ok := s.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID)
 		if !ok {
 			return result, errBillingUnavailable
+		}
+		if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+			return (hubOperatorExecutor{service: s}).Execute(ctx, call)
 		}
 		if _, err := s.operatorBillingCredential(ctx, "billing", true); err != nil {
 			return result, err
@@ -340,6 +351,9 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Action) (execution chat.ActionExecution, err error) {
+	if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+		return (hubOperatorExecutor{service: e.service}).ExecuteAction(ctx, action)
+	}
 	defer func() {
 		if err != nil {
 			err = safeBillingError(err)
@@ -377,6 +391,10 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 }
 
 func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Action, outcome string) {
+	if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+		(hubOperatorExecutor{service: e.service}).AuditAction(ctx, action, outcome)
+		return
+	}
 	credential, err := e.service.operatorBillingCredential(ctx, "billing", true)
 	if err != nil {
 		return

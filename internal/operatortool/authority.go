@@ -42,6 +42,7 @@ type Authority struct {
 	Check     func(context.Context, Requirement) error
 	Snapshot  func(context.Context, telemetry.Snapshot) (telemetry.Snapshot, error)
 	WorkReads WorkReader
+	Changes   ChangeApplication
 }
 
 type Connection struct {
@@ -194,4 +195,14 @@ func BindConnection(ctx context.Context, id, client string) context.Context {
 	connection := CurrentConnection(ctx)
 	connection.ID, connection.Client = id, client
 	return WithConnection(ctx, connection)
+}
+
+// CurrentChanges returns the application adapter bound by the latest authority
+// resolution. It must never be retained across calls or operator approval.
+func CurrentChanges(ctx context.Context) (ChangeApplication, error) {
+	authority, ok := ctx.Value(authorityKey{}).(Authority)
+	if !ok || authority.Changes == nil {
+		return nil, ErrServiceUnavailable
+	}
+	return authority.Changes, nil
 }

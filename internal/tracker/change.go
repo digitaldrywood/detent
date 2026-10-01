@@ -134,6 +134,7 @@ type ChangeReview struct {
 
 type ReviewChange struct {
 	Mutation
+	ExpectedRevision  Revision            `json:"expected_revision,string,omitempty"`
 	Decision          string              `json:"decision"`
 	Body              string              `json:"body"`
 	ExpectedVersionID string              `json:"expected_version_id,omitempty"`

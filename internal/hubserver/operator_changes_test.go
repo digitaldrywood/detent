@@ -1,0 +1,360 @@
+package hubserver
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
+)
+
+func changeOperatorContext(t *testing.T, s *Service, token, organization string) context.Context {
+	t.Helper()
+	credential, _, err := s.authenticateAPIToken(t.Context(), token, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := operatortool.Connection{ID: "test-connection", Client: "test-client", Identity: operatorIdentity(credential, organization), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		current, _, err := s.authenticateAPIToken(ctx, token, "", "")
+		if err != nil {
+			return operatortool.Authority{}, err
+		}
+		return s.operatorCurrentAuthority(ctx, current, organization)
+	}}
+	return operatortool.WithConnection(t.Context(), connection)
+}
+func changeToolCall(name string, args operatortool.ChangeArguments) operatortool.Call {
+	raw, _ := json.Marshal(args)
+	return operatortool.Call{Name: name, Arguments: raw}
+}
+
+// Catches discovery bypass reaching foreign nested resources, stale review
+// identities, and replay repeating discussion effects after reconnect.
+func TestOperatorChangeCommands(t *testing.T) {
+	f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
+	version := f.publish(t, "v1", "")
+	bundle := seedReviewBundle(t, f, version, time.Now().Add(time.Hour))
+	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	executor := hubOperatorExecutor{f.service}
+	base := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), ChangeID: f.change.ID}
+	for _, test := range []struct {
+		name, tool string
+		edit       func(*operatortool.ChangeArguments)
+		want       error
+	}{
+		{"detail", operatortool.GetChange, nil, nil},
+		{"version", operatortool.GetChangeVersion, func(a *operatortool.ChangeArguments) { a.VersionID = version.ID }, nil},
+		{"foreign project", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ProjectID = "prj_foreign" }, operatortool.ErrAccessDenied},
+		{"foreign item", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ItemID = "wi_foreign" }, operatortool.ErrAccessDenied},
+		{"foreign change", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ChangeID = "change_foreign" }, operatortool.ErrAccessDenied},
+		{"foreign version", operatortool.GetChangeVersion, func(a *operatortool.ChangeArguments) { a.VersionID = "version_foreign" }, operatortool.ErrAccessDenied},
+		{"worker publish", "publish_change_version", nil, operatortool.ErrUnknownTool},
+		{"worker landing", "land_change", nil, operatortool.ErrUnknownTool},
+		{"worker CI", "submit_change_check", nil, operatortool.ErrUnknownTool},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := base
+			if test.edit != nil {
+				test.edit(&args)
+			}
+			_, err := executor.Execute(ctx, changeToolCall(test.tool, args))
+			if !errors.Is(err, test.want) {
+				t.Fatalf("got %v want %v", err, test.want)
+			}
+		})
+	}
+	args := base
+	args.RequestID = "discussion"
+	args.Body = "message"
+	call := changeToolCall(operatortool.DiscussChange, args)
+	first, err := executor.Execute(ctx, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnect := operatortool.CurrentConnection(ctx)
+	reconnect.ID = "reconnected"
+	ctx = operatortool.WithConnection(ctx, reconnect)
+	second, err := executor.Execute(ctx, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var one, two operatortool.ChangeResult
+	if json.Unmarshal(first.Content, &one) != nil || json.Unmarshal(second.Content, &two) != nil || !bytes.Equal(one.Receipt, two.Receipt) {
+		t.Fatal("replay changed command receipt")
+	}
+	args.Body = "different"
+	if _, err := executor.Execute(ctx, changeToolCall(operatortool.DiscussChange, args)); !errors.Is(err, mutation.ErrConflict) {
+		t.Fatalf("changed replay: %v", err)
+	}
+	if count := len(f.detail(t).Discussion); count != 1 {
+		t.Fatalf("discussion effects=%d", count)
+	}
+	args = base
+	args.VersionID = version.ID
+	args.RequestID = "review"
+	args.ExpectedRevision = int64(f.detail(t).Change.Revision)
+	args.Decision = "approved"
+	args.Bundle = &bundle
+	for _, test := range []struct {
+		name string
+		edit func(*operatortool.ChangeArguments)
+	}{
+		{"stale revision", func(a *operatortool.ChangeArguments) { a.ExpectedRevision++ }},
+		{"forged bundle", func(a *operatortool.ChangeArguments) {
+			b := *a.Bundle
+			b.SHA256 = strings.Repeat("f", 64)
+			a.Bundle = &b
+		}},
+		{"stale version", func(a *operatortool.ChangeArguments) { a.VersionID = "version_stale" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a := args
+			test.edit(&a)
+			authorized, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: "write", ProjectID: a.ProjectID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			app, err := operatortool.CurrentChanges(authorized)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = app.MutateChange(authorized, operatortool.ReviewChange, a); err == nil {
+				t.Fatal("invalid review succeeded")
+			}
+		})
+	}
+	if len(f.detail(t).Reviews) != 0 {
+		t.Fatal("denied review had side effects")
+	}
+	if _, err := executor.Execute(ctx, changeToolCall(operatortool.ReviewChange, args)); !errors.Is(err, operatortool.ErrServiceUnavailable) {
+		t.Fatalf("absent approval service: %v", err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Execute(ctx, call); !errors.Is(err, operatortool.ErrAccessDenied) {
+		t.Fatalf("lost grant replay: %v", err)
+	}
+}
+
+// Catches forged artifact identity, token persistence/logging, permission loss
+// during replay, read grants incorrectly requiring write, and unusable URLs.
+func TestOperatorArtifactResults(t *testing.T) {
+	for _, scenario := range []string{"valid replay", "historical revision", "viewer", "forged hash", "foreign item", "missing service", "expired", "lost grant", "revoked session"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newHostedSecurityFixture(t)
+			deadline := time.Now().Add(time.Hour)
+			if scenario == "expired" {
+				deadline = time.Now().Add(-time.Minute)
+			}
+			ref, _, _ := seedHostedArtifact(t, f, deadline)
+			role, grant := "member", "write"
+			if scenario == "viewer" {
+				role, grant = "viewer", "read"
+			}
+			u := f.user(t, "download", role, "download@example.test", grant, "")
+			var logs bytes.Buffer
+			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			var ctx context.Context
+			f.service.echo.GET("/capture-authority", func(c echo.Context) error {
+				ctx = operatortool.BindConnection(c.Request().Context(), "download-connection", "generic-client")
+				return c.NoContent(http.StatusOK)
+			}, f.service.operatorAuthority)
+			requireNativeStatus(t, f.request(t, u, http.MethodGet, "/capture-authority", nil), http.StatusOK)
+			if scenario == "historical revision" {
+				next := ref
+				next.Revision++
+				next.ManifestID = artifact.NewID("manifest")
+				raw, _ := json.Marshal(next)
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO artifact_references(organization_id,project_id,work_item_id,service_id,artifact_id,revision,manifest_id,reference_json) VALUES(?,?,?,?,?,?,?,?)`, next.OrganizationID, next.ProjectID, next.WorkItemID, next.ServiceID, next.ArtifactID, next.Revision, next.ManifestID, raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := operatortool.ChangeArguments{ProjectID: string(f.project), ItemID: ref.WorkItemID, ArtifactID: ref.ArtifactID, Revision: ref.Revision, SHA256: ref.SHA256, RequestID: "download"}
+			ex := hubOperatorExecutor{f.service}
+			switch scenario {
+			case "forged hash":
+				args.SHA256 = strings.Repeat("f", 64)
+			case "foreign item":
+				args.ItemID = "wi_foreign"
+			case "missing service":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE artifact_services SET binding_json='{}'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			call := changeToolCall(operatortool.ArtifactAccess, args)
+			result, err := ex.Execute(ctx, call)
+			if scenario == "forged hash" || scenario == "foreign item" || scenario == "missing service" || scenario == "expired" {
+				if err == nil {
+					t.Fatal("invalid download succeeded")
+				}
+				var count int
+				if e := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM artifact_grants").Scan(&count); e != nil || count != 0 {
+					t.Fatalf("denied grant effect=%d: %v", count, e)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var value operatortool.ChangeResult
+			if err := json.Unmarshal(result.Content, &value); err != nil {
+				t.Fatal(err)
+			}
+			if value.Access == nil || value.Access.Grant.Token == "" || !strings.HasSuffix(value.Access.ManifestURL, "/manifests/1") || !strings.HasSuffix(value.Access.ObjectURLTemplate, "/manifests/1/objects/{object_id}") {
+				t.Fatalf("unusable result: %s", result.Content)
+			}
+			token := value.Access.Grant.Token
+			if strings.Contains(logs.String(), token) || strings.Contains(string(value.Receipt), token) {
+				t.Fatal("secret in audit/receipt")
+			}
+			var receipt string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT response_json FROM native_commands WHERE command_key='download'").Scan(&receipt); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(receipt, token) {
+				t.Fatal("persisted token")
+			}
+			if time.Until(value.Access.Grant.ExpiresAt) > time.Minute {
+				t.Fatal("grant exceeded existing TTL")
+			}
+			if scenario == "lost grant" {
+				operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=?", u.identity.Subject)
+			}
+			if scenario == "revoked session" {
+				operatorSQL(t, f, "UPDATE hosted_sessions SET revoked_at=?", formatHubTime(time.Now()))
+			}
+			replay, err := ex.Execute(ctx, call)
+			if scenario == "lost grant" || scenario == "revoked session" {
+				if !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("lost authority replay: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var repeated operatortool.ChangeResult
+			if json.Unmarshal(replay.Content, &repeated) != nil || repeated.Access == nil || repeated.Access.Grant.Token == token {
+				t.Fatal("replay must freshly authorize ephemeral access")
+			}
+		})
+	}
+}
+
+// Catches forged API approval, material actions running before confirmation,
+// stale policy previews, and approval under a downgraded originating role.
+func TestHostedOperatorPolicyApproval(t *testing.T) {
+	for _, scenario := range []string{"confirm", "reject", "YOLO", "role lost", "stale policy", "API approval", "policy floor"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newHostedSecurityFixture(t)
+			u := f.user(t, "approver", "owner", "approver@example.test", "write", "")
+			var ctx context.Context
+			f.service.echo.GET("/capture-authority", func(c echo.Context) error {
+				ctx = operatortool.BindConnection(c.Request().Context(), "policy-connection", "generic-client")
+				return c.NoContent(http.StatusOK)
+			}, f.service.operatorAuthority)
+			requireNativeStatus(t, f.request(t, u, http.MethodGet, "/capture-authority", nil), http.StatusOK)
+			ex := hubOperatorExecutor{f.service}
+			if err := ex.OpenConnection(ctx); err != nil {
+				t.Fatal(err)
+			}
+			f.grant(t, u, true, true)
+			descriptor := hubTestPolicy()
+			requireNativeStatus(t, f.request(t, u, http.MethodPut, f.base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
+			args := operatortool.ChangeArguments{ProjectID: string(f.project), RequestID: "policy", Policy: &tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}
+			if scenario == "policy floor" {
+				args.Policy.PolicyID = "forged-policy"
+			}
+
+			if scenario == "YOLO" {
+				if err := f.service.operatorChat.SetConnectionMode(chat.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx)), "policy-connection", chat.YOLOMode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := ex.Execute(ctx, changeToolCall(operatortool.ApproveChangeReviewPolicy, args))
+
+			if scenario == "YOLO" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				var value struct {
+					Status string `json:"status"`
+				}
+				if json.Unmarshal(result.Content, &value) != nil || value.Status != "succeeded" {
+					t.Fatal("YOLO failed authorized command")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatal(err)
+			}
+			var preview struct {
+				ID     string `json:"action_id"`
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(result.Content, &preview) != nil || preview.Status != "pending" {
+				t.Fatalf("material action not pending: %s", result.Content)
+			}
+			page := f.request(t, u, http.MethodGet, "/chat/approval?connection_id=policy-connection", nil)
+			requireNativeStatus(t, page, http.StatusOK)
+			tokenRE := regexp.MustCompile(`name="form_token" value="([^"]+)"`)
+			matches := tokenRE.FindAllStringSubmatch(page.Body.String(), -1)
+			if len(matches) < 2 {
+				t.Fatalf("approval form missing: %s", page.Body)
+			}
+			form := url.Values{"connection_id": {"policy-connection"}, "action_id": {preview.ID}, "decision": {"confirm"}, "form_token": {matches[1][1]}}
+			if scenario == "reject" {
+				form.Set("decision", "reject")
+			}
+			if scenario == "role lost" {
+				operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", u.identity.Subject)
+			}
+			if scenario == "stale policy" {
+				args.RequestID = "concurrent-policy"
+				args.Policy.RequireReview = true
+				requireNativeStatus(t, f.request(t, u, http.MethodPut, f.base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "concurrent-policy"}, Policy: *args.Policy}), http.StatusOK)
+			}
+			response := f.request(t, u, http.MethodPost, "/chat/approval", form)
+			if scenario == "API approval" {
+				r := httptest.NewRequest(http.MethodPost, "/chat/approval", strings.NewReader(form.Encode()))
+				r.Header.Set("Content-Type", echo.MIMEApplicationForm)
+				r.Header.Set("Authorization", "Bearer forged")
+				response = httptest.NewRecorder()
+				f.service.echo.ServeHTTP(response, r)
+			}
+			if scenario == "reject" {
+				requireNativeStatus(t, response, http.StatusSeeOther)
+				a, _ := f.service.operatorChat.Action("policy-connection", preview.ID)
+				if a.Status != chat.ActionRejected {
+					t.Fatal("rejection ignored")
+				}
+			} else if scenario == "confirm" {
+				requireNativeStatus(t, response, http.StatusSeeOther)
+				action, _ := f.service.operatorChat.Action("policy-connection", preview.ID)
+				if action.Status != chat.ActionSucceeded {
+					t.Fatal("confirmed policy did not execute")
+				}
+			} else if response.Code < 400 {
+				t.Fatalf("invalid authorization/policy succeeded: %d", response.Code)
+			}
+		})
+	}
+}

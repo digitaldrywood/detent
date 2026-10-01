@@ -12,15 +12,17 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 	t.Parallel()
 	version := tracker.ChangeVersion{ID: "version_example", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), RunID: "run_example", AttemptID: "attempt_example", Code: tracker.ChangeArtifact{SHA256: strings.Repeat("b", 64)}}}
-	ref := artifact.Reference{Scope: artifact.Scope{RunID: version.RunID, AttemptID: version.AttemptID, VersionID: version.ID}, ArtifactID: artifact.NewID("artifact"), Revision: 1, Kind: "diff", State: "complete", SHA256: version.Code.SHA256}
+	ref := artifact.Reference{Scope: artifact.Scope{RunID: version.RunID, AttemptID: version.AttemptID, VersionID: version.ID}, ArtifactID: artifact.NewID("artifact"), Revision: 1, Kind: "diff", State: "complete", SHA256: version.Code.SHA256, Availability: "available", ExpiresAt: time.Now().Add(time.Hour)}
 	var mu sync.Mutex
 	upstreamStatus := 0
+	accessCalls := 0
 	lastToken := ""
 	lastPath := ""
 	lastBody := map[string]json.RawMessage{}
@@ -41,8 +43,11 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 			result = tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: "change_example", CurrentVersion: version.ID}, Versions: []tracker.ChangeVersion{version}}
 		case strings.HasSuffix(r.URL.Path, "/artifacts"):
 			result = []artifact.Reference{ref}
+		case strings.HasSuffix(r.URL.Path, "/revisions/1"):
+			result = ref
 		case strings.HasSuffix(r.URL.Path, "/access"):
-			result = artifact.Grant{ArtifactID: ref.ArtifactID, Revision: 1, SHA256: ref.SHA256, ExpiresAt: time.Now().Add(time.Minute)}
+			accessCalls++
+			result = artifact.Grant{Origin: "https://artifacts.example.test", Token: "fixture-grant", ArtifactID: ref.ArtifactID, Revision: 1, SHA256: ref.SHA256, ExpiresAt: time.Now().Add(time.Minute)}
 		case strings.HasSuffix(r.URL.Path, "/viewed-files") && r.Method == http.MethodGet:
 			result = []tracker.ChangeViewedFile{}
 		}
@@ -132,4 +137,68 @@ func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
 			t.Fatalf("%s form boundary status %d, want forbidden", tt.name, res.Code)
 		}
 	}
+	// These direct dispatcher calls catch accidental use of the configured
+	// producer token and duplicate grant issuance through shared retry receipts.
+	mu.Lock()
+	upstreamStatus = 0
+	before := accessCalls
+	mu.Unlock()
+	args := operatortool.ChangeArguments{ProjectID: "native", ItemID: "wi_example", ArtifactID: ref.ArtifactID, Revision: 1, SHA256: ref.SHA256, RequestID: "portable-download"}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []string{"first", "replay", "foreign local grant", "offline"} {
+		t.Run("operator download/"+scenario, func(t *testing.T) {
+			token := fixture.keys["readnative"]
+			if scenario == "foreign local grant" {
+				token = fixture.keys["writeother"]
+			}
+			mu.Lock()
+			lastToken = ""
+			if scenario == "offline" {
+				upstreamStatus = 503
+			}
+			mu.Unlock()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/operator-tools/artifact_access", strings.NewReader(string(raw)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer "+token)
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if scenario == "foreign local grant" || scenario == "offline" {
+				if response.Code < 400 {
+					t.Fatal("denied/offline operation succeeded")
+				}
+				if strings.Contains(response.Body.String(), "private upstream failure") {
+					t.Fatal("upstream error exposed")
+				}
+				if scenario == "foreign local grant" {
+					mu.Lock()
+					defer mu.Unlock()
+					if lastToken != "" {
+						t.Fatal("foreign project reached upstream")
+					}
+				}
+				return
+			}
+			if response.Code != 200 {
+				t.Fatalf("status=%d: %s", response.Code, response.Body)
+			}
+			var result operatortool.ChangeResult
+			if json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Access == nil || result.Access.Grant.Token != "fixture-grant" {
+				t.Fatal("missing usable download result")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if lastToken != "Bearer "+token {
+				t.Fatalf("operator credential replaced by producer: %s", lastToken)
+			}
+		})
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if accessCalls-before != 2 {
+		t.Fatalf("grant calls=%d for two authorized calls", accessCalls-before)
+	}
+
 }

@@ -87,6 +87,7 @@ func (s *Server) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 			return operatortool.Authority{
 				Identity: identity,
+				Changes:  dashboardChangeApplication{server: s, token: token},
 				Check: func(ctx context.Context, requirement operatortool.Requirement) error {
 					if !apikey.HasScope(current.Scopes, requirement.Scope) || !apikey.AllowsProject(current.ProjectIDs, requirement.ProjectID) || requirement.ResourceID != "" || requirement.ResourceKind != "" {
 						return operatortool.ErrAccessDenied

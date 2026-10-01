@@ -30,43 +30,7 @@ func (s *Service) reviewChange(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		change, err := readChange(ctx, tx, scope, c.Param("item"), c.Param("change"))
-		if err != nil {
-			return nil, err
-		}
-		version, err := readChangeVersion(ctx, tx, change.ID, c.Param("version"))
-		if err != nil {
-			return nil, err
-		}
-		if request.Decision == "approved" && change.CurrentVersion != version.ID || request.ExpectedVersionID != "" && (request.ExpectedVersionID != version.ID || change.CurrentVersion != version.ID) {
-			return nil, nativeConflict(change.Revision)
-		}
-		if request.Bundle != nil {
-			if err := validateReviewBundle(ctx, tx, scope, change, version, *request.Bundle, now); err != nil {
-				return nil, err
-			}
-		}
-		if !slices.Contains([]string{"approved", "changes_requested", "commented"}, request.Decision) || len(request.Body) > 64<<10 {
-			return nil, nativeInvalid("Review decision is invalid or body exceeds 64 KiB")
-		}
-		if change.Landed != nil {
-			return nil, nativeConflict(change.Revision)
-		}
-		review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: c.Param("version"), Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
-		if err := insertChangeEvidence(ctx, tx, change.ID, review.VersionID, "review", "", review); err != nil {
-			return nil, err
-		}
-		switch request.Decision {
-		case "approved":
-			if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
-				return nil, err
-			}
-		case "changes_requested":
-			if err := returnChangeForRework(ctx, tx, scope, change, review, now); err != nil {
-				return nil, err
-			}
-		}
-		return review, nil
+		return s.reviewChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
 	})
 }
 
@@ -135,36 +99,83 @@ func (s *Service) discussChange(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		change, err := readChange(ctx, tx, scope, c.Param("item"), c.Param("change"))
-		if err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10 {
-			return nil, nativeInvalid("Discussion requires 1 byte to 64 KiB")
-		}
-		if request.VersionID != "" {
-			if _, err := readChangeVersion(ctx, tx, change.ID, request.VersionID); err != nil {
-				return nil, err
-			}
-		}
-		if err := validateNativeProvenance(scope, request.Provenance); err != nil {
-			return nil, err
-		}
-		sourceKey := ""
-		if request.Provenance != nil {
-			sourceKey = request.Provenance.Provider + ":" + request.Provenance.ExternalID
-			var raw string
-			err := tx.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'discussion' AND source_key = ?", change.ID, sourceKey).Scan(&raw)
-			if err == nil {
-				var existing tracker.ChangeDiscussion
-				err = json.Unmarshal([]byte(raw), &existing)
-				return existing, err
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return nil, err
-			}
-		}
-		comment := tracker.ChangeDiscussion{ID: newNativeID("cmt"), VersionID: request.VersionID, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now}
-		return comment, insertChangeEvidence(ctx, tx, change.ID, comment.VersionID, "discussion", sourceKey, comment)
+		return s.discussChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
 	})
+}
+
+func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ReviewChange, now time.Time) (any, error) {
+	change, err := readChange(ctx, tx, scope, item, changeID)
+	if err != nil {
+		return nil, err
+	}
+	if request.ExpectedRevision != 0 && request.ExpectedRevision != change.Revision {
+		return nil, nativeConflict(change.Revision)
+	}
+	version, err := readChangeVersion(ctx, tx, change.ID, versionID)
+	if err != nil {
+		return nil, err
+	}
+	if request.Decision == "approved" && change.CurrentVersion != version.ID || request.ExpectedVersionID != "" && (request.ExpectedVersionID != version.ID || change.CurrentVersion != version.ID) {
+		return nil, nativeConflict(change.Revision)
+	}
+	if request.Bundle != nil {
+		if err := validateReviewBundle(ctx, tx, scope, change, version, *request.Bundle, now); err != nil {
+			return nil, err
+		}
+	}
+	if !slices.Contains([]string{"approved", "changes_requested", "commented"}, request.Decision) || len(request.Body) > 64<<10 {
+		return nil, nativeInvalid("Review decision is invalid or body exceeds 64 KiB")
+	}
+	if change.Landed != nil {
+		return nil, nativeConflict(change.Revision)
+	}
+	review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
+	if err := insertChangeEvidence(ctx, tx, change.ID, review.VersionID, "review", "", review); err != nil {
+		return nil, err
+	}
+	switch request.Decision {
+	case "approved":
+		if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
+			return nil, err
+		}
+	case "changes_requested":
+		if err := returnChangeForRework(ctx, tx, scope, change, review, now); err != nil {
+			return nil, err
+		}
+	}
+	return review, nil
+}
+
+func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.DiscussChange, now time.Time) (any, error) {
+	change, err := readChange(ctx, tx, scope, item, changeID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10 {
+		return nil, nativeInvalid("Discussion requires 1 byte to 64 KiB")
+	}
+	if request.VersionID != "" {
+		if _, err := readChangeVersion(ctx, tx, change.ID, request.VersionID); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateNativeProvenance(scope, request.Provenance); err != nil {
+		return nil, err
+	}
+	sourceKey := ""
+	if request.Provenance != nil {
+		sourceKey = request.Provenance.Provider + ":" + request.Provenance.ExternalID
+		var raw string
+		err := tx.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'discussion' AND source_key = ?", change.ID, sourceKey).Scan(&raw)
+		if err == nil {
+			var existing tracker.ChangeDiscussion
+			err = json.Unmarshal([]byte(raw), &existing)
+			return existing, err
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	comment := tracker.ChangeDiscussion{ID: newNativeID("cmt"), VersionID: request.VersionID, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now}
+	return comment, insertChangeEvidence(ctx, tx, change.ID, comment.VersionID, "discussion", sourceKey, comment)
 }
