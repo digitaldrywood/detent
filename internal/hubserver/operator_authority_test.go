@@ -1,8 +1,8 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -65,8 +65,11 @@ func TestHostedOperatorCurrentAuthority(t *testing.T) {
 					if project == "" {
 						project = string(f.project)
 					}
-					var connection context.Context
-					f.service.echo.POST("/authority-test", func(c echo.Context) error { connection = c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+					var request *http.Request
+					f.service.echo.POST("/authority-test", func(c echo.Context) error {
+						request = c.Request()
+						return c.NoContent(http.StatusOK)
+					}, f.service.operatorAuthority)
 					var status int
 					if deployment == "shared" {
 						csrf := cloudassert.CSRFToken("shared-"+u.identity.Subject, "org_security")
@@ -81,20 +84,20 @@ func TestHostedOperatorCurrentAuthority(t *testing.T) {
 					if test.change != nil {
 						test.change(t, f, u)
 					}
-					_, err := operatortool.AuthorizeCurrent(connection, operatortool.Requirement{Scope: test.scope, ProjectID: project})
+					_, err := operatortool.AuthorizeCurrent(request.Context(), operatortool.Requirement{Scope: test.scope, ProjectID: project})
 					if (err != nil) != test.denied {
 						t.Fatalf("authorization=%v want denied=%t", err, test.denied)
 					}
 					// Direct tools/call reaches the identical adapter, even if a
 					// client never listed tools. No absent runtime is touched.
-					_, callErr := operatortool.NewAuthorizedExecutor(nil).Execute(connection, operatortool.Call{Name: operatortool.BoardState, Arguments: json.RawMessage(`{"project_id":"` + project + `"}`)})
-					if test.scope == apikey.ScopeRead && test.denied && callErr != operatortool.ErrAccessDenied {
+					_, callErr := operatortool.NewAuthorizedExecutor(nil).Execute(request.Context(), operatortool.Call{Name: operatortool.BoardState, Arguments: json.RawMessage(`{"project_id":"` + project + `"}`)})
+					if test.scope == apikey.ScopeRead && test.denied && !errors.Is(callErr, operatortool.ErrAccessDenied) {
 						t.Fatalf("direct call=%v", callErr)
 					}
-					if _, err := operatortool.AuthorizeCurrent(connection, operatortool.Requirement{Scope: apikey.ScopeRead, OrganizationID: "other", ProjectID: project}); err == nil {
+					if _, err := operatortool.AuthorizeCurrent(request.Context(), operatortool.Requirement{Scope: apikey.ScopeRead, OrganizationID: "other", ProjectID: project}); err == nil {
 						t.Fatal("foreign organization authorized")
 					}
-					if _, err := operatortool.AuthorizeCurrent(connection, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: project, ResourceKind: "unknown", ResourceID: "foreign"}); err == nil {
+					if _, err := operatortool.AuthorizeCurrent(request.Context(), operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: project, ResourceKind: "unknown", ResourceID: "foreign"}); err == nil {
 						t.Fatal("unowned resource authorized")
 					}
 				})
