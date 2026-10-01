@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -34,9 +35,36 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			wantContent: "go test ./...",
 		},
 		{
+			name:        "native command actions preserve input and original command",
+			method:      "item/started",
+			params:      `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"/bin/zsh -lc 'go test ./...'","commandActions":[{"type":"unknown","command":"go test ./..."}],"status":"inProgress"}}`,
+			wantType:    UpdateToolStarted,
+			wantTool:    "commandExecution",
+			wantCommand: "/bin/zsh -lc 'go test ./...'",
+			wantContent: "go test ./...",
+		},
+		{
+			name:        "mixed native actions retain every command",
+			method:      "item/started",
+			params:      `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"/bin/zsh -lc 'cat AGENTS.md; go test ./...'","commandActions":[{"type":"read","command":"cat AGENTS.md","name":"AGENTS.md","path":"AGENTS.md"},{"type":"unknown","command":"go test ./..."}],"status":"inProgress"}}`,
+			wantType:    UpdateToolStarted,
+			wantTool:    "commandExecution",
+			wantCommand: "/bin/zsh -lc 'cat AGENTS.md; go test ./...'",
+			wantContent: "cat AGENTS.md; go test ./...",
+		},
+		{
+			name:        "incomplete native actions stay opaque",
+			method:      "item/started",
+			params:      `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"/bin/zsh -lc 'cat AGENTS.md; go test ./...'","commandActions":[{"type":"read","command":"cat AGENTS.md"},{"type":"unknown"}],"status":"inProgress"}}`,
+			wantType:    UpdateToolStarted,
+			wantTool:    "commandExecution",
+			wantCommand: "/bin/zsh -lc 'cat AGENTS.md; go test ./...'",
+			wantContent: "/bin/zsh -lc 'cat AGENTS.md; go test ./...'",
+		},
+		{
 			name:         "failed command retains command and exit code",
 			method:       "item/completed",
-			params:       `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"git push origin HEAD && exit 19","status":"failed","exitCode":19,"aggregatedOutput":"branch updated; later assertion failed"}}`,
+			params:       `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"git push origin HEAD && exit 19","commandActions":[{"type":"unknown","command":"git push origin HEAD"},{"type":"unknown","command":"exit 19"}],"status":"failed","exitCode":19,"aggregatedOutput":"branch updated; later assertion failed"}}`,
 			wantType:     UpdateToolCompleted,
 			wantTool:     "commandExecution",
 			wantCommand:  "git push origin HEAD && exit 19",
@@ -161,4 +189,20 @@ func equalIntPointers(left *int, right *int) bool {
 		return left == right
 	}
 	return *left == *right
+}
+
+func BenchmarkToolLifecycleNativeActions(b *testing.B) {
+	for _, size := range []int{32, 8100} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			command := "go test " + strings.Repeat("x", size)
+			params, _ := json.Marshal(map[string]any{"threadId": "thread", "turnId": "turn", "item": map[string]any{"id": "tool", "type": "commandExecution", "command": "/bin/zsh -lc '" + command + "'", "commandActions": []map[string]string{{"type": "unknown", "command": command}}, "status": "inProgress"}})
+			message := Message{Method: "item/started", Params: params}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, ok, err := toolLifecycleUpdate(message); !ok || err != nil {
+					b.Fatalf("tool lifecycle: ok=%v err=%v", ok, err)
+				}
+			}
+		})
+	}
 }

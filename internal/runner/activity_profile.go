@@ -252,7 +252,10 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 		if command == "" {
 			command = activityInputCommand(u.Delta)
 		}
-		activityCommand := activityShellCommand(command)
+		activityCommand := command
+		if u.Tool == "commandExecution" && u.Delta != "" {
+			activityCommand = u.Delta
+		}
 		kind, evidence := classifyActivity(u.Tool, activityCommand)
 		span := workflowmetrics.ActivitySpan{ID: key, ParentID: parent, Kind: kind, Evidence: evidence, Fingerprint: activityHash(u.Tool + "\x00" + command), StartedAt: observation.at, Outcome: "running", Attribution: "unattributed"}
 		if kind == "waiting" {
@@ -445,66 +448,6 @@ func classifyActivity(tool, command string) (string, string) {
 		return "unclassified", "tool_lifecycle"
 	}
 	return kind, evidence
-}
-
-func activityShellCommand(command string) string {
-	launcher, rest, ok := strings.Cut(strings.TrimSpace(command), " ")
-	if !ok {
-		return command
-	}
-	switch filepath.Base(launcher) {
-	case "sh", "bash", "zsh", "dash", "ksh":
-	default:
-		return command
-	}
-	option, script, ok := strings.Cut(strings.TrimSpace(rest), " ")
-	if !ok || (option != "-c" && option != "-lc") {
-		return command
-	}
-	var result strings.Builder
-	quote := byte(0)
-	script = strings.TrimSpace(script)
-	result.Grow(len(script))
-	for index := 0; index < len(script); index++ {
-		value := script[index]
-		if quote == '\'' {
-			if value == '\'' {
-				quote = 0
-			} else {
-				result.WriteByte(value)
-			}
-			continue
-		}
-		if value == quote && quote != 0 {
-			quote = 0
-			continue
-		}
-		if value == '\\' {
-			index++
-			if index == len(script) {
-				return command
-			}
-			if quote == '"' && !strings.ContainsRune("\\\"$`\n", rune(script[index])) {
-				result.WriteByte('\\')
-			}
-			if script[index] != '\n' {
-				result.WriteByte(script[index])
-			}
-			continue
-		}
-		if quote == 0 && (value == '\'' || value == '"') {
-			quote = value
-			continue
-		}
-		if strings.ContainsRune("$`", rune(value)) || (quote == 0 && strings.ContainsRune(" \t\r\n;&|<>()*?[]~", rune(value))) {
-			return command
-		}
-		result.WriteByte(value)
-	}
-	if quote != 0 || result.Len() == 0 {
-		return command
-	}
-	return result.String()
 }
 
 // Only known JSON command fields are decoded. Free-form code and arbitrary

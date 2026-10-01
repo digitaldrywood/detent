@@ -35,10 +35,11 @@ Read the served build directly from the live page:
 curl -fsS http://127.0.0.1:4000/ | rg -o 'data-detent-served-version="[^"]+"' -m 1
 ```
 
-Activity classification recognizes literal commands inside native shell
-launchers such as `/bin/zsh -lc`. Observed instruction reads retain source
-hashes; exact instruction text matches remain explicitly inferred. Opaque,
-mixed, expanding or malformed commands remain uncertain. Profiles store safe
+Activity classification uses the provider's existing parsed command actions
+when available, preserving the original command fingerprint. These actions
+are best-effort metadata, not original argument arrays. Observed instruction
+reads retain source hashes; exact instruction text matches remain explicitly
+inferred. Opaque, mixed or missing actions remain uncertain. Profiles store safe
 fingerprints and references rather than commands, arguments or instruction
 contents. Partial coverage and unattributed intervals are evidence limits;
 parallel command durations must not be summed as sequential elapsed time.

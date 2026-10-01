@@ -23,22 +23,6 @@ func TestActivityObservationAttributionAndGaps(t *testing.T) {
 	at := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
 	for _, tt := range []struct{ name, tool, command, kind, attribution string }{
 		{"instruction read", "commandExecution", "cat AGENTS.md", "context_read", "observed_read_request"},
-		{"native instruction read", "commandExecution", `/bin/zsh -lc 'cat AGENTS.md'`, "context_read", "observed_read_request"},
-		{"native quoted instruction read", "commandExecution", `/bin/zsh -lc 'cat '\''AGENTS.md'\'''`, "context_read", "observed_read_request"},
-		{"native validation", "commandExecution", `/bin/zsh -lc 'go test ./internal/foo'`, "local_validation", "inferred_text_match"},
-		{"native env validation", "commandExecution", `/bin/bash -c 'env GOMAXPROCS=2 go test ./internal/foo'`, "local_validation", "unattributed"},
-		{"native unset env validation", "commandExecution", `/bin/zsh -lc 'env -u TMPDIR -u TMP -u TEMP GOMAXPROCS=2 go test ./internal/foo'`, "local_validation", "unattributed"},
-		{"native opaque env script", "commandExecution", `/bin/zsh -lc 'env -S "go test ./internal/foo"'`, "tool_execution", "unattributed"},
-		{"native double quoted validation", "commandExecution", `/bin/sh -c "go test ./internal/foo"`, "local_validation", "inferred_text_match"},
-		{"native escaped validation", "commandExecution", `/bin/sh -c go\ test\ ./internal/foo`, "local_validation", "inferred_text_match"},
-		{"native review", "commandExecution", `/bin/zsh -lc 'git diff'`, "review", "unattributed"},
-		{"native wait", "commandExecution", `/bin/zsh -lc 'sleep 3'`, "waiting", "unattributed"},
-		{"native compound", "commandExecution", `/bin/zsh -lc 'cat AGENTS.md; go test ./internal/foo'`, "unclassified", "unattributed"},
-		{"native quoted validation text", "commandExecution", `/bin/zsh -lc 'echo '\''go test ./internal/foo'\'''`, "tool_execution", "unattributed"},
-		{"native expanding wrapper", "commandExecution", `/bin/zsh -lc "$VALIDATION"`, "tool_execution", "unattributed"},
-		{"native unfinished quote", "commandExecution", `/bin/zsh -lc 'go test ./internal/foo`, "tool_execution", "unattributed"},
-		{"native extra argument", "commandExecution", `/bin/zsh -lc 'go test ./internal/foo' other`, "tool_execution", "unattributed"},
-		{"native other directory", "commandExecution", `/bin/zsh -lc 'cat /private/other/AGENTS.md'`, "context_read", "unattributed"},
 		{"validation", "commandExecution", "go test ./internal/foo", "local_validation", "inferred_text_match"},
 		{"json command", "Bash", `{"command":"go test ./internal/foo"}`, "local_validation", "inferred_text_match"},
 		{"json read", "Read", `{"file_path":"AGENTS.md"}`, "context_read", "observed_read_request"},
@@ -109,25 +93,40 @@ func TestActivityObservationAttributionAndGaps(t *testing.T) {
 	}
 }
 
-func BenchmarkActivityShellClassification(b *testing.B) {
-	for _, fixture := range []struct{ name, command string }{
-		{"bare", "go test ./internal/foo"},
-		{"native", `/bin/zsh -lc 'go test ./internal/foo'`},
-		{"native env", `/bin/bash -c 'env GOMAXPROCS=2 go test ./internal/foo'`},
-		{"bounded", "/bin/zsh -lc '" + strings.Repeat("x", 8100) + "'"},
+func TestActivityNativeCommandInput(t *testing.T) {
+	at := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+	for _, tt := range []struct{ name, input, kind, attribution string }{
+		{"read", "cat AGENTS.md", "context_read", "observed_read_request"},
+		{"quoted read", "cat 'AGENTS.md'", "context_read", "observed_read_request"},
+		{"validation", "go test ./internal/foo", "local_validation", "inferred_text_match"},
+		{"env validation", "env GOMAXPROCS=2 go test ./internal/foo", "local_validation", "unattributed"},
+		{"unset env validation", "env -u TMPDIR -u TMP -u TEMP GOMAXPROCS=2 go test ./internal/foo", "local_validation", "unattributed"},
+		{"opaque env script", `env -S "go test ./internal/foo"`, "tool_execution", "unattributed"},
+		{"review", "git diff", "review", "unattributed"},
+		{"wait", "sleep 3", "waiting", "unattributed"},
+		{"mixed", "cat AGENTS.md; go test ./internal/foo", "unclassified", "unattributed"},
+		{"quoted validation text", "echo 'go test ./internal/foo'", "tool_execution", "unattributed"},
+		{"expansion", "$VALIDATION", "tool_execution", "unattributed"},
+		{"missing native actions", "", "tool_execution", "unattributed"},
+		{"other directory", "cat /private/other/AGENTS.md", "context_read", "unattributed"},
 	} {
-		for _, normalized := range []bool{false, true} {
-			b.Run(fixture.name+"/normalized="+strconv.FormatBool(normalized), func(b *testing.B) {
-				b.ReportAllocs()
-				for b.Loop() {
-					command := fixture.command
-					if normalized {
-						command = activityShellCommand(command)
-					}
-					classifyActivity("commandExecution", command)
-				}
-			})
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			command := "/bin/zsh -lc 'native command'"
+			profile := workflowmetrics.ActivityProfile{StartedAt: at}
+			sources := []activityInstruction{{ref: workflowmetrics.InstructionRef{Name: "AGENTS.md", Hash: activityHash("instructions"), ObservedAt: at}, text: "Run go test ./internal/foo"}}
+			applyActivityObservation(&profile, map[string]int{}, map[string]int{}, sources, activityObservation{at: at, update: activityUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "tool", Tool: "commandExecution", Command: command, Delta: tt.input}})
+			span := profile.Spans[0]
+			if span.Kind != tt.kind || span.Attribution != tt.attribution || span.Fingerprint != activityHash("commandExecution\x00"+command) {
+				t.Fatalf("native activity = %+v", span)
+			}
+			if tt.attribution != "unattributed" && (len(span.Sources) != 1 || span.Sources[0].Hash != activityHash("instructions")) {
+				t.Fatalf("instruction provenance lost: %+v", span.Sources)
+			}
+			data, _ := json.Marshal(profile)
+			if strings.Contains(string(data), command) || (tt.input != "" && strings.Contains(string(data), tt.input)) {
+				t.Fatal("private command persisted")
+			}
+		})
 	}
 }
 
