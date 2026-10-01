@@ -7,19 +7,13 @@ import (
 )
 
 type projectCache struct {
-	mu            sync.RWMutex
-	ttl           time.Duration
-	now           func() time.Time
-	entries       map[string]map[string]projectItemCacheEntry
-	scanned       map[string]time.Time
-	revisions     map[string]uint64
-	refs          map[string]issueRefCacheEntry
-	labelEvidence map[string]labelEvidenceCacheEntry
-}
-
-type labelEvidenceCacheEntry struct {
-	node      githubIssueNode
-	updatedAt time.Time
+	mu        sync.RWMutex
+	ttl       time.Duration
+	now       func() time.Time
+	entries   map[string]map[string]projectItemCacheEntry
+	scanned   map[string]time.Time
+	revisions map[string]uint64
+	refs      map[string]issueRefCacheEntry
 }
 
 type projectItemCacheEntry struct {
@@ -54,13 +48,12 @@ func newProjectCache(ttl time.Duration, now func() time.Time) *projectCache {
 	}
 
 	return &projectCache{
-		ttl:           ttl,
-		now:           now,
-		entries:       map[string]map[string]projectItemCacheEntry{},
-		scanned:       map[string]time.Time{},
-		revisions:     map[string]uint64{},
-		refs:          map[string]issueRefCacheEntry{},
-		labelEvidence: map[string]labelEvidenceCacheEntry{},
+		ttl:       ttl,
+		now:       now,
+		entries:   map[string]map[string]projectItemCacheEntry{},
+		scanned:   map[string]time.Time{},
+		revisions: map[string]uint64{},
+		refs:      map[string]issueRefCacheEntry{},
 	}
 }
 
@@ -336,38 +329,4 @@ func cloneProjectItemFields(fields projectItemFields) projectItemFields {
 		}
 	}
 	return cloned
-}
-
-// Label evidence is revision-based: reuse requires this tick's listing to prove
-// both the issue and every blocker unchanged. An unlisted blocker is unknown.
-func (c *projectCache) GetLabelEvidence(issueID string, listed map[string]*time.Time) (githubIssueNode, bool) {
-	c.mu.RLock()
-	entry, ok := c.labelEvidence[issueID]
-	c.mu.RUnlock()
-	updatedAt := listed[issueID]
-	if !ok || updatedAt == nil || !entry.updatedAt.Equal(*updatedAt) {
-		return githubIssueNode{}, false
-	}
-	for _, blocker := range entry.node.BlockedBy.Nodes {
-		cachedAt := parseGitHubTime(blocker.UpdatedAt)
-		current := listed[blocker.ID]
-		if cachedAt == nil || current == nil || !cachedAt.Equal(*current) {
-			return githubIssueNode{}, false
-		}
-	}
-	return entry.node, true
-}
-
-func (c *projectCache) SetLabelEvidence(node githubIssueNode, updatedAt *time.Time) {
-	hydratedAt := parseGitHubTime(node.UpdatedAt)
-	if node.ID == "" || updatedAt == nil || updatedAt.IsZero() || hydratedAt == nil || !hydratedAt.Equal(*updatedAt) || !candidateEvidenceComplete(node) {
-		return
-	}
-	// PR heads and reviews can advance without changing the issue timestamp.
-	// Cache scheduler evidence only; refresh uses the existing PR readers.
-	node.CandidatePR = nil
-	node.TimelineItems = nodeConnection[timelineItem]{}
-	c.mu.Lock()
-	c.labelEvidence[node.ID] = labelEvidenceCacheEntry{node: node, updatedAt: *updatedAt}
-	c.mu.Unlock()
 }
