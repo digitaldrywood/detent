@@ -54,6 +54,16 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 		return nil, err
 	}
 	for _, definition := range operatortool.CommandCatalog() {
+		if _, fleet := operatortool.FleetDefinition(definition.Name); fleet {
+			if s := e.server; !dashboardFleetTool(definition.Name) || !s.fleetToolAvailable(definition.Name) {
+				continue
+			}
+			if _, err := operatortool.AuthorizeCurrent(ctx, dashboardFleetRequirement(definition.Name, "")); err != nil {
+				continue
+			}
+			definitions = append(definitions, definition)
+			continue
+		}
 		if definition.Meta.Toolset == "billing_usage" && definition.Name != operatortool.BudgetOverrideSet && definition.Name != operatortool.BudgetOverrideClear && definition.Name != operatortool.UsageReport && definition.Name != operatortool.IssueExplanation {
 			continue
 		}
@@ -68,6 +78,16 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 
 func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.server
+	if dashboardFleetTool(call.Name) {
+		definition, _ := operatortool.FleetDefinition(call.Name)
+		if definition.Annotations.ReadOnly {
+			return s.executeFleetRead(ctx, call)
+		}
+		if err := operatortool.ValidateFleetArguments(call.Name, call.Arguments); err != nil {
+			return operatortool.Result{}, err
+		}
+		return s.executeOperatorMutation(ctx, call)
+	}
 	switch call.Name {
 	case operatortool.UsageReport:
 		return s.operatorUsageReport(ctx, call.Arguments)
@@ -117,7 +137,7 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		if !ok {
 			return operatortool.Result{}, errOperatorCommandUnavailable
 		}
-		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, OrganizationID: action.OrganizationID, ProjectID: action.ProjectID}); err != nil {
+		if _, err := operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(string(action.Kind), action.ProjectID)); err != nil {
 			return operatortool.Result{}, err
 		}
 		return s.operatorActionResult(action)
@@ -143,7 +163,7 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", Mode: string(s.chat.Conversation(operatortool.CurrentConnection(ctx).ID).Mode), Confirmation: "none", CorrelationID: correlation}
 	outcome := "failed"
 	defer func() { s.auditMutation(ctx, m, outcome) }()
-	requestID, arguments, projectID, err := operatorActionArguments(call.Arguments)
+	requestID, arguments, projectID, err := operatorActionArguments(call.Arguments, dashboardFleetTool(call.Name))
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -164,7 +184,7 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
-	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: projectID})
+	ctx, err = operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(call.Name, projectID))
 	if err != nil {
 		outcome = "denied"
 		return operatortool.Result{}, err
@@ -223,14 +243,19 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 	return s.operatorActionResult(action)
 }
 
-func operatorActionArguments(raw json.RawMessage) (string, json.RawMessage, string, error) {
+func operatorActionArguments(raw json.RawMessage, allowGlobal bool) (string, json.RawMessage, string, error) {
 	var fields map[string]json.RawMessage
 	if len(raw) > operatortool.MaxArgumentBytes || json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return "", nil, "", operatortool.ErrInvalidArguments
 	}
 	var requestID, projectID string
-	if json.Unmarshal(fields["request_id"], &requestID) != nil || requestID == "" || len(requestID) > 128 || json.Unmarshal(fields["project_id"], &projectID) != nil || strings.TrimSpace(projectID) == "" || len(projectID) > 256 {
+	if json.Unmarshal(fields["request_id"], &requestID) != nil || requestID == "" || len(requestID) > 128 || (!allowGlobal && (json.Unmarshal(fields["project_id"], &projectID) != nil || strings.TrimSpace(projectID) == "")) || len(projectID) > 256 {
 		return "", nil, "", operatortool.ErrInvalidArguments
+	}
+	if field, ok := fields["project_id"]; ok {
+		if json.Unmarshal(field, &projectID) != nil {
+			return "", nil, "", operatortool.ErrInvalidArguments
+		}
 	}
 	delete(fields, "request_id")
 	for key, raw := range fields {
@@ -277,6 +302,9 @@ func operatorActionArguments(raw json.RawMessage) (string, json.RawMessage, stri
 }
 
 func (s *Server) operatorActionProposal(ctx context.Context, name string, arguments json.RawMessage) (chatpkg.Action, error) {
+	if dashboardFleetTool(name) {
+		return s.fleetActionProposal(ctx, name, arguments)
+	}
 	var result chatpkg.ToolResult
 	var err error
 	switch name {

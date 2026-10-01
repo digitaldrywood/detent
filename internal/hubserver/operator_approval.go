@@ -15,13 +15,46 @@ import (
 )
 
 func (s *Service) hostedOperatorBrowser(c echo.Context, next echo.HandlerFunc) error {
-	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
+	if s.config.Hosted == nil || c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 	}
-	if _, err := s.hostedBillingOwner(c); err != nil {
-		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-	}
-	return s.operatorAuthority(next)(c)
+	return s.operatorAuthority(func(c echo.Context) error {
+		credential, err := currentHubOperator(c.Request().Context())
+		if err != nil || credential.SessionHash == "" || credential.Hosted == nil || s.operatorFormCSRF(c) == "" {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+		id := c.QueryParam("connection_id")
+		if c.Request().Method == http.MethodPost {
+			c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
+			id = c.FormValue("connection_id")
+		}
+		conversation := s.operatorChat.Conversation(id)
+		billing, fleet := false, false
+		for _, action := range conversation.Actions {
+			if action.Kind == chat.ActionKind(operatortool.BillingCheckout) || action.Kind == chat.ActionKind(operatortool.BillingPortal) {
+				billing = true
+			}
+			fleet = fleet || hubFleetTool(string(action.Kind))
+		}
+		if fleet {
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		}
+		if billing {
+			if _, err := s.hostedBillingOwner(c); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if !fleet {
+			// Owners can configure billing confirmation before their first preview.
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
+				if _, err := s.hostedBillingOwner(c); err != nil {
+					return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+				}
+			}
+		}
+		return next(c)
+	})(c)
 }
 
 func (s *Service) operatorFormCSRF(c echo.Context) string {
