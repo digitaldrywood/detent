@@ -9236,6 +9236,53 @@ func TestServerEventsStreamsSidebarGitHubAPIHealth(t *testing.T) {
 	}
 }
 
+func TestServerEventsBuildDashboardScopeOnce(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name      string
+		project   string
+		wantCalls int64
+	}{
+		{name: "fleet", wantCalls: 1},
+		{name: "project", project: "detent", wantCalls: 1},
+		{name: "unknown project falls back to fleet", project: "missing", wantCalls: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &enrichmentQueryCountingStore{}
+			deps := testDeps(t)
+			deps.Store = backend
+			mustSetWebProject(t, deps.Registry, "detent", false)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Now().UTC(),
+				Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Projects:    []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			server, err := newServerWithLaneWriter(web.Config{SSETickInterval: time.Hour}, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requestDashboardEnrichment(t, server)
+			before := backend.budgetCostCalls.Load()
+			addr := startWebServer(t, server)
+			conn, reader := openRawEventStream(t, addr, "/events?project="+tt.project+"&view=kanban")
+			event := readRawSSEEvent(t, conn, reader)
+			if event.name != "snapshot" {
+				t.Fatalf("event name = %q, want snapshot", event.name)
+			}
+			if tt.project == "detent" && !strings.Contains(event.data, `data-board-key="project.detent"`) {
+				t.Fatal("project snapshot lost project board scope")
+			}
+			if got := backend.budgetCostCalls.Load() - before; got != tt.wantCalls {
+				t.Fatalf("dashboard spend queries = %d, want %d", got, tt.wantCalls)
+			}
+		})
+	}
+}
+
 func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 	t.Parallel()
 
