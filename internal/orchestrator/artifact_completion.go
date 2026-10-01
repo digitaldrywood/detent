@@ -145,29 +145,23 @@ func artifactGateCompletionStatusAllowed(status string, cfg gate.ArtifactConfig)
 }
 
 func artifactGateWorkpadStatusHash(comments []connector.IssueComment) string {
-	for index := len(comments) - 1; index >= 0; index-- {
-		comment := comments[index]
-		if !autoPromoteIsWorkpadComment(comment.Body) {
-			continue
-		}
-		content, ok := workpad.LastStatusBlock(comment.Body)
-		if !ok {
-			return ""
-		}
-		return workpad.ContentHash(content)
+	index := currentWorkpadCommentIndex(comments)
+	if index < 0 {
+		return ""
 	}
-	return ""
+	content, ok := workpad.LastStatusBlock(comments[index].Body)
+	if !ok {
+		return ""
+	}
+	return workpad.ContentHash(content)
 }
 
 func artifactCompletionReceiptHash(comments []connector.IssueComment) string {
-	for index := len(comments) - 1; index >= 0; index-- {
-		body := strings.TrimSpace(comments[index].Body)
-		if !autoPromoteIsWorkpadComment(body) {
-			continue
-		}
-		return workpad.ContentHash(body)
+	index := currentWorkpadCommentIndex(comments)
+	if index < 0 {
+		return ""
 	}
-	return ""
+	return workpad.ContentHash(strings.TrimSpace(comments[index].Body))
 }
 
 func (o *Orchestrator) artifactGateDispatchWorkpadSnapshot(ctx context.Context, issue connector.Issue) (string, []connector.IssueComment, bool) {

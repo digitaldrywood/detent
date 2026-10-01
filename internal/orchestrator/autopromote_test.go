@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestEvaluateAutoPromote(t *testing.T) {
@@ -1024,6 +1025,10 @@ func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
 	}
 
 	tests := []struct {
+		comments              []connector.IssueComment
+		wantURL               string
+		wantStatus            string
+		wantNil               bool
 		name                  string
 		body                  string
 		cfg                   AutoPromoteConfig
@@ -1037,6 +1042,15 @@ func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
 		wantProseDisabled     bool
 		wantVerificationParts []string
 	}{
+		{name: "earlier created edited complete supersedes stale in progress", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &oldActivity, UpdatedAt: &oldActivity}}, wantURL: "https://github.test/comment/earlier", wantStatus: "complete", wantAction: AutoPromoteActionPromote, wantReason: AutoPromoteReasonReady, wantSource: "structured", wantBlocker: "", wantInvalid: "", wantNil: false},
+		{name: "earlier edited human hold supersedes complete", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &oldActivity, UpdatedAt: &oldActivity}}, wantURL: "https://github.test/comment/earlier", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadBlocker, wantSource: "structured", wantBlocker: "Need owner approval.", wantInvalid: "", wantNil: false},
+		{name: "earlier edited invalid supersedes complete", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &oldActivity, UpdatedAt: &oldActivity}}, wantURL: "https://github.test/comment/earlier", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadStatusInvalid, wantSource: "structured", wantBlocker: "", wantInvalid: "status blocked requires", wantNil: false},
+		{name: "edited clearing suppresses prior and body receipt", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\nCurrent status cleared.", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &oldActivity, UpdatedAt: &oldActivity}}, wantURL: "https://github.test/comment/earlier", wantStatus: "", wantAction: AutoPromoteActionPromote, wantReason: AutoPromoteReasonReady, wantSource: "structured", wantBlocker: "", wantInvalid: "", wantNil: true},
+		{name: "equal edit time retains reverse input precedence", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &now, UpdatedAt: &now}}, wantURL: "https://github.test/comment/later", wantStatus: "in_progress", wantAction: AutoPromoteActionPromote, wantReason: AutoPromoteReasonReady, wantSource: "structured", wantBlocker: "", wantInvalid: "", wantNil: false},
+		{name: "zero edit timestamp falls back to created time", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: &now, UpdatedAt: new(time.Time{})}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadBlocker, wantSource: "structured", wantBlocker: "Need owner approval.", wantInvalid: "", wantNil: false},
+		{name: "zero dates retain input precedence", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: new(time.Time{}), UpdatedAt: new(time.Time{})}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadBlocker, wantSource: "structured", wantBlocker: "Need owner approval.", wantInvalid: "", wantNil: false},
+		{name: "undated later human hold keeps input precedence", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later"}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadBlocker, wantSource: "structured", wantBlocker: "Need owner approval.", wantInvalid: "", wantNil: false},
+		{name: "no dates keep reverse input precedence", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier"}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later"}}, wantURL: "https://github.test/comment/later", wantStatus: "in_progress", wantAction: AutoPromoteActionPromote, wantReason: AutoPromoteReasonReady, wantSource: "structured", wantBlocker: "", wantInvalid: "", wantNil: false},
 		{
 			name: "open structured blocker holds",
 			body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```",
@@ -1119,6 +1133,46 @@ func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
 				Body: tt.body,
 				URL:  "https://github.test/comment/structured",
 			}}
+			wantURL := "https://github.test/comment/structured"
+			if tt.comments != nil {
+				issue.Comments = tt.comments
+				issue.Description = "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+				wantURL = tt.wantURL
+			}
+			if tt.comments != nil {
+				var current connector.IssueComment
+				for _, comment := range tt.comments {
+					if comment.URL == tt.wantURL {
+						current = comment
+					}
+				}
+				if got := artifactCompletionReceiptHash(issue.Comments); got != workpad.ContentHash(strings.TrimSpace(current.Body)) {
+					t.Fatalf("receipt hash chose a different Workpad: %q", got)
+				}
+				wantHash := ""
+				if content, ok := workpad.LastStatusBlock(current.Body); ok {
+					wantHash = workpad.ContentHash(content)
+				}
+				if got := artifactGateWorkpadStatusHash(issue.Comments); got != wantHash {
+					t.Fatalf("status hash = %q, want current Workpad %q", got, wantHash)
+				}
+				tracker := &autoPromoteTickConnector{issueComments: map[string][]connector.IssueComment{issue.ID: issue.Comments}}
+				orch := &Orchestrator{connector: tracker}
+				got, err := orch.sessionProgressProbe(issue)(t.Context())
+				if err != nil || got != workpad.ContentHash(strings.TrimSpace(current.Body)) {
+					t.Fatalf("progress hash = %q, %v, want current Workpad", got, err)
+				}
+			}
+			signal, _ := rawIssueWorkpadSignal(issue)
+			if tt.wantNil {
+				if signal != nil {
+					t.Fatalf("selected cleared Workpad retained older signal: %#v", signal)
+				}
+				return
+			}
+			if tt.wantStatus != "" && tt.wantInvalid == "" && (signal == nil || signal.Status != tt.wantStatus) {
+				t.Fatalf("selected status = %#v, want %q", signal, tt.wantStatus)
+			}
 			issue.BlockedBy = append([]connector.BlockedRef(nil), tt.blockedBy...)
 			testCfg := cfg
 			if tt.cfg.Enabled {
@@ -1138,7 +1192,7 @@ func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
 			if got.WorkpadSignalSource != tt.wantSource {
 				t.Fatalf("WorkpadSignalSource = %q, want %q", got.WorkpadSignalSource, tt.wantSource)
 			}
-			if got.WorkpadCommentURL != "https://github.test/comment/structured" {
+			if got.WorkpadCommentURL != wantURL {
 				t.Fatalf("WorkpadCommentURL = %q, want structured comment URL", got.WorkpadCommentURL)
 			}
 			if tt.wantInvalid != "" && !strings.Contains(got.WorkpadStatusInvalid, tt.wantInvalid) {
