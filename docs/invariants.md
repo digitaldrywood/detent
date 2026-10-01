@@ -904,6 +904,13 @@ negative evidence, cleared bodies, empty comments, marker reset and omission
 from persisted data. This removes a duplicate reader without a cache or new
 configuration, gate or recovery mechanism.
 
+Admission reconciliation (#3719) applies the same operation-result contract to
+decision comments returned by its current issue read. Complete results, including empty
+comments, retain that current evidence; incomplete results keep the explicit
+comment read and its error refusal. Comment identity and authorization, proposal
+fingerprints, dependency checks and lane writes retain their existing owners.
+This removes a duplicate comment reader without retaining evidence across runs.
+
 Final workspace diagnostics (#3658) use the existing workspace-preparation
 failure class even after a coding turn has finished. The existing runner error
 classifier also recognizes the strictly anchored legacy final-diffstat Git
