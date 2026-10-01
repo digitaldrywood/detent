@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +23,7 @@ import (
 const (
 	dashboardReadTimeout     = 10 * time.Second
 	dashboardResponseBodyMax = 1 << 20
-	stateCollectionLimit     = 100
+	stateCollectionLimit     = serviceapi.StateCollectionLimit
 )
 
 type dashboardHTTPClient interface {
@@ -94,16 +93,8 @@ type DashboardState struct {
 	Truncation StateTruncation
 }
 
-type StateTruncation struct {
-	Limit       int                         `json:"limit"`
-	Truncated   bool                        `json:"truncated"`
-	Collections []StateCollectionTruncation `json:"collections"`
-}
-
-type StateCollectionTruncation struct {
-	Path    string `json:"path"`
-	Omitted int    `json:"omitted"`
-}
+type StateTruncation = serviceapi.StateTruncation
+type StateCollectionTruncation = serviceapi.StateCollectionTruncation
 
 func (e *DashboardTransportError) Error() string {
 	if e == nil {
@@ -261,15 +252,32 @@ func (c *DashboardReadClient) State(ctx context.Context, projectID string) (Dash
 		requestURL.Path = "/api/v1/projects/" + projectID + "/state"
 		requestURL.RawPath = "/api/v1/projects/" + url.PathEscape(projectID) + "/state"
 	}
+	query := requestURL.Query()
+	query.Set("projection", serviceapi.StateProjection)
+	requestURL.RawQuery = query.Encode()
 
 	payload := map[string]any{}
 	if _, err := c.readJSON(ctx, requestURL, &payload); err != nil {
 		return DashboardState{}, err
 	}
-	delete(payload, "board_issues")
-	truncation := StateTruncation{Limit: stateCollectionLimit, Collections: []StateCollectionTruncation{}}
-	truncateStateCollections(payload, "", &truncation)
-	truncation.Truncated = len(truncation.Collections) > 0
+	if _, ok := payload["truncation"]; !ok {
+		// Small responses from older services remain compatible. The hard
+		// transport limit still rejects their unbounded large responses.
+		var err error
+		payload, err = serviceapi.BoundedState(payload)
+		if err != nil {
+			return DashboardState{}, err
+		}
+	}
+	data, err := json.Marshal(payload["truncation"])
+	if err != nil {
+		return DashboardState{}, fmt.Errorf("encode state truncation: %w", err)
+	}
+	var truncation StateTruncation
+	if err := json.Unmarshal(data, &truncation); err != nil {
+		return DashboardState{}, fmt.Errorf("decode state truncation: %w", err)
+	}
+	delete(payload, "truncation")
 	return DashboardState{payload: payload, Truncation: truncation}, nil
 }
 
@@ -360,41 +368,6 @@ func decodeDashboardJSON(reader io.Reader, result any) error {
 		return fmt.Errorf("decode dashboard API response: %w", err)
 	}
 	return nil
-}
-
-func truncateStateCollections(value any, path string, truncation *StateTruncation) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		if typed == nil {
-			return typed
-		}
-		keys := make([]string, 0, len(typed))
-		for key := range typed {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			typed[key] = truncateStateCollections(typed[key], path+"/"+jsonPointerToken(key), truncation)
-		}
-		return typed
-	case []any:
-		if len(typed) > stateCollectionLimit {
-			truncation.Collections = append(truncation.Collections, StateCollectionTruncation{
-				Path:    path,
-				Omitted: len(typed) - stateCollectionLimit,
-			})
-			typed = typed[:stateCollectionLimit]
-		}
-		for index := range typed {
-			typed[index] = truncateStateCollections(typed[index], path+"/"+strconv.Itoa(index), truncation)
-		}
-		return typed
-	}
-	return value
-}
-
-func jsonPointerToken(value string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(value, "~", "~0"), "/", "~1")
 }
 
 // ListTools delegates discovery to the same daemon authority as execution.

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -15,6 +16,13 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web"
 )
 
 func TestDashboardReadClientStateScoping(t *testing.T) {
@@ -47,6 +55,9 @@ func TestDashboardReadClientStateScoping(t *testing.T) {
 				}
 				if got := request.Header.Get("Accept"); got != "application/json" {
 					t.Errorf("Accept = %q", got)
+				}
+				if got := request.URL.Query().Get("projection"); got != serviceapi.StateProjection {
+					t.Errorf("projection = %q", got)
 				}
 				_ = json.NewEncoder(writer).Encode(stateFixture())
 			}))
@@ -98,11 +109,13 @@ func TestDashboardReadClientStateBoundsEveryCollection(t *testing.T) {
 		t.Fatalf("refresh.sources length = %d, want %d", len(sources), stateCollectionLimit)
 	}
 	wantTruncation := StateTruncation{
-		Limit:     stateCollectionLimit,
-		Truncated: true,
+		Limit:         stateCollectionLimit,
+		MaxBytes:      serviceapi.StateResponseBytes,
+		ValueMaxBytes: serviceapi.StateValueBytes,
+		Truncated:     true,
 		Collections: []StateCollectionTruncation{
-			{Path: "/refresh/sources", Omitted: 1},
-			{Path: "/running", Omitted: 3},
+			{Path: "/refresh/sources", Omitted: 1, Total: 101, Returned: 100},
+			{Path: "/running", Omitted: 3, Total: 103, Returned: 100},
 		},
 	}
 	if !reflect.DeepEqual(state.Truncation, wantTruncation) {
@@ -161,6 +174,11 @@ func TestDashboardReadClientStateProblemsMatchExplain(t *testing.T) {
 			status: http.StatusOK,
 			body:   `{"generated_at":"2026-08-08T03:00:00Z","error":{"code":"snapshot_unavailable","message":"Snapshot unavailable"}}`,
 		},
+		{
+			name:   "legacy service ignoring projection remains transport bounded",
+			status: http.StatusOK, body: `{"large":"` + strings.Repeat("x", dashboardResponseBodyMax) + `"}`,
+			wantCode: errorCodeGeneral, wantExit: ExitGeneral,
+		},
 	}
 
 	for _, tt := range tests {
@@ -194,6 +212,9 @@ func TestDashboardReadClientStateProblemsMatchExplain(t *testing.T) {
 				}
 				return
 			}
+			if err == nil {
+				t.Fatal("expected state read failure")
+			}
 			problem := ProblemForError(classifyStateReadError(err))
 			if problem.Code != tt.wantCode || problem.ExitCode != tt.wantExit {
 				t.Fatalf("problem = %#v, want code %q exit %d", problem, tt.wantCode, tt.wantExit)
@@ -211,8 +232,12 @@ func TestStateCommandOutput(t *testing.T) {
 		args          []string
 		wantPretty    []string
 		wantJSONBuild bool
+		large         bool
 	}{
 		{name: "JSON projection", args: []string{"--project", "detent"}, wantJSONBuild: true},
+		{name: "large fleet over HTTP", large: true},
+		{name: "large project over HTTP", args: []string{"--project", "detent"}, large: true},
+		{name: "large pretty project", args: []string{"--project", "detent"}, large: true, stdoutTTY: true, wantPretty: []string{"Running: 103", "Truncated: true", "Omitted /running/0/issue_title: byte_limit"}},
 		{name: "pretty projection", stdoutTTY: true, args: []string{"--project", "detent"}, wantPretty: []string{"Status: running", "Generated at: 2026-08-08T03:00:00Z", "Degraded: true", "Refresh status: degraded", "Enrichment status: ready", "Enrichment completed snapshot: 2026-08-08T03:00:00Z", "Running: 2", "Ready: 3", "Waiting: 4", "Blocked: 1", "Memory PSI some avg60: 0% / 10% threshold (admitting)", "I/O PSI full avg10: 63.64% / 5% threshold (limited to 1 agent for 5m0s)", "CPU PSI some avg10: 91.2% / 80% threshold (holding dispatch)", "Truncated: false"}},
 	}
 
@@ -220,12 +245,63 @@ func TestStateCommandOutput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			var handler http.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if request.URL.Path != "/api/v1/projects/detent/state" {
 					t.Errorf("path = %q", request.URL.Path)
 				}
 				_ = json.NewEncoder(writer).Encode(stateFixture())
-			}))
+			})
+			if tt.large {
+				// Catches reading the unbounded state before projection, including
+				// nested arrays and a single entry larger than the transport cap.
+				snapshots := hub.New[telemetry.Snapshot]()
+				refresh := telemetry.Refresh{Status: telemetry.RefreshStatus("degraded"), Sources: make([]telemetry.RefreshSource, 103)}
+				refresh.Sources[0].Degraded = true
+				snapshot := telemetry.Snapshot{
+					GeneratedAt: time.Date(2026, 8, 8, 3, 0, 0, 0, time.UTC),
+					Refresh:     refresh, Counts: telemetry.Counts{Running: 103},
+					Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "detent"}, Counts: telemetry.Counts{Running: 103}, Refresh: refresh}},
+					Running:  make([]telemetry.Running, 104),
+				}
+				for i := range snapshot.Running {
+					snapshot.Running[i].Issue = telemetry.Issue{ID: strconv.Itoa(i), Identifier: "detent#" + strconv.Itoa(i), ProjectID: "detent"}
+				}
+				// This other project must be filtered before collection totals are taken.
+				snapshot.Running[103].ProjectID = "other"
+				snapshot.Running[0].Title = strings.Repeat("large entry ", 1<<18)
+				if err := snapshots.Publish(snapshot); err != nil {
+					t.Fatal(err)
+				}
+				backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "state.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := backend.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				dashboard, err := web.NewServer(web.Config{LookupEnv: func(string) string { return "" }}, web.Dependencies{Hub: snapshots, Store: backend, Registry: project.NewRegistry(), Connector: memory.New(memory.Config{})})
+				if err != nil {
+					t.Fatal(err)
+				}
+				handler = dashboard.Handler()
+				path := "/api/v1/state"
+				if len(tt.args) > 0 {
+					path = "/api/v1/projects/detent/state"
+				}
+				full := httptest.NewRecorder()
+				handler.ServeHTTP(full, httptest.NewRequest(http.MethodGet, path, nil))
+				if full.Code != http.StatusOK || full.Body.Len() <= dashboardResponseBodyMax {
+					t.Fatalf("full state: status=%d bytes=%d", full.Code, full.Body.Len())
+				}
+				var unbounded map[string]any
+				if err := decodeDashboardJSON(bytes.NewReader(full.Body.Bytes()), &unbounded); err == nil || !strings.Contains(err.Error(), "response exceeds 1048576 bytes") {
+					t.Fatalf("unbounded state read = %v, want transport limit failure", err)
+				}
+				t.Logf("unbounded state reproduces transport failure: %d bytes", full.Body.Len())
+			}
+			server := httptest.NewServer(handler)
 			t.Cleanup(server.Close)
 			parsed, err := url.Parse(server.URL)
 			if err != nil {
@@ -283,6 +359,88 @@ func TestStateCommandOutput(t *testing.T) {
 				if instance["version"] != "v1.3.0" || instance["commit"] != "abcdef123456" {
 					t.Fatalf("instance = %#v, want running build", instance)
 				}
+			}
+			if tt.large {
+				if stdout.Len() > dashboardResponseBodyMax {
+					t.Fatalf("bounded output has %d bytes", stdout.Len())
+				}
+				var truncation StateTruncation
+				if err := json.Unmarshal(object["truncation"], &truncation); err != nil {
+					t.Fatal(err)
+				}
+				if !truncation.Truncated {
+					t.Fatal("large state silently presented as complete")
+				}
+				var rows []map[string]any
+				if err := json.Unmarshal(object["running"], &rows); err != nil {
+					t.Fatal(err)
+				}
+				if len(rows) != 100 {
+					t.Fatalf("running rows = %d", len(rows))
+				}
+				for i, row := range rows {
+					if row["issue_identifier"] != "detent#"+strconv.Itoa(i) {
+						t.Fatalf("running[%d] = %v", i, row["issue_identifier"])
+					}
+				}
+				var generatedAt string
+				if err := json.Unmarshal(object["generated_at"], &generatedAt); err != nil {
+					t.Fatal(err)
+				}
+				if generatedAt != "2026-08-08T03:00:00Z" {
+					t.Fatalf("generated_at = %q", generatedAt)
+				}
+				var counts struct {
+					Running int `json:"running"`
+				}
+				if err := json.Unmarshal(object["counts"], &counts); err != nil {
+					t.Fatal(err)
+				}
+				wantRunning := 104
+				if len(tt.args) > 0 {
+					wantRunning = 103
+				}
+				if counts.Running != wantRunning {
+					t.Fatalf("original counts = %v", counts)
+				}
+				for _, want := range []StateCollectionTruncation{{Path: "/running", Total: wantRunning, Returned: 100, Omitted: wantRunning - 100}, {Path: "/refresh/sources", Total: 103, Returned: 100, Omitted: 3}} {
+					found := false
+					for _, got := range truncation.Collections {
+						if got == want {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("missing truncation %+v in %+v", want, truncation.Collections)
+					}
+				}
+				foundTitle := false
+				for _, field := range truncation.OmittedFields {
+					if field.Path == "/running/0/issue_title" && field.Reason == "byte_limit" {
+						foundTitle = true
+					}
+				}
+				if !foundTitle {
+					t.Fatalf("missing oversized title omission: %+v", truncation)
+				}
+				if _, ok := rows[0]["issue_title"]; ok {
+					t.Fatal("oversized title retained")
+				}
+				var refresh map[string]any
+				if err := json.Unmarshal(object["refresh"], &refresh); err != nil {
+					t.Fatal(err)
+				}
+				if refresh["status"] != "degraded" || len(refresh["sources"].([]any)) != 100 {
+					t.Fatalf("refresh = %+v", refresh)
+				}
+				var enrichment map[string]any
+				if err := json.Unmarshal(object["enrichment"], &enrichment); err != nil {
+					t.Fatal(err)
+				}
+				if enrichment["status"] != "omitted" || enrichment["degraded_reason"] == "" {
+					t.Fatalf("enrichment = %+v", enrichment)
+				}
+				t.Logf("bounded command output: %d bytes, scoped running total %d", stdout.Len(), counts.Running)
 			}
 		})
 	}

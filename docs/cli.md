@@ -279,16 +279,25 @@ remain on stderr.
 
 ### Fleet state reads
 
-`detent state` reads the public `/api/v1/state` model from the running service.
+`detent state` reads the public `/api/v1/state` model from the running service
+with `projection=cli`, bounding the response before the client reads it.
 `--project <project-id>` selects the existing project-scoped state route. The
 CLI projection does not expose the fuller internal snapshot's `board_issues`
 array. It preserves `generated_at`, refresh freshness and source degradation,
 and snapshot-unavailable degraded responses.
 
-Every JSON array is limited to its first 100 entries in service order. The
+Every state data array is limited to its first 100 entries in service order. The
 top-level `truncation` object always reports that limit and contains
-`truncated` plus a `collections` array of JSON Pointer paths and omitted counts.
-The one-MiB shared-client response limit also bounds non-collection content.
+`truncated` plus a `collections` array of JSON Pointer paths, original `total`,
+`returned`, and `omitted` counts. The service limits compact JSON, including
+metadata, to 768 KiB (`max_bytes`), and individual encoded scalar values to
+16 KiB (`value_max_bytes`). The byte budget can return fewer than 100 entries.
+Oversized fields or subtrees appear in `omitted_fields` with a JSON Pointer
+`path` and `reason: byte_limit`; an omitted array also records its original
+`total`. Counts and freshness come from the complete scoped snapshot.
+The shared client's hard one-MiB transport limit remains unchanged. Older
+services remain compatible for small states, but large states require updating
+the service to support this projection.
 JSON is written to stdout, pretty output is only a human-readable projection,
 and diagnostics remain on stderr.
 
