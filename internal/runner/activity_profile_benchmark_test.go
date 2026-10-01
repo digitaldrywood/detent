@@ -43,12 +43,14 @@ func BenchmarkActivityProfileWorkloads(b *testing.B) {
 		name               string
 		attempts, commands int
 		command            string
-		queries            bool
+		queries, native    bool
 	}{
-		{"short", 1, 120, "printf 'fixture output\\n'", false},
-		{"long", 1, 1, "sleep 6", false},
-		{"concurrent", 4, 60, "printf 'fixture output\\n'", false},
-		{"active_audit", 4, 60, "printf 'fixture output\\n'", true},
+		{"short", 1, 120, "printf 'fixture output\\n'", false, false},
+		{"long", 1, 1, "sleep 6", false, false},
+		{"concurrent", 4, 60, "printf 'fixture output\\n'", false, false},
+		{"active_audit", 4, 60, "printf 'fixture output\\n'", true, false},
+		{"native_short", 1, 120, "cat AGENTS.md >/dev/null; printf 'fixture output\\n'", false, true},
+		{"native_audit", 4, 60, "cat AGENTS.md >/dev/null; printf 'fixture output\\n'", true, true},
 	} {
 		b.Run(workload.name, func(b *testing.B) {
 			for range b.N {
@@ -58,7 +60,7 @@ func BenchmarkActivityProfileWorkloads(b *testing.B) {
 					order = []bool{true, false}
 				}
 				for _, enabled := range order {
-					activityBenchmarkWorkload(b, workload.attempts, workload.commands, workload.command, workload.queries, enabled)
+					activityBenchmarkWorkload(b, workload.attempts, workload.commands, workload.command, workload.queries, workload.native, enabled)
 				}
 			}
 		})
@@ -67,11 +69,16 @@ func BenchmarkActivityProfileWorkloads(b *testing.B) {
 
 var activityBenchmarkOrder atomic.Uint64
 
-func activityBenchmarkWorkload(b *testing.B, attempts, commands int, command string, queries, enabled bool) {
+func activityBenchmarkWorkload(b *testing.B, attempts, commands int, command string, queries, native, enabled bool) {
 	b.Helper()
 	b.StopTimer()
 	ctx := b.Context()
 	dir := b.TempDir()
+	if native {
+		if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("Private fixture policy\nRun focused tools\n"), 0600); err != nil {
+			b.Fatal(err)
+		}
+	}
 	path := filepath.Join(dir, "profile.db")
 	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: path})
 	if err != nil {
@@ -128,15 +135,22 @@ func activityBenchmarkWorkload(b *testing.B, attempts, commands int, command str
 			}
 			for item := range commands {
 				id := fmt.Sprintf("tool-%d", item)
-				emit(AgentUpdate{Type: AgentUpdateToolStarted, ThreadID: "fixture-thread", TurnID: "fixture-turn", ItemID: id, Tool: "commandExecution", Command: command})
+				update := AgentUpdate{Type: AgentUpdateToolStarted, ThreadID: "fixture-thread", TurnID: "fixture-turn", ItemID: id, Tool: "commandExecution", Command: command}
+				if native {
+					update.CWD = dir
+					update.NativeActions = []NativeCommandAction{{Type: "read", Command: "cat AGENTS.md", Name: "AGENTS.md", Path: "AGENTS.md"}, {Type: "unknown", Command: "printf 'fixture output\\n'"}}
+				}
+				emit(update)
 				begin := time.Now()
-				output, err := exec.CommandContext(ctx, "/bin/sh", "-c", command).Output()
+				cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+				cmd.Dir = dir
+				output, err := cmd.Output()
 				commandTimes[attempt] = append(commandTimes[attempt], time.Since(begin))
 				if err != nil {
 					b.Error(err)
 				}
 				emit(AgentUpdate{Type: AgentUpdateToolOutput, ThreadID: "fixture-thread", TurnID: "fixture-turn", ItemID: id, Tool: "command", Delta: string(output)})
-				emit(AgentUpdate{Type: AgentUpdateToolCompleted, ThreadID: "fixture-thread", TurnID: "fixture-turn", ItemID: id, Tool: "commandExecution", Status: "completed"})
+				emit(AgentUpdate{Type: AgentUpdateToolCompleted, ThreadID: "fixture-thread", TurnID: "fixture-turn", ItemID: id, Tool: "commandExecution", Status: "completed", NativeActions: update.NativeActions, CWD: update.CWD})
 			}
 			emit(AgentUpdate{Type: AgentUpdateTurnCompleted, ThreadID: "fixture-thread", TurnID: "fixture-turn", Status: "completed"})
 			recorder.close()
