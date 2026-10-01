@@ -622,6 +622,15 @@ without loading breaker history they cannot consume.
 retained current park decisions. This consolidates the existing eligibility
 condition before its read without a cache or recovery mechanism.
 
+Scoped park summaries select physical rows through the existing identity
+indexes before aggregating history. A fixed two or three `json_each` identity
+branches serve any batch size; `rowid IN` deduplicates rows matching several
+aliases without collapsing distinct usage rows. Project boundaries, one-hop
+alias matching, list and invalid-identity behavior, park provenance, and
+acknowledgment receipts remain unchanged. The existing park summary, bridging,
+and acknowledgment tests cover these contracts, including a board-sized batch.
+This consolidates scoped readers without a new index, cache, or mechanism.
+
 Missing `gate.local_status` evidence is unproduced Detent-owned work (#3172).
 The connector shares the ownership predicate with current-head CI telemetry and
 merge missing-check accounting, removing that context from pending-CI suppression,
