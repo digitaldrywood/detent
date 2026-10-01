@@ -3563,14 +3563,30 @@ func TestManagerKeepsValidSemanticEvaluationWhenPeerIsMalformed(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	current := now
 	issues := []connector.Issue{
 		admissionIssueFixture("issue-1", "DD-1", 1, now),
 		admissionIssueFixture("issue-2", "DD-2", 2, now),
 	}
-	tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+	for index := range issues {
+		issues[index].Description += "\nBlocked by: #10"
+	}
+	blocker := admissionIssueFixture("blocker", "owner/repo#10", 1, now)
+	blocker.Closed = true
+	blocker.State = "Done"
+	tracker := memory.New(memory.Config{Issues: append(issues, blocker), Stateful: true})
 	backend := openManagerTestStore(t)
+	faults := faultAdmissionStore{Store: backend}
 	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
-		evaluation := admissionProposalEvaluation(request.Admission.Candidates[0].ID)
+		if !request.StartedAt.IsZero() {
+			t.Errorf("candidate session StartedAt = %v at clock %v, want runner default", request.StartedAt, current)
+		}
+		candidate := request.Admission.Candidates[0]
+		if candidate.Dependencies == nil || !candidate.Dependencies.ObservedAt.Equal(now) {
+			t.Errorf("candidate dependency observation = %#v, want batch time %v", candidate.Dependencies, now)
+		}
+		current = current.Add(time.Minute)
+		evaluation := admissionProposalEvaluation(candidate.ID)
 		if evaluation.IssueID == issues[1].ID {
 			evaluation.Confidence = float64Pointer(2)
 		}
@@ -3579,14 +3595,29 @@ func TestManagerKeepsValidSemanticEvaluationWhenPeerIsMalformed(t *testing.T) {
 	manager := newAdmissionTestManager(
 		t,
 		admissionTestSettings(tracker, agent),
-		backend,
-		func() time.Time { return now },
+		&faults,
+		func() time.Time { return current },
 	)
 
 	result, err := manager.RunOnce(t.Context())
 	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issues[0].ID ||
 		len(result.Malformed) != 1 || result.Malformed[0].IssueID != issues[1].ID {
 		t.Fatalf("RunOnce() = %#v, %v", result, err)
+	}
+	runs, runsErr := backend.RecentAdmissionRuns(t.Context(), "detent", 2)
+	if runsErr != nil || len(runs) != 1 || !runs[0].StartedAt.Equal(now) || !runs[0].CompletedAt.Equal(current) {
+		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, runsErr)
+	}
+	if agent.calls != len(issues) || !current.Equal(now.Add(2*time.Minute)) || len(runs[0].Issues) != len(issues) {
+		t.Fatalf("runner calls = %d, clock = %v, run issues = %#v", agent.calls, current, runs[0].Issues)
+	}
+	for _, issue := range runs[0].Issues {
+		if !issue.EvaluatedAt.Equal(now) {
+			t.Errorf("evaluation history time = %v, want batch time %v", issue.EvaluatedAt, now)
+		}
+	}
+	if len(faults.malformed) != 1 || !faults.malformed[0].FirstSeenAt.Equal(now) || !faults.malformed[0].LastSeenAt.Equal(now) {
+		t.Fatalf("malformed history = %#v, want batch time %v", faults.malformed, now)
 	}
 	history, historyErr := backend.AdmissionProposalHistory(t.Context(), "detent", issues[1].ID)
 	if historyErr != nil || len(history) != 0 {
@@ -3981,6 +4012,7 @@ func (g *capacityGate) Release(scheduler.Slot) error {
 
 type faultAdmissionStore struct {
 	Store
+	malformed             []admissionmodel.MalformedResult
 	expireErr             error
 	refreshErr            error
 	recordErr             error
@@ -3996,6 +4028,14 @@ type faultAdmissionStore struct {
 
 type admissionIssueStoreWithoutCommentReader struct {
 	IssueStore
+}
+
+func (s *faultAdmissionStore) RecordAdmissionMalformedResult(ctx context.Context, record admissionmodel.MalformedResult, limit int) (admissionmodel.MalformedResult, error) {
+	stored, err := s.Store.RecordAdmissionMalformedResult(ctx, record, limit)
+	if err == nil {
+		s.malformed = append(s.malformed, stored)
+	}
+	return stored, err
 }
 
 func (s *faultAdmissionStore) CreateAdmissionDecline(ctx context.Context, decline admissionmodel.Decline) (bool, error) {

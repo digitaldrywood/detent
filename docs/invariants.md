@@ -830,6 +830,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Admission candidate evaluations use the runner's existing current-clock fallback
+for each logical session start (#3729). The admission batch no longer overrides
+that clock. Run start, dependency observations, evaluation history and malformed
+result history retain their batch observation time; budget, fingerprints, capacity
+and fresh final eligibility validation retain their existing owners. Session start
+remains distinct from physical provider launch. The existing mixed semantic-result
+and runner admission fixtures cover these boundaries without adding a clock field
+or mechanism.
+
 Dispatch reference evidence (#3696) consolidates dependency hydration and recorded
 predicate resolution under the existing per-plan blocker cache. Only successfully
 resolved issue snapshots seed predicates, keyed by the normalized actual issue
