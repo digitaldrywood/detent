@@ -52,11 +52,12 @@ func TestHostedMemberManagement(t *testing.T) {
 			name, account, method, path string
 			payload                     any
 			status                      int
+			message                     string
 		}{
 			{name: "viewer cannot change a role", account: "viewer", method: http.MethodPut, path: "membership_user_browser_owner/role", payload: map[string]any{"role": "member"}, status: http.StatusForbidden},
 			{name: "unknown member", account: "owner", method: http.MethodPut, path: "membership_unknown/role", payload: map[string]any{"role": "member"}, status: http.StatusForbidden},
 			{name: "invalid role", account: "owner", method: http.MethodPut, path: "membership_user_browser_viewer/role", payload: map[string]any{"role": "superuser"}, status: http.StatusForbidden},
-			{name: "last owner keeps the organization", account: "owner", method: http.MethodDelete, path: "membership_user_browser_owner", status: http.StatusForbidden},
+			{name: "last owner keeps the organization", account: "owner", method: http.MethodDelete, path: "membership_user_browser_owner", status: http.StatusForbidden, message: "This member could not be removed; the organization must retain an owner"},
 			{name: "unknown member grant", account: "owner", method: http.MethodPut, path: "membership_unknown/grants", payload: map[string]any{"project_id": "prj_x"}, status: http.StatusNotFound},
 			{name: "viewer cannot grant", account: "viewer", method: http.MethodPut, path: "membership_user_browser_viewer/grants", payload: map[string]any{"project_id": "prj_x"}, status: http.StatusForbidden},
 		} {
@@ -66,6 +67,9 @@ func TestHostedMemberManagement(t *testing.T) {
 				browserHostedDecode(t, response, &failure)
 				if failure.Code == "" || failure.Message == "" {
 					t.Fatalf("error shape = %#v", failure)
+				}
+				if test.message != "" && failure.Message != test.message {
+					t.Fatalf("error message = %q, want %q", failure.Message, test.message)
 				}
 			})
 		}
