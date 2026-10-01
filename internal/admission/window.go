@@ -24,7 +24,7 @@ func (m *Manager) orderCandidateWindow(ctx context.Context, settings Settings, c
 	out := make([]connector.Issue, 0, len(candidates))
 	for _, candidate := range candidates {
 		if len(admissionDependencyReferences(candidate)) > 0 {
-			settings.dependencies[candidate.ID] = resolveAdmissionDependencies(ctx, settings, candidate, at)
+			settings.dependencies[candidate.ID] = resolveAdmissionDependenciesWithEvidence(ctx, settings, candidate, at, settings.dependencies)
 		}
 		previous := history[candidate.ID]
 		if previous.Fingerprint == admissionEvaluationFingerprints(settings, candidate).proposal {

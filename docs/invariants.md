@@ -1917,6 +1917,15 @@ ranking-only projection; unresolved, failed, or unverified human prerequisites
 remain nonterminal. Only the resulting unblocker counts return to the original
 candidate, preserving dependency identities, provenance, fingerprints and final
 revalidation without another read or ranking mechanism.
+The initial candidate window reuses successfully resolved canonical prerequisite
+facts from its operation-owned candidate evidence (#3730). Each candidate retains
+its own observation clock, readiness projection and fingerprint; missing or
+failed references and unqualified local aliases are resolved independently.
+Final candidate and dependency revalidation still reads fresh tracker evidence.
+This consolidates duplicate reference hydration without a separate cache or reader.
+`TestManagerAdmissionUsesAcceptedDependencyFrontier` covers shared-reference reads
+and unchanged evidence; `TestAdmissionRevalidatesDependenciesDuringEvaluation`
+rejects both candidates when their shared prerequisite changes after evaluation.
 
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the

@@ -53,6 +53,10 @@ func admissionDependencyReferences(issue connector.Issue) []string {
 }
 
 func resolveAdmissionDependencies(ctx context.Context, settings Settings, issue connector.Issue, at time.Time) *runner.AdmissionDependencies {
+	return resolveAdmissionDependenciesWithEvidence(ctx, settings, issue, at, nil)
+}
+
+func resolveAdmissionDependenciesWithEvidence(ctx context.Context, settings Settings, issue connector.Issue, at time.Time, previous map[string]*runner.AdmissionDependencies) *runner.AdmissionDependencies {
 	refs := admissionDependencyReferences(issue)
 	if len(refs) == 0 {
 		return nil
@@ -67,20 +71,43 @@ func resolveAdmissionDependencies(ctx context.Context, settings Settings, issue 
 		evidence.References = append(evidence.References, runner.AdmissionDependency{Error: "dependency reference limit exceeded"})
 		refs = refs[:admissionDependencyLimit]
 	}
-	resolved := make(map[string]connector.Issue)
+	resolved := make(map[string]runner.AdmissionDependency, len(refs))
+	for _, ref := range refs {
+		resolved[ref] = runner.AdmissionDependency{Identifier: ref, Error: "tracker cannot resolve issue references"}
+	}
+	for _, snapshot := range previous {
+		if snapshot == nil || snapshot.Readiness != rule || !snapshot.ObservedAt.Equal(evidence.ObservedAt) {
+			continue
+		}
+		for _, entry := range snapshot.References {
+			if _, requested := resolved[entry.Identifier]; !requested || entry.Error != "" {
+				continue
+			}
+			if canonical, err := dependencyline.CanonicalReference(entry.Identifier, ""); err == nil && canonical == entry.Identifier {
+				resolved[entry.Identifier] = entry
+			}
+		}
+	}
+	pending := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if resolved[ref].Error != "" {
+			pending = append(pending, ref)
+		}
+	}
+	fresh := make(map[string]connector.Issue)
 	resolutionError := "tracker cannot resolve issue references"
-	if resolver, ok := settings.Issues.(connector.IssueReferenceResolver); ok {
-		issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, refs)
+	if resolver, ok := settings.Issues.(connector.IssueReferenceResolver); ok && len(pending) > 0 {
+		issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, pending)
 		if err != nil {
 			resolutionError = "dependency resolution failed: " + redactAdmissionOutput([]byte(err.Error()))
 		} else {
 			resolutionError = "dependency was not returned by tracker"
-			resolved = indexAdmissionDependencies(issues, refs)
+			fresh = indexAdmissionDependencies(issues, pending)
 		}
 	}
-	for _, ref := range refs {
+	for _, ref := range pending {
 		entry := runner.AdmissionDependency{Identifier: ref}
-		dependency, found := resolved[ref]
+		dependency, found := fresh[ref]
 		if !found {
 			entry.Error = resolutionError
 		} else {
@@ -95,6 +122,10 @@ func resolveAdmissionDependencies(ctx context.Context, settings Settings, issue 
 				entry.Ready = connector.HumanPrerequisiteReady(dependency)
 			}
 		}
+		resolved[ref] = entry
+	}
+	for _, ref := range refs {
+		entry := resolved[ref]
 		evidence.Ready = evidence.Ready && entry.Ready
 		evidence.References = append(evidence.References, entry)
 	}

@@ -230,10 +230,10 @@ func TestManagerPartialReadWithStaleHistory(t *testing.T) {
 func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, source, prerequisite, snapshotState string
-		enabled, human, unknown, bodyOnly         bool
-		wantReady                                 bool
-		wantFirst                                 string
+		name, source, prerequisite, snapshotState                                       string
+		enabled, human, unknown, bodyOnly, shared, localAlias, extraMissing, extraError bool
+		wantReady                                                                       bool
+		wantFirst                                                                       string
 	}{
 		{name: "active frontier", source: "Rework", enabled: true, wantFirst: "frontier"},
 		{name: "blocked frontier", source: "Blocked", enabled: true, wantFirst: "frontier"},
@@ -249,6 +249,16 @@ func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 		{name: "closed unverified human prerequisite", source: "Todo", enabled: true, prerequisite: "human", snapshotState: "Done", wantFirst: "older"},
 		{name: "body-only closed prerequisite", source: "Todo", enabled: true, prerequisite: "closed", bodyOnly: true, wantReady: true, wantFirst: "frontier"},
 		{name: "body-only open prerequisite", source: "Todo", enabled: true, prerequisite: "open", bodyOnly: true, wantFirst: "older"},
+		{name: "shared closed prerequisite", source: "Todo", enabled: true, prerequisite: "closed", shared: true, wantReady: true, wantFirst: "frontier"},
+		{name: "shared merged prerequisite", source: "Todo", enabled: true, prerequisite: "merged", shared: true, bodyOnly: true, wantReady: true, wantFirst: "frontier"},
+		{name: "shared open prerequisite", source: "Todo", enabled: true, prerequisite: "open", shared: true, snapshotState: "Done", wantFirst: "older"},
+		{name: "shared missing prerequisite", source: "Todo", enabled: true, prerequisite: "missing", shared: true, wantFirst: "older"},
+		{name: "shared failed prerequisite read", source: "Todo", enabled: true, prerequisite: "error", shared: true, wantFirst: "older"},
+		{name: "shared unverified human prerequisite", source: "Todo", enabled: true, prerequisite: "human", shared: true, wantFirst: "older"},
+		{name: "shared prerequisite with missing peer prerequisite", source: "Todo", enabled: true, prerequisite: "closed", shared: true, extraMissing: true, wantReady: true, wantFirst: "frontier"},
+		{name: "shared prerequisite with inaccessible peer prerequisite", source: "Todo", enabled: true, prerequisite: "closed", shared: true, extraError: true, wantReady: true, wantFirst: "frontier"},
+		{name: "shared local alias", source: "Todo", enabled: true, prerequisite: "closed", shared: true, bodyOnly: true, localAlias: true, wantReady: true, wantFirst: "frontier"},
+		{name: "ambiguous shared local alias", source: "Todo", enabled: true, prerequisite: "ambiguous", shared: true, bodyOnly: true, localAlias: true, wantFirst: "older"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -257,6 +267,10 @@ func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 			frontier := admissionIssueFixture("frontier", "owner/repo#3242", 0, now)
 			prerequisite := admissionIssueFixture("prerequisite", "owner/repo#2", 0, now)
 			prerequisite.State = "Todo"
+			prerequisite.Number = 2
+			if tt.localAlias {
+				frontier.Identifier = "local-frontier"
+			}
 			switch tt.prerequisite {
 			case "closed", "human":
 				prerequisite.Closed = true
@@ -288,11 +302,24 @@ func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 			tracker := memory.New(memory.Config{Issues: []connector.Issue{older, frontier, prerequisite}, Stateful: true})
 			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{})
 			resolver := &dependencyAdmissionTracker{IssueStore: tracker, issues: []connector.Issue{prerequisite}}
+			if tt.prerequisite == "ambiguous" {
+				other := prerequisite
+				other.Identifier = "elsewhere/repo#2"
+				resolver.issues = append(resolver.issues, other)
+			}
 			if tt.prerequisite == "missing" {
 				resolver.issues = nil
 			}
 			if tt.prerequisite == "error" {
 				resolver.err = errors.New("inaccessible prerequisite")
+			}
+			if tt.extraError {
+				resolver.resolve = func(refs []string) ([]connector.Issue, error) {
+					if reflect.DeepEqual(refs, []string{"owner/repo#3"}) {
+						return []connector.Issue{prerequisite}, errors.New("inaccessible prerequisite")
+					}
+					return resolver.issues, nil
+				}
 			}
 			settings.Issues = resolver
 			settings.dependencies = make(map[string]*runner.AdmissionDependencies)
@@ -309,8 +336,21 @@ func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 			}
 			backend := openManagerTestStore(t)
 			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
-			got, err := manager.orderCandidateWindow(t.Context(), settings, []connector.Issue{older, frontier}, map[string]int{}, now)
-			if err != nil || len(got) != 2 || got[0].ID != tt.wantFirst {
+			candidates := []connector.Issue{older, frontier}
+			peer := frontier
+			peer.ID = "peer"
+			peer.Identifier = "owner/repo#3243"
+			if tt.extraMissing || tt.extraError {
+				peer.Description += "\nDepends on: owner/repo#3"
+			}
+			if tt.localAlias {
+				peer.Identifier = "local-peer"
+			}
+			if tt.shared {
+				candidates = append(candidates, peer)
+			}
+			got, err := manager.orderCandidateWindow(t.Context(), settings, candidates, map[string]int{}, now)
+			if err != nil || len(got) != len(candidates) || got[0].ID != tt.wantFirst {
 				t.Fatalf("order=%+v err=%v", got, err)
 			}
 			wantCalls := 0
@@ -330,8 +370,49 @@ func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 					t.Fatalf("fresh dependency evidence=%+v", evidence)
 				}
 			}
+			if tt.shared && (tt.prerequisite == "missing" || tt.prerequisite == "error" || tt.localAlias || tt.extraMissing || tt.extraError) {
+				wantReads = 2
+			}
 			if resolver.calls != wantReads {
 				t.Fatalf("dependency reads=%d want=%d", resolver.calls, wantReads)
+			}
+			if wantReads > 0 {
+				ref := "owner/repo#2"
+				if tt.localAlias {
+					ref = "#2"
+				}
+				for i, request := range resolver.requests {
+					if i == 1 && (tt.extraMissing || tt.extraError) {
+						ref = "owner/repo#3"
+					}
+					if !reflect.DeepEqual(request, []string{ref}) {
+						t.Fatalf("dependency read=%+v", request)
+					}
+				}
+			}
+			if tt.shared {
+				frontierEvidence := settings.dependencies[frontier.ID]
+				peerEvidence := settings.dependencies[peer.ID]
+				baseline := frontierEvidence
+				if tt.extraMissing || tt.extraError {
+					expected := *frontierEvidence
+					expected.Ready = false
+					entry := runner.AdmissionDependency{Identifier: "owner/repo#3", Error: "dependency was not returned by tracker"}
+					if tt.extraError {
+						entry.Error = "dependency resolution failed: inaccessible prerequisite"
+					}
+					expected.References = append(append([]runner.AdmissionDependency(nil), frontierEvidence.References...), entry)
+					baseline = &expected
+				}
+				if !reflect.DeepEqual(baseline, peerEvidence) || !peerEvidence.ObservedAt.Equal(now) || dependencyFingerprint("candidate", baseline) != dependencyFingerprint("candidate", peerEvidence) {
+					t.Fatalf("shared evidence changed: frontier=%+v peer=%+v", frontierEvidence, peerEvidence)
+				}
+				if !tt.extraError {
+					baseline = resolveAdmissionDependencies(t.Context(), settings, peer, now)
+					if !reflect.DeepEqual(peerEvidence, baseline) || issueFingerprint(peer, peerEvidence) != issueFingerprint(peer, baseline) {
+						t.Fatalf("shared resolution changed candidate fingerprint: %+v", peerEvidence)
+					}
+				}
 			}
 			for _, candidate := range got {
 				if candidate.ID == frontier.ID {
