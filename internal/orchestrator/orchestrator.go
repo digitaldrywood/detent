@@ -348,9 +348,6 @@ type Orchestrator struct {
 	dispatchGateSamples     map[dispatchGateSampleKey]time.Time
 	ciTriggerLabelMu        sync.Mutex
 	ciTriggerLabelHeads     map[string]ciTriggerLabelHead
-	stateRequests           chan stateRequest
-	snapshotSignalMu        sync.Mutex
-	snapshotAvailable       chan struct{}
 	initialStateReady       chan struct{}
 	initialStatePublished   sync.Once
 	drainRequests           chan drainRequest
@@ -380,7 +377,6 @@ type Orchestrator struct {
 	latestState             atomic.Pointer[State]
 	completionState         atomic.Pointer[State]
 	latestRuntimeState      atomic.Pointer[runtimeState]
-	refreshInProgress       atomic.Bool
 	refreshProgress         atomic.Pointer[telemetry.RefreshProgress]
 	tickWatchdog            *tickWatchdog
 
@@ -405,10 +401,6 @@ type validatorStageFailure struct {
 	Attempt     int
 	NextRetryAt time.Time
 	Error       string
-}
-
-type stateRequest struct {
-	reply chan State
 }
 
 type modelPermitRequest struct {
@@ -733,8 +725,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		now:                     now,
 		dispatchGateSamples:     map[dispatchGateSampleKey]time.Time{},
 		ciTriggerLabelHeads:     map[string]ciTriggerLabelHead{},
-		stateRequests:           make(chan stateRequest),
-		snapshotAvailable:       make(chan struct{}),
 		initialStateReady:       make(chan struct{}),
 		drainRequests:           make(chan drainRequest),
 		forceRequests:           make(chan forceRequest),
@@ -973,9 +963,6 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			}
 			o.finishTick(&state)
 			update.reply <- struct{}{}
-		case request := <-o.stateRequests:
-			state.syncWorkerProgress()
-			request.reply <- state.clone()
 		}
 		o.publishState(&state)
 	}
@@ -996,8 +983,6 @@ func (o *Orchestrator) startTick(state *State, at time.Time) {
 	// Publish recovered and updated runtime ownership before tracker reads can
 	// block the actor. Existing progress pointers keep heartbeats observable.
 	o.publishRuntimeState(state)
-	o.refreshInProgress.Store(true)
-	o.signalSnapshotAvailable()
 	if o.tickWatchdog == nil || state == nil {
 		return
 	}
@@ -1017,20 +1002,10 @@ func (o *Orchestrator) finishTick(state *State) {
 	}
 	o.publishState(state)
 	o.refreshProgress.Store(nil)
-	o.refreshInProgress.Store(false)
 	if o.tickWatchdog == nil || state == nil {
 		return
 	}
 	o.tickWatchdog.Schedule(state.NextRefreshAt, state.PollInterval)
-}
-
-func (o *Orchestrator) signalSnapshotAvailable() {
-	o.snapshotSignalMu.Lock()
-	defer o.snapshotSignalMu.Unlock()
-	if o.snapshotAvailable != nil {
-		close(o.snapshotAvailable)
-	}
-	o.snapshotAvailable = make(chan struct{})
 }
 
 func (o *Orchestrator) startCompletion(state *State) {
@@ -1045,7 +1020,6 @@ func (o *Orchestrator) startCompletion(state *State) {
 		Complete:   true,
 	}
 	o.completionState.Store(&cloned)
-	o.signalSnapshotAvailable()
 }
 
 func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) ([]BackendOutage, error) {
@@ -1208,13 +1182,6 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	select {
-	case <-ctx.Done():
-		return State{}, ctx.Err()
-	case <-o.done:
-		return State{}, ErrStopped
-	default:
-	}
 	if o.latestState.Load() == nil {
 		select {
 		case <-ctx.Done():
@@ -1224,31 +1191,13 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 		case <-o.initialStateReady:
 		}
 	}
-	o.snapshotSignalMu.Lock()
-	snapshotAvailable := o.snapshotAvailable
-	o.snapshotSignalMu.Unlock()
-	if o.completionState.Load() != nil || o.refreshInProgress.Load() {
-		return o.publishedState(), nil
-	}
-	request := stateRequest{reply: make(chan State, 1)}
 	select {
 	case <-ctx.Done():
 		return State{}, ctx.Err()
 	case <-o.done:
 		return State{}, ErrStopped
-	case <-snapshotAvailable:
+	default:
 		return o.publishedState(), nil
-	case o.stateRequests <- request:
-	}
-	select {
-	case <-ctx.Done():
-		return State{}, ctx.Err()
-	case <-o.done:
-		return State{}, ErrStopped
-	case <-snapshotAvailable:
-		return o.publishedState(), nil
-	case state := <-request.reply:
-		return o.observableState(state), nil
 	}
 }
 

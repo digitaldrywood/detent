@@ -7,7 +7,8 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as Schema from "effect/Schema";
 
 import { SettingsSidebarNav } from "../../src/components/settings/SettingsSidebarNav.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
@@ -30,8 +31,16 @@ import { ExpandableText } from "../../src/app/settings/ExpandableText.tsx";
 import { summarizeProviders } from "../../src/app/fleet/RunnersSection.tsx";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import type { FleetResponse } from "../../src/contracts/account.ts";
+import { AccountBootstrap } from "../../src/contracts/account.ts";
+import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
+import { SettingsRoute } from "../../src/app/settings/Settings.tsx";
+import { organizationMCPEndpoint } from "../../src/app/settings/MCPSettings.tsx";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 if (typeof globalThis.PointerEvent === "undefined") {
   globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
@@ -53,6 +62,7 @@ describe("which sections an actor gets", () => {
       "Projects",
       "Providers & runners",
       "Integrations",
+      "MCP",
       "Plan",
       "Billing",
       "Keybindings",
@@ -98,7 +108,7 @@ describe("which sections an actor gets", () => {
   });
 });
 
-function renderSidebarNav(pathname = "/settings/projects", account: unknown = OWNER_ACCOUNT) {
+function renderSidebarNav(pathname = "/settings/projects", account: unknown = OWNER_ACCOUNT, content: React.ReactNode = null) {
   const navigated: string[] = [];
   const root = createRootRoute();
   const section = createRoute({
@@ -107,6 +117,7 @@ function renderSidebarNav(pathname = "/settings/projects", account: unknown = OW
     component: () => (
       <SidebarProvider>
         <SettingsSidebarNav pathname={pathname} />
+        {content}
       </SidebarProvider>
     ),
   });
@@ -129,6 +140,67 @@ const OWNER_ACCOUNT = {
   account: { actor: { can_manage: true }, support: null },
 };
 
+describe("MCP setup", () => {
+  const account = accountFixture as unknown as AccountBootstrap;
+
+  it.each([
+    ["dedicated", "https://threefold.detent.cloud/", "https://threefold.detent.cloud/mcp"],
+    ["shared entry", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["HTTP", "http://threefold.detent.cloud", null],
+    ["credentials in URL", "https://user:secret@threefold.detent.cloud", null],
+    ["query credential", "https://threefold.detent.cloud?token=secret", null],
+    ["fragment", "https://threefold.detent.cloud#secret", null],
+    ["malformed", "not a URL", null],
+  ])("uses only a safe canonical %s organization endpoint", (_name, publicURL, expected) => {
+    const decoded = Schema.decodeUnknownSync(AccountBootstrap)({ ...account, organization: { ...account.organization, public_url: publicURL }, organizations: [] });
+    expect(organizationMCPEndpoint(decoded)).toBe(expected);
+  });
+
+  it("matches the active organization's identity rather than another directory entry", () => {
+    expect(organizationMCPEndpoint({ ...account, organizations: [...account.organizations].reverse() })).toBe("https://threefold.detent.cloud/mcp");
+    expect(organizationMCPEndpoint({ ...account, organization: { id: "org_unknown", name: "Unknown" } })).toBeNull();
+    expect(organizationMCPEndpoint(null)).toBeNull();
+  });
+
+  it("routes a viewer to setup and copies only the organization URL or placeholder examples without requesting credentials", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const activeAccount = {
+      ...account,
+      organization: { ...account.organization, public_url: "https://app.detent.cloud/organizations/org_threefold" },
+      actor: { ...account.actor, can_manage: false, role: "viewer" },
+      csrf_token: "private-csrf-credential",
+      token: "private-api-credential",
+    };
+    renderSidebarNav("/settings/mcp", { account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Cloud connection requirements" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: "MCP" }).getAttribute("aria-current")).toBe("true");
+    expect(document.body.textContent).not.toContain("private-csrf-credential");
+    expect(document.body.textContent).not.toContain("private-api-credential");
+    fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("https://app.detent.cloud/organizations/org_threefold/mcp"));
+    expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("copied");
+    fireEvent.click(screen.getByText("Connect to your own Detent daemon"));
+    fireEvent.click(screen.getByRole("button", { name: "Copy Local stdio configuration" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(writeText.mock.calls[1]![0]).mcpServers.detent.env.DETENT_API_TOKEN).toBe("YOUR_DETENT_API_TOKEN");
+    for (const [url, options] of fetch.mock.calls) {
+      expect(String(url)).not.toMatch(/tokens|credentials/);
+      expect(options?.method ?? "GET").toBe("GET");
+    }
+  });
+
+  it("offers manual copying when clipboard access fails", async () => {
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    renderSidebarNav("/settings/mcp", { account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy Organization MCP endpoint" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
+    await waitFor(() => expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("Select the text"));
+  });
+});
+
 describe("the settings navigation in the sidebar", () => {
   it("lists every section the actor gets, in the reading order", async () => {
     renderSidebarNav();
@@ -140,6 +212,7 @@ describe("the settings navigation in the sidebar", () => {
       "Projects",
       "Providers & runners",
       "Integrations",
+      "MCP",
       "Plan",
       "Billing",
       "Keybindings",

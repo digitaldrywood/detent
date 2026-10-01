@@ -165,7 +165,11 @@ export type UpdatesReport = typeof UpdatesReport.Type;
  * loads it once.
  */
 export const AccountBootstrap = Schema.Struct({
-  organization: Schema.Struct({ id: Schema.String, name: Schema.String }),
+  organization: Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    public_url: Schema.optional(Schema.String),
+  }),
   organizations: Schema.Array(BootstrapOrganization),
   actor: AccountActor,
   projects: Schema.Array(AccountProject),

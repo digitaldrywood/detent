@@ -46,6 +46,7 @@ import {
 } from "./sections.tsx";
 import { CreditSettings } from "./CreditSettings.tsx";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
+import { MCPSettings } from "./MCPSettings.tsx";
 import { signInPath } from "../../runtime/basePath.ts";
 
 /** The allowance label the plan report's keys become. */
@@ -678,6 +679,8 @@ function SettingsBody({
       return <RunnersSettings />;
     case "integrations":
       return <IntegrationsSettings project={project} onNavigate={onNavigate} />;
+    case "mcp":
+      return <MCPSettings />;
     case "plan":
       return <PlanSettings />;
     case "billing":

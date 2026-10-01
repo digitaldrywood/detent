@@ -830,6 +830,47 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Project state reads (#3748) use the existing published snapshot owner once the
+first publication is ready, including while the actor is blocked on synchronous
+refill. The competing actor state request and snapshot notification channels are
+removed, along with the read-routing refresh flag. The shared refill owner
+publishes confirmed operation state before its fresh candidate read; unresolved tracker writes remain unpublished. Completion
+snapshots retain priority over runtime and full publications during completion
+refill, until final publication clears the existing fence. Returned state remains
+independent, with live runtime ownership, persisted worker heartbeat and validator
+progress observable outside the fence. Reads do not advance tracker freshness,
+complete an unfinished refresh or establish dispatch eligibility. Existing
+publication, operator-move, queued-completion, defensive-copy, worker-progress,
+startup and promotion-read fixtures cover these boundaries. No new cache,
+timeout, configuration, guard, lane writer or recovery mechanism is added.
+
+Completion cleanliness (#3744) uses current, available workspace recovery
+evidence before classifying blocked Workpad text as an intentional remainder.
+After prior cleanliness rejections, verified zero-diff, zero-unpublished evidence
+retains the existing clean-retry owner, with or without a current completion
+declaration or committed/discarded metadata. Absent or unavailable recovery
+evidence and history failures retain their existing refusal semantics. Actual
+dirty or unpublished source remains refused; blocked intentional remainders
+retain their existing escalation owner. Independent human actions, project
+verification and PR promotion retain their existing owners: cleanliness alone
+does not establish approval or successful acceptance. Historical human-owned
+parks retain their authorized recovery lifecycle. The existing evaluator and
+run-completion cleanliness fixtures cover these boundaries. This consolidates
+classification order without a prose classifier, guard, reason, retry,
+configuration or recovery mechanism.
+
+Machine-issue authoring (#3742) exposes optional metadata labels through the
+existing intake draft and connector label normalization. The tool omits lane
+labels projected from the configured tracker prefix, lane states and state map,
+including Backlog, while preserving unrelated metadata. This consolidates the
+authoring contract with existing configured status ownership; it adds no policy
+configuration, reader, recovery mechanism or lane writer. Source stamping and
+fingerprint coordination retain their existing owners. Open fingerprint reuse
+remains comment-only, without body, label or lane changes; only newly published
+issues receive the orchestrator's Backlog state write. The existing
+`TestMachineIssueTool` fixture covers metadata, omitted labels, configured/mapped
+lane filtering, malformed requests, provenance, reuse and publication failures.
+
 Admission candidate evaluations use the runner's existing current-clock fallback
 for each logical session start (#3729). The admission batch no longer overrides
 that clock. Run start, dependency observations, evaluation history and malformed

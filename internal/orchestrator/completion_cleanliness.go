@@ -105,15 +105,6 @@ func (o *Orchestrator) evaluateCompletionCleanliness(
 	}
 	decision.Attempted = true
 	decision.Declaration = completionCleanlinessResolutionDeclaration(issue, running)
-	if intentionalStatement != "" {
-		decision.Outcome = completionCleanlinessEscalated
-		decision.Resolution = completionCleanlinessIntentionallyLeft
-		decision.Reason = dirtyCompletionEscalationReason
-		decision.Statement = intentionalStatement
-		decision.ConsecutiveRejections = previousRejections + 1
-		decision.Block = true
-		return decision
-	}
 	if !diffStatsPresent(evidence) {
 		decision.Outcome = completionCleanlinessRejected
 		decision.Reason = "workspace_cleanliness_unavailable"
@@ -142,6 +133,15 @@ func (o *Orchestrator) evaluateCompletionCleanliness(
 		if previousRejections > 0 && completionCleanlinessResolutionValid(decision.Declaration) {
 			decision.Resolution = decision.Declaration
 		}
+		return decision
+	}
+	if intentionalStatement != "" {
+		decision.Outcome = completionCleanlinessEscalated
+		decision.Resolution = completionCleanlinessIntentionallyLeft
+		decision.Reason = dirtyCompletionEscalationReason
+		decision.Statement = intentionalStatement
+		decision.ConsecutiveRejections = previousRejections + 1
+		decision.Block = true
 		return decision
 	}
 	decision.Outcome = completionCleanlinessRejected

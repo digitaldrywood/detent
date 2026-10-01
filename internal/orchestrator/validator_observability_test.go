@@ -33,7 +33,6 @@ func TestValidatorRuntimeObservable(t *testing.T) {
 			state := newState(orch.cfg)
 			// An implementation for the same issue must not be overwritten by its validator.
 			state.Running[issue.ID] = Running{Issue: issue, DetentSessionID: 6058}
-			orch.startTick(&state, now)
 			orch.publishState(&state)
 			orch.startValidatorStage(t.Context(), &state, issue, now)
 			release := sync.OnceFunc(func() { close(validator.release) })
