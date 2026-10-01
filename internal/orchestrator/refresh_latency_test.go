@@ -281,13 +281,20 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				defer requestMu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
 				if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
+					graphqlReads++
 					var request struct {
 						Query string `json:"query"`
 					}
-					if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !strings.Contains(request.Query, "query DetentGitHubCandidateHydration(") {
-						t.Errorf("unexpected scheduler evidence query %q: %v", request.Query, err)
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Errorf("decode authority query: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
 					}
-					graphqlReads++
+					if !strings.HasPrefix(request.Query, "query DetentGitHubCandidateHydration(") {
+						t.Errorf("unexpected authority query %s", request.Query)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
 					fmt.Fprint(w, `{"errors":[{"message":"Cannot query field \"blockedBy\" on type \"Issue\"."}]}`)
 					return
 				}
@@ -369,8 +376,8 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						t.Fatalf("ID-only phase authority changed: %+v", evidence)
 					}
 				}
-				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 {
-					t.Fatalf("inline authority read remote: %v %v", tracker.fetchIdentifiers, paths)
+				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 || graphqlReads != 0 {
+					t.Fatalf("inline authority read remote: %v %v, GraphQL reads %d", tracker.fetchIdentifiers, paths, graphqlReads)
 				}
 				return
 			}
@@ -411,6 +418,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			}
 			requestMu.Lock()
 			requests := maps.Clone(paths)
+			queries := graphqlReads
 			requestMu.Unlock()
 			want := []string{"owner/repo#1", "owner/repo#2", "owner/other#1"}
 			if len(tracker.fetchIdentifiers) == 0 || fmt.Sprint(tracker.fetchIdentifiers[0]) != fmt.Sprint(want) {
@@ -475,8 +483,8 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						t.Fatalf("request cap changed: %v", requests)
 					}
 				}
-				if mode == "cancelled" && len(requests) != 0 {
-					t.Fatalf("cancelled phase read remote: %v", requests)
+				if mode == "cancelled" && (len(requests) != 0 || queries != 0) {
+					t.Fatalf("cancelled phase read remote: %v, GraphQL reads %d", requests, queries)
 				}
 			}
 		})

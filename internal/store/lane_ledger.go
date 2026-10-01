@@ -147,11 +147,7 @@ type ShippedOutcomeStore interface {
 	ShippedOutcomes(context.Context) ([]ShippedOutcome, error)
 }
 
-// The applied writer ledger records verified deliverables, unlike observed Done
-// cards or successful sessions. Keep the first such outcome for an issue across
-// all history so a repeated/imported observation cannot move it to another day.
-func (s *sqliteStore) ShippedOutcomes(ctx context.Context) ([]ShippedOutcome, error) {
-	rows, err := s.db.QueryContext(ctx, `
+const shippedOutcomesSQL = `
 WITH outcomes AS (
  SELECT id, project_id, issue_id, to_state, written_at,
    ROW_NUMBER() OVER (PARTITION BY project_id, issue_id ORDER BY julianday(written_at), id) AS ordinal
@@ -160,7 +156,7 @@ WITH outcomes AS (
    reason IN ('merge_worker_programmatic_merge', 'pull_request_merged',
      'closed_completed_running_done', 'issue_closed_completed', 'operational_completion')
    OR (reason = 'ready' AND EXISTS (
-     SELECT 1 FROM workflow_phase_events AS phase
+     SELECT 1 FROM workflow_phase_events AS phase INDEXED BY workflow_phase_events_issue_idx
      WHERE phase.project_id = lane.project_id AND phase.issue_id = lane.issue_id
        AND phase.phase_type = 'lane' AND phase.status = 'entered'
        AND phase.phase_name = lane.to_state AND phase.started_at = lane.written_at
@@ -177,7 +173,13 @@ LEFT JOIN workflow_phase_events AS phase ON phase.id = (
  ORDER BY id DESC LIMIT 1
 )
 WHERE outcome.ordinal = 1
-ORDER BY outcome.project_id, outcome.issue_id`)
+ORDER BY outcome.project_id, outcome.issue_id`
+
+// The applied writer ledger records verified deliverables, unlike observed Done
+// cards or successful sessions. Keep the first such outcome for an issue across
+// all history so a repeated/imported observation cannot move it to another day.
+func (s *sqliteStore) ShippedOutcomes(ctx context.Context) ([]ShippedOutcome, error) {
+	rows, err := s.db.QueryContext(ctx, shippedOutcomesSQL)
 	if err != nil {
 		return nil, fmt.Errorf("read shipped outcomes: %w", err)
 	}
