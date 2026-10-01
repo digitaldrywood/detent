@@ -143,6 +143,7 @@ func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connec
 	if c == nil || issue == nil {
 		return nil
 	}
+	issue.CommentsComplete = false
 	issue.DependencyNotes = nil
 	issue.DependencySource = ""
 	ref, ok := issueRefFromIdentifier(issue.Identifier)
@@ -173,6 +174,7 @@ func (c *Connector) hydrateIssueBlockedByRefs(ctx context.Context, issue *connec
 			return fmt.Errorf("fetch dependency comment evidence: %w", err)
 		}
 		issue.Comments = connectorIssueComments(comments)
+		issue.CommentsComplete = true
 		issue.WorkpadSignal = parseWorkpadSignal(githubIssueNode{Body: issue.Description, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}, Comments: nodeConnection[issueComment]{Nodes: comments}})
 	}
 	applyNativeDependencyEvidence(issue, ref.Owner+"/"+ref.Name, nativeRefs)

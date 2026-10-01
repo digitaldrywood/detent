@@ -89,6 +89,7 @@ type Issue struct {
 	WorkpadSignal     *workpad.Signal      `json:"workpad_signal,omitempty" yaml:"workpad_signal,omitempty"`
 	Labels            []string             `json:"labels" yaml:"labels"`
 	CommentCount      int                  `json:"-" yaml:"-"`
+	CommentsComplete  bool                 `json:"-" yaml:"-"`
 	Comments          []IssueComment       `json:"comments,omitempty" yaml:"comments,omitempty"`
 	Fields            map[string]string    `json:"fields,omitempty" yaml:"fields,omitempty"`
 	FieldUpdatedAt    map[string]time.Time `json:"field_updated_at,omitempty" yaml:"field_updated_at,omitempty"`

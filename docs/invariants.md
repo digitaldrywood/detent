@@ -745,6 +745,20 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Completion comment hydration (#3661) consumes the current producer's complete
+comment result instead of immediately reading it again. `CommentsComplete` is
+an operation-result contract excluded from JSON/YAML, not retained freshness
+or timestamp authority. GitHub marks only a successful full comment read;
+local results mark their current database read; composite results require both.
+The completion owner replaces body, comment count, comments and completeness
+from the matching fresh candidate, including empty values. Unknown, partial
+and failed reads retain the explicit fresh comment owner. Native dependencies,
+current head, Workpad edits and read-error refusal remain unchanged. Existing
+fresh-Workpad and local/composite comment fixtures cover edited same-comment
+negative evidence, cleared bodies, empty comments, marker reset and omission
+from persisted data. This removes a duplicate reader without a cache or new
+configuration, gate or recovery mechanism.
+
 Final workspace diagnostics (#3658) use the existing workspace-preparation
 failure class even after a coding turn has finished. The existing runner error
 classifier also recognizes the strictly anchored legacy final-diffstat Git
