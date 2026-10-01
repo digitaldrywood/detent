@@ -327,8 +327,34 @@ configuration change cannot replay a purchase from another billing binding.
 
 ## Generic client setup
 
-Use any MCP client with either a stdio command (`detent mcp`) or the deployed
-organization's HTTPS MCP endpoint. Authoritative wire references are the
+Cloud exposes setup information in **Settings → MCP**. The organization endpoint
+comes from the application's canonical public URL: shared Cloud uses
+`https://<cloud-origin>/organizations/<organization>/mcp`, and a dedicated
+hosted origin uses `https://<organization-origin>/mcp`.
+
+Hosted MCP currently requires the existing hosted browser session, current
+membership and CSRF protection. Hosted operator authority rejects machine API
+tokens, including otherwise valid scoped tokens. There is no MCP OAuth
+authorization flow. A bearer-header configuration in an external client cannot
+connect to Cloud today; do not export browser cookies or CSRF credentials as a
+workaround. The private credential-maintenance listener does not mount MCP.
+
+Self-hosted daemon clients can use `detent mcp` over stdio or the daemon's HTTPS
+`/mcp` endpoint with an existing API key. Create a least-privilege expiring key
+with `detent key add --name mcp-client --scope read --expires-in 30d`; select
+write/admin scope and project restrictions only when needed. Keep the returned
+token in private client configuration or its supported environment variables.
+Use `detent key list` and `detent key revoke KEY_ID` to revoke it; deleting the
+client entry does not revoke a key. These commands operate on the configured
+daemon and do not create Cloud credentials. For unhosted hubs, use the separate
+hub token-management API and `/api/v2/organizations/<organization>/mcp` route.
+
+Follow the client-specific [Claude Code installation instructions](https://code.claude.com/docs/en/mcp)
+or [Cursor installation instructions](https://cursor.com/docs/mcp), selecting
+HTTP with an `Authorization: Bearer YOUR_DETENT_API_TOKEN` header for a
+self-hosted endpoint. SSE and WebSocket transports are not supported.
+
+Authoritative wire references are the
 [2026-07-28 announcement](https://blog.modelcontextprotocol.io/posts/2026-07-28/),
 [current specification](https://modelcontextprotocol.io/specification/2026-07-28),
 [version compatibility](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning),
