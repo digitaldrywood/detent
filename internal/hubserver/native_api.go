@@ -297,9 +297,6 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 	hash := sha256.Sum256(encoded)
 	requestHash := hex.EncodeToString(hash[:])
 	operationID := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	if scope.credential.Hosted != nil {
-		operationID += " " + scope.credential.Hosted.SessionID
-	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -317,8 +314,10 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 			return s.nativeAPIError(c, err)
 		}
 	}
+	// Older hosted receipts included the originating session in operation.
+	// Read those records as the same business operation across reconnects.
 	var storedHash, response string
-	err = tx.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?`, scope.organization, scope.credential.ID, operationID, command.IdempotencyKey).Scan(&storedHash, &response)
+	err = tx.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, command.IdempotencyKey, operationID, operationID, operationID).Scan(&storedHash, &response)
 	if err == nil {
 		if storedHash != requestHash {
 			return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict})

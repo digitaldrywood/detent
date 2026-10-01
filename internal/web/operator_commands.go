@@ -2,14 +2,19 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 var errOperatorCommandUnavailable = errors.New("operator command is unavailable")
@@ -17,6 +22,7 @@ var errOperatorCommandUnavailable = errors.New("operator command is unavailable"
 type dashboardOperatorExecutor struct{ server *Server }
 
 type operatorActionResult struct {
+	CorrelationID  string               `json:"correlation_id"`
 	ActionID       string               `json:"action_id"`
 	ConnectionID   string               `json:"connection_id"`
 	OrganizationID string               `json:"organization_id"`
@@ -100,32 +106,79 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		}
 		return s.operatorActionResult(action)
 	case operatortool.MoveItem, operatortool.SetPriority, operatortool.StopRun, operatortool.FileIssue:
-		requestID, arguments, projectID, err := operatorActionArguments(call.Arguments)
-		if err != nil {
-			return operatortool.Result{}, err
-		}
-		ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: projectID})
-		if err != nil {
-			return operatortool.Result{}, err
-		}
-		if previous, found, err := s.chat.RetryResult(ctx, chatpkg.ActionKind(call.Name), requestID, arguments); err != nil {
-			return operatortool.Result{}, err
-		} else if found {
-			return s.operatorActionResult(previous)
-		}
-		proposal, err := s.operatorActionProposal(ctx, call.Name, arguments)
-		if err != nil {
-			return operatortool.Result{}, errOperatorCommandUnavailable
-		}
-		proposal.RequestID, proposal.Arguments = requestID, arguments
-		action, err := s.chat.Submit(ctx, proposal)
-		if err != nil {
-			return operatortool.Result{}, errOperatorCommandUnavailable
-		}
-		return s.operatorActionResult(action)
+		return s.executeOperatorMutation(ctx, call)
 	default:
 		return operatortool.NewAuthorizedExecutor(s.operatorTools).Execute(ctx, call)
 	}
+}
+
+func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	identity := operatortool.ConnectionIdentity(ctx)
+	correlation, err := randomMutationCorrelation()
+	if err != nil {
+		return operatortool.Result{}, errOperatorCommandUnavailable
+	}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", Mode: string(s.chat.Conversation(operatortool.CurrentConnection(ctx).ID).Mode), Confirmation: "none", CorrelationID: correlation}
+	outcome := "failed"
+	defer func() { s.auditMutation(ctx, m, outcome) }()
+	requestID, arguments, projectID, err := operatorActionArguments(call.Arguments)
+	if err != nil {
+		return operatortool.Result{}, err
+	}
+	m.ProjectID = projectID
+	m, err = m.Bind(requestID, arguments)
+	if err != nil {
+		return operatortool.Result{}, operatortool.ErrInvalidArguments
+	}
+	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: projectID})
+	if err != nil {
+		outcome = "denied"
+		return operatortool.Result{}, err
+	}
+	if previous, found, err := s.chat.RetryResult(ctx, chatpkg.ActionKind(call.Name), requestID, arguments); err != nil {
+		return operatortool.Result{}, err
+	} else if found {
+		outcome = "replayed"
+		return s.operatorActionResult(previous)
+	}
+	if replay, found, err := s.operatorMutationReplay(ctx, m); found || err != nil {
+		if err == nil {
+			outcome = "replayed"
+		}
+		return replay, err
+	}
+	proposal, err := s.operatorActionProposal(ctx, call.Name, arguments)
+	if err != nil {
+		return operatortool.Result{}, errOperatorCommandUnavailable
+	}
+	m.ResourceID = proposal.IssueID
+	if chatpkg.RequiresConfirmation(proposal) {
+		m.Confirmation = "pending"
+		if m.Mode == string(chatpkg.YOLOMode) {
+			m.Confirmation = "yolo"
+		}
+	}
+	records, ok := s.store.(store.OperatorMutations)
+	if !ok {
+		return operatortool.Result{}, errOperatorCommandUnavailable
+	}
+	reserved, err := records.ReserveOperatorMutation(ctx, m)
+	if err != nil {
+		return operatortool.Result{}, errOperatorCommandUnavailable
+	}
+	if !reserved {
+		replay, _, err := s.operatorMutationReplay(ctx, m)
+		return replay, err
+	}
+	proposal.RequestID, proposal.Arguments, proposal.Mutation = requestID, arguments, m
+	action, err := s.chat.Submit(ctx, proposal)
+	if err != nil {
+		return operatortool.Result{}, safeMutationError(err)
+	}
+	m = action.Mutation
+	m.ResourceID = action.IssueID
+	outcome = string(action.Status)
+	return s.operatorActionResult(action)
 }
 
 func operatorActionArguments(raw json.RawMessage) (string, json.RawMessage, string, error) {
@@ -197,6 +250,15 @@ func (s *Server) operatorActionProposal(ctx context.Context, name string, argume
 }
 
 func (s *Server) validateOperatorAction(ctx context.Context, action chatpkg.Action) error {
+	identity := operatortool.ConnectionIdentity(ctx)
+	m := action.Mutation
+	if m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.ProjectID != action.ProjectID || m.Action != string(action.Kind) || m.CorrelationID == "" {
+		return operatortool.ErrAccessDenied
+	}
+	bound, err := m.Bind(action.RequestID, action.Arguments)
+	if err != nil || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash {
+		return operatortool.ErrAccessDenied
+	}
 	name := string(action.Kind)
 	current, err := s.operatorActionProposal(ctx, name, action.Arguments)
 	if err != nil {
@@ -204,6 +266,7 @@ func (s *Server) validateOperatorAction(ctx context.Context, action chatpkg.Acti
 	}
 	expected := action
 	expected.ID, expected.ConnectionID, expected.OrganizationID, expected.Client, expected.RequestID = "", "", "", "", ""
+	expected.Mutation = current.Mutation
 	expected.Arguments, expected.Mode, expected.Status, expected.Result = nil, "", "", ""
 	expected.CreatedAt, expected.ResolvedAt = current.CreatedAt, nil
 	if !reflect.DeepEqual(current, expected) {
@@ -218,7 +281,7 @@ func (s *Server) operatorApprovalURL(id string) string {
 }
 
 func (s *Server) operatorActionResult(action chatpkg.Action) (operatortool.Result, error) {
-	return operatorResult(operatorActionResult{action.ID, action.ConnectionID, action.OrganizationID, action.ProjectID, action.IssueID, action.Identifier, action.ResourceURL, action.Client, action.Kind, action.Arguments, action, action.Status, s.operatorApprovalURL(action.ConnectionID), operatortool.ActionResult})
+	return operatorResult(operatorActionResult{action.Mutation.CorrelationID, action.ID, action.ConnectionID, action.OrganizationID, action.ProjectID, action.IssueID, action.Identifier, action.ResourceURL, action.Client, action.Kind, action.Arguments, action, action.Status, s.operatorApprovalURL(action.ConnectionID), operatortool.ActionResult})
 }
 
 func operatorResult(value any) (operatortool.Result, error) {
@@ -227,4 +290,96 @@ func operatorResult(value any) (operatortool.Result, error) {
 		return operatortool.Result{}, errOperatorCommandUnavailable
 	}
 	return operatortool.Result{Content: content}, nil
+}
+
+func (s *Server) operatorMutationReplay(ctx context.Context, m mutation.Metadata) (operatortool.Result, bool, error) {
+	records, ok := s.store.(store.OperatorMutations)
+	if !ok {
+		return operatortool.Result{}, false, errOperatorCommandUnavailable
+	}
+	receipt, found, err := records.OperatorMutation(ctx, m)
+	if err != nil {
+		return operatortool.Result{}, found, safeMutationError(err)
+	}
+	if !found {
+		return operatortool.Result{}, false, nil
+	}
+	if receipt.Outcome != "succeeded" && receipt.Outcome != "rejected" {
+		return operatortool.Result{}, true, mutation.ErrUncertain
+	}
+	result, err := operatorResult(struct {
+		CorrelationID string    `json:"correlation_id"`
+		CompletedAt   time.Time `json:"completed_at"`
+		Mode          string    `json:"mode"`
+		Confirmation  string    `json:"confirmation"`
+		Status        string    `json:"status"`
+		ProjectID     string    `json:"project_id"`
+		ResourceID    string    `json:"resource_id,omitempty"`
+		Identifier    string    `json:"identifier,omitempty"`
+		URL           string    `json:"url,omitempty"`
+	}{receipt.CorrelationID, receipt.CompletedAt, receipt.Mode, receipt.Confirmation, receipt.Outcome, receipt.ProjectID, receipt.ResourceID, receipt.Identifier, receipt.URL})
+	return result, true, err
+}
+
+func safeMutationError(err error) error {
+	if errors.Is(err, mutation.ErrConflict) {
+		return mutation.ErrConflict
+	}
+	if errors.Is(err, mutation.ErrUncertain) {
+		return mutation.ErrUncertain
+	}
+	return errOperatorCommandUnavailable
+}
+
+// AuditAction is the shared chat approval/submission audit callback. It uses
+// the originating actor even when a different authenticated operator approves.
+func (s *Server) AuditAction(ctx context.Context, action chatpkg.Action, outcome string) {
+	m := action.Mutation
+	if m.Source != "mcp" {
+		return
+	}
+	m.Mode, m.ResourceID = string(action.Mode), action.IssueID
+	if outcome == "approved" || outcome == "rejected" {
+		m.Confirmation = outcome
+	}
+	if outcome == "rejected" {
+		if records, ok := s.store.(store.OperatorMutations); ok {
+			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			defer cancel()
+			if err := records.CompleteOperatorMutation(persistCtx, store.OperatorReceipt{Metadata: m, Outcome: "rejected"}); err != nil {
+				s.logger.WarnContext(ctx, "operator rejection receipt unavailable")
+			}
+		}
+	}
+	s.auditMutation(ctx, m, outcome)
+}
+
+func (s *Server) auditMutation(ctx context.Context, m mutation.Metadata, outcome string) {
+	// Receipt uniqueness belongs only to the operation record, not audit attempts.
+	m.RetryIdentity, m.InputHash = "", ""
+	raw, err := json.Marshal(struct {
+		mutation.Metadata
+		Outcome string `json:"outcome"`
+	}{m, outcome})
+	if err != nil {
+		return
+	}
+	s.logger.InfoContext(ctx, "operator mutation", "audit", string(raw))
+	if s.store == nil {
+		return
+	}
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	now := time.Now().UTC()
+	if _, err := s.store.RecordWorkflowPhaseEvent(auditCtx, store.WorkflowPhaseEvent{ProjectID: m.ProjectID, IssueID: m.ResourceID, PhaseType: store.WorkflowPhaseTypeOperatorAction, PhaseName: m.Action, Status: outcome, StartedAt: now, FinishedAt: now, EndpointFamily: "mcp", MetadataJSON: string(raw)}); err != nil {
+		s.logger.WarnContext(ctx, "operator mutation audit unavailable")
+	}
+}
+
+func randomMutationCorrelation() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -384,6 +385,53 @@ func TestHostedInvitationIdempotency(t *testing.T) {
 			}
 		})
 	}
+	t.Run("provider sends before its response is lost", func(t *testing.T) {
+		f.service.config.Hosted.Provider = sendAndLoseInviteProvider{f.provider}
+		input := map[string]any{"email": "lost@example.test", "role": "member", "idempotency_key": "lost"}
+		failure := f.api(t, "owner", http.MethodPost, path, input, http.StatusServiceUnavailable)
+		if strings.Contains(failure.Body.String(), "credential-invitation-support-billing-sensitive-sentinel") {
+			t.Fatal("provider secret in error")
+		}
+		f.service.config.Hosted.Provider = f.provider
+		f.api(t, "owner", http.MethodPost, path, input, http.StatusConflict)
+		if count := f.providerInvitations(); count != 3 {
+			t.Fatalf("duplicate invitation after lost response: %d", count)
+		}
+	})
+	t.Run("hosted audit consumes content-free context", func(t *testing.T) {
+		session, err := f.service.hostedSessions.Authenticate(t.Context(), f.cookies["owner"].Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := mutation.Metadata{PrincipalID: "untrusted-actor", OrganizationID: "untrusted-org", ProjectID: f.project, ResourceID: first.ID, Action: "invite_member", Source: "mcp", Mode: "confirmation", Confirmation: "approved", CorrelationID: "audit-correlation"}
+		m, err = m.Bind("secret-business-key", map[string]string{"body": "credential-invitation-support-billing-sensitive-sentinel"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.hostedAudit(mutation.WithContext(t.Context(), m), session.Identity, "succeeded", "invite_member", f.project, http.StatusCreated); err != nil {
+			t.Fatal(err)
+		}
+		var summary string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT mutation_json FROM hosted_audit WHERE event='succeeded' ORDER BY id DESC LIMIT 1").Scan(&summary); err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{"untrusted-actor", "untrusted-org", "secret-business-key", "credential-invitation-support-billing-sensitive-sentinel"} {
+			if strings.Contains(summary, secret) {
+				t.Fatalf("audit leaked %s", secret)
+			}
+		}
+		var got struct {
+			mutation.Metadata
+			Outcome string `json:"outcome"`
+		}
+		if err := json.Unmarshal([]byte(summary), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.PrincipalID != session.Identity.Subject || got.OrganizationID != f.service.config.Hosted.OrganizationID || got.CorrelationID != "audit-correlation" || got.Confirmation != "approved" || got.Source != "mcp" {
+			t.Fatalf("audit context=%+v; expected actor=%q organization=%q", got, session.Identity.Subject, f.service.config.Hosted.OrganizationID)
+		}
+	})
+
 }
 
 func TestHostedInvitationFailureKeepsHeldSeat(t *testing.T) {
@@ -405,6 +453,11 @@ func TestHostedInvitationFailureKeepsHeldSeat(t *testing.T) {
 			}
 			f.service.config.Hosted.Provider = failingInviteProvider{f.provider}
 			f.api(t, "owner", http.MethodPost, path, map[string]any{"email": "seat@example.test", "role": "member", "idempotency_key": "failed"}, http.StatusServiceUnavailable)
+			f.api(t, "owner", http.MethodPost, path, map[string]any{"email": "seat@example.test", "role": "member", "idempotency_key": "failed"}, http.StatusConflict)
+			var pending string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT response_json FROM native_commands WHERE command_key='failed'").Scan(&pending); err != nil || pending != hostedPendingCommand {
+				t.Fatalf("uncertain invitation receipt=%q %v", pending, err)
+			}
 			if got := f.invitationSeats(t, "seat@example.test"); got != test.seats {
 				t.Fatalf("seats = %d, want %d", got, test.seats)
 			}
@@ -662,4 +715,13 @@ func TestClaimHostedCommandIsExclusive(t *testing.T) {
 	if owners != 1 {
 		t.Fatalf("%d callers claimed the key, want exactly one", owners)
 	}
+}
+
+type sendAndLoseInviteProvider struct{ *browserHostedProvider }
+
+func (p sendAndLoseInviteProvider) Invite(ctx context.Context, org, email, role, actor string) (auth.Invitation, error) {
+	if _, err := p.browserHostedProvider.Invite(ctx, org, email, role, actor); err != nil {
+		return auth.Invitation{}, err
+	}
+	return auth.Invitation{}, errors.New("credential-invitation-support-billing-sensitive-sentinel")
 }

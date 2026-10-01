@@ -194,7 +194,7 @@ func TestToolCallReturnsTextContentForLegacyVersions(t *testing.T) {
 func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 	t.Parallel()
 
-	executor := &staticExecutor{err: errors.New("dashboard API is unreachable")}
+	executor := &staticExecutor{err: errors.New("credential-sensitive-value invitation-secret prompt-body support-token billing-secret sentinel")}
 	client := startLiveServer(t, executor)
 	client.write(initializeRequest)
 	client.read()
@@ -212,7 +212,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		IsError           bool            `json:"isError"`
 	}
 	decodeResult(t, response, &result)
-	if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != "dashboard API is unreachable" || len(result.StructuredContent) != 0 {
+	if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != "Operator tool is unavailable" || len(result.StructuredContent) != 0 {
 		t.Fatalf("tool error result = %#v", result)
 	}
 }

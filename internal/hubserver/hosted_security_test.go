@@ -563,7 +563,13 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	f.seedIssue(t, 1)
 	f.seedIssue(t, 2)
 	command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cached-command"}, Title: "cached-private-sentinel", State: "Todo"}
-	requireNativeStatus(t, f.request(t, writer, http.MethodPost, f.base+"/work-items", command), http.StatusOK)
+	created := f.request(t, writer, http.MethodPost, f.base+"/work-items", command)
+	requireNativeStatus(t, created, http.StatusOK)
+	// Simulate a pre-upgrade receipt: its session suffix must not let a
+	// reconnect create a duplicate or evade changed-payload conflicts.
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_commands SET operation=operation || ' ' || ? WHERE command_key=?", writer.identity.Hosted.SessionID, command.IdempotencyKey); err != nil {
+		t.Fatal(err)
+	}
 	response := f.request(t, writer, http.MethodGet, f.base+"/work-items?limit=1", nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var page tracker.Page[tracker.NativeIssue]
@@ -584,6 +590,24 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondSession := hostedSecurityUser{identity: secondIdentity, token: secondToken}
+	replay := f.request(t, secondSession, http.MethodPost, f.base+"/work-items", command)
+	requireNativeStatus(t, replay, http.StatusOK)
+	if replay.Body.String() != created.Body.String() {
+		t.Fatal("reconnect did not replay legacy receipt")
+	}
+	changed := command
+	changed.Title = "changed"
+	requireNativeStatus(t, f.request(t, secondSession, http.MethodPost, f.base+"/work-items", changed), http.StatusConflict)
+	other := f.user(t, "other-writer", "member", "other-writer@example.test", "write", "")
+	distinct := f.request(t, other, http.MethodPost, f.base+"/work-items", command)
+	requireNativeStatus(t, distinct, http.StatusOK)
+	var first, second tracker.NativeIssue
+	decodeHubResponse(t, created, &first)
+	decodeHubResponse(t, distinct, &second)
+	if first.WorkItemID == second.WorkItemID {
+		t.Fatal("distinct actors shared a receipt")
+	}
+
 	requireNativeStatus(t, f.request(t, secondSession, http.MethodGet, f.base+"/work-items?limit=1&cursor="+url.QueryEscape(page.NextCursor), nil), http.StatusUnprocessableEntity)
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ?", writer.identity.Subject); err != nil {
 		t.Fatal(err)

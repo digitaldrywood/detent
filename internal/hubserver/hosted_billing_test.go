@@ -291,9 +291,9 @@ func TestHostedBillingAuthorizationAndCheckout(t *testing.T) {
 	}
 	f, p = newHostedBillingFixture(t)
 	p.checkoutFail = true
-	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusServiceUnavailable)
+	requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodPost, "/billing/checkout", `{"price":"price_fixture","idempotency_key":"uncertain-checkout"}`), http.StatusServiceUnavailable)
 	p.checkoutFail = false
-	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusSeeOther)
+	requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodPost, "/billing/checkout", `{"price":"price_fixture","idempotency_key":"uncertain-checkout"}`), http.StatusOK)
 	if len(p.checkouts) != 2 || p.checkouts[0].IdempotencyKey != p.checkouts[1].IdempotencyKey || !p.checkouts[0].ExpiresAt.Equal(p.checkouts[1].ExpiresAt) {
 		t.Fatal("uncertain checkout retry changed operation identity")
 	}

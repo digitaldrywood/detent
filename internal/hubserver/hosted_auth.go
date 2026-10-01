@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
 const hostedCookie = "detent_hosted_session"
@@ -382,7 +383,20 @@ func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identi
 	if identity.SupportActor != "" {
 		actor = identity.SupportActor
 	}
-	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(s.config.now()))
+	summary := "{}"
+	if m, ok := mutation.FromContext(ctx); ok {
+		m.PrincipalID, m.OrganizationID = actor, s.config.Hosted.OrganizationID
+		m.RetryIdentity, m.InputHash = "", ""
+		raw, err := json.Marshal(struct {
+			mutation.Metadata
+			Outcome string `json:"outcome"`
+		}{m, event})
+		if err != nil {
+			return err
+		}
+		summary = string(raw)
+	}
+	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(s.config.now()), summary)
 	return err
 }

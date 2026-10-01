@@ -13,6 +13,8 @@ const (
 
 // CommandCatalog is separate from the five preserved shared read definitions.
 // A deployment advertises commands only when its application adapter exists.
+// request_id is an explicit business idempotency key, reused across reconnects;
+// it is independent of JSON-RPC request IDs and is never an approval token.
 func CommandCatalog() []Definition {
 	return []Definition{
 		commandDefinition(MoveItem, "Move an item through the dashboard command. Moves between Todo and Backlog execute directly; material actions return a browser approval preview.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256}`, `"identifier","target_state"`, true),
@@ -25,6 +27,6 @@ func CommandCatalog() []Definition {
 }
 
 func commandDefinition(name, description, properties, required string, destructive bool) Definition {
-	schema := `{"type":"object","required":["project_id","request_id",` + required + `],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","minLength":1,"maxLength":128},` + properties + `},"additionalProperties":false}`
+	schema := `{"type":"object","required":["project_id","request_id",` + required + `],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","description":"Business idempotency key; reuse for the same operation across reconnects. Independent of JSON-RPC id.","minLength":1,"maxLength":128},` + properties + `},"additionalProperties":false}`
 	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: true}}
 }

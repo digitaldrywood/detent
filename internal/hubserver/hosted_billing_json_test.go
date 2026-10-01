@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -70,6 +71,25 @@ func TestHostedBillingJSONForTheClient(t *testing.T) {
 	if portal.Code != http.StatusOK || !strings.Contains(portal.Body.String(), "billing.stripe.com") {
 		t.Fatalf("portal = %d %s", portal.Code, portal.Body.String())
 	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodPost, "/billing/checkout", `{"price":"price_fixture","idempotency_key":"k2"}`), http.StatusOK)
+			requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodPost, "/billing/portal", `{"idempotency_key":"k4"}`), http.StatusOK)
+		})
+	}
+	wg.Wait()
+	if len(provider.checkouts) != 1 || len(provider.portals) != 1 {
+		t.Fatalf("retry duplicated billing effects: checkout=%d portal=%d", len(provider.checkouts), len(provider.portals))
+	}
+	// Both choices are approved, so changed content reaches the receipt conflict.
+	cfg := f.service.config.Hosted.Billing
+	cfg.Prices = append(cfg.Prices, HostedBillingPrice{PriceID: "price_changed", Plan: cfg.Prices[0].Plan})
+	requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodPost, "/billing/checkout", `{"price":"price_changed","idempotency_key":"k2"}`), http.StatusConflict)
+	previousMode := cfg.Mode
+	cfg.Mode = "live"
+	requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodPost, "/billing/checkout", `{"price":"price_fixture","idempotency_key":"k2"}`), http.StatusConflict)
+	cfg.Mode = previousMode
 	for _, account := range []string{"member", "anonymous"} {
 		if denied := f.billingAPI(t, account, http.MethodGet, "/billing", ""); denied.Code == http.StatusOK {
 			t.Fatalf("%s read billing", account)

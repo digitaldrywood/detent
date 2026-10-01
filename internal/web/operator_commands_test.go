@@ -1,13 +1,17 @@
 package web_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,17 +28,21 @@ import (
 // targets, and request metadata/header attempts to enable YOLO.
 func TestMCPActionApprovalBoundary(t *testing.T) {
 	for _, transport := range []string{"remote", "stdio"} {
-		for _, scenario := range []string{"ordinary", "approve", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard"} {
+		for _, scenario := range []string{"ordinary", "reconnect retry", "concurrent retry", "application failure", "approve", "approve after YOLO", "pending reconnect conflict", "reject", "stale target", "YOLO", "untrusted YOLO", "forged approval", "changed retry", "closed connection", "read scope", "project grant", "revoked credential", "expired credential", "forged form", "unprotected dashboard"} {
 			if transport == "stdio" && scenario == "closed connection" {
 				continue // Protocol DELETE is a remote MCP lifecycle operation.
 			}
 			t.Run(transport+"/"+scenario, func(t *testing.T) {
 				conn := &kanbanActionConnector{name: "memory"}
-				deps := testDeps(t)
-				authorityCase := scenario == "read scope" || scenario == "project grant" || scenario == "revoked credential" || scenario == "expired credential" || scenario == "YOLO"
-				if authorityCase {
-					deps.Store = openWebTestStore(t)
+				if scenario == "application failure" {
+					conn.updateErr = errors.New("credential-sensitive-value-sentinel")
 				}
+				deps := testDeps(t)
+				deps.Store = openWebTestStore(t)
+				var mutationLogs bytes.Buffer
+
+				authorityCase := scenario == "read scope" || scenario == "project grant" || scenario == "revoked credential" || scenario == "expired credential" || scenario == "YOLO"
+
 				clock := time.Now()
 
 				mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}, conn)
@@ -42,7 +50,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 				if err := deps.Hub.Publish(snapshot); err != nil {
 					t.Fatal(err)
 				}
-				cfg := web.Config{ServerAddress: "127.0.0.1:0", Now: func() time.Time { return clock }, GlobalConfig: globalconfig.Config{APIToken: "detent_admin_token", DashboardAccess: globalconfig.DashboardAccess{Mode: globalconfig.DashboardAccessModePrivateToken, Token: "human-only-fixture", AllowWrite: true}}}
+				cfg := web.Config{Logger: slog.New(slog.NewJSONHandler(&mutationLogs, nil)), ServerAddress: "127.0.0.1:0", Now: func() time.Time { return clock }, GlobalConfig: globalconfig.Config{APIToken: "detent_admin_token", DashboardAccess: globalconfig.DashboardAccess{Mode: globalconfig.DashboardAccessModePrivateToken, Token: "human-only-fixture", AllowWrite: true}}}
 				if scenario == "unprotected dashboard" {
 					cfg.GlobalConfig.DashboardAccess = globalconfig.DashboardAccess{}
 				}
@@ -153,7 +161,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 				}
 				headers["X-Detent-YOLO"] = "true"
 				state := "Cancelled"
-				if scenario == "ordinary" {
+				if scenario == "ordinary" || scenario == "reconnect retry" || scenario == "concurrent retry" || scenario == "application failure" {
 					state = "Todo"
 				}
 				args := `{"project_id":"detent","identifier":"digitaldrywood/detent#3337","target_state":"` + state + `","request_id":"request"}`
@@ -172,6 +180,68 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 				if scenario == "read scope" || scenario == "project grant" {
 					if strings.Contains(reply.Body.String(), `"status":"succeeded"`) || strings.Contains(reply.Body.String(), `"status":"pending"`) || len(conn.stateUpdates()) != 0 {
 						t.Fatalf("YOLO expanded authority: %s", reply.Body.String())
+					}
+					if !hasMutationAudit(mutationLogs.String(), "denied") {
+						t.Fatal("authorization denial lacks audit/correlation context")
+					}
+					return
+				}
+				if scenario == "reconnect retry" || scenario == "concurrent retry" || scenario == "application failure" {
+					// Reconnect through the real transport and reuse the explicit business key.
+					connect := func() string {
+						path, body := "/api/v1/operator-connections", `{}`
+						if transport == "remote" {
+							path = "/mcp"
+							body = `{"jsonrpc":"2.0","id":99,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"reconnected","version":"1"}}}`
+						}
+						h := map[string]string{"Authorization": headers["Authorization"]}
+						response := performJSON(t, server.Handler(), http.MethodPost, path, body, h)
+						if transport == "remote" {
+							return response.Header().Get("Mcp-Session-Id")
+						}
+						var c struct {
+							ID string `json:"connection_id"`
+						}
+						if err := json.Unmarshal(response.Body.Bytes(), &c); err != nil {
+							t.Fatal(err)
+						}
+						return c.ID
+					}
+					connectionID := connect()
+					if transport == "remote" {
+						headers["Mcp-Session-Id"] = connectionID
+						performJSON(t, server.Handler(), http.MethodPost, "/mcp", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, headers)
+					} else {
+						headers["X-Detent-Connection-ID"] = connectionID
+					}
+					if scenario == "concurrent retry" {
+						var wg sync.WaitGroup
+						for range 8 {
+							wg.Go(func() { call("move_item", args) })
+						}
+						wg.Wait()
+					} else {
+						call("move_item", args)
+					}
+					if len(conn.stateUpdates()) != 1 {
+						t.Fatalf("retry effects=%v", conn.stateUpdates())
+					}
+					if scenario == "application failure" {
+						if !hasMutationAudit(mutationLogs.String(), "failed") {
+							t.Fatal("application failure lacks audit/correlation context")
+						}
+						if strings.Contains(reply.Body.String(), "credential-sensitive-value-sentinel") || strings.Contains(mutationLogs.String(), "credential-sensitive-value-sentinel") {
+							t.Fatal("sensitive application error escaped")
+						}
+					} else {
+						replay := call("move_item", args)
+						if !strings.Contains(replay.Body.String(), `"status":"succeeded"`) {
+							t.Fatalf("durable replay=%s", replay.Body.String())
+						}
+					}
+					conflict := call("move_item", strings.Replace(args, "Todo", "Backlog", 1))
+					if strings.Contains(conflict.Body.String(), `"status":"succeeded"`) {
+						t.Fatalf("changed retry succeeded: %s", conflict.Body.String())
 					}
 					return
 				}
@@ -209,7 +279,7 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 						}
 						audited := false
 						for _, event := range timeline.Events {
-							if strings.Contains(event.MetadataJSON, `"connection_mode":"yolo"`) && strings.Contains(event.MetadataJSON, `"request_id":"request"`) {
+							if strings.Contains(event.MetadataJSON, `"mode":"yolo"`) && strings.Contains(event.MetadataJSON, `"correlation_id":`) {
 								audited = true
 							}
 						}
@@ -264,9 +334,33 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 						t.Fatal(err)
 					}
 					decision(receipt.ID, "confirm", "", false)
+				case "pending reconnect conflict":
+					fresh := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-connections", `{}`, map[string]string{"Authorization": headers["Authorization"]})
+					var setup struct {
+						ID string `json:"connection_id"`
+					}
+					if err := json.Unmarshal(fresh.Body.Bytes(), &setup); err != nil {
+						t.Fatal(err)
+					}
+					changed := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/move_item", strings.Replace(args, "Cancelled", "Todo", 1), map[string]string{"Authorization": headers["Authorization"], "X-Detent-Connection-ID": setup.ID})
+					if changed.Code != http.StatusConflict {
+						t.Fatalf("pending changed replay=%d %s", changed.Code, changed.Body.String())
+					}
 				case "reject":
 					decision(receipt.ID, "reject", "", false)
 					decision(receipt.ID, "confirm", "", false)
+					fresh := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-connections", `{}`, map[string]string{"Authorization": headers["Authorization"]})
+					var setup struct {
+						ID string `json:"connection_id"`
+					}
+					if err := json.Unmarshal(fresh.Body.Bytes(), &setup); err != nil {
+						t.Fatal(err)
+					}
+					replay := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/move_item", args, map[string]string{"Authorization": headers["Authorization"], "X-Detent-Connection-ID": setup.ID})
+					if replay.Code != http.StatusOK || !strings.Contains(replay.Body.String(), `"status":"rejected"`) {
+						t.Fatalf("rejected reconnect=%d %s", replay.Code, replay.Body.String())
+					}
+
 				case "forged approval":
 					if result := decision(receipt.ID, "confirm", "", true); result.Code != 403 {
 						t.Fatalf("forged approval=%d %s", result.Code, result.Body.String())
@@ -278,13 +372,34 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 						performJSON(t, server.Handler(), http.MethodDelete, "/mcp", "", headers)
 						decision(receipt.ID, "confirm", "", false)
 					}
+				case "approve after YOLO":
+					decision("", "mode", "yolo", false)
+					decision(receipt.ID, "confirm", "", false)
 				case "approve":
 					decision(receipt.ID, "confirm", "", false)
 					decision(receipt.ID, "confirm", "", false)
 				}
 				want := 0
-				if scenario == "approve" {
+				if scenario == "approve" || scenario == "approve after YOLO" {
 					want = 1
+				}
+				if expected := map[string]string{"approve": "approved", "approve after YOLO": "approved", "reject": "rejected", "revoked credential": "denied", "expired credential": "denied", "stale target": "failed"}[scenario]; expected != "" {
+					timeline, err := deps.Store.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: "detent", IssueID: "issue"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					for _, event := range timeline.Events {
+						if strings.Contains(event.MetadataJSON, `"outcome":"`+expected+`"`) && strings.Contains(event.MetadataJSON, `"correlation_id":`) && strings.Contains(event.MetadataJSON, `"principal_id":`) {
+							found = true
+						}
+						if strings.Contains(event.MetadataJSON, `"request_id"`) {
+							t.Fatal("raw business key in audit")
+						}
+					}
+					if !found {
+						t.Fatalf("missing %s audit: %+v", expected, timeline.Events)
+					}
 				}
 				if len(conn.stateUpdates()) != want {
 					t.Fatalf("updates=%+v want=%d", conn.stateUpdates(), want)
@@ -292,4 +407,28 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 			})
 		}
 	}
+}
+
+func hasMutationAudit(logs, outcome string) bool {
+	for _, line := range strings.Split(logs, "\n") {
+		var log struct {
+			Audit string `json:"audit"`
+		}
+		if json.Unmarshal([]byte(line), &log) != nil {
+			continue
+		}
+		var audit struct {
+			Principal   string `json:"principal_id"`
+			Correlation string `json:"correlation_id"`
+			Source      string `json:"source"`
+			Outcome     string `json:"outcome"`
+		}
+		if json.Unmarshal([]byte(log.Audit), &audit) != nil {
+			continue
+		}
+		if audit.Principal != "" && audit.Correlation != "" && audit.Source == "mcp" && audit.Outcome == outcome {
+			return true
+		}
+	}
+	return false
 }

@@ -199,14 +199,27 @@ func (s *Service) Confirm(ctx context.Context, sessionID string, actionID string
 		var err error
 		ctx, err = authorizeAction(ctx, *current.connection, current.actions[index])
 		if err != nil {
+			s.auditAction(ctx, current.actions[index], "denied")
 			return s.resolveAction(current, index, "Operator access is unavailable.", err)
 		}
 		current.actions[index].Mode = current.mode
+		current.actions[index].Mutation.Mode = string(current.mode)
+		current.actions[index].Mutation.Confirmation = "approved"
+		s.auditAction(ctx, current.actions[index], "approved")
 	}
 	if s.actions == nil {
 		return s.resolveAction(current, index, "Action execution is unavailable.", ErrUnavailable)
 	}
 	result, err := s.actions.ExecuteAction(ctx, current.actions[index])
+	outcome := "succeeded"
+	if err != nil {
+		outcome = "failed"
+	}
+	auditAction := current.actions[index]
+	if err == nil && result.ResourceID != "" {
+		auditAction.IssueID = result.ResourceID
+	}
+	s.auditAction(ctx, auditAction, outcome)
 	return s.resolveExecution(current, index, result, err)
 }
 
@@ -365,4 +378,12 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(data), nil
+}
+
+func (s *Service) auditAction(ctx context.Context, action Action, outcome string) {
+	if auditor, ok := s.actions.(interface {
+		AuditAction(context.Context, Action, string)
+	}); ok {
+		auditor.AuditAction(ctx, action, outcome)
+	}
 }
