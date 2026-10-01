@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -56,12 +59,16 @@ func TestResolveAdmissionDependencies(t *testing.T) {
 		missing     bool
 		fail        bool
 		unsupported bool
+		native      bool
+		human       bool
 		ready       bool
 		wantError   bool
 	}{
 		{name: "closed", body: "Blocked by: #10", closed: true, ready: true},
+		{name: "unverified human completion", body: "Depends on: #10", state: "Done", closed: true, human: true},
 		{name: "terminal", body: "Depends on: #10", state: "Done", ready: true},
 		{name: "open", body: "Blocked by: #10", state: "Todo"},
+		{name: "stale native terminal facts", body: "Blocked by: #10", native: true, state: "Todo"},
 		{name: "bold open", body: "**Depends on:** #10", state: "In Progress"},
 		{name: "italic URL open", body: "_Blocked by:_ https://github.com/owner/repo/issues/10", state: "In Progress"},
 		{name: "list prose open", body: "- **Depends on:** owner/repo#10 so the schema exists", state: "In Progress"},
@@ -77,8 +84,52 @@ func TestResolveAdmissionDependencies(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-			issue := connector.Issue{Identifier: "owner/repo#20", Description: tt.body}
+			sourceRequests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sourceRequests++
+				w.Header().Set("Content-Type", "application/json")
+				var response any
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues":
+					response = []any{map[string]any{"node_id": "I20", "number": 20, "body": tt.body, "state": "open", "html_url": "https://github.com/owner/repo/issues/20", "labels": []any{map[string]any{"name": "detent:backlog"}}}}
+				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+					native := []any{}
+					if tt.native {
+						native = append(native, map[string]any{"id": "B10", "number": 10, "state": "CLOSED", "repository": map[string]any{"nameWithOwner": "owner/repo"}})
+					}
+					response = map[string]any{"data": map[string]any{"issue0": map[string]any{"id": "I20", "body": tt.body, "comments": map[string]any{"nodes": []any{}}, "blockedBy": map[string]any{"nodes": native}}}}
+				default:
+					t.Errorf("unexpected source-stage request: %s %s", r.Method, r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				if err := json.NewEncoder(w).Encode(response); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(server.Close)
+			source, err := github.NewConnector(github.Config{Endpoint: server.URL + "/graphql", APIKey: "fixture", HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: github.GitHubStatusSourceLabel})
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidates, err := source.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Backlog"}, Limit: 1})
+			if err != nil || len(candidates.Issues) != 1 || sourceRequests != 2 {
+				t.Fatalf("source candidates=%+v err=%v requests=%d", candidates, err, sourceRequests)
+			}
+			issue := candidates.Issues[0]
+			if len(issue.BlockedBy) != 1 || issue.Description != tt.body {
+				t.Fatalf("source lost prerequisite: %+v", issue)
+			}
+			if tt.native && issue.BlockedBy[0].State != "Done" {
+				t.Fatalf("source lost native facts: %+v", issue.BlockedBy)
+			}
+			if !tt.native && (issue.BlockedBy[0].State != "" || issue.BlockedBy[0].ID != "") {
+				t.Fatalf("source resolved prose facts: %+v", issue.BlockedBy)
+			}
 			dependency := connector.Issue{Identifier: "owner/repo#10", State: tt.state, Closed: tt.closed}
+			if tt.human {
+				dependency.Labels = []string{"human-owned"}
+			}
 			if tt.pr != "" {
 				dependency.PullRequest = &connector.PullRequest{State: tt.pr}
 			}
@@ -96,6 +147,20 @@ func TestResolveAdmissionDependencies(t *testing.T) {
 			got := resolveAdmissionDependencies(t.Context(), settings, issue, now)
 			if got == nil || got.Ready != tt.ready || !got.ObservedAt.Equal(now) || len(got.References) != 1 || (got.References[0].Error != "") != tt.wantError {
 				t.Fatalf("evidence = %+v", got)
+			}
+			wantCalls := 1
+			if tt.unsupported {
+				wantCalls = 0
+			}
+			if tracker.calls != wantCalls || sourceRequests != 2 {
+				t.Fatalf("fresh readiness reads=%d source requests=%d", tracker.calls, sourceRequests)
+			}
+			wantReference := "owner/repo#10"
+			if tt.missing {
+				wantReference = "elsewhere/private#10"
+			}
+			if wantCalls > 0 && !reflect.DeepEqual(tracker.requests[0], []string{wantReference}) {
+				t.Fatalf("fresh resolution references=%v", tracker.requests)
 			}
 			if got.References[0].Ready != tt.ready {
 				t.Fatalf("reference = %+v", got.References[0])

@@ -135,8 +135,20 @@ run, tracker limitations apply, or three consecutive runs fail.
 
 ## Dependency evidence
 
-Before evaluation, admission resolves normalized blocker references and parser-supported
-`Depends on:` / `Blocked by:` lines through the project's tracker. The input includes
+The internal `CandidateReader` contract supplies bounded, fully hydrated own-issue
+snapshots and prerequisite reference identities; it does not guarantee current
+external prerequisite state. GitHub `ReadCandidates`, consumed only by admission,
+preserves canonically repository-qualified native and body references and any
+already-present native facts, but does not perform final external prerequisite
+state enrichment. Own-issue fields, body, comments, native relation hydration,
+filtering, pagination, partial results, and budget fallbacks retain their existing
+behavior. Normal tracker candidate, observed, and state refreshes still enrich
+prerequisites; `github_local` retains its existing local reader delegation and
+GitHub hydration. Source-populated facts never establish admission readiness.
+
+Before candidate history, ranking, fingerprints, and evaluation, admission resolves
+normalized blocker references and parser-supported `Depends on:` / `Blocked by:`
+lines through the project's tracker. The input includes
 each dependency's current workflow state, closed flag, attached PR state, resolution
 error, and observation timestamp. `tracker.dependency_auto_unblock.readiness` supplies
 the readiness rule even when automatic unblocking is disabled: `terminal` accepts
