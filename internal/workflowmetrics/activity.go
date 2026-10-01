@@ -10,6 +10,8 @@ const PhaseTypeAgentActivity PhaseType = "agent_activity"
 
 // InstructionRef identifies a source without retaining private instruction text.
 type InstructionRef struct {
+	PathRef     string    `json:"path_ref,omitempty"`
+	Evidence    string    `json:"evidence,omitempty"`
 	Name        string    `json:"name"`
 	Hash        string    `json:"sha256"`
 	Version     string    `json:"version,omitempty"`
@@ -17,25 +19,46 @@ type InstructionRef struct {
 	ObservedAt  time.Time `json:"observed_at"`
 }
 
+// ActivityAction is untimed evidence within a tool interval. Native metadata
+// does not supply per-action timing, outcomes or causal instruction origins.
+type ActivityAction struct {
+	Index             int              `json:"index"`
+	Type              string           `json:"type"`
+	TypeRef           string           `json:"type_ref,omitempty"`
+	NameRef           string           `json:"name_ref,omitempty"`
+	PathRef           string           `json:"path_ref,omitempty"`
+	Fingerprint       string           `json:"fingerprint"`
+	Kind              string           `json:"kind"`
+	Evidence          string           `json:"evidence"`
+	Attribution       string           `json:"attribution"`
+	CausalAttribution string           `json:"causal_attribution"`
+	Sources           []InstructionRef `json:"sources,omitempty"`
+	SourceCoverage    string           `json:"source_coverage,omitempty"`
+	Repeat            int              `json:"repeat"`
+}
+
 type ActivitySpan struct {
-	ID              string           `json:"id"`
-	ParentID        string           `json:"parent_id"`
-	Kind            string           `json:"kind"`
-	Evidence        string           `json:"evidence"`
-	Fingerprint     string           `json:"fingerprint,omitempty"`
-	Head            string           `json:"head,omitempty"`
-	HeadObservedAt  time.Time        `json:"head_observed_at,omitzero"`
-	HeadAttribution string           `json:"head_attribution,omitempty"`
-	Attribution     string           `json:"attribution"`
-	Sources         []InstructionRef `json:"sources,omitempty"`
-	StartedAt       time.Time        `json:"started_at"`
-	FinishedAt      time.Time        `json:"finished_at,omitzero"`
-	Outcome         string           `json:"outcome"`
-	ExitCode        *int             `json:"exit_code,omitempty"`
-	Repeat          int              `json:"repeat"`
-	ElapsedSeconds  float64          `json:"elapsed_seconds,omitempty"`
-	PendingSeconds  float64          `json:"pending_seconds,omitempty"`
-	WaitReason      string           `json:"wait_reason,omitempty"`
+	ID                string           `json:"id"`
+	ParentID          string           `json:"parent_id"`
+	Kind              string           `json:"kind"`
+	Evidence          string           `json:"evidence"`
+	Fingerprint       string           `json:"fingerprint,omitempty"`
+	Head              string           `json:"head,omitempty"`
+	HeadObservedAt    time.Time        `json:"head_observed_at,omitzero"`
+	HeadAttribution   string           `json:"head_attribution,omitempty"`
+	Attribution       string           `json:"attribution"`
+	Sources           []InstructionRef `json:"sources,omitempty"`
+	Actions           []ActivityAction `json:"actions,omitempty"`
+	ActionsDropped    int              `json:"actions_dropped,omitempty"`
+	CausalAttribution string           `json:"causal_attribution,omitempty"`
+	StartedAt         time.Time        `json:"started_at"`
+	FinishedAt        time.Time        `json:"finished_at,omitzero"`
+	Outcome           string           `json:"outcome"`
+	ExitCode          *int             `json:"exit_code,omitempty"`
+	Repeat            int              `json:"repeat"`
+	ElapsedSeconds    float64          `json:"elapsed_seconds,omitempty"`
+	PendingSeconds    float64          `json:"pending_seconds,omitempty"`
+	WaitReason        string           `json:"wait_reason,omitempty"`
 }
 
 // ActivityProfile is a bounded checkpoint of received lifecycle events. AsOf is
@@ -55,6 +78,7 @@ type ActivityProfile struct {
 	FinishedAt         time.Time        `json:"finished_at,omitzero"`
 	Status             string           `json:"status"`
 	Coverage           string           `json:"coverage"`
+	CoverageNotes      []string         `json:"coverage_notes,omitempty"`
 	Dropped            uint64           `json:"dropped_events"`
 	Unpaired           uint64           `json:"unpaired_events"`
 	Sources            []InstructionRef `json:"instructions"`

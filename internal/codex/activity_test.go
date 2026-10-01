@@ -2,9 +2,12 @@ package codex
 
 import (
 	"encoding/json"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/runner"
 )
 
 func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
@@ -17,6 +20,8 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 		wantType         UpdateType
 		wantTool         string
 		wantCommand      string
+		wantActions      []runner.NativeCommandAction
+		wantCWD          string
 		wantExitCode     *int
 		wantContent      string
 		wantErrorBody    string
@@ -32,6 +37,7 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			wantType:    UpdateToolStarted,
 			wantTool:    "commandExecution",
 			wantCommand: "go test ./...",
+			wantCWD:     "/tmp",
 			wantContent: "go test ./...",
 		},
 		{
@@ -42,6 +48,7 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			wantTool:    "commandExecution",
 			wantCommand: "/bin/zsh -lc 'go test ./...'",
 			wantContent: "go test ./...",
+			wantActions: []runner.NativeCommandAction{{Type: "unknown", Command: "go test ./..."}},
 		},
 		{
 			name:        "mixed native actions retain every command",
@@ -51,6 +58,7 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			wantTool:    "commandExecution",
 			wantCommand: "/bin/zsh -lc 'cat AGENTS.md; go test ./...'",
 			wantContent: "cat AGENTS.md; go test ./...",
+			wantActions: []runner.NativeCommandAction{{Type: "read", Command: "cat AGENTS.md", Name: "AGENTS.md", Path: "AGENTS.md"}, {Type: "unknown", Command: "go test ./..."}},
 		},
 		{
 			name:        "incomplete native actions stay opaque",
@@ -60,6 +68,14 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			wantTool:    "commandExecution",
 			wantCommand: "/bin/zsh -lc 'cat AGENTS.md; go test ./...'",
 			wantContent: "/bin/zsh -lc 'cat AGENTS.md; go test ./...'",
+			wantActions: []runner.NativeCommandAction{{Type: "read", Command: "cat AGENTS.md"}, {Type: "unknown"}},
+		},
+		{
+			name:     "native read without command retains path and type",
+			method:   "item/started",
+			params:   `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"private wrapper","cwd":"/private/workspace/nested","commandActions":[{"type":"read","name":"CLAUDE.md","path":"CLAUDE.md"},{"type":"futureOpaque","name":"private name"}],"status":"inProgress"}}`,
+			wantType: UpdateToolStarted, wantTool: "commandExecution", wantCommand: "private wrapper", wantContent: "private wrapper", wantCWD: "/private/workspace/nested",
+			wantActions: []runner.NativeCommandAction{{Type: "read", Name: "CLAUDE.md", Path: "CLAUDE.md"}, {Type: "futureOpaque", Name: "private name"}},
 		},
 		{
 			name:         "failed command retains command and exit code",
@@ -70,6 +86,7 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			wantCommand:  "git push origin HEAD && exit 19",
 			wantExitCode: intPointer(19),
 			wantContent:  "branch updated; later assertion failed",
+			wantActions:  []runner.NativeCommandAction{{Type: "unknown", Command: "git push origin HEAD"}, {Type: "unknown", Command: "exit 19"}},
 		},
 		{
 			name:        "command output streams",
@@ -153,6 +170,16 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			if update.Type != tt.wantType || update.Tool != tt.wantTool || (!tt.contentFromError && update.Delta != tt.wantContent) ||
 				update.BackendErrorBody != tt.wantErrorBody || (tt.wantMaxBytes == 0 && update.BackendErrorMessage != tt.wantErrorMessage) {
 				t.Fatalf("update = %#v, want type %q tool %q content %q", update, tt.wantType, tt.wantTool, tt.wantContent)
+			}
+			if len(update.NativeActions) != len(tt.wantActions) || (len(tt.wantActions) > 0 && !reflect.DeepEqual(update.NativeActions, tt.wantActions)) {
+				t.Fatalf("native actions = %+v, want %+v", update.NativeActions, tt.wantActions)
+			}
+			agent := agentUpdateFromCodex(update)
+			if !reflect.DeepEqual(agent.NativeActions, update.NativeActions) || agent.CWD != update.CWD {
+				t.Fatal("native action evidence lost at backend boundary")
+			}
+			if update.CWD != tt.wantCWD {
+				t.Fatalf("cwd = %q, want %q", update.CWD, tt.wantCWD)
 			}
 			if update.Command != tt.wantCommand || !equalIntPointers(update.ExitCode, tt.wantExitCode) {
 				t.Fatalf("command evidence = command %q exit %#v, want command %q exit %#v", update.Command, update.ExitCode, tt.wantCommand, tt.wantExitCode)

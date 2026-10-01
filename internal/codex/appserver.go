@@ -305,6 +305,8 @@ type Update struct {
 	ItemID              string
 	Tool                string
 	Command             string
+	NativeActions       []runner.NativeCommandAction
+	CWD                 string
 	Delta               string
 	Status              string
 	ExitCode            *int
@@ -2075,22 +2077,21 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		ThreadID string `json:"threadId"`
 		TurnID   string `json:"turnId"`
 		Item     struct {
-			ID             string `json:"id"`
-			Type           string `json:"type"`
-			Command        string `json:"command"`
-			CommandActions []struct {
-				Command string `json:"command"`
-			} `json:"commandActions"`
-			Arguments        json.RawMessage `json:"arguments"`
-			Status           string          `json:"status"`
-			ExitCode         *int            `json:"exitCode"`
-			AggregatedOutput string          `json:"aggregatedOutput"`
-			Server           string          `json:"server"`
-			Tool             string          `json:"tool"`
-			Result           json.RawMessage `json:"result"`
-			Error            json.RawMessage `json:"error"`
-			Changes          json.RawMessage `json:"changes"`
-			ContentItems     json.RawMessage `json:"contentItems"`
+			ID               string                       `json:"id"`
+			Type             string                       `json:"type"`
+			Command          string                       `json:"command"`
+			CommandActions   []runner.NativeCommandAction `json:"commandActions"`
+			CWD              string                       `json:"cwd"`
+			Arguments        json.RawMessage              `json:"arguments"`
+			Status           string                       `json:"status"`
+			ExitCode         *int                         `json:"exitCode"`
+			AggregatedOutput string                       `json:"aggregatedOutput"`
+			Server           string                       `json:"server"`
+			Tool             string                       `json:"tool"`
+			Result           json.RawMessage              `json:"result"`
+			Error            json.RawMessage              `json:"error"`
+			Changes          json.RawMessage              `json:"changes"`
+			ContentItems     json.RawMessage              `json:"contentItems"`
 		} `json:"item"`
 	}
 	if err := json.Unmarshal(msg.Params, &params); err != nil {
@@ -2160,6 +2161,8 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		ItemID:              params.Item.ID,
 		Tool:                tool,
 		Command:             strings.TrimSpace(params.Item.Command),
+		NativeActions:       params.Item.CommandActions,
+		CWD:                 params.Item.CWD,
 		Delta:               content,
 		Status:              params.Item.Status,
 		ExitCode:            params.Item.ExitCode,

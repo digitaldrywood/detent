@@ -469,6 +469,15 @@ const (
 	AgentUpdateResourceUsage    AgentUpdateType = "resource_usage"
 )
 
+// NativeCommandAction retains provider metadata transiently; activity profiles
+// persist only fixed categories, fingerprints and instruction references.
+type NativeCommandAction struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+}
+
 type AgentUpdate struct {
 	workerScratchPath   string
 	Type                AgentUpdateType
@@ -482,6 +491,8 @@ type AgentUpdate struct {
 	ItemID              string
 	Tool                string
 	Command             string
+	NativeActions       []NativeCommandAction
+	CWD                 string
 	Delta               string
 	Status              string
 	ExitCode            *int

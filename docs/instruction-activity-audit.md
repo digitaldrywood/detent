@@ -21,8 +21,11 @@ curl --get http://127.0.0.1:4000/api/v1/workflow/timeline \
   bounded startup snapshots of root WORKFLOW.md, AGENTS.md and CLAUDE.md.
   Configuration source versions and snapshot times are preserved. A literal
   command match includes its source line. Private contents are never persisted.
-  Nested files, subsequent file changes, and instructions supplied outside
-  these sources remain outside this snapshot's coverage.
+  Native read metadata additionally identifies bounded nested instruction
+  snapshots and later versions inside the workspace. Their path digests and
+  observation times distinguish source versions. These are recorder snapshots
+  after a read request, not proof of the bytes read by the provider; instructions
+  outside these sources remain unknown. See [the native evidence limits](diagnosis.md#authority-by-question).
 - `observed_read_request` identifies the file requested by a read operation.
   It does not prove successful reading or that an instruction caused later work.
   `inferred_text_match` is a candidate source matching the command literally;
@@ -33,13 +36,18 @@ curl --get http://127.0.0.1:4000/api/v1/workflow/timeline \
   It is not a fresh Git read for every tool. A stale or absent snapshot does not
   establish the exact execution head. Repeat counts group command/tool digests
   within a profile and that observed head, not across attempts or different heads.
+  Native action fingerprints also include the provider cwd so identical relative
+  operations in different directories do not share action repeat counts.
 - The fixed evidence vocabulary identifies Go test/vet/build, known Make checks,
   edits, Git review/rebase/merge, forge merge calls and explicit waits. Raw shell
   text, tool inputs, output, prompts and credentials are absent. Fingerprints
   permit a locally known command to be compared without exposing it.
-- Compound commands spanning multiple activities and opaque code execution stay
-  unclassified. Internal tools hidden by a provider are not invented. The
-  tool/turn digest relationship and observed validation-lock child intervals
+- Ordered native actions retain individual types, safe identities, candidates
+  and repeats within one timed tool span. The first available action list from
+  start or completion is retained; repeated completion metadata counts once.
+  Actions have no separate durations or outcomes. Compound commands spanning
+  multiple activities and opaque code execution stay unclassified. Internal tools
+  hidden by a provider are not invented. The tool/turn digest relationship and observed validation-lock child intervals
   preserve nesting; missing wait-end markers do not manufacture wait durations.
 - `elapsed_seconds` on a finished span is its observed start/end interval.
   Pending starts report `pending_seconds` separately. Breakdown only credits
@@ -58,6 +66,9 @@ fixed validation markers. Its consumer drains batches (64-event wake threshold,
 256-event queue) and checkpoints one phase-ledger row every five seconds, plus
 an initial and final checkpoint. Profiles retain at most 1,024 spans. Tool input
 classification is bounded to 8 KiB and instruction files to 256 KiB each.
+Native evidence retains at most 32 actions and 8 KiB including cwd per event,
+64 snapshot requests and 64 instruction source records per profile, and four
+inferred candidates per action. Truncation and source coverage are explicit.
 Saturation increments drop counts rather than delaying tools. Serialization and
 SQLite/SSH persistence run outside the worker callback; checkpoint failures log
 instance telemetry and do not fail the attempt. The central store serializes a
@@ -168,3 +179,63 @@ serialization. Batching consumption, compacting queued updates, and serializing
 once reduced the final median concurrent throughput regression from the first
 experiment's 14.149% to 0.429%. That comparison spans different noisy runs and is
 not a statistically established optimization percentage.
+
+## Native evidence follow-up (#3655)
+
+The existing timeline returns the largest observed tool intervals with safe
+native operation references and instruction candidates. For example:
+
+```sh
+curl --get http://127.0.0.1:4000/api/v1/workflow/timeline \
+  --data-urlencode project_id=detent \
+  --data-urlencode 'identifier=digitaldrywood/detent#3655' | jq '
+  .activity[] | .profile as $p |
+  $p.spans | sort_by(-(.elapsed_seconds // 0)) | .[:5][] |
+  {session_id: $p.session_id, id, kind, fingerprint, elapsed_seconds,
+   repeat, attribution, sources, actions, actions_dropped,
+   causal_attribution: (.causal_attribution // "unknown_provider_origin")} '
+```
+
+An October 1 read-only probe from this worker returned connection refused at
+127.0.0.1:4000. No live verification of this unmerged change is claimed. After
+integration, Detent's integration owner and the project's release owner retain
+live acceptance: use the served build containing this PR, audit representative
+Mac/Prom profiles through the existing timeline, rank observed intervals, compare
+action repeats and source versions, and keep missing causal provenance visibly
+unknown. Deployment or restarting the live instance requires the operator's
+explicit authorization. Older profiles cannot recover discarded native fields.
+
+Focused overhead measurements on October 1, 2026, Darwin arm64, Apple M4 Max,
+Go 1.27.1 (host toolchain; project target remains Go 1.26), GOMAXPROCS=4:
+
+```sh
+go test -p 4 ./internal/runner -run '^$' \
+  -bench '^(BenchmarkActivityNativeObserve|BenchmarkActivityInstructionSnapshot)$' \
+  -benchtime=200ms -count=3
+go test -p 4 ./internal/runner -run '^$' \
+  -bench '^BenchmarkActivityProfileWorkloads/native_(short|audit)$' \
+  -benchtime=1x -count=3
+```
+
+Producer medians (zero/two/32 native actions) are 40.43/161.9/2087 ns per event,
+0/256/4352 allocated bytes, and 0/9/129 allocations. Reads, hashing and storage
+remain outside that producer path. A 9.5 KiB instruction snapshot on the recorder
+goroutine takes a median 51.005 microseconds and 58,136 allocated bytes.
+
+The native workloads emit two actions per tool (an AGENTS.md read and a
+printf) at both lifecycle edges, with 120 short tools or four concurrent attempts
+of 60 tools plus timeline queries. Three paired samples alternate profiling order.
+Worker elapsed excludes final flush; CPU includes parent/children and flush.
+
+| Workload | Commands/s off / on | Enqueue p95 microseconds off / on | CPU ms off / on | Paired median worker elapsed change |
+| --- | ---: | ---: | ---: | ---: |
+| native_short | 198.6 / 174.9 | 0.125 / 8.584 | 490.326 / 549.570 | +15.244% |
+| native_audit | 751.6 / 744.0 | 0.042 / 10.916 | 1047.030 / 1063.849 | +1.027% |
+
+The respective elapsed change ranges are +0.273% to +48.031% and -3.546% to
++1.196% on this shared host. These few noisy samples do not establish production
+throughput equivalence or a total-process CPU bound. Final enabled metadata is
+about 211/488 KiB; checkpoint counts remain two per attempt (2/8 total). Background
+snapshot, serialization and query work has a cost, while producer work stays
+bounded and does not synchronously fetch or write. These controlled fixtures
+are overhead evidence, not a live audit or proof of instruction causality.

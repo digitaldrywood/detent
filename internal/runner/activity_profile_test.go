@@ -128,6 +128,158 @@ func TestActivityNativeCommandInput(t *testing.T) {
 			}
 		})
 	}
+
+	// Catches discarded path/type evidence, stale nested source versions and
+	// compound duration multiplication without executing provider commands.
+	for _, tt := range []struct {
+		name, path, cwd, coverage                                                 string
+		remove, limit, completionOnly, directory, oversized, symlink, sourceLimit bool
+	}{
+		{name: "completion-only native evidence", path: "nested/AGENTS.md", coverage: "recorder_snapshot", completionOnly: true},
+		{name: "nested changed source", path: "nested/AGENTS.md", coverage: "recorder_snapshot"},
+		{name: "native cwd", path: "AGENTS.md", cwd: "nested", coverage: "recorder_snapshot"},
+		{name: "absolute workspace path", path: "absolute", coverage: "recorder_snapshot"},
+		{name: "missing path", coverage: "instruction_path_unavailable"},
+		{name: "outside workspace", path: "../AGENTS.md", coverage: "outside_workspace"},
+		{name: "missing file", path: "missing/AGENTS.md", coverage: "snapshot_unavailable"},
+		{name: "snapshot bound", path: "nested/AGENTS.md", coverage: "snapshot_limit", limit: true},
+		{name: "nonregular source", path: "nested/AGENTS.md", coverage: "snapshot_unavailable", directory: true},
+		{name: "oversized source", path: "nested/AGENTS.md", coverage: "snapshot_unavailable", oversized: true},
+		{name: "symlink escapes workspace", path: "nested/AGENTS.md", coverage: "snapshot_unavailable", symlink: true},
+		{name: "source bound", path: "nested/AGENTS.md", coverage: "snapshot_limit", sourceLimit: true},
+		{name: "removed source", path: "nested/AGENTS.md", coverage: "snapshot_unavailable", remove: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			nested := filepath.Join(workspace, "nested", "AGENTS.md")
+			if err := os.Mkdir(filepath.Dir(nested), 0700); err != nil {
+				t.Fatal(err)
+			}
+			path := tt.path
+			if path == "absolute" {
+				path = nested
+			}
+			p := workflowmetrics.ActivityProfile{StartedAt: at, AsOf: at.Add(30 * time.Second)}
+			if tt.sourceLimit {
+				p.Sources = make([]workflowmetrics.InstructionRef, activitySourceLimit)
+			}
+			open, repeats := map[string]int{}, map[string]int{}
+			sources := []activityInstruction{}
+			snapshots := 0
+			for i := range 2 {
+				text := "private policy version " + strconv.Itoa(i) + "\nRun go test ./internal/fixture"
+				if tt.oversized {
+					text += strings.Repeat("x", 256*1024)
+				}
+				if err := os.Remove(nested); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(nested, []byte(text), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if tt.directory || tt.symlink {
+					if err := os.Remove(nested); err != nil {
+						t.Fatal(err)
+					}
+					if tt.directory {
+						if err := os.Mkdir(nested, 0700); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						external := filepath.Join(t.TempDir(), "AGENTS.md")
+						if err := os.WriteFile(external, []byte(text), 0600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Symlink(external, nested); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if tt.remove {
+					if err := os.Remove(nested); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tt.limit {
+					snapshots = activitySnapshotLimit
+				}
+				actions := []NativeCommandAction{{Type: "read", Name: "private name", Path: path}, {Type: "unknown", Command: "go test ./internal/fixture"}, {Type: "private provider type"}}
+				o := activityObservation{at: at.Add(time.Duration(i*10) * time.Second), head: "head", update: activityUpdate{Type: AgentUpdateToolStarted, ItemID: strconv.Itoa(i), Tool: "commandExecution", Command: "private compound command", NativeActions: actions, CWD: tt.cwd}}
+				if tt.completionOnly {
+					o.update.NativeActions = nil
+				}
+				snapshotActivityReads(&p, &sources, &snapshots, workspace, &o)
+				applyActivityObservation(&p, open, repeats, sources, o)
+				exit := 19
+				completed := activityObservation{at: o.at.Add(5 * time.Second), update: activityUpdate{Type: AgentUpdateToolCompleted, ItemID: strconv.Itoa(i), Status: "failed", ExitCode: &exit}}
+				if tt.completionOnly {
+					completed.update.NativeActions, completed.update.CWD = actions, tt.cwd
+					snapshotActivityReads(&p, &sources, &snapshots, workspace, &completed)
+				}
+				applyActivityObservation(&p, open, repeats, sources, completed)
+				span := p.Spans[i]
+				if len(span.Actions) != 3 || span.Kind != "unclassified" || span.Outcome != "failed" || *span.ExitCode != 19 || span.CausalAttribution != "unknown_provider_origin" || span.Fingerprint != activityHash("commandExecution\x00private compound command") {
+					t.Fatalf("span=%+v", span)
+				}
+				read := span.Actions[0]
+				if read.Type != "read" || read.Kind != "context_read" || read.SourceCoverage != tt.coverage || read.Repeat != i+1 || read.NameRef != activityHash("private name") || span.Actions[2].Evidence != "opaque_native_action" {
+					t.Fatalf("actions=%+v", span.Actions)
+				}
+				if tt.coverage == "recorder_snapshot" {
+					if len(read.Sources) != 1 || read.Sources[0].Hash != activityHash(text) || read.Sources[0].PathRef != activityHash(filepath.Join("nested", "AGENTS.md")) || read.Sources[0].Evidence != "recorder_snapshot_after_native_read" {
+						t.Fatalf("source=%+v", read.Sources)
+					}
+					if read.Attribution != "observed_read_request" || span.Actions[1].Attribution != "inferred_text_match" || len(span.Actions[1].Sources) != 1 || span.Actions[1].Sources[0].Hash != activityHash(text) {
+						t.Fatalf("attribution=%+v", span.Actions)
+					}
+				} else if len(read.Sources) != 0 || read.Attribution != "unattributed" {
+					t.Fatalf("unavailable source=%+v", read)
+				}
+			}
+			if len(p.Spans) != 2 || p.Breakdown().ObservedSeconds != 10 || p.Breakdown().ConcurrentSeconds != 0 {
+				t.Fatalf("duplicate native timing: %+v", p.Breakdown())
+			}
+			if tt.coverage == "recorder_snapshot" && (len(p.Sources) != 2 || p.Sources[0].Hash == p.Sources[1].Hash) {
+				t.Fatalf("versions=%+v", p.Sources)
+			}
+			data, err := json.Marshal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, private := range []string{"private policy", "private compound command", "private name", "private provider type", "go test ./internal/fixture", workspace, "nested/AGENTS.md"} {
+				if strings.Contains(string(data), private) {
+					t.Fatalf("private evidence persisted: %q", private)
+				}
+			}
+		})
+	}
+
+	// Catches conflated relative operations in different working directories and
+	// stale wait reasons after structured actions replace fallback classification.
+	for _, tt := range []struct {
+		name, command, actionType, actionCommand, kind, waitReason, secondCWD string
+		wantRepeat                                                            int
+	}{
+		{name: "native wait without command", actionType: "unknown", actionCommand: "sleep 1", kind: "waiting", waitReason: "sleep_command", wantRepeat: 2},
+		{name: "native read replaces fallback wait", command: "sleep 1", actionType: "read", kind: "context_read", wantRepeat: 2},
+		{name: "same action different cwd", command: "private wrapper", actionType: "unknown", actionCommand: "go test ./internal/fixture", kind: "local_validation", secondCWD: "other", wantRepeat: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := workflowmetrics.ActivityProfile{}
+			open, repeats := map[string]int{}, map[string]int{}
+			for i := range 2 {
+				cwd := "nested"
+				if i == 1 && tt.secondCWD != "" {
+					cwd = tt.secondCWD
+				}
+				applyActivityObservation(&profile, open, repeats, nil, activityObservation{at: at, head: "head", update: activityUpdate{Type: AgentUpdateToolStarted, ItemID: strconv.Itoa(i), Tool: "commandExecution", Command: tt.command, CWD: cwd, NativeActions: []NativeCommandAction{{Type: tt.actionType, Command: tt.actionCommand, Path: "AGENTS.md"}}}})
+			}
+			span := profile.Spans[1]
+			if span.Kind != tt.kind || span.WaitReason != tt.waitReason || span.Actions[0].Repeat != tt.wantRepeat {
+				t.Fatalf("native classification/repeats: %+v", span)
+			}
+		})
+	}
 }
 
 type activityCheckpointProbe struct {
@@ -223,8 +375,18 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 			<-probe.profiles // initial durable coverage boundary
 			for i, command := range []string{"cat AGENTS.md", "go test ./internal/fixture", "go test ./internal/fixture", "git diff", "git rebase origin/develop", "gh api repos/fixture/repo/pulls/1/merge", "sleep 1"} {
 				item := strconv.Itoa(i)
-				recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: item, Tool: "Bash", Command: command}, at.Add(time.Duration(i*2+1)*time.Second), "fixture-head", at)
-				recorder.observe(AgentUpdate{Type: AgentUpdateToolCompleted, TurnID: "turn", ItemID: item, Status: "completed"}, at.Add(time.Duration(i*2+2)*time.Second), "", time.Time{})
+				update := AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: item, Tool: "Bash", Command: command}
+				if i == 0 {
+					update.Tool = "commandExecution"
+					update.CWD = workspace
+					update.NativeActions = []NativeCommandAction{{Type: "read", Name: "AGENTS.md", Path: "AGENTS.md"}}
+				}
+				started := update
+				if stage == "validation" {
+					started.NativeActions = nil // Provider metadata first arrives on completion.
+				}
+				recorder.observe(started, at.Add(time.Duration(i*2+1)*time.Second), "fixture-head", at)
+				recorder.observe(AgentUpdate{Type: AgentUpdateToolCompleted, TurnID: "turn", ItemID: item, Status: "completed", NativeActions: update.NativeActions, CWD: update.CWD}, at.Add(time.Duration(i*2+2)*time.Second), "", time.Time{})
 			}
 			recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn", ItemID: "edit", Tool: "fileChange"}, at.Add(15*time.Second), "fixture-head", at)
 			recorder.observe(AgentUpdate{Type: AgentUpdateToolCompleted, TurnID: "turn", ItemID: "edit", Status: "completed"}, at.Add(16*time.Second), "", time.Time{})
@@ -240,6 +402,10 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 				if audits[0].Breakdown.ByKind[kind] == 0 {
 					t.Fatalf("missing %s: %+v", kind, audits[0])
 				}
+			}
+			nativeRead := audits[0].Profile.Spans[0].Actions
+			if len(nativeRead) != 1 || nativeRead[0].Repeat != 1 || nativeRead[0].SourceCoverage != "recorder_snapshot" || len(nativeRead[0].Sources) != 1 || nativeRead[0].Sources[0].Hash != activityHash(instructions) || nativeRead[0].CausalAttribution != "unknown_provider_origin" || len(audits[0].Profile.CoverageNotes) == 0 {
+				t.Fatalf("native read checkpoint=%+v", nativeRead)
 			}
 			if audits[0].Profile.Spans[2].Repeat != 2 || audits[0].Profile.Spans[2].Sources[1].MatchedLine != 2 || audits[0].Profile.Spans[8].PendingSeconds != 3 {
 				t.Fatalf("evidence=%+v", audits[0].Profile.Spans)
@@ -268,5 +434,57 @@ func TestActivityObservationCapacity(t *testing.T) {
 	}
 	if len(p.Spans) != activitySpanLimit || len(open) != activitySpanLimit || p.Dropped != 1 {
 		t.Fatalf("spans=%d open=%d dropped=%d", len(p.Spans), len(open), p.Dropped)
+	}
+	recorder := &activityRecorder{queue: make(chan activityObservation, 4), wake: make(chan struct{}, 1)}
+	actions := make([]NativeCommandAction, activityActionLimit+1)
+	actions[0] = NativeCommandAction{Type: "read", Path: "AGENTS.md"}
+	recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "bounded", NativeActions: actions}, time.Now(), "", time.Time{})
+	actions[0].Path = "changed"
+	o := <-recorder.queue
+	if len(o.update.NativeActions) != activityActionLimit || o.update.ActionsDropped != 1 || o.update.NativeActions[0].Path != "AGENTS.md" {
+		t.Fatalf("queued actions=%+v", o.update)
+	}
+	actions[0].Command = strings.Repeat("private", 2048)
+	recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "oversized", NativeActions: actions}, time.Now(), "", time.Time{})
+	o = <-recorder.queue
+	if len(o.update.NativeActions) != 0 || o.update.ActionsDropped != len(actions) {
+		t.Fatalf("oversized actions retained: %+v", o.update)
+	}
+	applyActivityObservation(&p, map[string]int{}, map[string]int{}, nil, o)
+}
+
+// Compare producer overhead with and without retained native metadata. Storage,
+// file reads and hashing must stay off this producer path.
+func BenchmarkActivityNativeObserve(b *testing.B) {
+	for _, count := range []int{0, 2, 32} {
+		b.Run(strconv.Itoa(count), func(b *testing.B) {
+			recorder := &activityRecorder{queue: make(chan activityObservation, 256), wake: make(chan struct{}, 1)}
+			actions := make([]NativeCommandAction, count)
+			for i := range actions {
+				actions[i] = NativeCommandAction{Type: "read", Command: "cat private/AGENTS.md", Name: "AGENTS.md", Path: "private/AGENTS.md"}
+			}
+			update := AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "item", Tool: "commandExecution", Command: "private compound", NativeActions: actions}
+			at := time.Now()
+			b.ReportAllocs()
+			for b.Loop() {
+				recorder.observe(update, at, "head", at)
+				<-recorder.queue
+			}
+		})
+	}
+}
+
+func BenchmarkActivityInstructionSnapshot(b *testing.B) {
+	workspace := b.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte(strings.Repeat("private instruction\n", 512)), 0600); err != nil {
+		b.Fatal(err)
+	}
+	sources := []activityInstruction{}
+	b.ReportAllocs()
+	for b.Loop() {
+		profile := workflowmetrics.ActivityProfile{}
+		snapshots := 0
+		observation := activityObservation{update: activityUpdate{NativeActions: []NativeCommandAction{{Type: "read", Path: "AGENTS.md"}}}}
+		snapshotActivityReads(&profile, &sources, &snapshots, workspace, &observation)
 	}
 }

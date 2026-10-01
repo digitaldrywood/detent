@@ -19,7 +19,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
-const activitySpanLimit = 1024
+const (
+	activitySpanLimit     = 1024
+	activityActionLimit   = 32
+	activitySourceLimit   = 64
+	activitySnapshotLimit = 64
+)
 
 type activityProfileStore interface {
 	SaveWorkflowActivityProfile(context.Context, int64, store.WorkflowPhaseEvent, workflowmetrics.ActivityProfile) (int64, error)
@@ -32,13 +37,18 @@ type activityUpdate struct {
 	ItemID, TurnID, ThreadID, ProviderSessionID string
 	Tool, Command, Delta, Status                string
 	ExitCode                                    *int
+	NativeActions                               []NativeCommandAction
+	ActionsDropped                              int
+	CWD                                         string
 }
 
 type activityObservation struct {
-	update activityUpdate
-	at     time.Time
-	head   string
-	headAt time.Time
+	update         activityUpdate
+	at             time.Time
+	head           string
+	headAt         time.Time
+	nativeSources  map[int]workflowmetrics.InstructionRef
+	sourceCoverage map[int]string
 }
 
 type activityRecorder struct {
@@ -90,6 +100,30 @@ func (r *activityRecorder) observe(update AgentUpdate, at time.Time, head string
 	if update.Type == AgentUpdateToolStarted {
 		observation.update.Command = update.Command
 	}
+	if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolCompleted {
+		// Copy a bounded prefix: producer-owned slices must not change queued evidence.
+		budget := 8192
+		if len(update.CWD) <= 4096 {
+			observation.update.CWD = strings.Clone(update.CWD)
+			budget -= len(update.CWD)
+		}
+		if len(update.CWD) > 4096 {
+			observation.update.ActionsDropped = len(update.NativeActions)
+		} else {
+			if len(update.NativeActions) > 0 {
+				observation.update.NativeActions = make([]NativeCommandAction, 0, min(len(update.NativeActions), activityActionLimit))
+			}
+			for i, action := range update.NativeActions {
+				size := len(action.Type) + len(action.Command) + len(action.Name) + len(action.Path)
+				if i >= activityActionLimit || size > budget {
+					observation.update.ActionsDropped = len(update.NativeActions) - i
+					break
+				}
+				budget -= size
+				observation.update.NativeActions = append(observation.update.NativeActions, NativeCommandAction{Type: strings.Clone(action.Type), Command: strings.Clone(action.Command), Name: strings.Clone(action.Name), Path: strings.Clone(action.Path)})
+			}
+		}
+	}
 	select {
 	case r.queue <- observation:
 		// Wake once per batch rather than scheduling a consumer per event.
@@ -123,7 +157,20 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 	started := r.now()
 	go func() {
 		defer close(recorder.done)
-		profile := workflowmetrics.ActivityProfile{Schema: 1, AttemptID: request.WorkAttemptID, Generation: request.Generation, SessionID: sessionID, Stage: stage, StartedAt: started, AsOf: started, Status: "running", Coverage: "partial", Spans: make([]workflowmetrics.ActivitySpan, 0, 64)}
+		profile := workflowmetrics.ActivityProfile{
+			Schema: 1, AttemptID: request.WorkAttemptID, Generation: request.Generation,
+			SessionID: sessionID, Stage: stage, StartedAt: started, AsOf: started,
+			Status: "running", Coverage: "partial",
+			CoverageNotes: []string{
+				"native_actions_have_no_individual_timing_or_outcomes",
+				"provider_instruction_origin_unavailable",
+				"read_requests_are_not_causal_proof",
+				"instruction_versions_are_recorder_snapshots_not_provider_read_bytes",
+				"instruction_snapshots_limited_to_workspace_regular_files_64_reads_64_sources_256KiB_each",
+				"native_actions_limited_to_32_and_8KiB_per_event_4_inferred_candidates_per_action",
+			},
+			Spans: make([]workflowmetrics.ActivitySpan, 0, 64),
+		}
 		profile.AttemptRef = "work_attempt:" + strconv.FormatInt(request.WorkAttemptID, 10)
 		if request.WorkAttemptID == 0 {
 			profile.AttemptRef = "session:" + strconv.FormatInt(sessionID, 10)
@@ -132,6 +179,7 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 		for _, source := range instructions {
 			profile.Sources = append(profile.Sources, source.ref)
 		}
+		snapshots := 0
 		event := store.WorkflowPhaseEvent{ProjectID: r.projectID, SessionID: sessionID, IssueID: request.Issue.ID, Identifier: request.Issue.Identifier, IssueURL: request.Issue.URL, PRNumber: pullRequestNumber(request.Issue), PhaseType: workflowmetrics.PhaseTypeAgentActivity, PhaseName: "instruction_activity", StartedAt: started}
 		var id int64
 		persist := func() {
@@ -174,6 +222,17 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 						persist()
 						return
 					}
+					snapshotReads := observation.update.Type == AgentUpdateToolStarted && len(profile.Spans) < activitySpanLimit
+					if observation.update.Type == AgentUpdateToolCompleted {
+						u := observation.update
+						key := activityHash(u.ThreadID + "\x00" + u.TurnID + "\x00" + u.ItemID)
+						if index, ok := open[key]; ok && len(profile.Spans[index].Actions) == 0 {
+							snapshotReads = true
+						}
+					}
+					if snapshotReads {
+						snapshotActivityReads(&profile, &instructions, &snapshots, workspace, &observation)
+					}
 					applyActivityObservation(&profile, open, repeats, instructions, observation)
 				default:
 					draining = false
@@ -214,7 +273,7 @@ func loadActivityInstructions(workspace string, workflow config.Workflow, at tim
 		if err != nil || len(data) > 256*1024 {
 			continue
 		}
-		sources = append(sources, activityInstruction{ref: workflowmetrics.InstructionRef{Name: name, Hash: activityHash(string(data)), ObservedAt: time.Now().UTC()}, text: string(data), path: filepath.Join(workspace, name)})
+		sources = append(sources, activityInstruction{ref: workflowmetrics.InstructionRef{Name: name, PathRef: activityHash(name), Evidence: "startup_snapshot", Hash: activityHash(string(data)), ObservedAt: time.Now().UTC()}, text: string(data), path: filepath.Join(workspace, name)})
 	}
 	return sources
 }
@@ -257,16 +316,16 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 			activityCommand = u.Delta
 		}
 		kind, evidence := classifyActivity(u.Tool, activityCommand)
-		span := workflowmetrics.ActivitySpan{ID: key, ParentID: parent, Kind: kind, Evidence: evidence, Fingerprint: activityHash(u.Tool + "\x00" + command), StartedAt: observation.at, Outcome: "running", Attribution: "unattributed"}
-		if kind == "waiting" {
-			span.WaitReason = evidence
-		}
+		span := workflowmetrics.ActivitySpan{ID: key, ParentID: parent, Kind: kind, Evidence: evidence, Fingerprint: activityHash(u.Tool + "\x00" + command), StartedAt: observation.at, Outcome: "running", Attribution: "unattributed", CausalAttribution: "unknown_provider_origin"}
 		span.Head = observation.head
 		span.HeadObservedAt = observation.headAt
 		if span.Head != "" {
 			span.HeadAttribution = "last_observed_workspace_snapshot"
 		}
 		for _, source := range sources {
+			if len(u.NativeActions) > 0 || u.ActionsDropped > 0 {
+				break
+			}
 			if kind == "context_read" && activityReadsSource(activityCommand, source) {
 				span.Sources = append(span.Sources, source.ref)
 				span.Attribution = "observed_read_request"
@@ -278,6 +337,7 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 				span.Attribution = "inferred_text_match"
 			}
 		}
+		applyActivityActions(&span, repeats, sources, observation)
 		repeatKey := span.Head + "\x00" + span.Fingerprint
 		repeats[repeatKey]++
 		span.Repeat = repeats[repeatKey]
@@ -311,10 +371,51 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 		delete(open, key+"/wait")
 	}
 	span := &profile.Spans[index]
+	if len(span.Actions) == 0 {
+		applyActivityActions(span, repeats, sources, observation)
+	}
 	span.FinishedAt = observation.at
 	span.Outcome = activityOutcome(u.Status, u.ExitCode)
 	span.ExitCode = u.ExitCode
 	delete(open, key)
+}
+
+// The first available native list describes the interval; repeated completion
+// metadata must not count the same actions again or invent new timed spans.
+func applyActivityActions(span *workflowmetrics.ActivitySpan, repeats map[string]int, sources []activityInstruction, observation activityObservation) {
+	u := observation.update
+	if len(u.NativeActions) > 0 || u.ActionsDropped > 0 {
+		span.Sources = nil
+		span.Attribution = "unattributed"
+		span.ActionsDropped = u.ActionsDropped
+		for i, action := range u.NativeActions {
+			record := activityAction(action, i, sources, observation)
+			repeatKey := "action\x00" + span.Head + "\x00" + record.Fingerprint
+			repeats[repeatKey]++
+			record.Repeat = repeats[repeatKey]
+			span.Actions = append(span.Actions, record)
+			span.Sources = append(span.Sources, record.Sources...)
+			if len(record.Sources) > 0 {
+				if span.Attribution == "unattributed" {
+					span.Attribution = record.Attribution
+				} else if span.Attribution != record.Attribution {
+					span.Attribution = "mixed_evidence"
+				}
+			}
+			if i == 0 {
+				span.Kind, span.Evidence = record.Kind, record.Evidence
+			} else if span.Kind != record.Kind {
+				span.Kind, span.Evidence = "unclassified", "mixed_native_actions"
+			}
+		}
+		if u.ActionsDropped > 0 {
+			span.Kind, span.Evidence = "unclassified", "partial_native_actions"
+		}
+	}
+	span.WaitReason = ""
+	if span.Kind == "waiting" {
+		span.WaitReason = span.Evidence
+	}
 }
 
 func finishActivityWait(profile *workflowmetrics.ActivityProfile, open map[string]int, key string, at time.Time) {
@@ -485,4 +586,144 @@ func activityReadsSource(command string, source activityInstruction) bool {
 		}
 	}
 	return false
+}
+
+// Native action type/name/path values may contain private provider data. Only
+// known types and content-free hashes leave the recorder.
+func activityAction(action NativeCommandAction, index int, sources []activityInstruction, observation activityObservation) workflowmetrics.ActivityAction {
+	record := workflowmetrics.ActivityAction{Index: index, Type: "unknown", TypeRef: activityHash(action.Type), Fingerprint: activityHash(observation.update.CWD + "\x00" + action.Type + "\x00" + action.Command + "\x00" + action.Name + "\x00" + action.Path), Attribution: "unattributed", CausalAttribution: "unknown_provider_origin"}
+	switch action.Type {
+	case "read", "search", "listFiles", "unknown":
+		record.Type = action.Type
+	}
+	if action.Name != "" {
+		record.NameRef = activityHash(action.Name)
+	}
+	if action.Path != "" {
+		record.PathRef = activityHash(action.Path)
+	}
+	if action.Command != "" {
+		record.Kind, record.Evidence = classifyActivity("commandExecution", action.Command)
+	} else {
+		record.Kind, record.Evidence = "unclassified", "opaque_native_action"
+	}
+	switch record.Type {
+	case "read":
+		record.Kind, record.Evidence = "context_read", "native_read"
+	case "search", "listFiles":
+		record.Kind, record.Evidence = "context_read", "native_search"
+	}
+	if ref, ok := observation.nativeSources[index]; ok {
+		record.Sources = append(record.Sources, ref)
+		record.Attribution = "observed_read_request"
+	}
+	record.SourceCoverage = observation.sourceCoverage[index]
+	if record.Kind != "context_read" && record.Kind != "unclassified" && record.Kind != "tool_execution" && action.Command != "" {
+		for _, source := range sources {
+			if line := strings.Index(source.text, action.Command); line >= 0 {
+				ref := source.ref
+				ref.MatchedLine = 1 + strings.Count(source.text[:line], "\n")
+				if len(record.Sources) >= 4 {
+					record.SourceCoverage = "inferred_candidates_limited"
+					break
+				}
+				record.Sources = append(record.Sources, ref)
+				record.Attribution = "inferred_text_match"
+			}
+		}
+	}
+	return record
+}
+
+// This runs only on the existing recorder goroutine. A request identifies a
+// source candidate; the later local snapshot cannot prove provider read bytes.
+func snapshotActivityReads(profile *workflowmetrics.ActivityProfile, sources *[]activityInstruction, snapshots *int, workspace string, observation *activityObservation) {
+	for i, action := range observation.update.NativeActions {
+		if action.Type != "read" {
+			continue
+		}
+		if observation.sourceCoverage == nil {
+			observation.sourceCoverage = make(map[int]string)
+		}
+		observation.sourceCoverage[i] = "instruction_path_unavailable"
+		if action.Path == "" {
+			continue
+		}
+		name := filepath.Base(action.Path)
+		if name != "AGENTS.md" && name != "WORKFLOW.md" && name != "CLAUDE.md" {
+			observation.sourceCoverage[i] = "not_instruction_file"
+			continue
+		}
+		cwd := observation.update.CWD
+		if cwd == "" {
+			cwd = workspace
+		} else if !filepath.IsAbs(cwd) {
+			cwd = filepath.Join(workspace, cwd)
+		}
+		path := action.Path
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
+		relative, err := filepath.Rel(workspace, path)
+		if err != nil || !filepath.IsLocal(relative) {
+			observation.sourceCoverage[i] = "outside_workspace"
+			continue
+		}
+		observation.sourceCoverage[i] = "snapshot_limit"
+		if *snapshots >= activitySnapshotLimit || len(profile.Sources) >= activitySourceLimit {
+			continue
+		}
+		*snapshots++
+		root, err := os.OpenRoot(workspace)
+		if err != nil {
+			observation.sourceCoverage[i] = "snapshot_unavailable"
+			continue
+		}
+		// Exclude directories and special files; Root also refuses symlink escapes.
+		info, err := root.Stat(relative)
+		var data []byte
+		if err == nil && info.Mode().IsRegular() {
+			var file *os.File
+			file, err = root.Open(relative)
+			if err == nil {
+				data, err = io.ReadAll(io.LimitReader(file, 256*1024+1))
+				_ = file.Close() //nolint:errcheck // Read-only telemetry cleanup.
+			}
+		} else if err == nil {
+			err = os.ErrInvalid
+		}
+		_ = root.Close() //nolint:errcheck // Read-only telemetry cleanup.
+		if err != nil || len(data) > 256*1024 {
+			observation.sourceCoverage[i] = "snapshot_unavailable"
+			continue
+		}
+		ref := workflowmetrics.InstructionRef{Name: name, PathRef: activityHash(filepath.Clean(relative)), Hash: activityHash(string(data)), ObservedAt: time.Now().UTC(), Evidence: "recorder_snapshot_after_native_read"}
+		if observation.nativeSources == nil {
+			observation.nativeSources = make(map[int]workflowmetrics.InstructionRef)
+		}
+		observation.nativeSources[i] = ref
+		observation.sourceCoverage[i] = "recorder_snapshot"
+		exists := false
+		for _, prior := range profile.Sources {
+			if prior.PathRef == ref.PathRef && prior.Hash == ref.Hash {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			profile.Sources = append(profile.Sources, ref)
+		}
+		next := activityInstruction{ref: ref, text: string(data), path: path}
+		replaced := false
+		for j, prior := range *sources {
+			if prior.path == path {
+				(*sources)[j] = next
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			*sources = append(*sources, next)
+		}
+	}
 }

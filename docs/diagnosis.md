@@ -36,13 +36,44 @@ curl -fsS http://127.0.0.1:4000/ | rg -o 'data-detent-served-version="[^"]+"' -m
 ```
 
 Activity classification uses the provider's existing parsed command actions
-when available, preserving the original command fingerprint. These actions
-are best-effort metadata, not original argument arrays. Observed instruction
-reads retain source hashes; exact instruction text matches remain explicitly
-inferred. Opaque, mixed or missing actions remain uncertain. Profiles store safe
-fingerprints and references rather than commands, arguments or instruction
-contents. Partial coverage and unattributed intervals are evidence limits;
-parallel command durations must not be summed as sequential elapsed time.
+when available, preserving the original command fingerprint. Each tool span
+retains an ordered `actions` list with fixed types/categories, hashed type/name/
+path identities, action fingerprints, repeats and instruction candidates. A
+mixed command retains one timed span: actions have no independent durations or
+outcomes. Sort spans by `elapsed_seconds` in the existing workflow timeline API
+to identify the largest observed operations; compare `actions[].fingerprint`
+and `repeat` under the same workspace head to identify repeated work. Native
+action fingerprints include cwd; raw tool command fingerprints remain unchanged.
+The first available native list from start or completion is retained once. Compare
+`actions[].sources` using `path_ref`, `sha256`, `observed_at` and `matched_line`
+to distinguish source versions and inferred instruction candidates. Do not sum
+parallel command durations as sequential elapsed time or assign a compound
+command's total to every action.
+
+Native instruction reads use the provider's path and working directory (the
+workspace when cwd is absent). Native snapshots cover only WORKFLOW.md,
+AGENTS.md and CLAUDE.md regular files inside the workspace, including nested
+files. The existing recorder goroutine performs these bounded local reads;
+dispatch and worker
+commands never wait for them. Snapshots are limited to 64 read requests and 64
+source records per profile, 256 KiB per file. The queue retains at most 32 actions
+and 8 KiB of native metadata including cwd per event; `actions_dropped` reports
+truncation. Each action retains at most four inferred instruction candidates.
+`source_coverage` explains missing paths, external files, unavailable snapshots
+and exhausted limits. File contents, commands, arguments, output and provider
+names/paths are excluded from persisted records.
+
+A read request is evidence that an instruction file was requested, not that it
+caused later work or succeeded. `recorder_snapshot_after_native_read` records
+the version available when telemetry processed the event, not a proof of the
+bytes the provider read; edits before queue consumption may change it. Prior
+versions remain in `instructions`, while text matching uses the latest local
+snapshot. Exact command matches are `inferred_text_match`. Existing native
+events supply no instruction-origin provenance, so `causal_attribution` remains
+`unknown_provider_origin`, including observed reads and inferred matches.
+`coverage_notes`, dropped/unpaired counts and unobserved intervals explain
+partial coverage. Older profiles lack structured actions and cannot be repaired
+from discarded evidence; absent causal attribution is unknown.
 
 ## Token spend
 
