@@ -167,7 +167,7 @@ func TestDispatchPlannerBoundsGitHubIssueReads(t *testing.T) {
 
 func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"native waits", "unknown waits", "due retries", "running", "blocked", "claimed", "deferred completion", "pending retry", "pending CI", "refreshed CI", "completed gate", "artifact wait", "mixed", "ready merge"} {
+	for _, mode := range []string{"native waits", "unknown waits", "due retries", "running", "blocked", "claimed", "deferred completion", "pending retry", "pending CI", "refreshed CI", "completed gate", "operator rejection", "artifact wait", "mixed", "ready merge"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			capacity := 6
@@ -190,15 +190,12 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 			now := time.Date(2026, 9, 30, 21, 51, 0, 0, time.UTC)
 			var candidates []connector.Issue
 			for i := range 30 {
-				if mode == "refreshed CI" && i >= 24 {
-					continue
-				}
 				issue := dispatchTestIssue(fmt.Sprintf("%02d", i), "Todo")
 				issue.CreatedAt = new(now.Add(time.Duration(i) * time.Second))
 				if i < 24 {
 					wait := mode
 					if mode == "mixed" {
-						wait = []string{"running", "blocked", "pending CI", "completed gate"}[i%4]
+						wait = []string{"running", "blocked", "deferred completion", "pending retry"}[i%4]
 					}
 					switch wait {
 					case "native waits", "unknown waits", "due retries", "ready merge":
@@ -219,10 +216,10 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 						state.deferredCompletions[issue.ID] = deferredCompletion{}
 					case "pending retry":
 						state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 1, DueAt: now.Add(time.Minute)}
-					case "pending CI", "refreshed CI", "completed gate":
+					case "pending CI", "refreshed CI", "completed gate", "operator rejection":
 						issue.State = "Rework"
 						issue.PullRequest = &connector.PullRequest{Number: i + 1, State: "OPEN", HeadSHA: "current", CIStatus: "pending"}
-						if wait == "completed gate" {
+						if wait == "completed gate" || wait == "operator rejection" {
 							issue.State = "In Progress"
 							state.Completed[issue.ID] = Completed{Issue: cloneIssue(issue), FinalState: FinalStateCompleted, CompletedAt: now}
 						}
@@ -230,15 +227,28 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 						issue.Fields = map[string]string{"render_status": "rendering"}
 					}
 				}
-				if mode == "ready merge" && i == 29 {
+				if mode == "ready merge" && (i == 0 || i == 29) {
 					issue.State = "Merging"
+					issue.BlockedBy = nil
 					issue.PRRepository = "fixture/dispatch"
-					issue.PullRequest = &connector.PullRequest{Number: 100, State: "OPEN", HeadSHA: "current", CIStatus: "green", MergeableState: "clean"}
+					issue.PullRequest = &connector.PullRequest{Number: 100 + i, State: "OPEN", HeadSHA: "current", CIStatus: "green", MergeableState: "clean"}
+					if i == 0 {
+						issue.StageUpdatedAt = new(now.Add(-time.Hour))
+						state.Blocked[issue.ID] = Blocked{Issue: cloneIssue(issue), Reason: "human_action", Source: BlockedSourceProjectStatus}
+					}
 				}
 				candidates = append(candidates, issue)
 			}
 			var hydrated []string
-			plan := newDispatchPlanner(cfg).plan(&state, candidates, now, dispatchPlanHooks{
+			planner := newDispatchPlanner(cfg)
+			rejections := 0
+			if mode == "operator rejection" {
+				planner.operatorRejectedHead = func(connector.Issue) (bool, error) {
+					rejections++
+					return true, nil
+				}
+			}
+			plan := planner.plan(&state, candidates, now, dispatchPlanHooks{
 				hydrate: func(issue connector.Issue) (connector.Issue, bool) {
 					hydrated = append(hydrated, issue.ID)
 					if mode == "refreshed CI" {
@@ -247,9 +257,9 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 					return issue, true
 				},
 			})
-			if mode != "unknown waits" && mode != "due retries" {
+			if mode != "unknown waits" && mode != "due retries" && mode != "pending CI" && mode != "completed gate" && mode != "artifact wait" {
 				want := []string{"24", "25", "26", "27", "28", "29"}
-				if mode == "refreshed CI" {
+				if mode == "refreshed CI" || mode == "operator rejection" {
 					want = []string{"00", "01", "02", "03", "04", "05"}
 				} else if mode == "ready merge" {
 					want = []string{"29", "24", "25", "26", "27", "28"}
@@ -261,8 +271,73 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 				if !slices.Equal(dispatched, want) || !slices.Equal(hydrated, want) {
 					t.Fatalf("ready tail dispatches=%+v hydrated=%v", plan.Dispatches, hydrated)
 				}
+				if mode == "operator rejection" && rejections != 6 {
+					t.Fatalf("rejection callbacks = %d, want six fresh eligibility calls", rejections)
+				}
 			} else if len(plan.Dispatches) != 0 || len(hydrated) != 14 || hydrated[0] != "00" || hydrated[13] != "13" {
 				t.Fatalf("unknown/retry evidence must retain bound: dispatches=%+v hydrated=%v", plan.Dispatches, hydrated)
+			}
+		})
+	}
+}
+
+func TestDispatchPlannerDependencyWaitProvenanceAcrossTicks(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"", connector.BlockedRefSourceNative} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 6, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			state := newState(cfg)
+			planner := newDispatchPlanner(cfg)
+			now := time.Date(2026, 10, 1, 1, 55, 0, 0, time.UTC)
+			var candidates []connector.Issue
+			for i := range 30 {
+				issue := dispatchTestIssue(fmt.Sprintf("%02d", i), "Todo")
+				issue.CreatedAt = new(now.Add(time.Duration(i) * time.Second))
+				if i < 2 {
+					issue.DependencySource = source
+					issue.BlockedBy = []connector.BlockedRef{{Identifier: "fixture/dispatch#999", State: "Todo"}}
+				}
+				candidates = append(candidates, issue)
+			}
+			for tick := range 2 {
+				clear(state.Running)
+				clear(state.Claimed)
+				if tick == 1 && source == connector.BlockedRefSourceNative {
+					candidates[0].BlockedBy, candidates[1].BlockedBy = nil, nil
+				}
+				planner.trackBlockedCandidates(&state, candidates, now)
+				var hydrated []string
+				plan := planner.plan(&state, candidates, now, dispatchPlanHooks{
+					hydrate: func(issue connector.Issue) (connector.Issue, bool) {
+						hydrated = append(hydrated, issue.ID)
+						if tick == 1 {
+							issue.BlockedBy = nil
+						}
+						if blocked, ok := state.Blocked[issue.ID]; ok && blockedFromDependency(blocked) && !issueBlockedByNonTerminal(issue, cfg.TerminalStates) {
+							delete(state.Blocked, issue.ID)
+						}
+						return issue, true
+					},
+				})
+				want := []string{"00", "01", "02", "03", "04", "05"}
+				if tick == 0 {
+					want = []string{"02", "03", "04", "05", "06", "07"}
+					if source != connector.BlockedRefSourceNative {
+						want = append([]string{"00", "01"}, want...)
+					}
+				}
+				if len(plan.Dispatches) != 6 || !slices.Equal(hydrated, want) {
+					t.Fatalf("tick %d: hydrated=%v dispatches=%+v; want six admissions with reads %v", tick, hydrated, plan.Dispatches, want)
+				}
+				if tick == 1 {
+					for _, id := range []string{"00", "01"} {
+						if _, held := state.Blocked[id]; held {
+							t.Fatalf("tick %d retained cleared dependency %s", tick, id)
+						}
+					}
+				}
+				now = now.Add(time.Minute)
 			}
 		})
 	}
