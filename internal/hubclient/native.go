@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -152,12 +153,19 @@ func (c *NativeClient) Dependency(ctx context.Context, id tracker.NativeWorkItem
 }
 
 func (c *NativeClient) Comments(ctx context.Context, id tracker.NativeWorkItemID, cursor string) (tracker.Page[tracker.NativeComment], error) {
+	return c.CommentsPage(ctx, id, cursor, 10)
+}
+
+func (c *NativeClient) CommentsPage(ctx context.Context, id tracker.NativeWorkItemID, cursor string, limit int) (tracker.Page[tracker.NativeComment], error) {
 	var result tracker.Page[tracker.NativeComment]
+	if limit < 1 || limit > 200 {
+		return result, errors.New("invalid comment page limit")
+	}
 	path, err := nativeItemPath(id)
 	if err != nil {
 		return result, err
 	}
-	err = c.client.request(ctx, http.MethodGet, c.base()+path+"/comments?limit=10&cursor="+url.QueryEscape(cursor), nil, &result)
+	err = c.client.request(ctx, http.MethodGet, c.base()+path+"/comments?limit="+strconv.Itoa(limit)+"&cursor="+url.QueryEscape(cursor), nil, &result)
 	return result, err
 }
 
@@ -272,4 +280,23 @@ func (c *NativeClient) Renew(ctx context.Context, lease tracker.NativeLease, ttl
 
 func (c *NativeClient) Release(ctx context.Context, lease tracker.NativeLease, reason string) error {
 	return c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason}, nil)
+}
+
+// SetArchived calls the existing native archive/restore command with its revision.
+func (c *NativeClient) SetArchived(ctx context.Context, id tracker.NativeWorkItemID, revision tracker.Revision, archived bool, command tracker.Mutation) (tracker.NativeIssue, error) {
+	var result tracker.NativeIssue
+	path, err := nativeItemPath(id)
+	if err != nil {
+		return result, err
+	}
+	operation := "restore"
+	if archived {
+		operation = "archive"
+	}
+	request := struct {
+		tracker.Mutation
+		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	}{c.fencedMutation(ctx, id, command), revision}
+	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/"+operation, request, &result)
+	return result, err
 }

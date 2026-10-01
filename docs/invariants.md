@@ -17,6 +17,24 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Work-item MCP parity (#3341) reuses the dashboard work creation, discussion,
+priority, native collaboration, park acknowledgement and security-disposition
+commands. Native edits keep expected revisions and workflow authority; connection
+approval and YOLO cannot bypass them. Compatibility dependencies, ordering and
+priority use the hub's existing application commands. Board removal now delegates
+project removal or lane-field clearing to `ReconcileOperatorMove`, consolidating
+the former dashboard tracker writes under the orchestrator. Hub-only deployments
+without a daemon lane owner or approval service return opaque unavailable results
+for those commands. No tracker capability or lane writer is added to MCP.
+The reviewed `applyOperatorMove` source digest changes for this consolidation;
+the existing move reasons are unchanged and no mechanism or reason code is added
+(INV-3).
+`TestMCPNativeWorkCommands`, `TestHubMCPWorkCommands`,
+`TestHubMCPCompatibilityCommands`, `TestMCPActionApprovalBoundary`,
+`TestOperatorRemovalCommand` and `TestWorkArgumentsDirectCallBounds` cover
+replay, native revisions, workflow refusal, ownership, bounded direct calls,
+real approval/rejection, authorized YOLO and orchestrator-owned removal.
+
 MCP transport parity (#3339) uses one permission-filtered, paginated typed
 registry with toolset metadata. The `2026-07-28` stateless protocol validates
 per-request metadata and mirrored HTTP headers; older handshakes retain their

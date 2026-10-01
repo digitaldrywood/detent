@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -236,52 +238,64 @@ func (s *Server) nativeIssueSubmit(c echo.Context) error {
 }
 
 func submitNativeForm(c echo.Context, client *hubclient.NativeClient, data templates.NativeFormData) (string, error) {
-	ctx := c.Request().Context()
-	mutation := tracker.Mutation{IdempotencyKey: data.Key}
+	result, err := executeNativeForm(c.Request().Context(), client, data)
+	return result.URL, err
+}
+
+type nativeFormResult struct {
+	URL     string
+	Issue   tracker.NativeIssue
+	Comment tracker.NativeComment
+}
+
+func executeNativeForm(ctx context.Context, client *hubclient.NativeClient, data templates.NativeFormData) (nativeFormResult, error) {
+	mutation := tracker.MutationForContext(ctx, data.Key)
 	if data.Key == "" || len(data.Key) > 128 {
-		return "", echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid mutation key")
+		return nativeFormResult{}, echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid mutation key")
 	}
 	id := data.Issue.WorkItemID
 	if (id == "") != (data.Action == "create") {
-		return "", echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid form action")
+		return nativeFormResult{}, echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid form action")
 	}
 	revision, err := strconv.ParseInt(data.Revision, 10, 64)
 	if data.Action != "create" && data.Action != "comment" && data.Action != "change" && (err != nil || revision <= 0) {
-		return "", echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid revision")
+		return nativeFormResult{}, echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid revision")
 	}
+	var result nativeFormResult
 	var priority *int
 	if data.Priority != "" {
 		value, err := strconv.Atoi(data.Priority)
 		if err != nil || value < 0 || value > 3 {
-			return "", echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid priority")
+			return nativeFormResult{}, echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid priority")
 		}
 		priority = &value
 	}
 	switch data.Action {
 	case "create":
 		issue, err := client.CreateIssue(ctx, tracker.CreateIssue{Mutation: mutation, GitHubIssueURL: data.GitHubIssueURL, Title: data.Title, Body: data.Body, State: data.State, Priority: priority})
-		return templates.NativeIssuePath(data.Dashboard.ProjectID, issue.WorkItemID), err
+		return nativeFormResult{URL: templates.NativeIssuePath(data.Dashboard.ProjectID, issue.WorkItemID), Issue: issue}, err
 	case "edit":
-		_, err = client.UpdateIssue(ctx, id, tracker.UpdateIssue{Mutation: mutation, ExpectedRevision: tracker.Revision(revision), Title: &data.Title, Body: &data.Body, Priority: tracker.SetPriority(priority)})
+		result, err = executeNativeWorkCommand(ctx, client, nativeWorkCommand{Kind: operatortool.EditItem, Key: data.Key, ID: id, ExpectedRevision: tracker.Revision(revision), Title: &data.Title, Body: &data.Body, Priority: priority})
 	case "transition":
-		_, err = client.Transition(ctx, id, tracker.Transition{Mutation: mutation, ExpectedRevision: tracker.Revision(revision), State: data.State, Reason: "user_requested"})
+		result.Issue, err = client.Transition(ctx, id, tracker.Transition{Mutation: mutation, ExpectedRevision: tracker.Revision(revision), State: data.State, Reason: "user_requested"})
 	case "dependency":
-		_, err = client.Dependency(ctx, id, tracker.DependencyMutation{Mutation: mutation, ExpectedRevision: tracker.Revision(revision), RelatedWorkItemID: tracker.NativeWorkItemID(strings.TrimSpace(data.Related)), Operation: data.Operation})
+		result, err = executeNativeWorkCommand(ctx, client, nativeWorkCommand{Kind: operatortool.SetDependency, Key: data.Key, ID: id, ExpectedRevision: tracker.Revision(revision), Related: tracker.NativeWorkItemID(strings.TrimSpace(data.Related)), Operation: data.Operation})
 	case "comment":
-		_, err = client.CreateComment(ctx, id, tracker.CreateComment{Mutation: mutation, Body: data.Body})
+		result, err = executeNativeWorkCommand(ctx, client, nativeWorkCommand{Kind: operatortool.AddComment, Key: data.Key, ID: id, Body: &data.Body})
 	case "comment_edit":
-		_, err = client.UpdateComment(ctx, id, data.CommentID, tracker.UpdateComment{Mutation: mutation, ExpectedRevision: tracker.Revision(revision), Body: data.Body})
+		result, err = executeNativeWorkCommand(ctx, client, nativeWorkCommand{Kind: operatortool.EditComment, Key: data.Key, ID: id, ExpectedRevision: tracker.Revision(revision), CommentID: data.CommentID, Body: &data.Body})
 	case "change":
 		var linked []tracker.NativeWorkItemID
 		for _, related := range strings.Fields(data.Related) {
 			linked = append(linked, tracker.NativeWorkItemID(related))
 		}
 		change, changeErr := client.CreateChange(ctx, id, tracker.CreateChange{Mutation: mutation, Title: data.Title, Body: data.Body, LinkedIssues: linked})
-		return templates.ChangePath(data.Dashboard.ProjectID, id, change.ID), changeErr
+		return nativeFormResult{URL: templates.ChangePath(data.Dashboard.ProjectID, id, change.ID)}, changeErr
 	default:
-		return "", echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid form action")
+		return nativeFormResult{}, echo.NewHTTPError(http.StatusUnprocessableEntity, "invalid form action")
 	}
-	return templates.NativeIssuePath(data.Dashboard.ProjectID, id), err
+	result.URL = templates.NativeIssuePath(data.Dashboard.ProjectID, id)
+	return result, err
 }
 
 func (s *Server) loadNativeWork(c echo.Context, client *hubclient.NativeClient, id tracker.NativeWorkItemID) (*templates.NativeWorkData, error) {

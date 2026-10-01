@@ -37,6 +37,9 @@ func ActionSummary(action Action) string {
 	case ActionFileIssue:
 		return fmt.Sprintf("File %q on %s", action.Title, action.ProjectID)
 	default:
+		if operatortool.IsWorkTool(string(action.Kind)) {
+			return fmt.Sprintf("%s on %s", strings.ReplaceAll(string(action.Kind), "_", " "), actionLabel(action))
+		}
 		return "Unknown operator action"
 	}
 }
