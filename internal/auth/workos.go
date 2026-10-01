@@ -640,6 +640,33 @@ func (p *workosProvider) AcceptInvitation(ctx context.Context, token string, use
 	if err != nil {
 		return err
 	}
+	return p.acceptInvitationRecord(ctx, invitation, userID)
+}
+
+func (p *workosProvider) InvitationByID(ctx context.Context, id string) (Invitation, error) {
+	if !validWorkOSID(id) {
+		return Invitation{}, ErrHostedIdentity
+	}
+	var invitation Invitation
+	if err := p.request(ctx, http.MethodGet, "/user_management/invitations/"+id, nil, &invitation); err != nil {
+		return Invitation{}, err
+	}
+	if !validWorkOSInvitation(invitation) || invitation.ID != id {
+		return Invitation{}, ErrHostedIdentity
+	}
+	return invitation, nil
+}
+func (p *workosProvider) AcceptInvitationByID(ctx context.Context, id, userID string) error {
+	if !validWorkOSID(userID) {
+		return ErrHostedIdentity
+	}
+	invitation, err := p.InvitationByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	return p.acceptInvitationRecord(ctx, invitation, userID)
+}
+func (p *workosProvider) acceptInvitationRecord(ctx context.Context, invitation Invitation, userID string) error {
 	if invitation.State != "pending" || !invitation.ExpiresAt.After(time.Now()) {
 		return ErrHostedIdentity
 	}

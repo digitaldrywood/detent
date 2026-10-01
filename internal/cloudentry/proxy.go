@@ -383,3 +383,16 @@ func (s *Service) revokeAtTenants(parent context.Context, items []authorization)
 		}
 	}
 }
+
+func (s *Service) acceptInvitationID(ctx context.Context, organization Organization, subject, email, providerSession, id string) error {
+	if s.staff(email) {
+		return auth.ErrHostedIdentity
+	}
+	status, err := s.serviceRequest(ctx, organization, "/internal/v1/invitations/accept", map[string]string{"invitation_id": id}, func(claims *cloudassert.Claims) {
+		claims.Subject, claims.Email, claims.ProviderSession = subject, email, providerSession
+	})
+	if err != nil || status != http.StatusNoContent {
+		return errors.Join(errors.New("tenant rejected the invitation"), err)
+	}
+	return nil
+}

@@ -68,6 +68,15 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		return nil, err
 	}
 	definitions = append(definitions, changes...)
+	admin, err := e.service.administration.ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, definition := range admin {
+		if operatortool.IsAdministration(definition.Name) || e.service.config.Hosted == nil {
+			definitions = append(definitions, definition)
+		}
+	}
 	fleet, err := (hubFleetExecutor{service: e.service}).ListTools(ctx)
 	if err != nil {
 		return nil, err
@@ -125,6 +134,19 @@ func safeBillingError(err error) error {
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
 	if _, ok := operatortool.ChangeDefinition(call.Name); ok {
 		return (hubOperatorExecutor{service: e.service}).Execute(ctx, call)
+	}
+	if operatortool.IsAdministration(call.Name) {
+		return e.service.administration.Execute(ctx, call)
+	}
+	if call.Name == operatortool.ActionResult {
+		var request struct {
+			ActionID string `json:"action_id"`
+		}
+		if operatortool.DecodeArguments(call.Arguments, &request) == nil {
+			if action, ok := e.service.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok && operatortool.IsAdministration(string(action.Kind)) {
+				return e.service.administration.Execute(ctx, call)
+			}
+		}
 	}
 	if hubFleetTool(call.Name) {
 		return (hubFleetExecutor{service: e.service}).Execute(ctx, call)
@@ -373,6 +395,9 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
 		return (hubOperatorExecutor{service: e.service}).ExecuteAction(ctx, action)
 	}
+	if operatortool.IsAdministration(string(action.Kind)) {
+		return e.service.administration.ExecuteAction(ctx, action)
+	}
 	if hubFleetTool(string(action.Kind)) {
 		return (hubFleetExecutor{service: e.service}).ExecuteAction(ctx, action)
 	}
@@ -415,6 +440,10 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Action, outcome string) {
 	if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
 		(hubOperatorExecutor{service: e.service}).AuditAction(ctx, action, outcome)
+		return
+	}
+	if operatortool.IsAdministration(string(action.Kind)) {
+		e.service.administration.AuditAction(ctx, action, outcome)
 		return
 	}
 	if hubFleetTool(string(action.Kind)) {

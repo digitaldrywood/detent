@@ -57,14 +57,21 @@ type tokenRequest struct {
 	Scope apiScope `json:"scope"`
 }
 
+type tokenGrantResponse struct {
+	OrganizationID string `json:"organization_id"`
+	ProjectID      string `json:"project_id"`
+}
 type tokenResponse struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Scope       apiScope  `json:"scope"`
-	Token       string    `json:"token"`
-	Fingerprint string    `json:"fingerprint"`
-	CreatedAt   time.Time `json:"created_at"`
-	RotatedAt   time.Time `json:"rotated_at,omitempty"`
+	NativeOnly  bool                 `json:"native_only"`
+	RevokedAt   *time.Time           `json:"revoked_at,omitempty"`
+	Grants      []tokenGrantResponse `json:"grants"`
+	ID          string               `json:"id"`
+	Name        string               `json:"name"`
+	Scope       apiScope             `json:"scope"`
+	Token       string               `json:"token,omitempty"`
+	Fingerprint string               `json:"fingerprint"`
+	CreatedAt   time.Time            `json:"created_at"`
+	RotatedAt   time.Time            `json:"rotated_at,omitempty"`
 }
 
 func (d *database) ensureInitialAdminToken(ctx context.Context, token []byte) error {
@@ -226,94 +233,26 @@ func (s *Service) createAPIToken(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	request.Name = strings.TrimSpace(request.Name)
-	if request.Name == "" || !validAPIScope(request.Scope) {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_token", Message: "Token name and scope are required"})
-	}
-	token, err := s.config.generateToken()
+	response, err := s.createAPITokenFor(c.Request().Context(), request)
 	if err != nil {
-		return s.internalAPIError(c, "token_create_failed", "API token could not be created", err)
-	}
-	now, err := s.database.currentTime()
-	if err != nil {
-		return s.internalAPIError(c, "token_create_failed", "API token could not be created", err)
-	}
-	id := strings.TrimSpace(s.config.newTokenID())
-	if id == "" {
-		return s.internalAPIError(c, "token_create_failed", "API token could not be created", errors.New("generated token ID is empty"))
-	}
-	hash := apikey.HashToken(token)
-	_, err = s.database.db.ExecContext(c.Request().Context(), `
-INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, request.Name, hash, tokenFingerprint(hash), request.Scope, formatHubTime(now), formatHubTime(now),
-	)
-	if err != nil {
-		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "token_conflict", Message: "API token name already exists"})
+		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusCreated, tokenResponse{ID: id, Name: request.Name, Scope: request.Scope, Token: token, Fingerprint: tokenFingerprint(hash), CreatedAt: now})
+	return c.JSON(http.StatusCreated, response)
 }
 
 func (s *Service) rotateAPIToken(c echo.Context) error {
-	id := strings.TrimSpace(c.Param("id"))
-	if id == "" {
-		return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "token_not_found", Message: "API token was not found"})
-	}
-	token, err := s.config.generateToken()
+	response, err := s.rotateAPITokenFor(c.Request().Context(), strings.TrimSpace(c.Param("id")))
 	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
+		return s.nativeAPIError(c, err)
 	}
-	now, err := s.database.currentTime()
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), `
-UPDATE api_tokens
-SET token_hash = ?, token_fingerprint = ?, rotated_at = ?, revoked_at = NULL, updated_at = ?
-WHERE id = ? AND NOT EXISTS (SELECT 1 FROM runner_identities WHERE token_id = api_tokens.id)`, apikey.HashToken(token), tokenFingerprint(apikey.HashToken(token)), formatHubTime(now), formatHubTime(now), id)
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	if rows != 1 {
-		return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "token_not_found", Message: "API token was not found"})
-	}
-	var response tokenResponse
-	var createdAt string
-	err = s.database.db.QueryRowContext(c.Request().Context(), "SELECT id, name, scope, token_fingerprint, created_at FROM api_tokens WHERE id = ?", id).Scan(&response.ID, &response.Name, &response.Scope, &response.Fingerprint, &createdAt)
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	response.CreatedAt, err = parseTimeValue(createdAt)
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	response.Token = token
-	response.RotatedAt = now
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, response)
 }
 
 func (s *Service) revokeAPIToken(c echo.Context) error {
-	id := strings.TrimSpace(c.Param("id"))
-	now, err := s.database.currentTime()
-	if err != nil {
-		return s.internalAPIError(c, "token_revoke_failed", "API token could not be revoked", err)
-	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE api_tokens SET revoked_at = ?, updated_at = ? WHERE id = ? AND revoked_at IS NULL AND NOT EXISTS (SELECT 1 FROM runner_identities WHERE token_id = api_tokens.id)", formatHubTime(now), formatHubTime(now), id)
-	if err != nil {
-		return s.internalAPIError(c, "token_revoke_failed", "API token could not be revoked", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return s.internalAPIError(c, "token_revoke_failed", "API token could not be revoked", err)
-	}
-	if rows != 1 {
-		return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "token_not_found", Message: "Active API token was not found"})
+	if err := s.revokeAPITokenFor(c.Request().Context(), strings.TrimSpace(c.Param("id"))); err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

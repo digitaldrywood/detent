@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -86,15 +87,16 @@ func (c Config) validate() error {
 }
 
 type Service struct {
-	config     Config
-	registry   *Registry
-	auth       *authStore
-	echo       *echo.Echo
-	secure     bool
-	transports sync.Map
-	mutationMu sync.Mutex
-	verified   sessionVerifications
-	refreshes  refreshLocks
+	administration *operatoradmin.Executor
+	config         Config
+	registry       *Registry
+	auth           *authStore
+	echo           *echo.Echo
+	secure         bool
+	transports     sync.Map
+	mutationMu     sync.Mutex
+	verified       sessionVerifications
+	refreshes      refreshLocks
 
 	stopAllocator context.CancelFunc
 	allocatorDone chan struct{}
@@ -191,6 +193,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 }
 
 func (s *Service) routes() {
+	s.registerAdministration()
 	e := s.echo
 	e.Pre(s.boundary)
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))

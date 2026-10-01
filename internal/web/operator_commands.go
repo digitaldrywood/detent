@@ -78,6 +78,15 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 			definitions = append(definitions, definition)
 		}
 	}
+	admin, err := e.server.credentialExecutor().ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range admin {
+		if operatortool.IsAdministration(d.Name) {
+			definitions = append(definitions, d)
+		}
+	}
 	return definitions, nil
 }
 
@@ -118,6 +127,19 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 			return result, err
 		}
 		return result, nil
+	}
+	if operatortool.IsAdministration(call.Name) {
+		return s.credentialExecutor().Execute(ctx, call)
+	}
+	if call.Name == operatortool.ActionResult {
+		var request struct {
+			ActionID string `json:"action_id"`
+		}
+		if operatortool.DecodeArguments(call.Arguments, &request) == nil {
+			if action, ok := s.chat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok && operatortool.IsAdministration(string(action.Kind)) {
+				return s.credentialExecutor().Execute(ctx, call)
+			}
+		}
 	}
 	if dashboardFleetTool(call.Name) {
 		definition, _ := operatortool.FleetDefinition(call.Name)

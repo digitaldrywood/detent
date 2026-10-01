@@ -97,6 +97,25 @@ writer is introduced. `TestProtocolApplicationParity`,
 modern cases in `TestMCPActionApprovalBoundary` cover transport parity, forged
 metadata, direct-call ownership, revoked authority and approval after a POST ends.
 
+Organization, membership/grant and credential administration (#3344) uses the
+same application commands as dashboard handlers. Dedicated bootstrap accounts
+and shared-entry account sessions carry no project grants; context selection
+returns a fresh authentication destination and leaves connection authority bound
+to its original context. Support entry returns the existing interactive provider
+flow only to configured support actors and grants no platform/customer powers.
+Access changes retain exact target/input previews in the existing chat approval
+service. Current role, scope, project grants and resource ownership are checked
+again on execution and cached result delivery. Account receipts reuse existing
+application audit ledgers; invitations and credentials retain the existing
+application retry contract. Credential values are omitted from conversation,
+browser, audit and durable retry records, and deliberate result delivery stays
+bound to the originating identity/session. Revoked or replaced credentials
+cannot deliver a stale secret. No lane writer or revocation/recovery mechanism
+is added. `TestAdministrationExecution`, `TestHostedAdministrationAuthority`,
+`TestNativeCredentialAdministration`, `TestDedicatedAdministrationSetup`,
+`TestEntryAdministrationContext` and `TestMCPCredentialAdministration` cover these
+boundaries with existing application identity fixtures.
+
 MCP mutations carry content-free, trusted audit/correlation context (#3338).
 Dashboard commands reuse durable operator events for retry receipts; native and
 hosted commands reuse `native_commands`, with existing billing intents/provider

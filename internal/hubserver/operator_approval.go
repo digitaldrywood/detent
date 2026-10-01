@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 	"github.com/labstack/echo/v4"
@@ -23,44 +24,6 @@ func (s *Service) hostedOperatorBrowser(c echo.Context, next echo.HandlerFunc) e
 		credential, err := currentHubOperator(c.Request().Context())
 		if err != nil || credential.SessionHash == "" || credential.Hosted == nil || s.operatorFormCSRF(c) == "" {
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-		}
-		id := c.QueryParam("connection_id")
-		if c.Request().Method == http.MethodPost {
-			c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
-			id = c.FormValue("connection_id")
-		}
-		conversation := s.operatorChat.Conversation(id)
-		billing, fleet, changes := false, false, false
-		for _, action := range conversation.Actions {
-			if action.Kind == chat.ActionKind(operatortool.BillingCheckout) || action.Kind == chat.ActionKind(operatortool.BillingPortal) {
-				billing = true
-			}
-			fleet = fleet || hubFleetTool(string(action.Kind))
-			if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
-				changes = true
-			}
-		}
-		if fleet {
-			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-			}
-		}
-		if changes {
-			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeAdmin}); err != nil {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-			}
-		}
-		if billing {
-			if _, err := s.hostedBillingOwner(c); err != nil {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-			}
-		} else if !fleet && !changes {
-			// Owners and administrators can configure confirmation before their first preview.
-			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
-				if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeAdmin}); err != nil {
-					return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-				}
-			}
 		}
 		return next(c)
 	})(c)
@@ -110,6 +73,9 @@ func (s *Service) renderBillingApproval(c echo.Context, id string) error {
 	if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
 		return echo.NewHTTPError(http.StatusNotFound, "Connection is unavailable")
 	}
+	if err := s.authorizeOperatorBrowserActions(c, id, conversation.Actions); err != nil {
+		return err
+	}
 	tokens := make(map[string]string, len(conversation.Actions))
 	for _, action := range conversation.Actions {
 		tokens[action.ID] = s.billingDecisionToken(c, id, action.ID)
@@ -131,24 +97,18 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 		if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 		}
-		ctx := chat.WithOperatorApproval(c.Request().Context(), operatortool.ConnectionIdentity(c.Request().Context()))
+		actions := conversation.Actions
 		if actionID != "" {
 			action, ok := s.operatorChat.Action(id, actionID)
 			if !ok {
-				return echo.NewHTTPError(http.StatusNotFound)
+				return echo.NewHTTPError(http.StatusNotFound, "Action is unavailable")
 			}
-			if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
-				if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID}); err != nil {
-					return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-				}
-			} else if hubFleetTool(string(action.Kind)) {
-				if _, err := operatortool.AuthorizeCurrent(ctx, hubFleetRequirement(string(action.Kind))); err != nil {
-					return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-				}
-			} else if _, err := s.operatorBillingCredential(ctx, "billing", true); err != nil {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-			}
+			actions = []chat.Action{action}
 		}
+		if err := s.authorizeOperatorBrowserActions(c, id, actions); err != nil {
+			return err
+		}
+		ctx := chat.WithOperatorApproval(c.Request().Context(), operatortool.ConnectionIdentity(c.Request().Context()))
 		var err error
 		switch c.FormValue("decision") {
 		case "confirm":
@@ -165,4 +125,34 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 		}
 		return c.Redirect(http.StatusSeeOther, s.hostedPath("/chat/approval")+"?connection_id="+id)
 	})
+}
+
+// Administration approvals use the originating browser and the exact operation's
+// powers. Billing approvals retain the application's owner-only policy.
+func (s *Service) authorizeOperatorBrowserActions(c echo.Context, id string, actions []chat.Action) error {
+	for _, action := range actions {
+		if operatortool.IsAdministration(string(action.Kind)) {
+			if err := s.operatorChat.CheckBrowserSession(c.Request().Context(), id); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+			in, err := operatoradmin.Decode(string(action.Kind), action.Arguments)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+			if err := s.administration.App.Authorize(c.Request().Context(), string(action.Kind), in, ""); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID}); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if hubFleetTool(string(action.Kind)) {
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(string(action.Kind))); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if _, err := s.hostedBillingOwner(c); err != nil {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+	}
+	return nil
 }

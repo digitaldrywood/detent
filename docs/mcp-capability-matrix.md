@@ -25,20 +25,20 @@ Sources: [POST /api/cloud/platform/organizations/:organization/entitlements](../
 
 Chooser
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.chooser` — Bounded chooserRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → chooserResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.organization_list` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.organizationsJSON; s.canCreate, s.organizationChoices, s.pendingOrganizations, s.platformStaff
-- Extraction: Extract cloudentry.organizationsJSON application inputs/results and validation from Echo; reuse s.canCreate, s.organizationChoices, s.pendingOrganizations, s.platformStaff. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: all calls → none
 
 Sources: [GET /api/cloud/organizations](../internal/cloudentry/service.go#L209), [GET /organizations](../internal/cloudentry/service.go#L201), [web/conversation/src/app/entry/api.ts:244](../web/conversation/src/app/entry/api.ts#L244), [web/conversation/src/app/entry/api.ts:247](../web/conversation/src/app/entry/api.ts#L247), [web/conversation/src/app/account/Organization.tsx:517](../web/conversation/src/app/account/Organization.tsx#L517), [web/conversation/src/app/entry/EntryScreens.tsx:180](../web/conversation/src/app/entry/EntryScreens.tsx#L180)
 ## cloudentry.complete_login
@@ -64,40 +64,40 @@ Sources: [GET /auth/oidc/callback](../internal/cloudentry/service.go#L200)
 
 Create organization
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.create_organization` — Bounded createOrganizationRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createOrganizationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.organization_create` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.newOrganizationPage; s.clientShell, s.denied, s.platformStaff, s.render
-- Extraction: Extract cloudentry.newOrganizationPage application inputs/results and validation from Echo; reuse s.clientShell, s.denied, s.platformStaff, s.render. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: create an organization with external identity or billing effects → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [GET /organizations/new](../internal/cloudentry/service.go#L202), [POST /organizations](../internal/cloudentry/service.go#L203), [internal/web/templates/hosted.templ:382](../internal/web/templates/hosted.templ#L382), [internal/web/templates/hosted.templ:417](../internal/web/templates/hosted.templ#L417), [internal/web/templates/hosted.templ:404](../internal/web/templates/hosted.templ#L404), [internal/web/templates/hosted.templ:389](../internal/web/templates/hosted.templ#L389), [internal/web/templates/hosted.templ:409](../internal/web/templates/hosted.templ#L409), [internal/web/templates/hosted.templ:372](../internal/web/templates/hosted.templ#L372), [internal/web/templates/hosted.templ:136](../internal/web/templates/hosted.templ#L136), [internal/web/templates/hosted.templ:352](../internal/web/templates/hosted.templ#L352), [internal/web/templates/hosted.templ:362](../internal/web/templates/hosted.templ#L362), [internal/web/templates/hosted.templ:382](../internal/web/templates/hosted.templ#L382), [internal/web/templates/hosted.templ:417](../internal/web/templates/hosted.templ#L417), [internal/web/templates/hosted.templ:404](../internal/web/templates/hosted.templ#L404), [web/conversation/src/app/entry/api.ts:249](../web/conversation/src/app/entry/api.ts#L249), [web/conversation/src/app/entry/api.ts:251](../web/conversation/src/app/entry/api.ts#L251), [web/conversation/src/app/entry/EntryScreens.tsx:245](../web/conversation/src/app/entry/EntryScreens.tsx#L245), [web/conversation/src/app/entry/EntryScreens.tsx:243](../web/conversation/src/app/entry/EntryScreens.tsx#L243)
 ## cloudentry.delete_organization
 
 Delete organization
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.delete_organization` — Bounded deleteOrganizationRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → deleteOrganizationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.organization_delete` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.deleteOrganizationPage; s.denied, s.ownerOrganization, s.render
-- Extraction: Extract cloudentry.deleteOrganizationPage application inputs/results and validation from Echo; reuse s.denied, s.ownerOrganization, s.render. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [GET /organizations/:organization/delete](../internal/cloudentry/service.go#L207), [POST /organizations/:organization/delete](../internal/cloudentry/service.go#L208)
 ## cloudentry.health
@@ -375,19 +375,20 @@ Sources: [GET /auth/oidc/start](../internal/cloudentry/service.go#L199)
 
 Start support
 
-- Audience: staff; status: **excluded**; owner: digitaldrywood/detent#3344.
-- Decision: Platform/instance staff authority is stricter than organization operator authority. Preserve this restriction; no organization-operator tool grants staff powers.
-- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Audience: staff; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open. Only an existing authorized support actor receives the interactive support entry destination; the existing browser cookie/provider impersonation flow must finish there. This tool grants no platform or support authority.
+- Tool: `organization.support_start` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role platform staff/support allowlist or entitlement administrator; credential-maintenance instance admin if applicable; credential staff session or dedicated private instance-admin credential; not an organization operator credential; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.startSupport; s.auth.createTransaction, s.config.generateToken, s.config.now, s.csrfValid, s.loginDenied, s.readyOrganization, s.render, s.supportActor
-- Extraction: None for this protocol/authority boundary; no operator command extraction.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: this non-operator source site → not_applicable
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /support/start](../internal/cloudentry/service.go#L220)
 ## cloudentry.static_assets
@@ -432,19 +433,20 @@ Sources: [POST /webhooks/stripe/:mode](../internal/cloudentry/service.go#L221)
 
 Support page
 
-- Audience: staff; status: **excluded**; owner: digitaldrywood/detent#3344.
-- Decision: Platform/instance staff authority is stricter than organization operator authority. Preserve this restriction; no organization-operator tool grants staff powers.
-- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Audience: staff; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open. Only an existing authorized support actor receives the interactive support entry destination; the existing browser cookie/provider impersonation flow must finish there. This tool grants no platform or support authority.
+- Tool: `organization.support_start` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role platform staff/support allowlist or entitlement administrator; credential-maintenance instance admin if applicable; credential staff session or dedicated private instance-admin credential; not an organization operator credential; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.supportPage; s.loginDenied, s.registry.List, s.render, s.supportActor
-- Extraction: None for this protocol/authority boundary; no operator command extraction.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: this non-operator source site → not_applicable
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [GET /support](../internal/cloudentry/service.go#L219)
 ## existing.board_state
@@ -1356,20 +1358,20 @@ Sources: [web/conversation/src/runtime/state/drafts.ts:166](../web/conversation/
 
 Accept hosted invitation
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.accept_hosted_invitation` — Bounded acceptHostedInvitationRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → acceptHostedInvitationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.invitation_accept` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role hosted owner/admin; owner-only restrictions for owner membership/role changes; invitation acceptance bound to invited identity; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.acceptHostedInvitationJSON; s.acceptHostedInvitationToken, s.hostedEntryOwned
-- Extraction: Extract hubserver.acceptHostedInvitationJSON application inputs/results and validation from Echo; reuse s.acceptHostedInvitationToken, s.hostedEntryOwned. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedInvitationAcceptedBySession(c, request.Token); s.hostedSession(c); err != nil
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /api/v2/organizations/:organization/invitations/accept](../internal/hubserver/hosted_org_api.go#L45), [web/conversation/src/app/account/api.ts:204](../web/conversation/src/app/account/api.ts#L204)
 ## hubserver.accept_hosted_shared_invitation
@@ -1770,40 +1772,40 @@ Sources: [POST /internal/v1/owner/bootstrap](../internal/hubserver/hosted_shared
 
 Change hosted grant
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.change_hosted_grant` — Bounded changeHostedGrantRequest: organization, member; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → changeHostedGrantResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.member_grant` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role hosted owner/admin; owner-only restrictions for owner membership/role changes; invitation acceptance bound to invited identity; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.changeHostedGrantJSON; s.hostedAdministrator, s.hostedGrant, s.hostedMemberByID
-- Extraction: Extract hubserver.changeHostedGrantJSON application inputs/results and validation from Echo; reuse s.hostedAdministrator, s.hostedGrant, s.hostedMemberByID. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [PUT /api/v2/organizations/:organization/members/:member/grants](../internal/hubserver/hosted_org_api.go#L40), [POST /organization/grants](../internal/hubserver/hosted_ui.go#L46), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [web/conversation/src/app/account/api.ts:191](../web/conversation/src/app/account/api.ts#L191)
 ## hubserver.change_hosted_role
 
 Change hosted role
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.change_hosted_role` — Bounded changeHostedRoleRequest: organization, member; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → changeHostedRoleResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.member_role` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role hosted owner/admin; owner-only restrictions for owner membership/role changes; invitation acceptance bound to invited identity; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.changeHostedRoleJSON; s.config.Hosted.Provider.SetMembershipRole, s.config.now, s.database.db.ExecContext, s.hostedAdministrator, s.hostedManagedMember
-- Extraction: Extract hubserver.changeHostedRoleJSON application inputs/results and validation from Echo; reuse s.config.Hosted.Provider.SetMembershipRole, s.config.now, s.database.db.ExecContext, s.hostedAdministrator, s.hostedManagedMember. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [PUT /api/v2/organizations/:organization/members/:member/role](../internal/hubserver/hosted_org_api.go#L39), [POST /organization/members/:member/role](../internal/hubserver/hosted_ui.go#L45), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [web/conversation/src/app/account/api.ts:179](../web/conversation/src/app/account/api.ts#L179)
 ## hubserver.change_native_dependency
@@ -2008,20 +2010,20 @@ Sources: [GET /auth/oidc/callback](../internal/hubserver/hosted_ui.go#L26)
 
 Create a p i token
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.create_api_token` — Bounded createAPITokenRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createAPITokenResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open. Material unhosted-hub MCP calls return opaque unavailable errors because no browser approval service exists; the existing native API commands remain available.
+- Tool: `credentials.credential_create` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.createAPIToken; s.config.generateToken, s.config.newTokenID, s.database.currentTime, s.database.db.ExecContext
-- Extraction: Extract hubserver.createAPIToken application inputs/results and validation from Echo; reuse s.config.generateToken, s.config.newTokenID, s.database.currentTime, s.database.db.ExecContext. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /api/v1/tokens](../internal/hubserver/api_http.go#L77)
 ## hubserver.create_api_token_maintenance
@@ -2087,20 +2089,20 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/conversatio
 
 Create hosted organization
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.create_hosted_organization` — Bounded createHostedOrganizationRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createHostedOrganizationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.organization_create` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.createHostedOrganization; s.config.Hosted.Provider.CreateMembership, s.config.Hosted.Provider.CreateOrganization, s.database.db.ExecContext, s.database.db.QueryRowContext, s.hostedProviderOrganization, s.storeHostedMember
-- Extraction: Extract hubserver.createHostedOrganization application inputs/results and validation from Echo; reuse s.config.Hosted.Provider.CreateMembership, s.config.Hosted.Provider.CreateOrganization, s.database.db.ExecContext, s.database.db.QueryRowContext, s.hostedProviderOrganization, s.storeHostedMember. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedSession(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: create an organization with external identity or billing effects → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /organization/create](../internal/hubserver/hosted_ui.go#L41), [internal/web/templates/hosted.templ:159](../internal/web/templates/hosted.templ#L159), [internal/web/templates/hosted.templ:159](../internal/web/templates/hosted.templ#L159)
 ## hubserver.create_hosted_project
@@ -2187,20 +2189,20 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items]
 
 Create native organization
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.create_native_organization` — Bounded createNativeOrganizationRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → createNativeOrganizationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open. Material unhosted-hub MCP calls return opaque unavailable errors because no browser approval service exists; the existing native API commands remain available.
+- Tool: `organization.organization_create` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.createNativeOrganization; s.config.now, s.database.db.ExecContext
-- Extraction: Extract hubserver.createNativeOrganization application inputs/results and validation from Echo; reuse s.config.now, s.database.db.ExecContext. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /api/v2/organizations](../internal/hubserver/native_api.go#L116)
 ## hubserver.create_native_project
@@ -2924,20 +2926,20 @@ Sources: [POST /api/v1/webhooks/github](../internal/hubserver/api_http.go#L80)
 
 Grant native token
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.grant_native_token` — Bounded grantNativeTokenRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → grantNativeTokenResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open. Material unhosted-hub MCP calls return opaque unavailable errors because no browser approval service exists; the existing native API commands remain available.
+- Tool: `credentials.credential_grant` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.grantNativeToken; s.database.db.BeginTx
-- Extraction: Extract hubserver.grantNativeToken application inputs/results and validation from Echo; reuse s.database.db.BeginTx. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /api/v2/tokens/:id/grants](../internal/hubserver/native_api.go#L122)
 ## hubserver.grant_native_token_maintenance
@@ -3353,19 +3355,20 @@ Sources: [POST /webhooks/stripe](../internal/hubserver/hosted_ui.go#L39)
 
 Hosted support page
 
-- Audience: staff; status: **excluded**; owner: digitaldrywood/detent#3344.
-- Decision: Platform/instance staff authority is stricter than organization operator authority. Preserve this restriction; no organization-operator tool grants staff powers.
-- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Audience: staff; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open. Only an existing authorized support actor receives the interactive support entry destination; the existing browser cookie/provider impersonation flow must finish there. This tool grants no platform or support authority.
+- Tool: `organization.support_start` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role platform staff/support allowlist or entitlement administrator; credential-maintenance instance admin if applicable; credential staff session or dedicated private instance-admin credential; not an organization operator credential; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.hostedSupportPage; s.renderHosted
-- Extraction: None for this protocol/authority boundary; no operator command extraction.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Current handler authority checks: s.hostedSession(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: this non-operator source site → not_applicable
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [GET /support](../internal/hubserver/hosted_ui.go#L30), [internal/web/templates/hosted.templ:125](../internal/web/templates/hosted.templ#L125)
 ## hubserver.hosted_usage_report
@@ -3411,20 +3414,20 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Invite hosted member
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.invite_hosted_member` — Bounded inviteHostedMemberRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → inviteHostedMemberResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.invitation_send` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role hosted owner/admin; owner-only restrictions for owner membership/role changes; invitation acceptance bound to invited identity; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.inviteHostedMemberJSON; s.abandonHostedCommand, s.claimHostedCommand, s.completeHostedCommand, s.config.Hosted.Provider.Invite, s.config.now, s.database.db.ExecContext, s.hostedAdministrator, s.releaseFailedHostedInvitation, s.reserveHostedInvitationSeat
-- Extraction: Extract hubserver.inviteHostedMemberJSON application inputs/results and validation from Echo; reuse s.abandonHostedCommand, s.claimHostedCommand, s.completeHostedCommand, s.config.Hosted.Provider.Invite, s.config.now, s.database.db.ExecContext, s.hostedAdministrator, s.releaseFailedHostedInvitation, s.reserveHostedInvitationSeat. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /api/v2/organizations/:organization/members/invitations](../internal/hubserver/hosted_org_api.go#L36), [POST /organization/invite](../internal/hubserver/hosted_ui.go#L43), [internal/web/templates/hosted.templ:213](../internal/web/templates/hosted.templ#L213), [internal/web/templates/hosted.templ:213](../internal/web/templates/hosted.templ#L213), [web/conversation/src/app/account/Organization.tsx:337](../web/conversation/src/app/account/Organization.tsx#L337), [web/conversation/src/app/account/Organization.tsx:335](../web/conversation/src/app/account/Organization.tsx#L335), [web/conversation/src/app/account/api.ts:162](../web/conversation/src/app/account/api.ts#L162)
 ## hubserver.land_change
@@ -3530,20 +3533,20 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/imports/:imp
 
 List hosted members
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.list_hosted_members` — Bounded listHostedMembersRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listHostedMembersResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.membership_list` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role current organization member; ordinary members see themselves; owner/admin sees all members/invitations; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.listHostedMembers; s.config.Hosted.Provider.Memberships, s.hostedCredential, s.hostedMemberEmails, s.hostedMemberGrants, s.hostedPendingInvitations; ordinary members see their own row, owner/admin sees the complete organization list
-- Extraction: Extract hubserver.listHostedMembers application inputs/results and validation from Echo; reuse s.config.Hosted.Provider.Memberships, s.hostedCredential, s.hostedMemberEmails, s.hostedMemberGrants, s.hostedPendingInvitations. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedCredential(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: all calls → none
 
 Sources: [GET /api/v2/organizations/:organization/members](../internal/hubserver/hosted_org_api.go#L35), [GET /organization](../internal/hubserver/hosted_ui.go#L31), [internal/web/templates/hosted.templ:54](../internal/web/templates/hosted.templ#L54), [internal/web/templates/hosted.templ:80](../internal/web/templates/hosted.templ#L80), [internal/web/templates/hosted.templ:113](../internal/web/templates/hosted.templ#L113), [internal/web/templates/hosted.templ:335](../internal/web/templates/hosted.templ#L335), [web/conversation/src/app/main.tsx:47](../web/conversation/src/app/main.tsx#L47), [web/conversation/src/app/account/api.ts:160](../web/conversation/src/app/account/api.ts#L160)
 ## hubserver.list_hosted_projects
@@ -3948,20 +3951,20 @@ Sources: [GET /api/v2/capabilities](../internal/hubserver/native_api.go#L114)
 
 Native organizations
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.native_organizations` — Bounded nativeOrganizationsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → nativeOrganizationsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.organization_list` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.nativeOrganizations; s.database.db.QueryContext
-- Extraction: Extract hubserver.nativeOrganizations application inputs/results and validation from Echo; reuse s.database.db.QueryContext. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: all calls → none
 
 Sources: [GET /api/v2/organizations](../internal/hubserver/native_api.go#L115), [web/conversation/src/app/account/Support.tsx:127](../web/conversation/src/app/account/Support.tsx#L127), [web/conversation/src/app/account/api.ts:199](../web/conversation/src/app/account/api.ts#L199)
 ## hubserver.observe_project_policy
@@ -4474,20 +4477,20 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Revoke a p i token
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.revoke_api_token` — Bounded revokeAPITokenRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → revokeAPITokenResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open. Material unhosted-hub MCP calls return opaque unavailable errors because no browser approval service exists; the existing native API commands remain available.
+- Tool: `credentials.credential_revoke` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.revokeAPIToken; s.database.currentTime, s.database.db.ExecContext
-- Extraction: Extract hubserver.revokeAPIToken application inputs/results and validation from Echo; reuse s.database.currentTime, s.database.db.ExecContext. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [DELETE /api/v1/tokens/:id](../internal/hubserver/api_http.go#L79)
 ## hubserver.revoke_api_token_maintenance
@@ -4513,40 +4516,40 @@ Sources: [DELETE /api/v1/tokens/:id](../internal/hubserver/credential_maintenanc
 
 Revoke hosted invitation j s o n
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.revoke_hosted_invitation_json` — Bounded revokeHostedInvitationJSONRequest: organization, invitation; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → revokeHostedInvitationJSONResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.invitation_revoke` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role hosted owner/admin; owner-only restrictions for owner membership/role changes; invitation acceptance bound to invited identity; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.revokeHostedInvitationJSON; s.database.db.QueryRowContext, s.hostedAdministrator, s.releaseHostedInvitation
-- Extraction: Extract hubserver.revokeHostedInvitationJSON application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext, s.hostedAdministrator, s.releaseHostedInvitation. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [DELETE /api/v2/organizations/:organization/members/invitations/:invitation](../internal/hubserver/hosted_org_api.go#L37), [web/conversation/src/app/account/api.ts:168](../web/conversation/src/app/account/api.ts#L168)
 ## hubserver.revoke_hosted_member
 
 Revoke hosted member
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.revoke_hosted_member` — Bounded revokeHostedMemberRequest: organization, member; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → revokeHostedMemberResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `organization.member_remove` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role hosted owner/admin; owner-only restrictions for owner membership/role changes; invitation acceptance bound to invited identity; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.revokeHostedMemberJSON; s.config.Hosted.Provider.RevokeMembership, s.hostedAdministrator, s.hostedManagedMember, s.revokeHostedMemberLocally
-- Extraction: Extract hubserver.revokeHostedMemberJSON application inputs/results and validation from Echo; reuse s.config.Hosted.Provider.RevokeMembership, s.hostedAdministrator, s.hostedManagedMember, s.revokeHostedMemberLocally. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [DELETE /api/v2/organizations/:organization/members/:member](../internal/hubserver/hosted_org_api.go#L38), [POST /organization/members/:member/revoke](../internal/hubserver/hosted_ui.go#L44), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [web/conversation/src/app/account/api.ts:175](../web/conversation/src/app/account/api.ts#L175)
 ## hubserver.revoke_hosted_shared_sessions
@@ -4632,20 +4635,20 @@ Sources: [DELETE /api/v2/organizations/:organization/runners/:runner](../interna
 
 Rotate a p i token
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.rotate_api_token` — Bounded rotateAPITokenRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → rotateAPITokenResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open. Material unhosted-hub MCP calls return opaque unavailable errors because no browser approval service exists; the existing native API commands remain available.
+- Tool: `credentials.credential_rotate` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role instance admin in unhosted hub; hosted owner/admin through requireHostedAdministration; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.rotateAPIToken; s.config.generateToken, s.database.currentTime, s.database.db.ExecContext, s.database.db.QueryRowContext
-- Extraction: Extract hubserver.rotateAPIToken application inputs/results and validation from Echo; reuse s.config.generateToken, s.database.currentTime, s.database.db.ExecContext, s.database.db.QueryRowContext. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: hosted_shared / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /api/v1/tokens/:id/rotate](../internal/hubserver/api_http.go#L78)
 ## hubserver.rotate_api_token_maintenance
@@ -4865,20 +4868,20 @@ Sources: [GET /auth/oidc/start](../internal/hubserver/hosted_ui.go#L25), [intern
 
 Start hosted support
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.start_hosted_support` — Bounded startHostedSupportRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → startHostedSupportResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open. Only an existing authorized support actor receives the interactive support entry destination; the existing browser cookie/provider impersonation flow must finish there. This tool grants no platform or support authority.
+- Tool: `organization.support_start` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.startHostedSupportJSON; s.beginHostedSupport, s.hostedEntryOwned
-- Extraction: Extract hubserver.startHostedSupportJSON application inputs/results and validation from Echo; reuse s.beginHostedSupport, s.hostedEntryOwned. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedSession(c); err != nil
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /api/v2/organizations/:organization/support/start](../internal/hubserver/hosted_org_api.go#L46), [POST /support/start](../internal/hubserver/hosted_ui.go#L29), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [web/conversation/src/app/account/api.ts:214](../web/conversation/src/app/account/api.ts#L214), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97)
 ## hubserver.static_assets
@@ -5847,100 +5850,100 @@ Sources: [POST /api/v1/kanban/remove](../internal/web/server.go#L566), [internal
 
 Api keys create
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.api_keys_create` — Bounded apiKeysCreateRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKeysCreateResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `credentials.credential_create` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKeysCreate; s.apiKeys.Create, s.apiKeysData
-- Extraction: Extract web.apiKeysCreate application inputs/results and validation from Echo; reuse s.apiKeys.Create, s.apiKeysData. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /api/v1/keys](../internal/web/server.go#L534)
 ## web.api_keys_list
 
 Api keys list
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.api_keys_list` — Bounded apiKeysListRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKeysListResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `credentials.credential_list` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKeysList; s.apiKeysData, s.store.ListAPIKeys
-- Extraction: Extract web.apiKeysList application inputs/results and validation from Echo; reuse s.apiKeysData, s.store.ListAPIKeys. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: all calls → none
 
 Sources: [GET /api/v1/keys](../internal/web/server.go#L533), [internal/web/templates/api_keys.templ:161](../internal/web/templates/api_keys.templ#L161), [internal/web/templates/api_keys.templ:30](../internal/web/templates/api_keys.templ#L30), [internal/web/templates/api_keys.templ:46](../internal/web/templates/api_keys.templ#L46), [internal/web/templates/api_keys.templ:149](../internal/web/templates/api_keys.templ#L149), [internal/web/templates/api_keys.templ:111](../internal/web/templates/api_keys.templ#L111), [internal/web/templates/api_keys.templ:190](../internal/web/templates/api_keys.templ#L190), [internal/web/templates/api_keys.templ:260](../internal/web/templates/api_keys.templ#L260), [internal/web/templates/api_keys.templ:190](../internal/web/templates/api_keys.templ#L190), [internal/web/templates/api_keys.templ:260](../internal/web/templates/api_keys.templ#L260)
 ## web.api_keys_page
 
 Api keys page
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.api_keys_page` — Bounded apiKeysPageRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKeysPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `credentials.credential_list` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKeysPage; s.apiKeysData
-- Extraction: Extract web.apiKeysPage application inputs/results and validation from Echo; reuse s.apiKeysData. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: all calls → none
 
 Sources: [GET /api-keys](../internal/web/server.go#L482)
 ## web.api_keys_revoke
 
 Api keys revoke
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.api_keys_revoke` — Bounded apiKeysRevokeRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKeysRevokeResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `credentials.credential_revoke` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKeysRevoke; s.apiKeys.Revoke, s.apiKeysData
-- Extraction: Extract web.apiKeysRevoke application inputs/results and validation from Echo; reuse s.apiKeys.Revoke, s.apiKeysData. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [DELETE /api/v1/keys/:id](../internal/web/server.go#L537)
 ## web.api_keys_rotate
 
 Api keys rotate
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `organization.api_keys_rotate` — Bounded apiKeysRotateRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiKeysRotateResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open.
+- Tool: `credentials.credential_rotate` — Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1–256 bytes, name 1–120, role/scope enums, at most 64 project IDs, limit 1–200 and offset 0–100000. Mutations require a request_id of 1–128 bytes. No identity, authentication, confirmation or YOLO input. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.apiKeysRotateDialog; s.apiKeysData
-- Extraction: Extract web.apiKeysRotateDialog application inputs/results and validation from Echo; reuse s.apiKeysData. The HTTP handler and MCP must delegate to this same application operation.
+- Application: Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.
+- Extraction: Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: access-changing or sensitive administration → operator
 
 Sources: [GET /api/v1/keys/:id/rotate](../internal/web/server.go#L535), [POST /api/v1/keys/:id/rotate](../internal/web/server.go#L536)
 ## web.api_operations
@@ -7173,3 +7176,22 @@ Read a workspace file through the existing relay file channel
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [web/conversation/src/app/components/surfaces/FilesSurface.tsx:264](../web/conversation/src/app/components/surfaces/FilesSurface.tsx#L264), [web/conversation/src/app/components/surfaces/FilesSurface.tsx:57](../web/conversation/src/app/components/surfaces/FilesSurface.tsx#L57), [web/conversation/src/app/adapters/workspaceRelay.ts:396](../web/conversation/src/app/adapters/workspaceRelay.ts#L396)
+## administration.transport_and_approval
+
+Account administration transport and existing operator approval
+
+- Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3344.
+- Decision: Protocol entry/approval surfaces, not model-callable confirmation tools. Tools cannot self-approve; browser operator decisions are authenticated and CSRF-bound. Account setup identities carry no customer/project grants.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: Shared typed dispatcher and chat approval service with deployment browser session and CSRF middleware
+- Extraction: Routes bind current application authority and render the existing approval component; they do not forward arbitrary HTTP commands.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
+- Coverage: TestAdministrationExecution, TestEntryAdministrationContext, TestDedicatedAdministrationSetup, TestMCPCredentialAdministration and isolated Chrome approval verification
+- Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: hosted_shared / github,native / shared entry account/organization service
+- Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: this non-operator source site → not_applicable
+
+Sources: [Any /api/cloud/mcp](../internal/cloudentry/operator_administration.go#L31), [GET /chat/approval](../internal/cloudentry/operator_administration.go#L32), [POST /chat/approval](../internal/cloudentry/operator_administration.go#L33)

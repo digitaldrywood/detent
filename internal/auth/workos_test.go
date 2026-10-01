@@ -576,18 +576,25 @@ func TestWorkOSInvitationSecurity(t *testing.T) {
 		{name: "invitation-wrong-user", wantErr: true}, {name: "invitation-accepted-wrong-user", wantErr: true},
 		{name: "invitation-accepted-wrong-org", wantErr: true}, {name: "invitation-accepted-wrong-id", wantErr: true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f.mode.Store(tt.name)
-			before := f.accepted.Load()
-			err := p.AcceptInvitation(t.Context(), "invitation_token", "user_customer")
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("AcceptInvitation() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if tt.wantErr && !strings.HasPrefix(tt.name, "invitation-accepted-") && f.accepted.Load() != before {
-				t.Fatal("invalid invitation reached provider acceptance")
-			}
-		})
+	for _, byID := range []bool{false, true} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%s/byID=%t", tt.name, byID), func(t *testing.T) {
+				f.mode.Store(tt.name)
+				before := f.accepted.Load()
+				var err error
+				if byID {
+					err = auth.AcceptInvitationID(t.Context(), p, "invitation_customer", "user_customer")
+				} else {
+					err = p.AcceptInvitation(t.Context(), "invitation_token", "user_customer")
+				}
+				if (err != nil) != tt.wantErr {
+					t.Fatalf("AcceptInvitation() error = %v, wantErr %v", err, tt.wantErr)
+				}
+				if tt.wantErr && !strings.HasPrefix(tt.name, "invitation-accepted-") && f.accepted.Load() != before {
+					t.Fatal("invalid invitation reached provider acceptance")
+				}
+			})
+		}
 	}
 }
 
@@ -778,7 +785,7 @@ func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.writeJSON(w, organization)
-	case "/user_management/invitations", "/user_management/invitations/by_token/invitation_token", "/user_management/invitations/invitation_customer/accept":
+	case "/user_management/invitations", "/user_management/invitations/by_token/invitation_token", "/user_management/invitations/invitation_customer", "/user_management/invitations/invitation_customer/accept":
 		f.invitation(w, r, mode)
 	case "/user_management/users":
 		if r.Method != http.MethodGet || r.URL.Query().Get("email") != "customer@example.com" || r.URL.Query().Get("limit") != "1" {
