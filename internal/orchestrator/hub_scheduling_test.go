@@ -258,7 +258,7 @@ func TestHubRefillRetainsNewClaims(t *testing.T) {
 			issue.Fields["detent_hub_work_item_id"] = "42"
 			source := &hubSchedulingSource{issue: issue}
 			tracker := &hubSchedulingConnector{}
-			o := Orchestrator{cfg: cfg, connector: tracker, scheduling: source, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1), lastDispatchCandidates: []connector.Issue{dispatchTestIssue("previous-claim", "Todo")}}
+			o := Orchestrator{cfg: cfg, connector: tracker, scheduling: source, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1)}
 			state := newState(cfg)
 			defer o.releaseRunningSlots(&state)
 			excluded := ""

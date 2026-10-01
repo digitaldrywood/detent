@@ -26,7 +26,7 @@ func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
 			second := dispatchTestIssue("second", "Todo")
 			next := dispatchTestIssue("next", "Todo")
 			runner := newWorkerHostRunner()
-			o := Orchestrator{cfg: cfg, globalDispatchGate: gate, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 3), pendingStops: map[string]*pendingStopRun{}, completedStops: map[string]StopRunResult{}, now: func() time.Time { return now }, lastDispatchCandidates: []connector.Issue{first, second, next}}
+			o := Orchestrator{cfg: cfg, globalDispatchGate: gate, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 3), pendingStops: map[string]*pendingStopRun{}, completedStops: map[string]StopRunResult{}, now: func() time.Time { return now }}
 			defer o.releaseRunningSlots(&state)
 			for _, issue := range []connector.Issue{first, second} {
 				slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), cfg.Project, scheduler.SlotRequest{State: "Todo"}, now)
@@ -97,7 +97,7 @@ func TestQueuedCompletionKeepsRejectedGenerationOwnership(t *testing.T) {
 	state.Running[issue.ID] = Running{Issue: issue, Generation: 2, StartedAt: now}
 	fetches := 0
 	tracker := completionRefillConnector{fetch: func(context.Context) ([]connector.Issue, error) { fetches++; return nil, nil }}
-	o := Orchestrator{cfg: cfg, connector: tracker, runResults: make(chan runpkg.Completion, 1), lastDispatchCandidates: []connector.Issue{issue}, now: func() time.Time { return now }}
+	o := Orchestrator{cfg: cfg, connector: tracker, runResults: make(chan runpkg.Completion, 1), now: func() time.Time { return now }}
 	o.handleQueuedRunResults(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Generation: 1}, CompletedAt: now})
 	if fetches != 0 || len(state.Running) != 1 {
 		t.Fatalf("nonreleased result refilled or lost ownership: reads=%d running=%d", fetches, len(state.Running))
@@ -120,7 +120,11 @@ func TestEventAndTickDispatchEligibilityParity(t *testing.T) {
 		prepare     func(*Config, *State, *connector.Issue)
 		wantRunning bool
 	}{
-		{name: "ready", wantRunning: true},
+		{name: "fresh Todo without prior snapshot", wantRunning: true},
+		{name: "newly recovered Rework", prepare: func(cfg *Config, _ *State, issue *connector.Issue) {
+			cfg.AutoPromote.ReworkState = "Rework"
+			issue.State = "Rework"
+		}, wantRunning: true},
 		{name: "lane changed", prepare: func(_ *Config, _ *State, issue *connector.Issue) { issue.State = "Done" }},
 		{name: "dependency changed", prepare: func(_ *Config, _ *State, issue *connector.Issue) {
 			issue.DependencySource = connector.BlockedRefSourceNative
@@ -157,9 +161,8 @@ func TestEventAndTickDispatchEligibilityParity(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "Rework"}, TerminalStates: []string{"Done"}})
-			prior := dispatchTestIssue("candidate", "Todo")
-			prior.Identifier = "digitaldrywood/detent#10"
-			current := cloneIssue(prior)
+			current := dispatchTestIssue("newly-ready", "Todo")
+			current.Identifier = "digitaldrywood/detent#10"
 			state := newState(cfg)
 			if tt.prepare != nil {
 				tt.prepare(&cfg, &state, &current)
@@ -172,7 +175,7 @@ func TestEventAndTickDispatchEligibilityParity(t *testing.T) {
 				}
 				t.Run(name, func(t *testing.T) {
 					tracker := hydratingDispatchConnector{issue: current}
-					o := Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1), lastDispatchCandidates: []connector.Issue{prior}}
+					o := Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1)}
 					copy := state.clone()
 					defer o.releaseRunningSlots(&copy)
 					if event {

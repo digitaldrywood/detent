@@ -267,7 +267,7 @@ func (o *Orchestrator) refillProjectSlots(ctx context.Context, state *State, now
 }
 
 func (o *Orchestrator) refillProjectSlotsExcluding(ctx context.Context, state *State, now time.Time, excludedIssueIDs ...string) {
-	if len(o.lastDispatchCandidates) == 0 || o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
+	if o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
 		state.Draining || o.dispatchQuiesced() {
 		return
 	}
@@ -279,20 +279,15 @@ func (o *Orchestrator) refillProjectSlotsExcluding(ctx context.Context, state *S
 		}
 		return
 	}
-	priorIDs := make(map[string]bool, len(o.lastDispatchCandidates))
-	for _, prior := range o.lastDispatchCandidates {
-		priorIDs[prior.ID] = true
-	}
 	candidates := make([]connector.Issue, 0, len(fresh))
 	for _, current := range fresh {
 		if slices.Contains(excludedIssueIDs, current.ID) {
 			o.releaseDeferredSchedulingClaims(ctx, state, []connector.Issue{current})
 			continue
 		}
-		if o.scheduling != nil || priorIDs[current.ID] {
-			candidates = append(candidates, current)
-		}
+		candidates = append(candidates, current)
 	}
+	candidates = overlayIssueStateSnapshots(candidates, o.restoreWorkAttemptRetryIntents(ctx, state, candidates, now))
 	o.dispatchReadyIssues(ctx, state, candidates, now)
 }
 

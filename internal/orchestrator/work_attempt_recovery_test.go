@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -109,6 +110,8 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 	runtimeStore := openWorkAttemptRecoveryStore(t, ctx)
 	now := time.Date(2026, 7, 9, 14, 0, 0, 0, time.UTC)
 	issue := recoveryTestIssue()
+	issue.Title = "Resume recorded work"
+	issue.AssignedToWorker = true
 	attemptID := startRecoveryWorkAttempt(t, ctx, runtimeStore, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-10*time.Minute))
 	sessionID, err := runtimeStore.StartSession(ctx, store.SessionStart{
 		ProjectID:        "detent",
@@ -168,6 +171,24 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 	event := recoveryTimelineEvent(t, ctx, runtimeStore, issue.ID, WorkAttemptRecoveryRetryResume)
 	if event.Status != "queued" || !strings.Contains(event.MetadataJSON, `"resume_eligible":true`) {
 		t.Fatalf("audit event = %#v, want succeeded resume audit", event)
+	}
+	state = newState(orch.cfg)
+	orch.connector = memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	orch.cfg.Claiming.Owner = "operator"
+	orch.refillProjectSlotsExcluding(t.Context(), &state, now, issue.ID)
+	if len(state.Retry) != 0 || len(state.Running) != 0 {
+		t.Fatal("excluded operator stop restored or dispatched its retry intent")
+	}
+	runner := newWorkerHostRunner()
+	orch.supervisor = newTestSupervisor(t, runner, orch.cfg)
+	defer orch.releaseRunningSlots(&state)
+	orch.refillProjectSlots(t.Context(), &state, now)
+	if len(state.Running) != 1 {
+		t.Fatalf("persisted resume intent did not dispatch: retry=%v blocked=%v decisions=%v", state.Retry, state.Blocked, state.SchedulerDecisions)
+	}
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Attempt != 2 || request.RetryMode != runpkg.RetryModeResume || request.ResumeState.DetentSessionID != sessionID || request.ResumeState.ProviderSessionID != "session-979" {
+		t.Fatalf("fresh refill lost persisted resume intent: %#v", request)
 	}
 }
 
@@ -368,6 +389,13 @@ func TestRecoveryPreservesIndependentRuntimeHolds(t *testing.T) {
 			}
 			if response.Status != "blocked" || !strings.Contains(response.Message, "independent predicate") {
 				t.Fatalf("response conceals independent hold: %#v", response)
+			}
+			if source == BlockedSourceOperatorStop {
+				orch.connector = completionRefillConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: issue}, fetch: func(context.Context) ([]connector.Issue, error) { return []connector.Issue{issue}, nil }}
+				orch.refillProjectSlots(t.Context(), &state, now)
+				if blocked, held := state.Blocked[issue.ID]; !held || blocked.Source != source || len(state.Running) != 0 || len(state.Retry) != 0 {
+					t.Fatalf("fresh refill lost independent operator stop: blocked=%#v running=%v retry=%v", blocked, state.Running, state.Retry)
+				}
 			}
 		})
 	}

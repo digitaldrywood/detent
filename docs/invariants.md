@@ -2111,8 +2111,9 @@ to yield when current-head CI is the only unfinished work.
 Slot refill reuses ordinary dispatch eligibility and releases deferred Hub claims
 through the existing claim writer. Fresh Hub scheduling results are already
 claimed and remain eligible even when absent from the previous refresh; excluded
-or ineligible claims are released. Ordinary tracker candidates retain the previous
-refresh bound. `TestHubRefillRetainsNewClaims` and
+or ineligible claims are released. Ordinary tracker candidates use the same fresh
+cohort and eligibility owner, without a previous-snapshot membership bound.
+`TestHubRefillRetainsNewClaims` and
 `TestEventAndTickDispatchEligibilityParity` cover these boundaries (#3219).
 
 Native issue archive (#3267) preserves workflow state and all issue, comment,
@@ -2503,10 +2504,17 @@ Owners consume grants in acquisition order and revalidate current candidates;
 refreshes retain standing requests and update their actions and slot requirements
 in place. Refreshed eligibility decisions remove obsolete requests; shutdown and
 explicit pause/configuration invalidation discard requests and release unused grants.
-Project run completion, lease release, and increased project capacity recheck
-candidates from the last refresh on the orchestrator event loop. The pass reads
-current tracker evidence and uses the tick's eligibility planner before claiming,
-so a stale higher-ranked candidate cannot keep a free project slot idle.
+Project run completion, lease release, and increased project capacity read fresh
+candidates on the orchestrator event loop. The pass uses the tick's eligibility
+planner before claiming, so stale snapshot membership cannot keep a newly ready
+candidate from a free project slot. The unused previous-candidate snapshot and
+membership restriction are removed (INV-3). After stop exclusions, the existing
+durable retry-intent owner restores first-seen recovery metadata before dispatch,
+including resume state and recovery attempt identity. Its early tick call remains
+because tick reconciliation needs that intent before evaluating terminal attempts.
+Refill adds the owner's local timeline read per retained candidate; further
+attempt and receipt reads occur only when an existing intent is found. Existing
+promotion, human, dependency, claim, budget, gate and stop owners remain in force.
 The same event-loop owner handles the bounded cohort of already queued worker
 completions before one fresh candidate refill. Each result retains its generation,
 completion fence and stop handling; all completed operator stops remain excluded
