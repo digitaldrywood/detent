@@ -8,9 +8,12 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestWorkflowIndexedCorrelationEquivalence(t *testing.T) {
@@ -114,6 +117,120 @@ func TestWorkflowHistoryRevision(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("revision = %d, want %d", got, tt.want)
+			}
+		})
+	}
+
+	event = WorkflowPhaseEvent{ProjectID: "project", IssueID: "issue", PhaseType: workflowmetrics.PhaseTypeAgentActivity, PhaseName: "instruction_activity", SessionID: 42, StartedAt: workflowMetricTestBase, Status: "running"}
+	profile := workflowmetrics.ActivityProfile{Schema: 1, SessionID: 42, StartedAt: event.StartedAt, AsOf: event.StartedAt.Add(time.Minute), Status: "running", Coverage: "partial"}
+	id, err = backend.SaveWorkflowActivityProfile(t.Context(), 0, event, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := backend.WorkflowHistoryRevision(t.Context())
+	if err != nil || revision != 5 {
+		t.Fatalf("activity insert revision = %d, error = %v", revision, err)
+	}
+	evidence, err := backend.RuntimeEvidence(t.Context(), RuntimeEvidenceQuery{ProjectID: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.AsOf = profile.AsOf.Add(time.Minute)
+	profile.Spans = []workflowmetrics.ActivitySpan{{ID: "observed", StartedAt: event.StartedAt, FinishedAt: profile.AsOf, Kind: "read", Outcome: "completed"}}
+	event.Status = "checkpointed"
+	if _, err := backend.SaveWorkflowActivityProfile(t.Context(), id, event, profile); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := backend.WorkflowHistoryRevision(t.Context()); err != nil || got != revision {
+		t.Fatalf("checkpoint revision = %d, want %d, error = %v", got, revision, err)
+	}
+	if got, err := backend.RuntimeEvidence(t.Context(), RuntimeEvidenceQuery{ProjectID: "project"}); err != nil || !reflect.DeepEqual(got, evidence) {
+		t.Fatalf("checkpoint changed runtime evidence: %+v, error = %v", got, err)
+	}
+	timeline, err := backend.IssueWorkflowTimeline(t.Context(), IssueIdentity{ProjectID: "project", IssueID: "issue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audits := workflowmetrics.ActivityAudits(timeline.Events, profile.AsOf)
+	if len(audits) != 1 || !audits[0].Profile.AsOf.Equal(profile.AsOf) || len(audits[0].Profile.Spans) != 1 {
+		t.Fatalf("checkpoint timeline is stale: %+v", audits)
+	}
+	profile.Status, profile.FinishedAt = "ended", profile.AsOf
+	event.Status, event.FinishedAt = profile.Status, profile.FinishedAt
+	if _, err := backend.SaveWorkflowActivityProfile(t.Context(), id, event, profile); err != nil {
+		t.Fatal(err)
+	}
+	revision++
+	if got, err := backend.WorkflowHistoryRevision(t.Context()); err != nil || got != revision {
+		t.Fatalf("finished revision = %d, want %d, error = %v", got, revision, err)
+	}
+	finishedEvidence, err := backend.RuntimeEvidence(t.Context(), RuntimeEvidenceQuery{ProjectID: "project"})
+	if err != nil || finishedEvidence.WorkflowPhaseEvents.NewestFinishedAt == nil || !finishedEvidence.WorkflowPhaseEvents.NewestFinishedAt.Equal(event.FinishedAt) || !reflect.DeepEqual(finishedEvidence.Tables, evidence.Tables) {
+		t.Fatalf("finished evidence = %+v, error = %v", finishedEvidence, err)
+	}
+	for _, tt := range []struct {
+		name string
+		set  string
+		bump bool
+	}{
+		{"activity payload", "metadata_json = '{}', status = 'changed', started_at = '2026-10-01T00:00:00Z', duration_seconds = 42, event_day = '2026-10-01'", false},
+		{"same finished time", "finished_at = finished_at", false},
+		{"activity ID", "id = id + 1", true},
+		{"project identity", "project_id = 'other'", true},
+		{"issue identity to NULL", "issue_id = NULL", true},
+		{"issue identity from NULL", "issue_id = 'other'", true},
+		{"identifier from NULL", "identifier = 'owner/repo#42'", true},
+		{"identifier to NULL", "identifier = NULL", true},
+		{"URL from NULL", "issue_url = 'https://example.test/issues/42'", true},
+		{"URL to NULL", "issue_url = NULL", true},
+		{"PR from NULL", "pr_number = 42", true},
+		{"PR to NULL", "pr_number = NULL", true},
+		{"finish to NULL", "finished_at = NULL", true},
+		{"finish from NULL", "finished_at = '2026-10-01T00:00:00Z'", true},
+		{"activity becomes lane", "phase_type = 'lane'", true},
+		{"nonactivity no-op", "metadata_json = metadata_json", true},
+		{"lane becomes activity", "phase_type = 'agent_activity'", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := backend.db.ExecContext(t.Context(), "UPDATE workflow_phase_events SET "+tt.set+" WHERE id = ?", id); err != nil {
+				t.Fatal(err)
+			}
+			if tt.name == "activity ID" {
+				id++
+			}
+			if tt.bump {
+				revision++
+			}
+			if got, err := backend.WorkflowHistoryRevision(t.Context()); err != nil || got != revision {
+				t.Fatalf("revision = %d, want %d, error = %v", got, revision, err)
+			}
+		})
+	}
+	migration, err := migrationsFS.ReadFile("migrations/00067_project_activity_history_revision.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, down, ok := strings.Cut(string(migration), "-- +goose Down")
+	if !ok {
+		t.Fatal("migration has no Down section")
+	}
+	for _, tt := range []struct {
+		name string
+		sql  string
+		bump bool
+	}{{"Down restores unconditional updates", down, true}, {"Up restores checkpoint projection", up, false}} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := backend.db.ExecContext(t.Context(), tt.sql); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := backend.db.ExecContext(t.Context(), "UPDATE workflow_phase_events SET metadata_json = '{}' WHERE id = ?", id); err != nil {
+				t.Fatal(err)
+			}
+			if tt.bump {
+				revision++
+			}
+			if got, err := backend.WorkflowHistoryRevision(t.Context()); err != nil || got != revision {
+				t.Fatalf("revision = %d, want %d, error = %v", got, revision, err)
 			}
 		})
 	}
