@@ -843,10 +843,14 @@ Workflow duration reports exclude `agent_activity` in their existing SQL owner
 before loading or converting the activity payloads that report aggregation does
 not use. A finite report window searches both inclusive-start/exclusive-end
 `finished_at` bounds through the existing index; absent bounds retain the
-optional query contract. Timeline/activity readers, history revision, flow,
-trends and representatives are unchanged. The existing report roundtrip fixture
-checks large activity exclusion, report equivalence, optional bounds and the
-actual bounded query plan. No index, cache, configuration or schema is added.
+optional query contract. Flow overlap reads likewise seek a present lower
+`finished_at` bound directly and retain the strict `started_at` upper bound.
+They do not constrain the upper `finished_at`: long sessions ending after the
+window still contribute their overlap. Absent lower bounds retain the optional
+query. Timeline/activity readers, history revision, trends and representatives
+are unchanged. Existing report fixtures check large activity exclusion, report
+equivalence, optional bounds, strict overlap boundaries and the actual lower
+index-seek operand. No index, cache, configuration or schema is added.
 
 GitHub usage timing (#3767) extends the existing `RESTScope` owner, mutex,
 fixed stage/step/family/outcome aggregation and single aggregate log event.

@@ -2947,6 +2947,27 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 			activeSeconds: 60,
 			waitSeconds:   180,
 		},
+		{
+			name:   "active event spans entire lane and ends after upper bound",
+			lane:   workflowMetricTestEvent("detent", "issue-long", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active: workflowMetricTestEvent("detent", "issue-long", WorkflowPhaseTypeAgentSession, "agent_active", 0, 2*time.Hour),
+			from:   workflowMetricTestBase.Add(9 * time.Minute), to: workflowMetricTestBase.Add(13 * time.Minute),
+			activeSeconds: 240,
+		},
+		{
+			name:   "active event ends exactly at lane start",
+			lane:   workflowMetricTestEvent("detent", "issue-ended", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active: workflowMetricTestEvent("detent", "issue-ended", WorkflowPhaseTypeCI, "ci", 0, 8*time.Minute),
+			from:   workflowMetricTestBase.Add(9 * time.Minute), to: workflowMetricTestBase.Add(13 * time.Minute),
+			waitSeconds: 240,
+		},
+		{
+			name:   "active event starts exactly at lane end",
+			lane:   workflowMetricTestEvent("detent", "issue-starting", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active: workflowMetricTestEvent("detent", "issue-starting", WorkflowPhaseTypeCI, "ci", 12*time.Minute, time.Minute),
+			from:   workflowMetricTestBase.Add(9 * time.Minute), to: workflowMetricTestBase.Add(13 * time.Minute),
+			waitSeconds: 240,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2961,6 +2982,9 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 				}
 			}
 
+			writer := backend.(*sqliteStore)
+			recorder := &refreshQueryRecorder{DB: writer.db}
+			writer.queries = sqlc.New(recorder)
 			report, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{
 				ProjectID: "detent",
 				From:      tt.from,
@@ -2968,6 +2992,40 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 			})
 			if err != nil {
 				t.Fatalf("WorkflowMetricsReport() error = %v", err)
+			}
+
+			if len(recorder.reads) != 2 {
+				t.Fatalf("report reads=%d, want duration and flow", len(recorder.reads))
+			}
+			read := recorder.reads[1]
+			rows, err := writer.db.QueryContext(ctx, "EXPLAIN "+read.query, read.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			registers := make(map[int]string)
+			var lowerBoundSeek bool
+			for rows.Next() {
+				var address, p1, p2, p3 int
+				var opcode string
+				var p4, p5, comment any
+				if err := rows.Scan(&address, &opcode, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
+					t.Fatal(err)
+				}
+				if opcode == "Variable" || opcode == "Null" {
+					registers[p2] = opcode
+				}
+				if opcode == "SeekGT" {
+					lowerBoundSeek = registers[p3] == "Variable"
+				}
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !lowerBoundSeek {
+				t.Fatal("flow index seeks NULL instead of the bound parameter")
 			}
 
 			lane := workflowMetricTestLane(t, report.Lanes, tt.lane.PhaseName)

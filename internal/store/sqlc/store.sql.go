@@ -5827,3 +5827,70 @@ func (q *Queries) WorkflowPhaseFlowRows(ctx context.Context, arg WorkflowPhaseFl
 	}
 	return items, nil
 }
+
+const workflowPhaseFlowRowsFrom = `-- name: WorkflowPhaseFlowRowsFrom :many
+SELECT event.id, event.project_id, event.run_id, event.session_id, event.issue_id, event.identifier, event.issue_url, event.pr_number, event.phase_type, event.phase_name, event.previous_phase_name, event.reason, event.status, event.started_at, event.finished_at, event.duration_seconds, event.event_day, event.command_name, event.exit_code, event.turns, event.input_tokens, event.output_tokens, event.total_tokens, event.endpoint_family, event.metadata_json, event.cached_input_tokens, event.reasoning_output_tokens, event.model_context_window
+FROM workflow_phase_events AS event INDEXED BY workflow_phase_events_finished_at_idx
+WHERE event.finished_at > ?1
+  AND event.phase_type IN ('agent_session', 'local_check', 'ci')
+  AND (?2 IS NULL OR event.project_id = ?2)
+  AND (?3 IS NULL OR event.started_at < ?3)
+`
+
+type WorkflowPhaseFlowRowsFromParams struct {
+	FromTime  sql.NullString `json:"from_time"`
+	ProjectID interface{}    `json:"project_id"`
+	ToTime    interface{}    `json:"to_time"`
+}
+
+func (q *Queries) WorkflowPhaseFlowRowsFrom(ctx context.Context, arg WorkflowPhaseFlowRowsFromParams) ([]WorkflowPhaseEvent, error) {
+	rows, err := q.db.QueryContext(ctx, workflowPhaseFlowRowsFrom, arg.FromTime, arg.ProjectID, arg.ToTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkflowPhaseEvent{}
+	for rows.Next() {
+		var i WorkflowPhaseEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.RunID,
+			&i.SessionID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.PhaseType,
+			&i.PhaseName,
+			&i.PreviousPhaseName,
+			&i.Reason,
+			&i.Status,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.DurationSeconds,
+			&i.EventDay,
+			&i.CommandName,
+			&i.ExitCode,
+			&i.Turns,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.EndpointFamily,
+			&i.MetadataJson,
+			&i.CachedInputTokens,
+			&i.ReasoningOutputTokens,
+			&i.ModelContextWindow,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
