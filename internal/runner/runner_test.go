@@ -2621,12 +2621,13 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 	agentBackend := &fakeCodexClient{
 		result: AgentTurnResult{ThreadID: "thread-admission", TurnID: "turn-1", SessionID: "thread-admission-turn-1"},
 	}
+	sessionStore := &fakeSessionStore{sessionID: 1535}
 	runner, err := NewRunner(Dependencies{
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Machine-local text must not appear."},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
-		Store:        &fakeSessionStore{sessionID: 1535},
-		Now:          newFakeClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second)).Now,
+		Store:        sessionStore,
+		Now:          func() time.Time { return startedAt },
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -2653,10 +2654,13 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 				Description: "Implement typed proposals.",
 			}},
 		},
-		StartedAt: startedAt,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	if sessionStore.startCalls != 1 || !sessionStore.started.StartedAt.Equal(startedAt) ||
+		!sessionStore.usage.StartedAt.Equal(startedAt) || !sessionStore.phase.StartedAt.Equal(startedAt) {
+		t.Fatalf("session attribution = %#v, usage = %#v, phase = %#v, want runner clock %v", sessionStore.started, sessionStore.usage, sessionStore.phase, startedAt)
 	}
 	if !agentBackend.request.ReadOnly {
 		t.Fatal("AgentTurnRequest.ReadOnly = false, want true for admission")

@@ -539,7 +539,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	validCandidates := make([]connector.Issue, 0, len(candidates))
 	evaluations := make([]AgentEvaluation, 0, len(candidates))
 	for _, candidate := range candidates {
-		evaluation, failure, deferredReason, err := m.evaluateCandidate(ctx, settings, candidate, startedAt)
+		evaluation, failure, deferredReason, err := m.evaluateCandidate(ctx, settings, candidate)
 		if err != nil {
 			return result, fmt.Errorf(
 				"evaluate backlog admission candidate %s: transport runner_error: %w",
@@ -604,13 +604,11 @@ func (m *Manager) evaluateCandidate(
 	ctx context.Context,
 	settings Settings,
 	candidate connector.Issue,
-	startedAt time.Time,
 ) (AgentEvaluation, *malformedEvaluation, string, error) {
 	collector := &proposalCollector{}
 	runResult, err := settings.Runner.Run(ctx, runner.RunRequest{
 		Issue:            admissionIssue(settings.ProjectID),
 		Mode:             runner.RunModeRoutine,
-		StartedAt:        startedAt,
 		Admission:        admissionRequest(settings, []connector.Issue{candidate}),
 		AgentTools:       []runner.AgentTool{proposalTool(settings.Config.RequireEffort)},
 		AgentToolHandler: collector.handle,
