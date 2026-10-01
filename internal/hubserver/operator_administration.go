@@ -561,7 +561,7 @@ func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenRespon
 	var view tokenResponse
 	var created string
 	var revoked sql.NullString
-	err := s.database.db.QueryRowContext(ctx, "SELECT id,name,scope,token_fingerprint,created_at,native_only,revoked_at FROM api_tokens WHERE id=?", id).Scan(&view.ID, &view.Name, &view.Scope, &view.Fingerprint, &created, &view.NativeOnly, &revoked)
+	err := s.database.db.QueryRowContext(ctx, "SELECT id,name,scope,token_fingerprint,created_at,native_only,revoked_at,CASE WHEN hosted_user_id IS NOT NULL THEN operator_project_access ELSE '' END FROM api_tokens WHERE id=?", id).Scan(&view.ID, &view.Name, &view.Scope, &view.Fingerprint, &created, &view.NativeOnly, &revoked, &view.ProjectAccess)
 	if err != nil {
 		return view, err
 	}
@@ -582,12 +582,14 @@ func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenRespon
 	}
 	defer rows.Close()
 	view.Grants = []tokenGrantResponse{}
+	view.Projects = []string{}
 	for rows.Next() {
 		var grant tokenGrantResponse
 		if err := rows.Scan(&grant.OrganizationID, &grant.ProjectID); err != nil {
 			return view, err
 		}
 		view.Grants = append(view.Grants, grant)
+		view.Projects = append(view.Projects, grant.ProjectID)
 	}
 	return view, rows.Err()
 }

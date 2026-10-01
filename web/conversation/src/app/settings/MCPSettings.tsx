@@ -1,7 +1,7 @@
 import React from "react";
 import { CheckIcon, CopyIcon, PlugIcon } from "lucide-react";
 
-import type { AccountBootstrap } from "../../contracts/account.ts";
+import type { AccountBootstrap, CreatedOperatorAPIKey } from "../../contracts/account.ts";
 import { Button } from "../../components/ui/button.tsx";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard.ts";
 import { basePath } from "../../runtime/basePath.ts";
@@ -75,19 +75,20 @@ const CURSOR_CONFIG = JSON.stringify({
   },
 }, null, 2);
 
-function keySetupPrompt(endpoint: string): string {
+function keySetupPrompt(endpoint: string, access: string): string {
   const settings = endpoint.replace(/\/mcp$/, "/settings/mcp");
-  return `Use the shared expiring API key from Detent Settings → API & MCP (${settings}). Create or select a key on that same page with Read scope and only the needed projects. The same key works for direct HTTP API and MCP. Write/Admin keys still require my current role and project grants; expiry, revocation and membership removal apply to both.
+  return `Use the shared expiring API key from Detent Settings → API & MCP (${settings}). Create or select a key on that same page with Read scope. Default project access is All projects, including future projects; choose Selected projects to restrict it. The same key works for direct HTTP API and MCP. Write/Admin keys still require my current role and project grants; expiry, revocation and membership removal apply to both.
+Project access: ${access}. Access always stays within this organization and my current project grants. Newly authorized projects work with an all-project key without replacing it or reconnecting MCP.
 Ask me to store the secret directly in your private secret store or private environment as DETENT_API_KEY. Never ask me to paste it into this conversation. Never expose it in URLs, screenshots, logs, command traces, diagnostics or committed files. All examples below reference a private environment variable, not an embedded secret.
 401: check key configuration, expiry and revocation. 403 or hidden 404: check current membership, role, key scope and project grants. Revoke the key on this page when finished; deleting client configuration alone does not revoke it.`;
 }
 
-export function apiSetupPrompt(endpoint: string, organization: string, project: string): string {
+export function apiSetupPrompt(endpoint: string, organization: string, project: string, access = "As listed for your key: All projects, including future projects, or Selected projects"): string {
   const base = endpoint.replace(/\/mcp$/, `/api/v2/organizations/${encodeURIComponent(organization)}`);
   return `Connect directly to the Detent HTTP API without an MCP client.
 Organization: ${organization}
 API base URL: ${base}
-${keySetupPrompt(endpoint)}
+${keySetupPrompt(endpoint, access)}
 
 Use Authorization: Bearer with the private DETENT_API_KEY environment variable; no browser cookies, session or CSRF state. Select a granted project ID from Settings → API & MCP; ${project} is the initial project context. With shell tracing disabled, verify an authorized read:
 DETENT_API_BASE='${base}'
@@ -99,11 +100,11 @@ Check returned project/organization IDs before reporting success; report no secr
 Before mutations, consult that operation's documented payload, revisions, idempotency and approval requirements. Ordinary writes require Write scope and current write grants. Material/destructive operations retain the existing exact-action browser approval boundary: present the preview/approval URL when supplied and have me review it in my signed-in Detent browser. If the direct route has no approved preview flow, stop and ask me to perform the operation in Detent; do not substitute a raw mutation to bypass approval. API keys cannot approve operations or write orchestrator lane state.`;
 }
 
-export function mcpSetupPrompt(endpoint: string, organization: string, project: string): string {
+export function mcpSetupPrompt(endpoint: string, organization: string, project: string, access = "As listed for your key: All projects, including future projects, or Selected projects"): string {
   return `Configure your supported MCP client for this exact Detent Cloud organization endpoint:
 ${endpoint}
 Organization: ${organization}
-${keySetupPrompt(endpoint)}
+${keySetupPrompt(endpoint, access)}
 
 Use Streamable HTTP with application/json JSON POSTs, Accept: application/json, text/event-stream and Authorization: Bearer from the private DETENT_API_KEY environment variable. No browser cookies, session or CSRF token is needed. GET/SSE and MCP OAuth are unsupported. For example, in Codex client configuration:
 [mcp_servers.detent]
@@ -118,7 +119,12 @@ export function MCPSettings(): React.ReactElement {
   const account = useAccountBootstrap();
   const endpoint = organizationMCPEndpoint(account);
   const [available, setAvailable] = React.useState(false);
-  const project = account?.projects[0]?.id ?? "YOUR_GRANTED_PROJECT_ID";
+  const [createdKey, setCreatedKey] = React.useState<CreatedOperatorAPIKey | null>(null);
+  React.useEffect(() => setCreatedKey(null), [account]);
+  const access = createdKey?.project_access === "selected"
+    ? `Selected projects: ${createdKey.project_ids.map((id) => account?.projects.find((project) => project.id === id)?.name ?? id).join(", ")}`
+    : createdKey ? "All projects, including future projects" : "As listed for your key: All projects, including future projects, or Selected projects";
+  const project = (createdKey?.project_access === "selected" ? createdKey.project_ids[0] : account?.projects[0]?.id) ?? "YOUR_GRANTED_PROJECT_ID";
   return (
     <SettingsPageContainer>
       <SettingsSection id="settings-mcp" title="API & MCP" icon={<PlugIcon className="size-3.5" />}>
@@ -130,10 +136,10 @@ export function MCPSettings(): React.ReactElement {
           {endpoint && <CopyExample label="Organization MCP endpoint" value={endpoint} />}
         </SettingsRow>
         {endpoint && account && available && <SettingsRow title="Agent setup prompts" description="Copy instructions for your preferred connection. Both use the same key; prompts contain only private environment references.">
-          <CopyExample label="API setup prompt" value={apiSetupPrompt(endpoint, account.organization.id, project)} />
-          <CopyExample label="MCP setup prompt" value={mcpSetupPrompt(endpoint, account.organization.id, project)} />
+          <CopyExample label="API setup prompt" value={apiSetupPrompt(endpoint, account.organization.id, project, access)} />
+          <CopyExample label="MCP setup prompt" value={mcpSetupPrompt(endpoint, account.organization.id, project, access)} />
         </SettingsRow>}
-        <APIKeysSettings onAvailability={setAvailable} />
+        <APIKeysSettings onAvailability={setAvailable} onKeyCreated={setCreatedKey} />
       </SettingsSection>
 
       <SettingsSection id="settings-mcp-permissions" title="Permissions and tools">

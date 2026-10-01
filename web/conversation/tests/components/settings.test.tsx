@@ -223,21 +223,31 @@ describe("MCP setup", () => {
     }
   });
 
-  it("creates and revokes a shared scoped key on the existing settings route while keeping it out of copied prompts", async () => {
+  it.each(["all", "selected", "all before projects"] as const)("creates and revokes a %s key while keeping it out of copied prompts", async (mode) => {
+    const currentAccount = mode === "all before projects" ? { ...account, projects: [] } : account;
+    const projectAccess = mode === "selected" ? "selected" : "all";
+    const projectIds = mode === "selected" ? [account.projects[0]!.id] : [];
     const secret = "detent_synthetic_once_only_key";
-    const metadata = { id: "key1", name: "agent", scope: "read", expires_at: "2026-11-01T00:00:00Z", fingerprint: "fingerprint", revoked: false, project_ids: [account.projects[0]!.id] };
+    const metadata = { id: "key1", name: "agent", scope: "read", expires_at: "2026-11-01T00:00:00Z", fingerprint: "fingerprint", revoked: false, project_access: projectAccess, project_ids: projectIds };
     let created = false;
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
-      if (options?.method === "POST") { created = true; return new Response(JSON.stringify({ token: secret }), { status: 201 }); }
+      if (options?.method === "POST") { created = true; return new Response(JSON.stringify({ token: secret, project_access: projectAccess, project_ids: projectIds }), { status: 201 }); }
       if (options?.method === "DELETE") return new Response(null, { status: 204 });
       return new Response(JSON.stringify({ keys: created ? [metadata] : [] }));
     });
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
-    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: "browser-csrf" }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: "browser-csrf" }, account: currentAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Create API key" })).toBeTruthy());
     fireEvent.change(screen.getByLabelText("Key name"), { target: { value: "agent" } });
-    fireEvent.click(screen.getAllByRole("checkbox")[0]!);
+    expect(screen.getByLabelText("Project access")).toHaveProperty("value", "all");
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Create API key" })).toHaveProperty("disabled", false);
+    if (mode === "selected") {
+      fireEvent.change(screen.getByLabelText("Project access"), { target: { value: "selected" } });
+      expect(screen.getByRole("button", { name: "Create API key" })).toHaveProperty("disabled", true);
+      fireEvent.click(screen.getByRole("checkbox", { name: account.projects[0]!.name }));
+    }
     fireEvent.click(screen.getByRole("button", { name: "Create API key" }));
     await waitFor(() => expect(screen.getByLabelText("New API key")).toBeTruthy());
     expect(screen.getByLabelText("New API key").getAttribute("type")).toBe("password");
@@ -247,10 +257,12 @@ describe("MCP setup", () => {
     const post = fetch.mock.calls.find((call) => call[1]?.method === "POST")!;
     expect(post[0]).toBe(`${account.api_base}/api-keys`);
     expect(post[1]?.headers).toMatchObject({ "X-CSRF-Token": "browser-csrf" });
-    expect(JSON.parse(post[1]!.body as string)).toMatchObject({ name: "agent", scope: "read", expires_days: 30, project_ids: [account.projects[0]!.id] });
+    expect(JSON.parse(post[1]!.body as string)).toMatchObject({ name: "agent", scope: "read", expires_days: 30, project_access: projectAccess, project_ids: projectIds });
     for (const label of ["API setup prompt", "MCP setup prompt"]) {
+      const copies = writeText.mock.calls.length;
       fireEvent.click(screen.getByRole("button", { name: `Copy ${label}` }));
-      await waitFor(() => expect(writeText).toHaveBeenCalled());
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(copies + 1));
+      expect(writeText.mock.lastCall![0]).toContain(mode === "selected" ? `Project access: Selected projects: ${account.projects[0]!.name}` : "Project access: All projects, including future projects");
       expect(writeText.mock.lastCall![0]).not.toContain(secret);
     }
     fireEvent.click(screen.getByRole("button", { name: "Revoke agent" }));

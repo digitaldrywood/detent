@@ -44,8 +44,13 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 		if request.Scope != apiScopeOperator && request.Scope != apiScopeAdmin || (request.Scope == apiScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hostedRoleAllows(issuer.HostedRole, request.KeyScope) {
 			return tokenResponse{}, nativeInvalid("Select a scope allowed by your current role")
 		}
-		if request.ExpiresAt == nil || !request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(90*24*time.Hour)) || len(request.ProjectIDs) == 0 {
-			return tokenResponse{}, nativeInvalid("Select an expiry within 90 days and at least one project")
+		if request.ExpiresAt == nil || !request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(90*24*time.Hour)) {
+			return tokenResponse{}, nativeInvalid("Select an expiry within 90 days")
+		}
+		var message string
+		request.ProjectAccess, message = resolveHostedProjectAccess(request.ProjectAccess, request.ProjectIDs)
+		if message != "" {
+			return tokenResponse{}, nativeInvalid(message)
 		}
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: issuer}
 		for _, project := range request.ProjectIDs {
@@ -72,11 +77,15 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 		user, organization, membership, keyScope = issuer.Hosted.Subject, s.config.Hosted.OrganizationID, issuer.HostedMembership, string(request.KeyScope)
 		nativeOnly = true
 	}
+	access := hostedProjectsSelected
+	if request.Issuer != nil {
+		access = request.ProjectAccess
+	}
 	var expiry any
 	if request.ExpiresAt != nil {
 		expiry = formatHubTime(*request.ExpiresAt)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at,expires_at,native_only,hosted_user_id,hosted_organization_id,hosted_membership_id,operator_key_scope) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, request.Name, hash, tokenFingerprint(hash), request.Scope, formatHubTime(now), formatHubTime(now), expiry, nativeOnly, user, organization, membership, keyScope)
+	_, err = tx.ExecContext(ctx, `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at,expires_at,native_only,hosted_user_id,hosted_organization_id,hosted_membership_id,operator_key_scope,operator_project_access) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, request.Name, hash, tokenFingerprint(hash), request.Scope, formatHubTime(now), formatHubTime(now), expiry, nativeOnly, user, organization, membership, keyScope, access)
 	if err != nil {
 		return tokenResponse{}, &nativeError{Code: "token_conflict", Message: "API token name already exists", status: 409}
 	}
@@ -88,7 +97,8 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 	if err := tx.Commit(); err != nil {
 		return tokenResponse{}, err
 	}
-	return tokenResponse{ID: id, Name: request.Name, Scope: request.Scope, Token: token, Fingerprint: tokenFingerprint(hash), CreatedAt: now, ExpiresAt: request.ExpiresAt, KeyScope: request.KeyScope, NativeOnly: nativeOnly}, nil
+	projects := append([]string{}, request.ProjectIDs...)
+	return tokenResponse{ProjectAccess: request.ProjectAccess, Projects: projects, ID: id, Name: request.Name, Scope: request.Scope, Token: token, Fingerprint: tokenFingerprint(hash), CreatedAt: now, ExpiresAt: request.ExpiresAt, KeyScope: request.KeyScope, NativeOnly: nativeOnly}, nil
 }
 
 func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenResponse, error) {
