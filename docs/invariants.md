@@ -1512,6 +1512,14 @@ than adding another recovery loop or reason code (#3064).
 `TestAttemptAllowanceLiveHead` and
 `TestAttemptTriageParkRecoversOnCleanGreenHead` cover the wait and recovery.
 
+The hourly source-invariant repair (#3656) refreshes the reviewed digest for
+`transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads` after
+PR #3590 consolidated already-merged completion under the existing merged-PR
+owner. Review confirms its fallback lane-reason selection is unchanged; the
+merged path reuses that owner's existing reasons and ledger. No mechanism,
+reason, or lane writer is added. `TestRepositorySources` still rejects further
+edits until reviewed.
+
 The scheduled coverage repair (#3545) refreshes the reviewed digest for
 `updateIssueStateByIDWithMetadataMode` after #3560 rewrote `!(A && B)` as
 `!A || !B`. The equivalent delivery-time condition preserves reason sources
