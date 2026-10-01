@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -83,25 +82,6 @@ func TestDispatchLoopStartPersistenceFailureFailsOpen(t *testing.T) {
 
 	if state.Running[issue.ID].DispatchLoopStart.Persisted {
 		t.Fatalf("dispatch loop start = %#v, want untrusted after persistence failure", state.Running[issue.ID].DispatchLoopStart)
-	}
-	decision := dispatchLoopDecision("In Progress", store.WorkAttemptTerminalFailure, autoPromoteReworkSignature{}, DiffStats{HeadSHA: "dispatch-head", Status: "clean"})
-	got := orch.evaluateDispatchLoopProgress(t.Context(), state.Running[issue.ID], decision)
-	if got.ConsecutiveNoProgress != 0 || got.Block {
-		t.Fatalf("evaluateDispatchLoopProgress() = count %d block %v, want persistence failure to fail open", got.ConsecutiveNoProgress, got.Block)
-	}
-}
-
-func dispatchLoopDecision(lane string, outcome store.WorkAttemptTerminalState, signature autoPromoteReworkSignature, diff DiffStats) implementCompletionProgressDecision {
-	issue := connector.Issue{ID: "issue-loop", Identifier: "digitaldrywood/detent#1886", State: lane}
-	diff = dispatchLoopTestRunnerDiff(diff)
-	return implementCompletionProgressDecision{
-		Issue:              issue,
-		Outcome:            outcome,
-		Reason:             implementDependencyDeferralReason,
-		CurrentSignature:   signature,
-		WorkspaceDiffStats: diff,
-		TrackerState:       lane,
-		NoProgressLimit:    3,
 	}
 }
 

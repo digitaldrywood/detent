@@ -597,19 +597,13 @@ func (o *Orchestrator) reconcileAttemptTriagePark(ctx context.Context, state *St
 	if BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel) != "" {
 		return true, false
 	}
-	if o.workAttempts != nil && stateIn(entry.Event.PreviousPhaseName, normalizedStates([]string{"In Progress", autoPromoteReworkState})) {
-		allowance, err := o.issueAttemptAllowance(ctx, issue)
-		if err != nil {
+	if stateIn(entry.Event.PreviousPhaseName, normalizedStates([]string{"In Progress", autoPromoteReworkState})) {
+		if err := o.updateIssueState(ctx, state, issue, entry.Event.PreviousPhaseName, now, workflowActionRecordedBlockerRecovery); err != nil {
 			return true, false
 		}
-		if !allowance.exhausted() {
-			if err := o.updateIssueState(ctx, state, issue, entry.Event.PreviousPhaseName, now, workflowActionRecordedBlockerRecovery); err != nil {
-				return true, false
-			}
-			delete(state.Blocked, issue.ID)
-			o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
-			return true, true
-		}
+		delete(state.Blocked, issue.ID)
+		o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+		return true, true
 	}
 	if entry.Metadata.PullRequest == nil || strings.TrimSpace(entry.Metadata.PullRequest.HeadSHA) == "" || o.mergeLaneUnavailableReason() != "" {
 		return true, false

@@ -2733,7 +2733,7 @@ func (c *blockedReadyPullRequestLookupConnector) LookupBranchHead(_ context.Cont
 	return c.remoteHead, c.remoteErr
 }
 
-func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
+func TestRetiredAttemptTriageParkRestoresPriorLane(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name, priorLane, humanAction string
@@ -2750,20 +2750,21 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 		{name: "missing PR association is not failure", priorLane: "Rework", failures: 2, wantLane: "Rework"},
 		{name: "preserve prior In Progress", priorLane: "In Progress", failures: 2, wantLane: "In Progress"},
 		{name: "resolved dependency", priorLane: "Rework", failures: 2, dependencyState: "Done", wantLane: "Rework"},
-		{name: "real failures remain exhausted", priorLane: "Rework", failures: 3},
+		{name: "legacy failures return to configured owners", priorLane: "Rework", failures: 3, wantLane: "Rework"},
 		{name: "historical diagnostics recover Rework", priorLane: "Rework", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1", wantLane: "Rework"},
 		{name: "historical diagnostics recover In Progress", priorLane: "In Progress", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1", wantLane: "In Progress"},
-		{name: "worker Git failures remain exhausted", priorLane: "Rework", failures: 3, failureMessage: "run agent turn: git add intent to add: git add failed: exit status 1"},
+		{name: "worker Git failures return to configured owners", priorLane: "Rework", failures: 3, failureMessage: "run agent turn: git add intent to add: git add failed: exit status 1", wantLane: "Rework"},
 		{name: "diagnostic allowance retains human hold", priorLane: "Rework", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git add failed: exit status 1", humanAction: "approve data migration"},
 		{name: "diagnostic allowance retains dependency hold", priorLane: "Rework", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git add failed: exit status 1", dependencyState: "In Progress"},
-		{name: "older cleared blocker cannot release exhausted cause", priorLane: "Rework", failures: 3, clearedBlocker: true},
+		{name: "retired allowance no longer competes with cleared blocker", priorLane: "Rework", failures: 3, clearedBlocker: true, wantLane: "Rework"},
 		{name: "older cleared blocker permits corrected allowance", priorLane: "Rework", failures: 2, clearedBlocker: true, wantLane: "Rework"},
-		{name: "sparse operational claim does not erase failures", priorLane: "In Progress", failures: 3, operationalClaim: true},
-		{name: "hydrated closed draft agrees with sparse claim", priorLane: "In Progress", failures: 3, operationalClaim: true, closedDraft: true},
-		{name: "newer Workpad clearance does not reset exhausted allowance", priorLane: "Rework", failures: 3, newerOperatorClearance: true},
+		{name: "sparse operational claim does not grant acceptance", priorLane: "In Progress", failures: 3, operationalClaim: true, wantLane: "In Progress"},
+		{name: "closed draft returns to prior lane without acceptance", priorLane: "In Progress", failures: 3, operationalClaim: true, closedDraft: true, wantLane: "In Progress"},
+		{name: "current clearance returns to prior lane", priorLane: "Rework", failures: 3, newerOperatorClearance: true, wantLane: "Rework"},
 		{name: "human hold remains", priorLane: "Rework", failures: 2, humanAction: "approve data migration"},
 		{name: "active dependency remains", priorLane: "Rework", failures: 2, dependencyState: "In Progress"},
-		{name: "incomplete success remains charged", priorLane: "Rework", failures: 2, incomplete: true},
+		{name: "unknown dependency remains", priorLane: "Rework", failures: 3, dependencyState: "unknown"},
+		{name: "incomplete success returns to current owner", priorLane: "Rework", failures: 2, incomplete: true, wantLane: "Rework"},
 		{name: "do not start fresh Todo work", priorLane: "Todo", failures: 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2847,26 +2848,6 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 			if tt.wantLane == "" {
 				if len(tracker.updates) != 0 {
 					t.Fatalf("updates=%+v, want retained hold", tracker.updates)
-				}
-				if tt.operationalClaim {
-					for observation := range 4 {
-						snapshot := cloneIssue(issue)
-						if observation%2 == 0 {
-							snapshot.PullRequest = nil
-							snapshot.PRNumber = nil
-						} else {
-							snapshot.PullRequest = &connector.PullRequest{Number: 3424, State: "CLOSED", Draft: true, HeadSHA: "old-draft", BaseRef: "develop"}
-							snapshot.PRNumber = &snapshot.PullRequest.Number
-						}
-						tracker.stateIssues = []connector.Issue{snapshot}
-						restarted := newLaneMutationTestOrchestrator(cfg, tracker, db, db, at.Add(time.Duration(observation+2)*time.Minute))
-						restartedState := newState(cfg)
-						restarted.recoverBlockedIssues(t.Context(), &restartedState, []connector.Issue{snapshot}, at.Add(time.Duration(observation+2)*time.Minute))
-						allowance, err := restarted.issueAttemptAllowance(t.Context(), snapshot)
-						if err != nil || allowance.Sessions != 3 || len(tracker.updates) != 0 {
-							t.Fatalf("observation=%d allowance=%+v updates=%+v error=%v", observation, allowance, tracker.updates, err)
-						}
-					}
 				}
 				return
 			}

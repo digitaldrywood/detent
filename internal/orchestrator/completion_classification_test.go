@@ -123,7 +123,7 @@ func TestCompletionRebaseProgress(t *testing.T) {
 	}
 }
 
-func TestUnfinishedSessionsExhaustAttemptAllowance(t *testing.T) {
+func TestUnfinishedSessionsRetainConfiguredDispatch(t *testing.T) {
 	t.Parallel()
 	for _, lane := range []string{"In Progress", "Rework"} {
 		t.Run(lane, func(t *testing.T) {
@@ -138,7 +138,7 @@ func TestUnfinishedSessionsExhaustAttemptAllowance(t *testing.T) {
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: issue}}
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
 			state := newState(cfg)
-			for i := range sessionsWithoutMergeAllowance {
+			for i := range 3 {
 				started := now.Add(time.Duration(i) * time.Minute)
 				if i > 0 {
 					var err error
@@ -165,36 +165,24 @@ func TestUnfinishedSessionsExhaustAttemptAllowance(t *testing.T) {
 					t.Fatalf("unexpected transition: %#v", tracker.updates)
 				}
 			}
-			// Restart from durable history; the fourth dispatch must be triage, never implementation.
 			orch = newLaneMutationTestOrchestrator(cfg, tracker, db, db, now.Add(time.Hour))
 			orch.supervisor = newTestSupervisor(t, attemptTriageRunner{}, cfg)
 			orch.runResults = make(chan runpkg.Completion, 1)
 			state = newState(cfg)
 			if !orch.dispatchIssue(t.Context(), &state, issue, 4, now.Add(time.Hour), "") {
-				t.Fatal("triage dispatch refused")
+				t.Fatal("implementation dispatch refused")
 			}
 			select {
 			case result := <-orch.runResults:
-				if result.Request.Mode != runpkg.RunModeTriage {
+				if result.Request.Mode != runpkg.RunModeImplement {
 					t.Fatalf("fourth mode = %s", result.Request.Mode)
 				}
-				orch.handleRunResult(t.Context(), &state, result)
 			case <-time.After(5 * time.Second):
-				t.Fatal("triage did not complete")
+				t.Fatal("implementation did not complete")
 			}
-			if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
-				t.Fatalf("allowance did not stop issue: %#v", tracker.updates)
+			if len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+				t.Fatalf("retired lifetime allowance wrote issue state: updates=%+v comments=%+v", tracker.updates, tracker.comments)
 			}
-			timeline, err := db.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: cfg.Project.ID, IssueID: issue.ID})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, event := range timeline.Events {
-				if event.Reason == attemptAllowanceExhaustedReason {
-					return
-				}
-			}
-			t.Fatal("allowance stop reason missing")
 		})
 	}
 }

@@ -127,21 +127,6 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 		}
 
-		var allowance attemptAllowance
-		workpadSignal, _ := autoPromoteIssueWorkpadSignal(issue)
-		if !autoPromoteOperationalCompletionAccepted(state, issue) || workpad.MergedCompletionEvidence(workpadSignal) {
-			var allowanceErr error
-			allowance, allowanceErr = o.issueAttemptAllowance(ctx, issue)
-			if allowanceErr != nil {
-				continue
-			}
-		}
-		allowanceExhausted := allowance.exhausted() && o.cfg.DeliverableKind != "artifact"
-		if allowanceExhausted && !repairOnly {
-			o.handleExhaustedAutoPromoteAllowance(ctx, state, issue, allowance, now)
-			continue
-		}
-
 		merging := mergeWorkerIssue(issue)
 		var securityAudit securityaudit.Evaluation
 		if merging {
@@ -205,9 +190,6 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			decision = EvaluateAutoPromote(issue, summary, cfg, now)
 			if repairOnly && (decision.Action != AutoPromoteActionRework ||
 				(decision.Reason != AutoPromoteReasonUnresolvedReviewThreads && decision.Reason != AutoPromoteReasonCINotGreen)) {
-				if allowanceExhausted {
-					o.handleExhaustedAutoPromoteAllowance(ctx, state, issue, allowance, now)
-				}
 				continue
 			}
 		}
@@ -259,7 +241,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			// Conflict routing must preserve deliberate review parks, while ready
 			// heads remain eligible for the normal promotion path.
 			if reason, ok := o.latestWorkflowLaneReason(ctx, issue, issue.State); ok &&
-				(reason == "operator_move" || reason == attemptAllowanceExhaustedReason) {
+				reason == "operator_move" {
 				decision.Action = AutoPromoteActionSkip
 			}
 		}
@@ -289,21 +271,6 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		return autoPromoteTickResult{}
 	}
 	return result
-}
-
-func (o *Orchestrator) handleExhaustedAutoPromoteAllowance(
-	ctx context.Context, state *State, issue connector.Issue, allowance attemptAllowance, now time.Time,
-) {
-	if _, running := state.Running[strings.TrimSpace(issue.ID)]; running {
-		return
-	}
-	if allowance.Triage != nil {
-		if err := o.publishAttemptTriage(ctx, state, issue, *allowance.Triage, now); err != nil && o.logger != nil {
-			o.logger.Warn("publish stalled issue triage", "issue_id", issue.ID, "error", err)
-		}
-	} else if !mergeWorkerIssue(issue) {
-		o.dispatchIssue(ctx, state, issue, 1, now, "")
-	}
 }
 
 func autoPromoteCompletedFinalState(state *State, issueID string) string {

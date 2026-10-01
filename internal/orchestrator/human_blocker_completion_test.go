@@ -71,9 +71,6 @@ func TestFirstHumanBlockerCompletionReachesBlocked(t *testing.T) {
 			if len(metrics.events) == 0 {
 				t.Fatal("missing lane transition audit")
 			}
-			if reset := lastAllowanceOperatorMoveAt(metrics.events); !reset.IsZero() {
-				t.Fatalf("automated Blocked move renewed attempt allowance at %s", reset)
-			}
 			blocked := state.Blocked[issue.ID]
 			if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.RecoveryReason != "Approve the hardware check." {
 				t.Fatalf("human recovery = %+v", blocked)

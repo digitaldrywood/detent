@@ -394,7 +394,7 @@ func TestTickAutoPromoteHumanReviewIssuesConflictParks(t *testing.T) {
 		protected bool
 	}{
 		{"operator_move", true},
-		{"attempt_allowance_exhausted", true},
+		{"attempt_allowance_exhausted", false},
 		{"completed", false},
 	} {
 		t.Run(tt.reason, func(t *testing.T) {
@@ -802,6 +802,7 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 			t.Parallel()
 
 			cfg := normalizeConfig(Config{
+				Project:             scheduler.ProjectCandidate{ID: "detent"},
 				PollInterval:        time.Minute,
 				MaxConcurrentAgents: 1,
 				AutoPromote: AutoPromoteConfig{
@@ -825,6 +826,20 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 				cfg:       cfg,
 				connector: tracker,
 				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			orch.workAttempts = db
+			for i := range 3 {
+				id, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
+					ProjectID: cfg.Project.ID, IssueID: tt.issue.ID, WorkerType: "agent", Lane: "Rework", AttemptNumber: i + 1, StartedAt: now.Add(-time.Duration(10-i) * time.Minute),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, TerminalState: store.WorkAttemptTerminalFailure, Phase: "failed", ErrorClass: "runner_error", CompletedAt: now.Add(-time.Duration(9-i) * time.Minute)}); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			orch.tick(context.Background(), &state, now)
