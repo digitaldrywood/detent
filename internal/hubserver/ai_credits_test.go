@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -215,30 +216,63 @@ func TestAICreditOwnerSettings(t *testing.T) {
 
 func TestAICreditUsageDebit(t *testing.T) {
 	t.Parallel()
-	f := newCoordinatorFixture(t, "credit-usage")
-	d := f.service.database
-	d.hostedOrganization = f.organization
-	d.aiCreditMode = billing.ModeTest
-	if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',5000000)", f.organization); err != nil {
-		t.Fatal(err)
-	}
-	record := f.seed(t, "Credit usage", nil)
-	usage := ConversationUsage{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, TurnID: "credit-usage-turn", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: 1000000}, Outcome: conversation.DeliveryCompleted, OccurredAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}
-	for range 2 {
-		if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var balance, count int64
-	if err := d.db.QueryRowContext(t.Context(), "SELECT balance_micros,(SELECT count(*) FROM ai_credit_transactions) FROM ai_credit_accounts").Scan(&balance, &count); err != nil || balance != 4900000 || count != 1 {
-		t.Fatalf("balance=%d count=%d err=%v", balance, count, err)
-	}
-	usage.TurnID = "own-provider-turn"
-	usage.Provider = "codex"
-	if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.db.QueryRowContext(t.Context(), "SELECT balance_micros FROM ai_credit_accounts").Scan(&balance); err != nil || balance != 4900000 {
-		t.Fatalf("own-provider balance=%d err=%v", balance, err)
+	for _, test := range []struct {
+		name       string
+		input      int64
+		multiplier float64
+		wantDebit  int64
+	}{
+		{"ten cents with markup", 1000000, 1.5, 150000},
+		{"sub-cent exact micros", 10000, 1.5, 1500},
+		{"fractional micro rounds up", 1, 1.5, 1},
+		{"fractional micro above one", 10, 1.5, 2},
+		{"exact micro boundary", 20, 1.5, 3},
+		{"zero cost", 0, 1.5, 0},
+		{"custom markup", 1000000, 2, 200000},
+		{"at cost", 1000000, 1, 100000},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "credit-usage")
+			d := f.service.database
+			d.hostedOrganization = f.organization
+			d.aiCreditMode = billing.ModeTest
+			d.aiCreditCostMultiplier = test.multiplier
+			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.organization), Billing: &HostedBillingConfig{}}
+			if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',5000000)", f.organization); err != nil {
+				t.Fatal(err)
+			}
+			record := f.seed(t, "Credit usage", nil)
+			at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+			usage := ConversationUsage{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, TurnID: "credit-usage-turn", Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: test.input}, Outcome: conversation.DeliveryCompleted, OccurredAt: at}
+			for range 2 {
+				if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
+					t.Fatal(err)
+				}
+			}
+			view, err := f.service.readAICredits(t.Context())
+			if err != nil || view.BalanceMicros != 5000000-test.wantDebit || len(view.History) != 1 || view.History[0].AmountMicros != -test.wantDebit || view.History[0].Kind != "usage" {
+				t.Fatalf("credits=%+v err=%v", view, err)
+			}
+			window := usageWindow{From: at, To: at.Add(time.Hour)}
+			summary, err := d.chatUsageSummary(t.Context(), f.organization, window, nil)
+			wantCost := float64(test.input) * .1 / 1000000
+			if err != nil || summary.Turns != 1 || math.Abs(summary.CostUSD-wantCost) > 1e-12 {
+				t.Fatalf("raw usage=%+v want cost=%g err=%v", summary, wantCost, err)
+			}
+			rows, err := f.service.chatUsageRows(t.Context(), window, []string{string(f.project.ID)})
+			if err != nil || len(rows) != 1 || math.Abs(rows[0].Cost-wantCost) > 1e-12 {
+				t.Fatalf("raw report rows=%+v err=%v", rows, err)
+			}
+			usage.TurnID = "own-provider-turn"
+			usage.Provider = "codex"
+			if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
+				t.Fatal(err)
+			}
+			view, err = f.service.readAICredits(t.Context())
+			if err != nil || view.BalanceMicros != 5000000-test.wantDebit || len(view.History) != 1 {
+				t.Fatalf("own-provider credits=%+v err=%v", view, err)
+			}
+		})
 	}
 }

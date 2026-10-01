@@ -13,7 +13,9 @@ func TestReadHostedBillingConfig(t *testing.T) {
 	for _, test := range []struct {
 		name, replace, with, key, secret string
 		wantError                        bool
+		wantMultiplier                   float64
 	}{
+		{name: "custom credit multiplier", replace: "grace_seconds: 3600", with: "credit_cost_multiplier: 2\n  grace_seconds: 3600", key: "sk_test_fixture_2196", secret: "whsec_fixture_2196_secret", wantMultiplier: 2},
 		{name: "test configuration", key: "sk_test_fixture_2196", secret: "whsec_fixture_2196_secret"},
 		{name: "restricted test key", key: "rk_test_fixture_2196", secret: "whsec_fixture_2196_secret"},
 		{name: "live key", key: "sk_live_private_sentinel", secret: "whsec_fixture_2196_secret", wantError: true},
@@ -54,6 +56,9 @@ func TestReadHostedBillingConfig(t *testing.T) {
 					t.Fatal("error exposed a secret")
 				}
 				return
+			}
+			if config.Billing.CreditCostMultiplier != test.wantMultiplier {
+				t.Fatalf("credit multiplier=%g want=%g", config.Billing.CreditCostMultiplier, test.wantMultiplier)
 			}
 			if !enabled || config.Billing == nil || config.Billing.Provider == nil || config.Billing.AccountID != "acct_fixture" || config.Billing.CustomerID != "cus_fixture" || config.Billing.Prices[0].Plan.Version != 2 || config.Billing.GraceSeconds != 3600 || config.Billing.ReconcileSeconds != 120 {
 				t.Fatal("billing configuration was not preserved")
