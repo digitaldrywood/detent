@@ -56,15 +56,18 @@ func TestReworkGateWaitHistoryCannotResurrectSupersededWait(t *testing.T) {
 	failed := valid
 	failed.TerminalState = store.WorkAttemptTerminalNoProgress
 	for _, tt := range []struct {
-		name       string
-		history    []store.WorkAttempt
-		err        error
-		refreshErr error
-		commentErr error
-		status     string
-		want       bool
-		cachedWant bool
-		nilStore   bool
+		name          string
+		history       []store.WorkAttempt
+		err           error
+		refreshErr    error
+		commentErr    error
+		status        string
+		want          bool
+		cachedWant    bool
+		nilStore      bool
+		complete      bool
+		clearBody     bool
+		emptyComments bool
 	}{
 		{name: "newer no progress supersedes wait", history: []store.WorkAttempt{failed, valid}, cachedWant: true},
 		{name: "ignore unrelated failed plan", history: []store.WorkAttempt{{TerminalState: store.WorkAttemptTerminalFailure}, valid}, want: true, cachedWant: true},
@@ -72,6 +75,10 @@ func TestReworkGateWaitHistoryCannotResurrectSupersededWait(t *testing.T) {
 		{name: "tracker state unavailable", history: []store.WorkAttempt{valid}, refreshErr: errors.New("state unavailable")},
 		{name: "workpad comments unavailable", history: []store.WorkAttempt{valid}, commentErr: errors.New("comments unavailable")},
 		{name: "fresh blocked Workpad supersedes snapshot", history: []store.WorkAttempt{valid}, status: workpad.StatusBlocked},
+		{name: "complete current blocked Workpad", history: []store.WorkAttempt{valid}, status: workpad.StatusBlocked, complete: true},
+		{name: "complete current Workpad clears old blocker", history: []store.WorkAttempt{valid}, status: workpad.StatusComplete, complete: true, want: true, cachedWant: true},
+		{name: "complete empty comments clear old Workpad", history: []store.WorkAttempt{valid}, complete: true, emptyComments: true},
+		{name: "fresh empty body replaces old body", history: []store.WorkAttempt{valid}, complete: true, clearBody: true, want: true, cachedWant: true},
 		{name: "fresh blocked Workpad without durable store", status: workpad.StatusBlocked, cachedWant: true, nilStore: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,11 +86,43 @@ func TestReworkGateWaitHistoryCannotResurrectSupersededWait(t *testing.T) {
 			refreshed := cloneIssue(issue)
 			if tt.status != "" {
 				refreshed.Comments = reworkGateWaitTestIssue(tt.status).Comments
+				if tt.status == workpad.StatusBlocked {
+					refreshed.Comments[0].Body = strings.Replace(refreshed.Comments[0].Body, "human_action: null", "human_action: approve current work", 1)
+				}
+			}
+			refreshed.CommentsComplete = tt.complete
+			if tt.emptyComments {
+				refreshed.Comments = nil
+			}
+			prior := cloneIssue(issue)
+			prior.CommentsComplete = true
+			prior.CommentCount = 42
+			if tt.status == workpad.StatusComplete {
+				prior.Comments = reworkGateWaitTestIssue(workpad.StatusBlocked).Comments
+			}
+			if tt.clearBody {
+				prior.Description = "old completion authority"
+				refreshed.Description = ""
+			}
+			if len(prior.Comments) > 0 {
+				prior.Comments[0].ID = "C1"
+			}
+			if len(refreshed.Comments) > 0 {
+				refreshed.Comments[0].ID = "C1"
 			}
 			tracker := &implementProgressConnector{refreshed: refreshed, refreshErr: tt.refreshErr, commentErr: tt.commentErr}
 			orch := &Orchestrator{cfg: normalizeConfig(Config{ActiveStates: []string{"Rework"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}}}), connector: tracker, workAttempts: &recordingWorkAttemptStore{history: tt.history, historyErr: tt.err}, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			if tt.nilStore {
 				orch.workAttempts = nil
+			}
+			current, fresh := orch.refreshImplementCompletionIssue(t.Context(), prior)
+			if tt.refreshErr == nil && tt.commentErr == nil {
+				if !fresh || current.Description != refreshed.Description || current.CommentCount != refreshed.CommentCount || current.CommentsComplete != tt.complete {
+					t.Fatalf("current=%+v fresh=%t, want current body and result-only completeness", current, fresh)
+				}
+				if tt.status != "" && (current.WorkpadSignal == nil || current.WorkpadSignal.Status != tt.status) {
+					t.Fatalf("same-comment edit retained old Workpad: %+v", current.WorkpadSignal)
+				}
 			}
 			_, ok, err := orch.latestSuccessfulGateWaitAttempt(t.Context(), issue)
 			if ok != tt.want || !errors.Is(err, tt.err) {
@@ -96,7 +135,7 @@ func TestReworkGateWaitHistoryCannotResurrectSupersededWait(t *testing.T) {
 				if cached {
 					state.Completed[issue.ID] = completedFromGateWaitAttempt(issue, valid)
 				}
-				restored := orch.restoreDurableGateWaitCompletionState(t.Context(), &state, []connector.Issue{{}, issue})
+				restored := orch.restoreDurableGateWaitCompletionState(t.Context(), &state, []connector.Issue{{}, prior})
 				want := tt.want
 				if cached {
 					want = tt.cachedWant
@@ -105,13 +144,13 @@ func TestReworkGateWaitHistoryCannotResurrectSupersededWait(t *testing.T) {
 					t.Fatalf("cached=%t restored=%t, want=%t", cached, exists, want)
 				}
 				wantComments := 1
-				if tt.refreshErr != nil {
+				if tt.refreshErr != nil || tt.complete {
 					wantComments = 0
 				}
 				if tracker.stateReads != 1 || tracker.commentReads != wantComments {
 					t.Fatalf("cached=%t state reads=%d comment reads=%d, want 1/%d", cached, tracker.stateReads, tracker.commentReads, wantComments)
 				}
-				if tt.status != "" && !reworkGateWaitWorkpadBlocked(restored.issues[1]) {
+				if tt.status == workpad.StatusBlocked && !reworkGateWaitWorkpadBlocked(restored.issues[1]) {
 					t.Fatal("fresh Workpad blocker was not carried into later tick owners")
 				}
 			}

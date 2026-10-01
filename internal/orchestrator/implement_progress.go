@@ -590,6 +590,10 @@ func (o *Orchestrator) refreshImplementCompletionIssue(ctx context.Context, issu
 	for _, candidate := range issues {
 		if strings.TrimSpace(candidate.ID) == strings.TrimSpace(issue.ID) {
 			refreshed = mergeIssueTrackerFields(issue, candidate)
+			refreshed.Description = candidate.Description
+			refreshed.Comments = cloneIssueComments(candidate.Comments)
+			refreshed.CommentCount = candidate.CommentCount
+			refreshed.CommentsComplete = candidate.CommentsComplete
 			break
 		}
 	}
@@ -602,17 +606,19 @@ func (o *Orchestrator) refreshImplementCompletionIssue(ctx context.Context, issu
 		refreshed.PRNumber = hydratedPRNumber
 		refreshed.PRRepository = hydratedPRRepository
 	}
-	reader, ok := o.connector.(connector.IssueCommentReader)
-	if !ok {
-		o.warnImplementProgressRefresh(refreshed, "issue comment reader unavailable", nil)
-		return refreshed, false
+	if !refreshed.CommentsComplete {
+		reader, ok := o.connector.(connector.IssueCommentReader)
+		if !ok {
+			o.warnImplementProgressRefresh(refreshed, "issue comment reader unavailable", nil)
+			return refreshed, false
+		}
+		comments, err := reader.FetchIssueComments(ctx, refreshed)
+		if err != nil {
+			o.warnImplementProgressRefresh(refreshed, "fetch workpad comments failed", err)
+			return refreshed, false
+		}
+		refreshed.Comments = comments
 	}
-	comments, err := reader.FetchIssueComments(ctx, refreshed)
-	if err != nil {
-		o.warnImplementProgressRefresh(refreshed, "fetch workpad comments failed", err)
-		return refreshed, false
-	}
-	refreshed.Comments = comments
 	refreshed.WorkpadSignal = nil
 	if signal, ok := autoPromoteIssueWorkpadSignal(refreshed); ok {
 		refreshed.WorkpadSignal = signal
