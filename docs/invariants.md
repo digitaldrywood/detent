@@ -745,6 +745,18 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Final workspace diagnostics (#3658) use the existing workspace-preparation
+failure class even after a coding turn has finished. The existing runner error
+classifier also recognizes the strictly anchored legacy final-diffstat Git
+intent-to-add diagnostic receipt. Infrastructure allowance attribution reuses
+that classifier only for persisted generic runner errors; genuine worker Git
+failures remain chargeable. Existing allowance recovery returns corrected
+historical holds to their prior lane while retaining human and dependency holds.
+This consolidates failure ownership without a reset, reason code or recovery path.
+`TestRunnerWorkAttemptErrorClass`, `TestAttemptAllowanceExternalWaits`,
+`TestAttemptTriageParkRechecksFailedAllowance` and the runner final-diff fixture
+cover typed diagnostics, legacy receipts, genuine failures and prior-lane recovery.
+
 Workspace intent-to-add (#3653) uses ordinary Git ignore handling in the existing
 temporary index. Runtime exclusion pathspecs remain on subsequent diagnostic
 reads, but no longer cause Git add to reject an ignored scratch directory or

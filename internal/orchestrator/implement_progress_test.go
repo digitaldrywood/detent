@@ -881,6 +881,11 @@ func TestRunnerWorkAttemptErrorClass(t *testing.T) {
 		want string
 	}{
 		{name: "generic runner failure", err: errors.New("runner failed"), want: workAttemptErrorRunner},
+		{name: "typed workspace diagnostic", err: errors.Join(runpkg.ErrWorkspacePreparation, errors.New("workspace diff stat: index unreadable")), want: workAttemptErrorWorkspace},
+		{name: "historical workspace diagnostic", err: errors.New("workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1"), want: workAttemptErrorWorkspace},
+		{name: "worker Git command failure", err: errors.New("run agent turn: git add intent to add: git add failed: exit status 1"), want: workAttemptErrorRunner},
+		{name: "worker cites workspace diagnostic", err: errors.New("run agent turn: workspace diff stat: git add intent to add: git add failed: exit status 1"), want: workAttemptErrorRunner},
+		{name: "unrecognized workspace failure", err: errors.New("workspace diff stat: code failed"), want: workAttemptErrorRunner},
 		{name: "post-push command failure", err: &runpkg.DeliverableCommandError{OperationClass: "post_push"}, want: workAttemptErrorPostPushCommand},
 		{name: "interrupted backend turn", err: backendStatusTestError{status: "interrupted"}, want: workAttemptErrorInterrupted},
 		{name: "failed backend turn", err: backendStatusTestError{status: "failed"}, want: workAttemptErrorRunner},

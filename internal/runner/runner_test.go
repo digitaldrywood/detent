@@ -7334,6 +7334,15 @@ func TestRunnerRunTreatsMissingWorkspaceFinalDiffAsCompleted(t *testing.T) {
 			t.Fatalf("log output missing %q:\n%s", want, logOutput)
 		}
 	}
+	failure := errors.New("git add intent to add: git add failed: exit status 1")
+	workspaceBackend.diffErr = failure
+	result, err = runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-453", Identifier: "digitaldrywood/detent#453"}, StartedAt: startedAt})
+	if !errors.Is(err, ErrWorkspacePreparation) || !errors.Is(err, failure) || !result.TurnStarted {
+		t.Fatalf("Run() error=%v result=%+v, want post-turn instance diagnostic failure", err, result)
+	}
+	if result.FinalState != FinalStateFailed || sessionStore.finished.FinalState != FinalStateFailed {
+		t.Fatalf("result=%+v session=%+v, want preserved failed diagnostic outcome", result, sessionStore.finished)
+	}
 }
 
 func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {

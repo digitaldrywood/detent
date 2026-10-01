@@ -2737,6 +2737,7 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name, priorLane, humanAction string
+		failureMessage               string
 		failures                     int
 		incomplete                   bool
 		clearedBlocker               bool
@@ -2750,6 +2751,11 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 		{name: "preserve prior In Progress", priorLane: "In Progress", failures: 2, wantLane: "In Progress"},
 		{name: "resolved dependency", priorLane: "Rework", failures: 2, dependencyState: "Done", wantLane: "Rework"},
 		{name: "real failures remain exhausted", priorLane: "Rework", failures: 3},
+		{name: "historical diagnostics recover Rework", priorLane: "Rework", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1", wantLane: "Rework"},
+		{name: "historical diagnostics recover In Progress", priorLane: "In Progress", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1", wantLane: "In Progress"},
+		{name: "worker Git failures remain exhausted", priorLane: "Rework", failures: 3, failureMessage: "run agent turn: git add intent to add: git add failed: exit status 1"},
+		{name: "diagnostic allowance retains human hold", priorLane: "Rework", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git add failed: exit status 1", humanAction: "approve data migration"},
+		{name: "diagnostic allowance retains dependency hold", priorLane: "Rework", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git add failed: exit status 1", dependencyState: "In Progress"},
 		{name: "older cleared blocker cannot release exhausted cause", priorLane: "Rework", failures: 3, clearedBlocker: true},
 		{name: "older cleared blocker permits corrected allowance", priorLane: "Rework", failures: 2, clearedBlocker: true, wantLane: "Rework"},
 		{name: "sparse operational claim does not erase failures", priorLane: "In Progress", failures: 3, operationalClaim: true},
@@ -2782,7 +2788,14 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 				if i == tt.failures && tt.incomplete {
 					phase = "waiting"
 				}
-				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, CompletedAt: start.Add(time.Second), TerminalState: terminal, Phase: phase}); err != nil {
+				completion := store.WorkAttemptCompletion{AttemptID: id, CompletedAt: start.Add(time.Second), TerminalState: terminal, Phase: phase}
+				if i < tt.failures && tt.failureMessage != "" {
+					completion.TerminalState = store.WorkAttemptTerminalFailure
+					completion.Phase = "failed"
+					completion.ErrorClass = workAttemptErrorRunner
+					completion.ErrorMessage = tt.failureMessage
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), completion); err != nil {
 					t.Fatal(err)
 				}
 			}

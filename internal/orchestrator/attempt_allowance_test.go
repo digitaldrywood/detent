@@ -911,6 +911,9 @@ func TestAttemptAllowanceExternalWaits(t *testing.T) {
 		{name: "three conflicted sessions", attempt: store.WorkAttempt{ErrorClass: "no_progress", WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{dispatchLoopStartMetadataKey: newDispatchLoopStartRecord(connector.Issue{PullRequest: &connector.PullRequest{MergeableState: "dirty"}}, runpkg.RunModeImplement)})}, want: 3},
 		{name: "historical external wait remains excluded", attempt: store.WorkAttempt{WorkerMetadataJSON: `{"dispatch_loop_start":{"allowance_external_wait":true}}`}},
 		{name: "three failed sessions", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: "runner_error"}, want: 3},
+		{name: "historical final diagnostics", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: workAttemptErrorRunner, ErrorMessage: "workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1"}},
+		{name: "worker Git failures", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalFailure, ErrorClass: workAttemptErrorRunner, ErrorMessage: "run agent turn: git add intent to add: git add failed: exit status 1"}, want: 3},
+		{name: "different failure owner", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalNoProgress, ErrorClass: "no_progress", ErrorMessage: "workspace diff stat: git add intent to add: git add failed: exit status 1"}, want: 3},
 		{name: "unrelated wait still counts", attempt: store.WorkAttempt{Phase: "waiting", StatusMessage: "waiting for tests"}, want: 3},
 		{name: "failed question session counts", attempt: store.WorkAttempt{TerminalState: store.WorkAttemptTerminalFailure, Phase: "waiting", StatusMessage: "waiting for a human reply on the original issue"}, want: 3},
 	} {

@@ -1179,6 +1179,9 @@ func runnerWorkAttemptErrorClass(err error) string {
 	if errors.As(err, &deliverableErr) && deliverableErr != nil && deliverableErr.OperationClass == "post_push" {
 		return workAttemptErrorPostPushCommand
 	}
+	if errors.Is(err, runpkg.ErrWorkspacePreparation) || err != nil && strings.HasPrefix(err.Error(), "workspace diff stat: git add intent to add: git ") {
+		return workAttemptErrorWorkspace
+	}
 	var statusCarrier interface {
 		BackendErrorStatus() string
 	}
