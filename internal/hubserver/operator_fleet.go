@@ -31,14 +31,15 @@ type hubFleetRequest struct {
 	Enrollment   runnerauth.EnrollmentRequest `json:"enrollment,omitempty"`
 	Change       json.RawMessage              `json:"change,omitempty"`
 	Limit        int                          `json:"limit,omitempty"`
+	Cursor       string                       `json:"cursor,omitempty"`
 	Offset       int                          `json:"offset,omitempty"`
 }
 
 func hubFleetTool(name string) bool {
-	return slices.Contains([]string{operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.HostedFleet, operatortool.GitHubRequestCounts}, name)
+	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.HostedFleet, operatortool.GitHubRequestCounts}, name)
 }
 func hubFleetRequirement(name string) operatortool.Requirement {
-	if name == operatortool.HostedFleet {
+	if name == operatortool.HostedFleet || name == operatortool.InstanceHealth || name == operatortool.NativeCapabilities || name == operatortool.OutboxHealth {
 		return operatortool.Requirement{Scope: apikey.ScopeRead}
 	}
 	return operatortool.Requirement{Scope: apikey.ScopeAdmin, ResourceKind: "runners"}
@@ -72,6 +73,10 @@ func (e hubFleetExecutor) ListTools(ctx context.Context) ([]operatortool.Definit
 		return nil, operatortool.ErrAccessDenied
 	}
 	for _, d := range operatortool.CommandCatalog() {
+		if !e.service.hubFleetReadPermitted(d.Name, credential) {
+			continue
+		}
+
 		if d.Name == operatortool.ConnectionInfo || d.Name == operatortool.ActionResult {
 			if e.service.config.Hosted != nil {
 				result = append(result, d)
@@ -148,6 +153,9 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrAccessDenied
 	}
+	if !s.hubFleetReadPermitted(call.Name, credential) {
+		return operatortool.Result{}, operatortool.ErrAccessDenied
+	}
 	if r.ProjectID != "" {
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: r.ProjectID}); err != nil {
 			return operatortool.Result{}, err
@@ -161,6 +169,16 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		}
 		var value any
 		switch call.Name {
+		case operatortool.InstanceHealth:
+			value, _ = s.readInstanceHealth(ctx)
+		case operatortool.NativeCapabilities:
+			value, err = s.readNativeCapabilities(ctx)
+		case operatortool.OutboxHealth:
+			cursor, decodeErr := decodeTimelineCursor(r.Cursor)
+			if decodeErr != nil {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
+			value, err = s.readOutboxHealthPage(ctx, r.Limit, cursor)
 		case operatortool.HostedFleet:
 			if s.config.Hosted == nil || credential.SessionHash == "" {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
@@ -203,11 +221,20 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		if err != nil {
 			return operatortool.Result{}, errHubOperatorUnavailable
 		}
+		resourceURL := "/fleet"
+		switch call.Name {
+		case operatortool.InstanceHealth:
+			resourceURL = "/health"
+		case operatortool.OutboxHealth:
+			resourceURL = "/api/v1/outbox/health"
+		case operatortool.NativeCapabilities:
+			resourceURL = "/api/v2/capabilities"
+		}
 		return hubOperatorResult(struct {
 			Data       any       `json:"data"`
 			ObservedAt time.Time `json:"observed_at"`
 			URL        string    `json:"url"`
-		}{value, s.config.now(), "/fleet"})
+		}{value, s.config.now(), resourceURL})
 	}
 	// The hub's real approval browser is the hosted dashboard. Other deployment
 	// modes return safely unavailable rather than treating an API token as a human.
@@ -477,5 +504,18 @@ func (e hubFleetExecutor) AuditAction(ctx context.Context, a chatpkg.Action, out
 		if err := e.service.hostedAudit(mutation.WithContext(auditCtx, m), credential.Hosted, "action", "mcp "+string(a.Kind)+" "+outcome, a.ProjectID, 0); err != nil {
 			e.service.config.Logger.WarnContext(ctx, "operator mutation audit unavailable")
 		}
+	}
+}
+
+// Keep these reads on the same deployment and credential boundary as the
+// dashboard routes. Hosted browsers cannot access the legacy instance APIs.
+func (s *Service) hubFleetReadPermitted(name string, credential apiCredential) bool {
+	switch name {
+	case operatortool.InstanceHealth, operatortool.NativeCapabilities:
+		return s.config.Hosted == nil
+	case operatortool.OutboxHealth:
+		return s.config.Hosted == nil && !credential.NativeOnly
+	default:
+		return true
 	}
 }

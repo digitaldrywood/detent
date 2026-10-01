@@ -13,10 +13,12 @@ import (
 	"time"
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
@@ -89,17 +91,35 @@ func fleetDecision(t *testing.T, server *web.Server, id, action, decision, mode 
 // Catch direct-call authority bypass, missing-service disclosure, and lost
 // application reads. These read rows are independent of catalog discovery.
 func TestMCPFleetReads(t *testing.T) {
-	for _, name := range []string{operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.OperationsReport, operatortool.RunnerFleet} {
+	for _, name := range []string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.OperationsReport, operatortool.RunnerFleet} {
 		t.Run(name, func(t *testing.T) {
 			deps := testDeps(t)
 			deps.Store = openWebTestStore(t)
+			if name == operatortool.AIDebugPrompt {
+				cfg := workflowconfig.Default()
+				cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+				cfg.Tracker.Repository = "example/repo"
+				cfg.Tracker.APIKey = "fixture"
+				cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+				tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "detent", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: cfg}}, project.Dependencies{Connector: connectorProbe{name: "memory"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := deps.Registry.Set(tracked); err != nil {
+					t.Fatal(err)
+				}
+			}
 			probe := runnerFleetTestProbe()
 			deps.RunnerFleet = probe
-			if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now(), BoardIssues: []telemetry.Issue{{ID: "allowed", ProjectID: "a"}, {ID: "foreign-sentinel", ProjectID: "b"}}}); err != nil {
+			if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now(), BoardIssues: []telemetry.Issue{{ID: "allowed", ProjectID: "detent"}, {ID: "foreign-sentinel", ProjectID: "b"}}, DispatchStalls: []telemetry.DispatchStatus{{ProjectID: "b", WaitReason: "foreign-sentinel"}}}); err != nil {
 				t.Fatal(err)
 			}
 			server := fleetTestServer(t, deps)
-			response, raw := fleetCall(t, server, "detent_admin_token", name, map[string]any{})
+			args := map[string]any{}
+			if name == operatortool.AIDebugPrompt {
+				args["scope"] = "fleet"
+			}
+			response, raw := fleetCall(t, server, "detent_admin_token", name, args)
 			if len(raw) == 0 || response.Code != http.StatusOK {
 				t.Fatalf("read=%s", response.Body.String())
 			}
@@ -124,16 +144,26 @@ func TestMCPFleetReads(t *testing.T) {
 					t.Fatalf("application read=%s", raw)
 				}
 			}
-			token, _ := createRemoteMCPKey(t, server, "project read", []string{"read"}, []string{"a"})
-			response, raw = fleetCall(t, server, token, name, map[string]any{})
-			if name == operatortool.RunnerFleet || name == operatortool.OperationsReport {
+			token, _ := createRemoteMCPKey(t, server, "project read", []string{"read"}, []string{"detent"})
+			response, raw = fleetCall(t, server, token, name, args)
+			if name == operatortool.InstanceHealth || name == operatortool.AIDebugPrompt || name == operatortool.RunnerFleet || name == operatortool.OperationsReport {
 				if len(raw) != 0 {
 					t.Fatal("project grant obtained instance read")
 				}
 			} else if len(raw) == 0 || strings.Contains(string(raw), "foreign-sentinel") {
 				t.Fatalf("projection=%s", response.Body.String())
 			}
-			response, raw = fleetCall(t, server, token, name, map[string]any{"project_id": "b"})
+			if name == operatortool.AIDebugPrompt {
+				response, raw = fleetCall(t, server, token, name, map[string]any{"scope": "project", "project_id": "detent"})
+				if len(raw) == 0 || strings.Contains(string(raw), "foreign-sentinel") {
+					t.Fatalf("scoped debug=%s", response.Body.String())
+				}
+			}
+			foreign := map[string]any{"project_id": "b"}
+			if name == operatortool.AIDebugPrompt {
+				foreign["scope"] = "project"
+			}
+			response, raw = fleetCall(t, server, token, name, foreign)
 			if len(raw) != 0 {
 				t.Fatalf("direct foreign-project read=%s", response.Body.String())
 			}

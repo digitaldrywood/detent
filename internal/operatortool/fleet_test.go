@@ -14,6 +14,10 @@ func TestFleetArgumentBoundary(t *testing.T) {
 		name, tool, input string
 		valid             bool
 	}{
+		{"health has no mode input", InstanceHealth, `{"mode":"yolo"}`, false},
+		{"capability identifiers bounded", NativeCapabilities, `{"project_id":"` + strings.Repeat("x", 257) + `"}`, false},
+		{"outbox cursor bounded", OutboxHealth, `{"cursor":"` + strings.Repeat("x", 2049) + `"}`, false},
+		{"debug scope bounded", AIDebugPrompt, `{"scope":"shell"}`, false},
 		{"bounded read", RunnerFleet, `{"limit":200,"offset":0}`, true},
 		{"limit overflow", RunnerFleet, `{"limit":201}`, false},
 		{"negative offset", RunnerFleet, `{"offset":-1}`, false},

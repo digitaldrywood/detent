@@ -28,7 +28,7 @@ const fleetProtocolMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-2
 // principal attribution, and repeat enrollment/credential effects.
 func TestHostedMCPFleetControls(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
-		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "routing", "host", "ordinary", "revoked grants", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
+		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "routing", "host", "ordinary", "revoked grants", "revoked original grants", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
 			t.Run(deployment+"/"+scenario, func(t *testing.T) {
 				var f hostedSecurityFixture
 				var shared hostedSharedFixture
@@ -144,6 +144,12 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					requireNativeStatus(t, redeemed, http.StatusCreated)
 				}
 				if scenario == "reads" {
+					for _, name := range []string{operatortool.InstanceHealth, operatortool.OutboxHealth, operatortool.NativeCapabilities} {
+						if raw := call(name, map[string]any{}); len(raw) != 0 {
+							t.Fatalf("hosted legacy read %s=%s", name, raw)
+						}
+					}
+
 					for _, name := range []string{operatortool.ListRunnerRouting, operatortool.HostedFleet} {
 						raw := call(name, map[string]any{"limit": 1})
 						if len(raw) == 0 || !strings.Contains(string(raw), runnerID) {
@@ -162,7 +168,7 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					t.Fatal(err)
 				}
 				approver := user
-				if scenario == "different approver" {
+				if scenario == "different approver" || scenario == "revoked original grants" {
 					approver = f.user(t, "approver", "admin", "approver@example.test", "write", "")
 					f.grant(t, approver, true, true)
 				}
@@ -230,7 +236,7 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					if receipt.Status != "pending" {
 						t.Fatalf("preview=%s", raw)
 					}
-					if scenario == "revoked grants" {
+					if scenario == "revoked grants" || scenario == "revoked original grants" {
 						cachedPage = request(approver, http.MethodGet, "/chat/approval?connection_id="+info.ID, nil)
 						operatorSQL(t, f, "UPDATE hosted_project_grants SET manage_runner=0 WHERE user_id=?", user.identity.Subject)
 					}
@@ -238,9 +244,23 @@ func TestHostedMCPFleetControls(t *testing.T) {
 						operatorSQL(t, f, "UPDATE runner_identities SET revision=revision+1 WHERE id=?", runnerID)
 					}
 					reply := decision(receipt.ID, "confirm", "")
-					if scenario == "revoked grants" {
-						if reply.Code != http.StatusForbidden {
+					if scenario == "revoked grants" || scenario == "revoked original grants" {
+						want := http.StatusForbidden
+						if scenario == "revoked original grants" {
+							want = http.StatusConflict
+						}
+						if reply.Code != want {
 							t.Fatalf("revoked decision=%d", reply.Code)
+						}
+						if raw := call(name, args); len(raw) != 0 {
+							t.Fatalf("revoked direct retry=%s", raw)
+						}
+						var state, display string
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT state,display_name FROM runner_identities WHERE id=?", runnerID).Scan(&state, &display); err != nil {
+							t.Fatal(err)
+						}
+						if state != "active" || display != "Fixture runner" {
+							t.Fatalf("revoked approval changed runner: state=%s display=%s", state, display)
 						}
 						return
 					}
@@ -368,7 +388,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 			if err := executor.OpenConnection(ctx); err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.GitHubRequestCounts} {
+			for _, name := range []string{operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.GitHubRequestCounts} {
 				args := map[string]any{}
 				if name == operatortool.GetRunnerRouting {
 					args["runner_id"] = r.binding.RunnerID
@@ -378,7 +398,11 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 					t.Fatal(err)
 				}
 				result, err := executor.Execute(ctx, operatortool.Call{Name: name, Arguments: raw})
-				if (err == nil) != tt.authorized {
+				allowed := tt.authorized
+				if name == operatortool.InstanceHealth || name == operatortool.NativeCapabilities {
+					allowed = true
+				}
+				if (err == nil) != allowed {
 					t.Fatalf("%s result=%s error=%v", name, result.Content, err)
 				}
 			}

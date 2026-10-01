@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/aidebug"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/explain"
@@ -41,7 +42,7 @@ type fleetRequest struct {
 }
 
 func dashboardFleetTool(name string) bool {
-	return slices.Contains([]string{operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.ProgressCredit, operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost}, name)
+	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.ProgressCredit, operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost}, name)
 }
 
 func dashboardFleetRequirement(name, projectID string) operatortool.Requirement {
@@ -55,7 +56,7 @@ func dashboardFleetRequirement(name, projectID string) operatortool.Requirement 
 	}
 	r := operatortool.Requirement{Scope: scope, ProjectID: projectID}
 	switch name {
-	case operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost, operatortool.Refresh, operatortool.UpdateApply:
+	case operatortool.InstanceHealth, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost, operatortool.Refresh, operatortool.UpdateApply:
 		r.ResourceKind = "instance"
 	case operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary:
 		if projectID == "" {
@@ -105,7 +106,18 @@ func (s *Server) executeFleetRead(ctx context.Context, call operatortool.Call) (
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	ctx, err = operatortool.AuthorizeCurrent(ctx, dashboardFleetRequirement(call.Name, r.ProjectID))
+	requirement := dashboardFleetRequirement(call.Name, r.ProjectID)
+	if call.Name == operatortool.AIDebugPrompt {
+		if r.Scope == "" {
+			r.Scope = "issue"
+		}
+		if r.Scope == "fleet" {
+			requirement.ResourceKind = "instance"
+		} else if r.ProjectID == "" || r.Scope == "issue" && r.Reference == "" {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+	}
+	ctx, err = operatortool.AuthorizeCurrent(ctx, requirement)
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -113,6 +125,32 @@ func (s *Server) executeFleetRead(ctx context.Context, call operatortool.Call) (
 		return operatortool.Result{}, errOperatorCommandUnavailable
 	}
 	switch call.Name {
+	case operatortool.InstanceHealth:
+		value, _ := s.readInstanceHealth(ctx)
+		return operatorResult(struct {
+			Health     healthResponse `json:"health"`
+			ObservedAt time.Time      `json:"observed_at"`
+			URL        string         `json:"url"`
+		}{value, s.now().UTC(), "/health"})
+	case operatortool.AIDebugPrompt:
+		snapshot, err := operatortool.ProjectSnapshot(ctx, s.latestSnapshot(ctx))
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		projection, err := s.aiDebugProjectionFromSnapshot(ctx, aidebug.Scope(r.Scope), r.ProjectID, r.Reference, snapshot)
+		if err != nil {
+			return operatortool.Result{}, errOperatorCommandUnavailable
+		}
+		prompt, err := projection.Prompt()
+		if err != nil {
+			return operatortool.Result{}, errOperatorCommandUnavailable
+		}
+		return operatorResult(struct {
+			Projection aidebug.Projection `json:"projection"`
+			Prompt     string             `json:"prompt"`
+			ObservedAt time.Time          `json:"observed_at"`
+			URL        string             `json:"url"`
+		}{projection, prompt, s.now().UTC(), "/api/v1/ai-debug?" + url.Values{"scope": {r.Scope}, "project": {r.ProjectID}, "issue": {r.Reference}}.Encode()})
 	case operatortool.RunnerFleet:
 		fleet, err := s.runnerFleet.Fleet(ctx)
 		if err != nil {

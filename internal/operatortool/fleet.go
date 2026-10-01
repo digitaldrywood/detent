@@ -13,6 +13,10 @@ import (
 )
 
 const (
+	InstanceHealth           = "health"
+	AIDebugPrompt            = "ai_debug_prompt"
+	NativeCapabilities       = "native_capabilities"
+	OutboxHealth             = "outbox_health"
 	RunnerFleet              = "runner_fleet"
 	OperationsReport         = "operations_report"
 	Dashboard                = "dashboard"
@@ -64,6 +68,10 @@ func FleetCatalog() []Definition {
 	for _, name := range []string{Dashboard, HealthDashboard, DiagnosticsDashboard} {
 		add(name, "Read the current dashboard application snapshot, projected to current project grants.", `"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false)
 	}
+	add(InstanceHealth, "Read the existing instance health and readiness report.", "", "", true, false)
+	add(NativeCapabilities, "Read the existing native protocol capabilities where the dashboard permits them.", "", "", true, false)
+	add(OutboxHealth, "Read the existing outbox health report and bounded operator actions.", `"limit":{"type":"integer","minimum":1,"maximum":200},"cursor":{"type":"string","maxLength":2048}`, "", true, false)
+	add(AIDebugPrompt, "Read the dashboard AI debug projection and prompt within current project grants.", `"scope":{"type":"string","enum":["fleet","project","issue"],"maxLength":256},"reference":`+boundedID, "", true, false)
 	add(OperationsReport, "Read the dashboard operations report for a bounded time range.", `"since":{"type":"string","maxLength":64}`, "", true, false)
 	add(RunnerFleet, "Read runner and host settings, health, capacity and optional project eligibility.", `"runner_id":`+boundedID+`,"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`, "", true, false)
 	add(Refresh, "Request the dashboard refresh; current refusals and coalescing still apply.", "", "", false, false)

@@ -29,21 +29,28 @@ func (s *Service) hostedOperatorBrowser(c echo.Context, next echo.HandlerFunc) e
 			id = c.FormValue("connection_id")
 		}
 		conversation := s.operatorChat.Conversation(id)
-		billing := false
+		billing, fleet := false, false
 		for _, action := range conversation.Actions {
 			if action.Kind == chat.ActionKind(operatortool.BillingCheckout) || action.Kind == chat.ActionKind(operatortool.BillingPortal) {
 				billing = true
-				break
+			}
+			fleet = fleet || hubFleetTool(string(action.Kind))
+		}
+		if fleet {
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 			}
 		}
 		if billing {
 			if _, err := s.hostedBillingOwner(c); err != nil {
 				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 			}
-		} else if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
+		} else if !fleet {
 			// Owners can configure billing confirmation before their first preview.
-			if _, err := s.hostedBillingOwner(c); err != nil {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
+				if _, err := s.hostedBillingOwner(c); err != nil {
+					return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+				}
 			}
 		}
 		return next(c)

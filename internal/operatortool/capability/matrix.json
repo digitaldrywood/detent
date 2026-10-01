@@ -4511,8 +4511,8 @@
       ],
       "availability": [
         {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "hub application service"},
-        {"deployment": "hosted_dedicated", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work."},
-        {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work."},
+        {"deployment": "hosted_dedicated", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "Existing dashboard route forbids hosted operators; MCP preserves that boundary."},
+        {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "Existing dashboard route forbids hosted operators; MCP preserves that boundary."},
         {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
       ],
       "authority": {"role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes", "credential_scope": "hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
@@ -4524,13 +4524,13 @@
       "confirmation": [
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
-      "application": "s.health; s.OutboxHealth, s.config.now, s.database.health, s.database.repositoryFreshness, s.ready.Load",
-      "extraction": "Extract hubserver.health application inputs/results and validation from Echo; reuse s.OutboxHealth, s.config.now, s.database.health, s.database.repositoryFreshness, s.ready.Load. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "health", "arguments": "Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "application": "Service.readInstanceHealth",
+      "extraction": "HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.",
+      "tool": {"set": "work_reads", "name": "health", "arguments": "Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments.", "result": "Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3343",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "internal/hubserver/operator_fleet_test.go: TestHubMCPFleetBoundary and TestHostedMCPFleetControls; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.",
+      "decision": "Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending."
     },
     {
       "id": "hubserver.heartbeat_machine",
@@ -6040,8 +6040,8 @@
       ],
       "availability": [
         {"deployment": "self_hosted", "trackers": ["native"], "service": "hub application service"},
-        {"deployment": "hosted_dedicated", "trackers": ["native"], "service": "hub application service"},
-        {"deployment": "hosted_shared", "trackers": ["native"], "service": "hub application service"},
+        {"deployment": "hosted_dedicated", "trackers": ["native"], "service": "hub application service", "unsupported": "Existing dashboard route forbids hosted operators; MCP preserves that boundary."},
+        {"deployment": "hosted_shared", "trackers": ["native"], "service": "hub application service", "unsupported": "Existing dashboard route forbids hosted operators; MCP preserves that boundary."},
         {"deployment": "credential_maintenance", "trackers": ["native"], "service": "hub application service", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
       ],
       "authority": {"role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes", "credential_scope": "worker or operator (native project); exact registration middleware retained in source", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
@@ -6053,13 +6053,13 @@
       "confirmation": [
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
-      "application": "s.nativeCapabilities; s.database.db.QueryRowContext",
-      "extraction": "Extract hubserver.nativeCapabilities application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "native_capabilities", "arguments": "Bounded nativeCapabilitiesRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "nativeCapabilitiesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
+      "application": "Service.readNativeCapabilities",
+      "extraction": "HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.",
+      "tool": {"set": "work_reads", "name": "native_capabilities", "arguments": "Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments.", "result": "Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3343",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 runtime/fleet scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "internal/hubserver/operator_fleet_test.go: TestHubMCPFleetBoundary and TestHostedMCPFleetControls; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.",
+      "decision": "Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending."
     },
     {
       "id": "hubserver.native_organizations",
@@ -6190,11 +6190,11 @@
       ],
       "availability": [
         {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "hub application service"},
-        {"deployment": "hosted_dedicated", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work."},
-        {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work."},
+        {"deployment": "hosted_dedicated", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "Existing dashboard route forbids hosted operators; MCP preserves that boundary."},
+        {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "Existing dashboard route forbids hosted operators; MCP preserves that boundary."},
         {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "hub application service", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
       ],
-      "authority": {"role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes", "credential_scope": "hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
+      "authority": {"role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes", "credential_scope": "current legacy instance operator/admin credential; scoped native and runner credentials do not gain access", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
@@ -6203,13 +6203,13 @@
       "confirmation": [
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
-      "application": "s.outboxHealth; s.OutboxHealth",
-      "extraction": "Extract hubserver.outboxHealth application inputs/results and validation from Echo; reuse s.OutboxHealth. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "outbox_health", "arguments": "Bounded outboxHealthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "outboxHealthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "application": "Service.readOutboxHealthPage / OutboxHealth",
+      "extraction": "HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.",
+      "tool": {"set": "work_reads", "name": "outbox_health", "arguments": "Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments.", "result": "Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3343",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "internal/hubserver/operator_fleet_test.go: TestHubMCPFleetBoundary and TestHostedMCPFleetControls; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.",
+      "decision": "Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending."
     },
     {
       "id": "hubserver.patch_conversation",
@@ -7969,7 +7969,7 @@
         {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
         {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
       ],
-      "authority": {"role": "local operator (dashboard authentication when configured)", "credential_scope": "read/write/admin (project scope where route supplies project)", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
+      "authority": {"role": "local operator (dashboard authentication when configured)", "credential_scope": "read/write/admin (project scope where route supplies project)", "project_grant": "Current project read grant and ownership for project/issue scopes, with snapshot projection; fleet scope requires an unscoped current read credential.", "ownership": "current organization/account; no cross-organization resource lookup"},
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
@@ -7978,13 +7978,13 @@
       "confirmation": [
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
-      "application": "s.aiDebugPrompt; s.aiDebugProjection",
-      "extraction": "Extract web.aiDebugPrompt application inputs/results and validation from Echo; reuse s.aiDebugProjection. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "ai_debug_prompt", "arguments": "Bounded aiDebugPromptRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "aiDebugPromptResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "application": "Server.aiDebugProjectionFromSnapshot / aidebug.Projection.Prompt",
+      "extraction": "HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.",
+      "tool": {"set": "work_reads", "name": "ai_debug_prompt", "arguments": "Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments.", "result": "Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3343",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "internal/web/operator_fleet_test.go: TestMCPFleetReads; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.",
+      "decision": "Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending."
     },
     {
       "id": "web.analytics_dashboard",
@@ -8431,7 +8431,7 @@
         {"when": "real operator confirms the pending material action", "class": "operator"}
       ],
       "application": "chat.Service.Confirm/RejectConnectionAction and shared dashboard action commands; operatorApprovalDecision authenticates the human browser and exact stored preview.",
-      "extraction": "Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution.",
+      "extraction": "Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution. Fleet, billing and work actions share these same hosted approval routes; current runner grants apply to fleet previews, including owners. No sibling approval handler remains.",
       "tool": {"set": "conversations_workspaces", "name": "action_result", "arguments": "action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments", "result": "bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3337",
       "status": "implemented",
@@ -10087,7 +10087,7 @@
         {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
         {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
       ],
-      "authority": {"role": "local operator (dashboard authentication when configured)", "credential_scope": "read", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
+      "authority": {"role": "local operator (dashboard authentication when configured)", "credential_scope": "read", "project_grant": "Instance report requires an unscoped current read credential; project-scoped credentials cannot read unrelated instance data.", "ownership": "current organization/account; no cross-organization resource lookup"},
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
@@ -10096,13 +10096,13 @@
       "confirmation": [
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
-      "application": "s.health; s.connectorName, s.enforcedBudgets, s.healthNotifications.Failures, s.hub.Latest, s.now, s.orphanedAgentProcesses, s.projectHealth, s.startupLifecycle.State, s.stateEndpoints.health, s.tickLiveness.TickLiveness, s.workflowSources",
-      "extraction": "Extract web.health application inputs/results and validation from Echo; reuse s.connectorName, s.enforcedBudgets, s.healthNotifications.Failures, s.hub.Latest, s.now, s.orphanedAgentProcesses, s.projectHealth, s.startupLifecycle.State, s.stateEndpoints.health, s.tickLiveness.TickLiveness, s.workflowSources. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "health", "arguments": "Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
+      "application": "Server.readInstanceHealth",
+      "extraction": "HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.",
+      "tool": {"set": "work_reads", "name": "health", "arguments": "Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments.", "result": "Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3343",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "internal/web/operator_fleet_test.go: TestMCPFleetReads; internal/operatortool/fleet_test.go: TestFleetArgumentBoundary; existing dashboard read regressions.",
+      "decision": "Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending."
     },
     {
       "id": "web.health_dashboard",
@@ -11099,7 +11099,7 @@
         {"when": "operator selects connection mode through the authenticated dashboard form", "class": "connection"}
       ],
       "application": "chat.Service.AttachConnection/SetConnectionMode; operatorBrowserFormAuth; mcp HTTP session binding and DashboardReadClient.OpenConnection",
-      "extraction": "Authenticated transports bind connection identity and default confirmation mode. Only a same-origin authenticated dashboard form can select YOLO; mode never grants scope or workflow authority.",
+      "extraction": "Authenticated transports bind connection identity and default confirmation mode. Only a same-origin authenticated dashboard form can select YOLO; mode never grants scope or workflow authority. Fleet, billing and work actions share these same hosted approval routes; current runner grants apply to fleet previews, including owners. No sibling approval handler remains.",
       "tool": {"set": "connection_authority", "name": "connection_info", "arguments": "empty typed object; identity, connection and mode are trusted transport/server state", "result": "connection_id, organization_id, originating client, current mode and authenticated dashboard setup URL", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3337",
       "status": "implemented",
@@ -11186,99 +11186,6 @@
       "status": "excluded",
       "coverage": "internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.",
       "decision": "Static stylesheet is an asset and carries no operator authority."
-    },
-    {
-      "id": "hubserver.fleet_approval_boundary",
-      "summary": "Existing hosted browser approval surface for fleet actions",
-      "audience": "authentication",
-      "sources": [
-        {
-          "source": "internal/hubserver/operator_authority.go",
-          "kind": "route",
-          "definition": "e.GET(\"/chat/approval\", s.hubOperatorApprovalPage, s.operatorAuthority) [route=\"/chat/approval\"]",
-          "occurrence": 1,
-          "line": 32,
-          "method": "GET",
-          "path": "\"/chat/approval\"",
-          "handler": "s.hubOperatorApprovalPage",
-          "resolved_path": "/chat/approval"
-        },
-        {
-          "source": "internal/hubserver/operator_authority.go",
-          "kind": "route",
-          "definition": "e.POST(\"/chat/approval\", s.hubOperatorApprovalDecision, s.operatorAuthority) [route=\"/chat/approval\"]",
-          "occurrence": 1,
-          "line": 33,
-          "method": "POST",
-          "path": "\"/chat/approval\"",
-          "handler": "s.hubOperatorApprovalDecision",
-          "resolved_path": "/chat/approval"
-        }
-      ],
-      "availability": [
-        {
-          "deployment": "hosted_dedicated",
-          "trackers": [
-            "github",
-            "native"
-          ],
-          "service": "existing hosted session and chat approval view"
-        },
-        {
-          "deployment": "hosted_shared",
-          "trackers": [
-            "github",
-            "native"
-          ],
-          "service": "existing signed browser assertion, CSRF and chat approval view"
-        },
-        {
-          "deployment": "self_hosted",
-          "trackers": [
-            "github",
-            "native"
-          ],
-          "service": "dashboard daemon approval surface",
-          "unsupported": "Standalone hub has no real authenticated browser approval service."
-        },
-        {
-          "deployment": "credential_maintenance",
-          "trackers": [
-            "github",
-            "native"
-          ],
-          "service": "private maintenance listener",
-          "unsupported": "No operator browser routes in this deployment."
-        }
-      ],
-      "authority": {
-        "role": "authenticated hosted non-viewer with current all-project runner grants",
-        "credential_scope": "real browser session/assertion; bearer tokens refused",
-        "project_grant": "current manage_runner grants for every organization project, checked again on execution",
-        "ownership": "organization-bound connection and exact action; original connection authority retained"
-      },
-      "preconditions": [
-        "Real browser authentication and bounded form token bound to current browser, connection, exact preview and mode; no model self-approval.",
-        "Original connection authority and exact resource revision are checked again at execution."
-      ],
-      "confirmation": [
-        {
-          "when": "authenticated browser approval, rejection or connection mode selection",
-          "class": "connection"
-        }
-      ],
-      "application": "Service.hubOperatorApprovalPage / hubOperatorApprovalDecision; existing ChatApproval view and chat.Service",
-      "extraction": "Reuse existing session, chat action service and approval template; no new primary page, configuration, revocation or recovery mechanism.",
-      "tool": {
-        "set": "boundary",
-        "name": "",
-        "arguments": "not applicable",
-        "result": "not applicable"
-      },
-      "owner": "digitaldrywood/detent#3343",
-      "status": "excluded",
-      "coverage": "internal/hubserver/operator_fleet_test.go: TestHostedMCPFleetControls exercises signed/dedicated browser forms, current authority, exact preview, approval and YOLO.",
-      "decision": "Browser authentication and confirmation boundary. Tools may read previews/results but cannot invoke operator approval or select mode."
     }
   ]
 }

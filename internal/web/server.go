@@ -1214,6 +1214,11 @@ func (s *Server) health(c echo.Context) error {
 	if _, _, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	}
+	response, status := s.readInstanceHealth(c.Request().Context())
+	return c.JSON(status, response)
+}
+
+func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 	lifecycle := s.startupLifecycle.State()
 	status := "ok"
 	now := s.now().UTC()
@@ -1292,7 +1297,7 @@ func (s *Server) health(c echo.Context) error {
 		tickLiveness = s.tickLiveness.TickLiveness(now)
 	}
 	if s.healthNotifications != nil {
-		failures, err := s.healthNotifications.Failures(c.Request().Context())
+		failures, err := s.healthNotifications.Failures(ctx)
 		if err != nil {
 			s.logger.Warn("read health notification failures failed", "error", err)
 		} else {
@@ -1305,7 +1310,7 @@ func (s *Server) health(c echo.Context) error {
 		"registry":  configuredStatus(s.registry),
 		"connector": configuredStatus(s.connector),
 	}
-	orphanedProcesses, orphanErr := s.orphanedAgentProcesses(c.Request().Context(), latestSnapshot, now)
+	orphanedProcesses, orphanErr := s.orphanedAgentProcesses(ctx, latestSnapshot, now)
 	if orphanErr != nil {
 		checks["worker_processes"] = "unavailable: " + orphanErr.Error()
 		s.logger.Warn("inspect orphaned agent processes failed", "error", orphanErr)
@@ -1344,7 +1349,7 @@ func (s *Server) health(c echo.Context) error {
 		httpStatus = http.StatusServiceUnavailable
 		status = "not_ready"
 	}
-	return c.JSON(httpStatus, healthResponse{
+	return healthResponse{
 		CandidatesMissingVsTracker: candidatesMissing,
 
 		Status:                 status,
@@ -1386,7 +1391,7 @@ func (s *Server) health(c echo.Context) error {
 		StateEndpoints:         stateEndpoints,
 		TickLiveness:           tickLiveness,
 		OrphanedAgentProcesses: orphanedProcesses,
-	})
+	}, httpStatus
 }
 
 func faultDispatchStatuses(statuses []telemetry.DispatchStatus) []telemetry.DispatchStatus {

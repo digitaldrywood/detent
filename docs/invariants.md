@@ -119,7 +119,10 @@ existing authenticated browser approval surface. Unknown action kinds still
 require confirmation. Fresh authority resolution binds application command
 credentials from the originating connection, including when another authorized
 browser approves. Hosted runner administration retains current all-project
-runner grants and transaction-time membership/credential checks. Missing runtime
+runner grants and transaction-time membership/credential checks. Browser previews
+containing fleet actions also require current runner grants, including for owners.
+Health and outbox reads retain dashboard deployment boundaries; AI debug projects
+its snapshot through current project grants. Missing runtime
 or approval services return opaque unavailable results; an unhosted hub bearer
 credential cannot stand in for a human. Worker enrollment redemption, credential
 renewal/rotation, claims, leases and heartbeat protocols remain worker-only.
