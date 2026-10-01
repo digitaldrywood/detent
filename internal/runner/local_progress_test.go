@@ -33,13 +33,21 @@ func TestSessionLocalCommitProgress(t *testing.T) {
 		{name: "tracked implementation edit", wantProgress: true, change: func(t *testing.T, path, _ string) {
 			writeLocalProgressFile(t, path, "implementation.txt", "tracked implementation\n")
 		}},
-		{name: "committed runtime scratch only", change: func(t *testing.T, path, _ string) {
+		{name: "committed project knowledge", wantProgress: true, change: func(t *testing.T, path, _ string) {
+			if err := os.MkdirAll(filepath.Join(path, ".detent"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeLocalProgressFile(t, path, ".detent/notes.md", "project knowledge\n")
+			runRunnerGit(t, path, "add", "-f", ".detent/notes.md")
+			runRunnerGit(t, path, "commit", "-m", "update project knowledge")
+		}},
+		{name: "committed runtime scratch", change: func(t *testing.T, path, _ string) {
 			if err := os.MkdirAll(filepath.Join(path, ".detent", "tmp"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			writeLocalProgressFile(t, path, ".detent/tmp/handoff.md", "handoff\n")
-			runRunnerGit(t, path, "add", "-f", ".detent/tmp/handoff.md")
-			runRunnerGit(t, path, "commit", "-m", "update runtime scratch")
+			writeLocalProgressFile(t, path, ".detent/tmp/scratch", "runtime output\n")
+			runRunnerGit(t, path, "add", "-f", ".detent/tmp/scratch")
+			runRunnerGit(t, path, "commit", "-m", "commit runtime scratch fixture")
 		}},
 		{name: "unchanged observation", change: func(*testing.T, string, string) {}},
 		{name: "empty commit", change: func(t *testing.T, path, _ string) {
