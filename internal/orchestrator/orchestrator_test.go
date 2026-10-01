@@ -2239,88 +2239,173 @@ func TestRunTracksStatusLabelConflictCandidateAsBlocked(t *testing.T) {
 	}
 }
 
-func TestRunDispatchesOperatorMovedBlockedIssueDuringDegradedTransitionRefresh(t *testing.T) {
+func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-operator-move", "digitaldrywood/detent#1482", "Blocked")
-	unrelated := testIssue("issue-unrelated-blocked", "digitaldrywood/detent#1483", "Blocked")
-	tracker := &operatorMoveConnector{fakeConnector: newFakeConnector(issue)}
-	tracker.setStateIssues(issue, unrelated)
-	runner := newBlockingRunner()
-	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:        time.Hour,
-		MaxConcurrentAgents: 1,
-		ActiveStates:        []string{"Todo", "Rework"},
-		ObservedStates:      []string{"Blocked"},
-		TerminalStates:      []string{"Done", "Cancelled"},
-	}, orchestrator.Dependencies{
-		Connector: tracker,
-		Runner:    runner,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+	tests := []struct {
+		name         string
+		from         string
+		to           string
+		requestFrom  string
+		missing      bool
+		degraded     bool
+		fail         bool
+		foreign      bool
+		remove       bool
+		noWrite      bool
+		capacity     bool
+		draining     bool
+		quiesced     bool
+		wantRefill   bool
+		wantDispatch bool
+	}{
+		{name: "degraded transition refresh", from: "Blocked", to: "Rework", requestFrom: "Blocked", degraded: true, noWrite: true, wantRefill: true, wantDispatch: true},
+		{name: "native backlog admission", from: "Backlog", to: "Todo", wantRefill: true, wantDispatch: true},
+		{name: "stale requested source", from: "Backlog", to: "Todo", requestFrom: "Todo", wantRefill: true, wantDispatch: true},
+		{name: "active lane transition", from: "Rework", to: "Todo", wantRefill: true, wantDispatch: true},
+		{name: "failed write", from: "Backlog", to: "Todo", fail: true},
+		{name: "no-op write", from: "Todo", to: " todo ", requestFrom: "Backlog"},
+		{name: "inactive destination", from: "Backlog", to: "Paused"},
+		{name: "terminal destination", from: "Backlog", to: "Done"},
+		{name: "missing current issue", from: "Backlog", to: "Todo", requestFrom: "Backlog", missing: true},
+		{name: "observed destination", from: "Backlog", to: "Blocked"},
+		{name: "foreign tracker", from: "Backlog", to: "Todo", foreign: true},
+		{name: "removal", from: "Backlog", to: "Todo", remove: true},
+		{name: "unwritten move", from: "Backlog", to: "Todo", noWrite: true},
+		{name: "capacity full", from: "Backlog", to: "Todo", capacity: true},
+		{name: "draining", from: "Backlog", to: "Todo", draining: true},
+		{name: "quiesced", from: "Backlog", to: "Todo", quiesced: true},
 	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	waitForState(t, orch, func(state orchestrator.State) bool {
-		_, movedBlocked := state.Blocked[issue.ID]
-		_, unrelatedBlocked := state.Blocked[unrelated.ID]
-		return movedBlocked && unrelatedBlocked
-	})
-	tracker.issueStateRefreshFailures.Store(1)
-	if err := tracker.UpdateIssueState(t.Context(), issue.ID, "Rework"); err != nil {
-		t.Fatalf("UpdateIssueState() error = %v", err)
-	}
-	result, err := orch.ReconcileOperatorMove(t.Context(), orchestrator.OperatorMoveRequest{
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		FromState:  "Blocked",
-		ToState:    "Rework",
-	})
-	if err != nil {
-		t.Fatalf("ReconcileOperatorMove() error = %v", err)
-	}
-	if !result.Reconciled || !result.BlockedCleared {
-		t.Fatalf("ReconcileOperatorMove() = %#v, want reconciled runtime block", result)
-	}
-	state, err := orch.State(t.Context())
-	if err != nil {
-		t.Fatalf("State() error = %v", err)
-	}
-	if _, ok := state.Blocked[unrelated.ID]; !ok {
-		t.Fatalf("Blocked[%q] missing after item-scoped reconcile", unrelated.ID)
-	}
-	// Omit the unrelated block from this refresh's feeds so transition snapshot
-	// reuse cannot skip its failing state lookup and leave the error for dispatch.
-	tracker.setStateIssues()
-	if _, err := orch.RequestRefresh(t.Context()); err != nil {
-		t.Fatalf("RequestRefresh() error = %v", err)
-	}
-
-	request := receiveRunRequest(t, runner.started)
-	if request.Issue.ID != issue.ID || request.Issue.State != "Rework" {
-		t.Fatalf("RunRequest.Issue = %#v, want moved Rework issue", request.Issue)
-	}
-	state = waitForState(t, orch, func(state orchestrator.State) bool {
-		for _, decision := range state.SchedulerDecisions {
-			if decision.IssueID == issue.ID && decision.Selected {
-				return true
+			issue := testIssue("issue-operator-move", "digitaldrywood/detent#1482", tt.from)
+			unrelated := testIssue("issue-unrelated-blocked", "digitaldrywood/detent#1483", "Blocked")
+			resident := testIssue("resident", "digitaldrywood/detent#1484", "Todo")
+			tracker := &operatorMoveConnector{fakeConnector: newFakeConnector()}
+			tracker.setStateIssues(issue, unrelated)
+			if tt.missing {
+				tracker.setStateIssues(unrelated)
 			}
-		}
-		return false
-	})
-	if _, ok := state.Blocked[issue.ID]; ok {
-		t.Fatalf("Blocked[%q] restored by degraded refresh", issue.ID)
+			if tt.degraded {
+				tracker.setCandidates(issue)
+			}
+			if tt.capacity {
+				tracker.setCandidates(resident)
+			}
+			if tt.fail {
+				tracker.writeErr = errors.New("operator lane write failed")
+			}
+			runner := newBlockingRunner()
+			orch, err := orchestrator.New(orchestrator.Config{
+				PollInterval:        time.Hour,
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo", "Rework"},
+				ObservedStates:      []string{"Blocked"},
+				TerminalStates:      []string{"Done", "Cancelled"},
+			}, orchestrator.Dependencies{
+				Connector: tracker,
+				Runner:    runner,
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			stop := runOrchestrator(t, orch)
+			defer stop()
+
+			waitForState(t, orch, func(state orchestrator.State) bool {
+				_, unrelatedBlocked := state.Blocked[unrelated.ID]
+				return unrelatedBlocked && !state.LastRefreshAt.IsZero()
+			})
+			if tt.capacity {
+				if request := receiveRunRequest(t, runner.started); request.Issue.ID != resident.ID {
+					t.Fatalf("initial RunRequest.Issue = %#v", request.Issue)
+				}
+				tracker.setCandidates(resident, issue)
+			} else if !tt.missing {
+				tracker.setCandidates(issue)
+			}
+			if tt.draining {
+				if err := orch.Drain(t.Context()); err != nil {
+					t.Fatalf("Drain() error = %v", err)
+				}
+			}
+			if tt.quiesced {
+				orch.BeginDrain()
+			}
+			if tt.degraded {
+				tracker.issueStateRefreshFailures.Store(1)
+				if err := tracker.UpdateIssueState(t.Context(), issue.ID, tt.to); err != nil {
+					t.Fatalf("UpdateIssueState() error = %v", err)
+				}
+			}
+			before := tracker.fetchCandidateCalls()
+			move := orchestrator.OperatorMoveRequest{
+				IssueID:      issue.ID,
+				Identifier:   issue.Identifier,
+				FromState:    tt.requestFrom,
+				ToState:      tt.to,
+				WriteTracker: !tt.noWrite,
+				Remove:       tt.remove,
+				Reason:       "backlog_admission",
+			}
+			if tt.foreign {
+				move.Tracker = newFakeConnector(issue)
+			}
+			result, err := orch.ReconcileOperatorMove(t.Context(), move)
+			if !errors.Is(err, tracker.writeErr) {
+				t.Fatalf("ReconcileOperatorMove() error = %v, want %v", err, tracker.writeErr)
+			}
+			if result.Reconciled != (tt.degraded || tt.foreign || tt.remove) || result.BlockedCleared != tt.degraded {
+				t.Fatalf("ReconcileOperatorMove() = %#v", result)
+			}
+			if tt.degraded {
+				tracker.setStateIssues()
+				if _, err := orch.RequestRefresh(t.Context()); err != nil {
+					t.Fatalf("RequestRefresh() error = %v", err)
+				}
+			}
+			if tt.wantDispatch {
+				request := receiveRunRequest(t, runner.started)
+				if request.Issue.ID != issue.ID || request.Issue.State != tt.to {
+					t.Fatalf("RunRequest.Issue = %#v, want moved %s issue", request.Issue, tt.to)
+				}
+			}
+			state, err := orch.State(t.Context())
+			if err != nil {
+				t.Fatalf("State() error = %v", err)
+			}
+			wantReads := 0
+			if tt.wantRefill {
+				wantReads = 1
+			}
+			if got := tracker.fetchCandidateCalls() - before; got != wantReads {
+				t.Fatalf("candidate reads after move = %d, want %d before ordinary poll", got, wantReads)
+			}
+			if !tt.wantDispatch {
+				if _, running := state.Running[issue.ID]; running {
+					t.Fatalf("moved issue dispatched: %#v", state.Running)
+				}
+			}
+			if _, ok := state.Blocked[unrelated.ID]; !ok {
+				t.Fatalf("Blocked[%q] missing after item-scoped reconcile", unrelated.ID)
+			}
+			if tt.degraded {
+				if _, ok := state.Blocked[issue.ID]; ok {
+					t.Fatalf("Blocked[%q] restored by degraded refresh", issue.ID)
+				}
+				if remaining := tracker.issueStateRefreshFailures.Load(); remaining != 0 {
+					t.Fatalf("issue-state refresh failures remaining = %d, want 0", remaining)
+				}
+				snapshot := state.Snapshot(time.Now())
+				if snapshot.Counts.Blocked != 1 || len(snapshot.Blocked) != 1 || snapshot.Blocked[0].ID != unrelated.ID {
+					t.Fatalf("blocked snapshot = count %d rows %#v, want unrelated issue only", snapshot.Counts.Blocked, snapshot.Blocked)
+				}
+			}
+			close(runner.release)
+		})
 	}
-	if remaining := tracker.issueStateRefreshFailures.Load(); remaining != 0 {
-		t.Fatalf("issue-state refresh failures remaining = %d, want 0", remaining)
-	}
-	snapshot := state.Snapshot(time.Now())
-	if snapshot.Counts.Blocked != 1 || len(snapshot.Blocked) != 1 || snapshot.Blocked[0].ID != unrelated.ID {
-		t.Fatalf("blocked snapshot = count %d rows %#v, want unrelated issue only", snapshot.Counts.Blocked, snapshot.Blocked)
-	}
-	close(runner.release)
 }
 
 func TestRunFetchesCandidatesBeforeObservedStates(t *testing.T) {
@@ -2957,6 +3042,32 @@ func (c *pendingDispatchConnector) FetchCandidateIssues(ctx context.Context) ([]
 type operatorMoveConnector struct {
 	*fakeConnector
 	issueStateRefreshFailures atomic.Int64
+	writeErr                  error
+}
+
+func (c *operatorMoveConnector) setCandidates(issues ...connector.Issue) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.candidates = cloneIssues(issues)
+}
+
+func (c *operatorMoveConnector) UpdateIssueState(ctx context.Context, issueID, state string) error {
+	if c.writeErr != nil {
+		return c.writeErr
+	}
+	return c.fakeConnector.UpdateIssueState(ctx, issueID, state)
+}
+
+func (c *operatorMoveConnector) RemoveIssueFromProject(_ context.Context, issueID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, issue := range c.candidates {
+		if issue.ID == issueID {
+			c.candidates = append(c.candidates[:i], c.candidates[i+1:]...)
+			break
+		}
+	}
+	return nil
 }
 
 func (c *operatorMoveConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {

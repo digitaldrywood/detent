@@ -958,8 +958,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			before := len(state.Running)
-			request.reply <- o.applyOperatorMove(ctx, &state, request.request, request.at)
-			if len(state.Running) < before {
+			result := o.applyOperatorMove(ctx, &state, request.request, request.at)
+			request.reply <- result.OperatorMoveResult
+			if result.ready || len(state.Running) < before {
 				o.refillProjectSlots(ctx, &state, o.clockNow())
 			}
 		case update := <-o.configUpdates:
