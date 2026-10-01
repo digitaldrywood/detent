@@ -25,33 +25,75 @@ func TestStateReadersCrossPublicationBoundaries(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
 		starting   bool
+		refresh    bool
 		completion bool
+		canceled   bool
+		stopped    bool
+		nilContext bool
 	}{
-		{name: "refresh starts with reader waiting"},
+		{name: "initialized idle actor"},
+		{name: "nil context", nilContext: true},
+		{name: "refresh in progress", refresh: true},
 		{name: "reader precedes initial publication", starting: true},
-		{name: "completion starts with reader waiting", completion: true},
+		{name: "completion in progress", completion: true},
+		{name: "canceled initial reader", starting: true, canceled: true},
+		{name: "stopped initial reader", starting: true, stopped: true},
+		{name: "canceled initialized reader", canceled: true},
+		{name: "stopped initialized reader", stopped: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				state := newState(normalizeConfig(Config{}))
-				orch := &Orchestrator{done: make(chan struct{}), initialStateReady: make(chan struct{}), snapshotAvailable: make(chan struct{}), stateRequests: make(chan stateRequest)}
+				orch := &Orchestrator{done: make(chan struct{}), initialStateReady: make(chan struct{})}
 				if !tt.starting {
 					orch.publishState(&state)
 				}
+				if tt.refresh {
+					orch.startTick(&state, time.Now())
+				}
+				if tt.completion {
+					orch.startCompletion(&state)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if !tt.starting && tt.canceled {
+					cancel()
+				}
+				if !tt.starting && tt.stopped {
+					close(orch.done)
+				}
+				if tt.nilContext {
+					ctx = nil
+				}
 				done := make(chan error, 1)
 				go func() {
-					_, err := orch.State(t.Context())
+					_, err := orch.State(ctx)
 					done <- err
 				}()
 				synctest.Wait()
-				if tt.completion {
-					orch.startCompletion(&state)
-				} else {
-					orch.startTick(&state, time.Now())
-					orch.publishState(&state)
+				if tt.starting {
+					select {
+					case err := <-done:
+						t.Fatalf("reader returned before first publication: %v", err)
+					default:
+					}
+					switch {
+					case tt.canceled:
+						cancel()
+					case tt.stopped:
+						close(orch.done)
+					default:
+						orch.publishState(&state)
+					}
 				}
-				if err := <-done; err != nil {
-					t.Fatal(err)
+				var want error
+				if tt.canceled {
+					want = context.Canceled
+				} else if tt.stopped {
+					want = ErrStopped
+				}
+				if err := <-done; !errors.Is(err, want) {
+					t.Fatalf("State() = %v, want %v", err, want)
 				}
 			})
 		})
@@ -89,8 +131,8 @@ func TestRefreshProgressPreservesTrackerFreshness(t *testing.T) {
 }
 
 func TestCompletionSnapshotExcludesPartialMutations(t *testing.T) {
-	for _, publishRuntime := range []bool{false, true} {
-		t.Run(fmt.Sprintf("runtime publication=%t", publishRuntime), func(t *testing.T) {
+	for _, publication := range []string{"none", "runtime", "full"} {
+		t.Run(publication, func(t *testing.T) {
 			state := newState(normalizeConfig(Config{}))
 			issue := connector.Issue{ID: "worker", State: "In Progress", Labels: []string{"original"}}
 			state.Running[issue.ID] = Running{Issue: issue}
@@ -100,8 +142,11 @@ func TestCompletionSnapshotExcludesPartialMutations(t *testing.T) {
 			orch.startCompletion(&state)
 			delete(state.Running, issue.ID)
 			state.Claimed[issue.ID].Issue.Labels[0] = "partial"
-			if publishRuntime {
+			switch publication {
+			case "runtime":
 				orch.publishRuntimeState(&state)
+			case "full":
+				orch.publishState(&state)
 			}
 			got, err := orch.State(t.Context())
 			if err != nil {
@@ -152,6 +197,8 @@ func TestCompletionSnapshotFreezesWorkerProgress(t *testing.T) {
 				t.Fatal("completion snapshot omitted existing worker progress")
 			}
 			observe("during completion")
+			orch.publishRuntimeState(&state)
+			orch.publishState(&state)
 			after := read(orch)
 			if before.Running[running.Issue.ID].LastMessage != after.Running[running.Issue.ID].LastMessage || !reflect.DeepEqual(before.WorkAttempts, after.WorkAttempts) || before.RuntimeObservation != after.RuntimeObservation {
 				t.Fatal("cached completion snapshot changed after worker progress")
@@ -162,7 +209,6 @@ func TestCompletionSnapshotFreezesWorkerProgress(t *testing.T) {
 			}
 			orch.publishState(&state)
 			orch.completionState.Store(nil)
-			orch.refreshInProgress.Store(true)
 			resumed := read(orch)
 			if resumed.Running[running.Issue.ID].LastMessage != "during completion" || (persisted && resumed.WorkAttempts[0].StatusMessage != "during completion") || !resumed.RuntimeObservation.IsZero() {
 				t.Fatal("live publication did not resume worker progress after completion")
@@ -196,7 +242,7 @@ func TestStatePreservesPublishedRunningAttemptsDuringRefresh(t *testing.T) {
 			}
 			orch := &Orchestrator{cfg: cfg, done: make(chan struct{})}
 			orch.publishState(&state)
-			orch.refreshInProgress.Store(true)
+			orch.startTick(&state, time.Now())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
@@ -1906,50 +1952,71 @@ func TestTelemetryIssuePreservesRoutingFields(t *testing.T) {
 // Replays the reported nine active attempts with an older empty board snapshot
 // while promotion waits on GitHub. The runtime overlay must stay live.
 func TestPromotionReadKeepsRecoveredWorkersObservable(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		o, tracker, issue := mergingSecurityAuditFixture()
-		issue.State = "Human Review"
-		slow := &slowPromotionHydrator{mergingSecurityAuditConnector: tracker, started: make(chan struct{}), release: make(chan struct{})}
-		o.connector = slow
-		o.done = make(chan struct{})
-		state := newState(o.cfg)
-		o.publishState(&state)
-		for i := range 9 {
-			id := fmt.Sprintf("recovered-%d", i)
-			running := Running{Issue: connector.Issue{ID: id, State: "In Progress"}, WorkAttemptID: int64(i + 1)}
-			running.progress = newWorkerProgress(running, store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID}, nil, 4096)
-			state.Running[id] = running
-			state.WorkAttempts = append(state.WorkAttempts, telemetry.WorkAttempt{AttemptID: running.WorkAttemptID})
-		}
-		o.startTick(&state, time.Now())
-		done := make(chan struct{})
-		go func() {
-			o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
-			close(done)
-		}()
-		<-slow.started
-		defer func() { close(slow.release); <-done; o.securityAuditWG.Wait() }()
-		for _, message := range []string{"working", "still working"} {
-			progress := state.Running["recovered-0"].progress
-			if err := progress.observe(t.Context(), runpkg.UsageUpdate{LastMessage: message}); err != nil {
-				t.Fatal(err)
-			}
-			heartbeat := progress.heartbeat(store.WorkAttemptHeartbeat{AttemptID: 1}, time.Now())
-			progress.persisted.Store(&heartbeat)
-			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-			snapshot, err := o.State(ctx)
-			cancel()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(snapshot.Running) != 9 || len(snapshot.WorkAttempts) != 9 {
-				t.Fatalf("runtime during promotion: workers=%d attempts=%d, want 9 each", len(snapshot.Running), len(snapshot.WorkAttempts))
-			}
-			if snapshot.Running["recovered-0"].LastMessage != message || snapshot.WorkAttempts[0].StatusMessage != message {
-				t.Fatalf("stale worker progress during promotion: %+v", snapshot.WorkAttempts[0])
-			}
-		}
-	})
+	for _, refresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refresh=%t", refresh), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				o, tracker, issue := mergingSecurityAuditFixture()
+				issue.State = "Human Review"
+				slow := &slowPromotionHydrator{mergingSecurityAuditConnector: tracker, started: make(chan struct{}), release: make(chan struct{})}
+				o.connector = slow
+				o.done = make(chan struct{})
+				state := newState(o.cfg)
+				state.LastRefreshAt = time.Now().Add(-time.Minute)
+				o.publishState(&state)
+				for i := range 9 {
+					id := fmt.Sprintf("recovered-%d", i)
+					running := Running{Issue: connector.Issue{ID: id, State: "In Progress"}, WorkAttemptID: int64(i + 1)}
+					running.progress = newWorkerProgress(running, store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID}, nil, 4096)
+					state.Running[id] = running
+					state.WorkAttempts = append(state.WorkAttempts, telemetry.WorkAttempt{AttemptID: running.WorkAttemptID})
+				}
+				if refresh {
+					o.startTick(&state, time.Now())
+				} else {
+					o.publishRuntimeState(&state)
+				}
+				done := make(chan struct{})
+				go func() {
+					o.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+					close(done)
+				}()
+				<-slow.started
+				defer func() { close(slow.release); <-done; o.securityAuditWG.Wait() }()
+				for _, message := range []string{"working", "still working"} {
+					progress := state.Running["recovered-0"].progress
+					if err := progress.observe(t.Context(), runpkg.UsageUpdate{LastMessage: message}); err != nil {
+						t.Fatal(err)
+					}
+					heartbeat := progress.heartbeat(store.WorkAttemptHeartbeat{AttemptID: 1}, time.Now())
+					progress.persisted.Store(&heartbeat)
+					ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+					snapshot, err := o.State(ctx)
+					cancel()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !snapshot.LastRefreshAt.Equal(state.LastRefreshAt) {
+						t.Fatal("runtime observation advanced tracker freshness")
+					}
+					if len(snapshot.Running) != 9 || len(snapshot.WorkAttempts) != 9 {
+						t.Fatalf("runtime during promotion: workers=%d attempts=%d, want 9 each", len(snapshot.Running), len(snapshot.WorkAttempts))
+					}
+					if snapshot.Running["recovered-0"].LastMessage != message || snapshot.WorkAttempts[0].StatusMessage != message {
+						t.Fatalf("stale worker progress during promotion: %+v", snapshot.WorkAttempts[0])
+					}
+					delete(snapshot.Running, "recovered-1")
+					snapshot.WorkAttempts[0].StatusMessage = "reader mutation"
+					unchanged, err := o.State(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(unchanged.Running) != 9 || unchanged.WorkAttempts[0].StatusMessage != message {
+						t.Fatal("reader mutated published runtime ownership or persisted progress")
+					}
+				}
+			})
+		})
+	}
 }
 
 type slowPromotionHydrator struct {

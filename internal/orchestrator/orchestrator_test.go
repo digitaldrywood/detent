@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2243,23 +2244,25 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		from         string
-		to           string
-		requestFrom  string
-		missing      bool
-		degraded     bool
-		fail         bool
-		foreign      bool
-		remove       bool
-		noWrite      bool
-		capacity     bool
-		draining     bool
-		quiesced     bool
-		wantRefill   bool
-		wantDispatch bool
+		name          string
+		from          string
+		to            string
+		requestFrom   string
+		missing       bool
+		degraded      bool
+		fail          bool
+		foreign       bool
+		remove        bool
+		noWrite       bool
+		capacity      bool
+		draining      bool
+		quiesced      bool
+		stalledRefill bool
+		wantRefill    bool
+		wantDispatch  bool
 	}{
 		{name: "degraded transition refresh", from: "Blocked", to: "Rework", requestFrom: "Blocked", degraded: true, noWrite: true, wantRefill: true, wantDispatch: true},
+		{name: "confirmed move visible during stalled refill", from: "Blocked", to: "Rework", requestFrom: "Blocked", stalledRefill: true, wantRefill: true, wantDispatch: true},
 		{name: "native backlog admission", from: "Backlog", to: "Todo", wantRefill: true, wantDispatch: true},
 		{name: "stale requested source", from: "Backlog", to: "Todo", requestFrom: "Todo", wantRefill: true, wantDispatch: true},
 		{name: "active lane transition", from: "Rework", to: "Todo", wantRefill: true, wantDispatch: true},
@@ -2340,6 +2343,15 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 					t.Fatalf("UpdateIssueState() error = %v", err)
 				}
 			}
+			baseline, err := orch.State(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.stalledRefill {
+				tracker.refillStarted = make(chan struct{})
+				tracker.refillRelease = make(chan struct{})
+				tracker.stallRefill.Store(true)
+			}
 			before := tracker.fetchCandidateCalls()
 			move := orchestrator.OperatorMoveRequest{
 				IssueID:      issue.ID,
@@ -2357,8 +2369,42 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 			if !errors.Is(err, tracker.writeErr) {
 				t.Fatalf("ReconcileOperatorMove() error = %v, want %v", err, tracker.writeErr)
 			}
-			if result.Reconciled != (tt.degraded || tt.foreign || tt.remove) || result.BlockedCleared != tt.degraded {
+			if result.Reconciled != (tt.degraded || tt.foreign || tt.remove || tt.stalledRefill) || result.BlockedCleared != (tt.degraded || tt.stalledRefill) {
 				t.Fatalf("ReconcileOperatorMove() = %#v", result)
+			}
+			if tt.stalledRefill {
+				release := sync.OnceFunc(func() { close(tracker.refillRelease) })
+				defer release()
+				select {
+				case <-tracker.refillStarted:
+				case <-time.After(slowCIIntegrationWaitTimeout):
+					t.Fatal("move did not reach refill")
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+				state, err := orch.State(ctx)
+				cancel()
+				if err != nil {
+					t.Fatalf("State() during stalled refill: %v", err)
+				}
+				if state.RefreshProgress.Stage != "" || !state.RuntimeObservation.IsZero() {
+					t.Fatal("operator refill acquired a refresh or completion observation")
+				}
+				if !state.LastRefreshAt.Equal(baseline.LastRefreshAt) || !reflect.DeepEqual(state.RefreshSources, baseline.RefreshSources) {
+					t.Fatal("snapshot read advanced tracker freshness")
+				}
+				if _, blocked := state.Blocked[issue.ID]; blocked {
+					t.Fatal("confirmed move retained blocked ownership during refill")
+				}
+				found := false
+				for _, boardIssue := range state.BoardIssues {
+					if boardIssue.ID == issue.ID {
+						found = boardIssue.State == tt.to
+					}
+				}
+				if !found {
+					t.Fatal("confirmed move absent during refill")
+				}
+				release()
 			}
 			if tt.degraded {
 				tracker.setStateIssues()
@@ -2435,6 +2481,7 @@ func TestStateReturnsDefensiveCopies(t *testing.T) {
 	t.Parallel()
 
 	issue := testIssue("issue-5", "digitaldrywood/detent#14", "In Progress")
+	issue.Labels = []string{"original"}
 	tracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
 
@@ -2443,11 +2490,14 @@ func TestStateReturnsDefensiveCopies(t *testing.T) {
 	defer stop()
 
 	receiveRunRequest(t, runner.started)
+	waitForState(t, orch, func(state orchestrator.State) bool { return len(state.Running) == 1 })
 
 	first, err := orch.State(context.Background())
 	if err != nil {
 		t.Fatalf("State() error = %v", err)
 	}
+	first.Running[issue.ID].Issue.Labels[0] = "mutated"
+	first.ActiveStates[0] = "mutated"
 	delete(first.Running, issue.ID)
 	first.Claimed[issue.ID] = orchestrator.Claimed{}
 
@@ -2462,6 +2512,9 @@ func TestStateReturnsDefensiveCopies(t *testing.T) {
 		t.Fatalf("Claimed[%q].Issue.ID = %q, want %q", issue.ID, second.Claimed[issue.ID].Issue.ID, issue.ID)
 	}
 
+	if second.Running[issue.ID].Issue.Labels[0] != "original" || second.ActiveStates[0] == "mutated" {
+		t.Fatal("reader mutated published slices")
+	}
 	close(runner.release)
 }
 
@@ -3042,7 +3095,22 @@ func (c *pendingDispatchConnector) FetchCandidateIssues(ctx context.Context) ([]
 type operatorMoveConnector struct {
 	*fakeConnector
 	issueStateRefreshFailures atomic.Int64
+	stallRefill               atomic.Bool
+	refillStarted             chan struct{}
+	refillRelease             chan struct{}
 	writeErr                  error
+}
+
+func (c *operatorMoveConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	if c.stallRefill.CompareAndSwap(true, false) {
+		close(c.refillStarted)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.refillRelease:
+		}
+	}
+	return c.fakeConnector.FetchCandidateIssues(ctx)
 }
 
 func (c *operatorMoveConnector) setCandidates(issues ...connector.Issue) {
