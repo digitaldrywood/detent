@@ -360,7 +360,10 @@ next-cycle dispatch.
 
 A structured merged-completion receipt can replace an absent or closed-unmerged
 PR association only after native lookup verifies the exact repository, PR URL,
-number, merged state, head, and base branch. The existing merged-PR owner scans
+number, merged state, head, and base branch. The injected receipt contract names
+the same fetched integration branch/head actually ancestry-tested, matching the
+merging PR's base rather than the worker workspace branch. Pending scheduled
+acceptance is not recorded as passed. The existing merged-PR owner scans
 active and observed lanes, including Blocked, and completes that verified work
 without another worker receipt. Completion classification shares that owner’s
 already-merged decision rather than waiting for new head checks after merge.
