@@ -37,6 +37,9 @@ func ActionSummary(action Action) string {
 	case ActionFileIssue:
 		return fmt.Sprintf("File %q on %s", action.Title, action.ProjectID)
 	default:
+		if action.Title != "" {
+			return action.Title
+		}
 		return "Unknown operator action"
 	}
 }

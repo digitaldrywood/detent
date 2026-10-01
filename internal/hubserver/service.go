@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,6 +30,7 @@ const (
 
 type Service struct {
 	mcpHTTP           *mcp.HTTPHandler
+	administration    *operatoradmin.Executor
 	billing           *hostedBillingWorker
 	hostedMutationMu  sync.Mutex
 	hostedAuthLogger  *slog.Logger

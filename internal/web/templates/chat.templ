@@ -103,6 +103,7 @@ templ ChatApproval(data ChatData) {
  <p role="alert">{ data.Error }</p>
  }
     <form method="post" action="/chat/approval" class="my-4 flex gap-2">
+     <input type="hidden" name="csrf" value={ data.CSRF }/>
      <input type="hidden" name="form_token" value={ data.FormToken }/>
      <input type="hidden" name="connection_id" value={ data.Conversation.ConnectionID }/>
      <input type="hidden" name="decision" value="mode"/>
@@ -112,9 +113,13 @@ templ ChatApproval(data ChatData) {
     <p class="mb-4 text-xs text-sec">YOLO skips confirmation for this connection. Permissions and workflow rules still apply.</p>
     for _, action := range data.Conversation.Actions {
      @ChatActionPreview(action)
+     if action.Description != "" {
+      <pre class="my-2 overflow-auto whitespace-pre-wrap break-words text-xs">{ action.Description }</pre>
+     }
      <pre class="my-2 overflow-auto whitespace-pre-wrap break-words text-xs">{ string(action.Arguments) }</pre>
      if action.Status == chatpkg.ActionPending {
       <form method="post" action="/chat/approval" class="mb-4 flex gap-2">
+       <input type="hidden" name="csrf" value={ data.CSRF }/>
        <input type="hidden" name="form_token" value={ data.ActionTokens[action.ID] }/>
        <input type="hidden" name="connection_id" value={ data.Conversation.ConnectionID }/>
        <input type="hidden" name="action_id" value={ action.ID }/>

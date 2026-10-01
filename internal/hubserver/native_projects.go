@@ -65,11 +65,7 @@ func (s *Service) createNativeOrganization(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if strings.TrimSpace(request.Name) == "" || len(request.Name) > 200 {
-		return s.nativeAPIError(c, nativeInvalid("Organization name is required and limited to 200 bytes"))
-	}
-	result := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: request.Name}
-	_, err := s.database.db.ExecContext(c.Request().Context(), "INSERT INTO organizations (id, name, created_at) VALUES (?, ?, ?)", result.ID, result.Name, formatHubTime(s.config.now()))
+	result, err := s.createNativeOrganizationFor(c.Request().Context(), request.Name)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -155,29 +151,7 @@ func (s *Service) grantNativeToken(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if c.Param("id") == bootstrapTokenID {
-		return s.nativeAPIError(c, nativeInvalid("Bootstrap administrator cannot be converted to a project token"))
-	}
-	ctx := c.Request().Context()
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer tx.Rollback()
-	var runnerCount int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM runner_identities WHERE token_id = ?", c.Param("id")).Scan(&runnerCount); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if runnerCount != 0 {
-		return s.nativeAPIError(c, nativeInvalid("Runner grants are fixed at enrollment; revoke and enroll a new identity to change authority"))
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants (token_id, organization_id, project_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", c.Param("id"), request.OrganizationID, request.ProjectID); err != nil {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE api_tokens SET native_only = 1 WHERE id = ?", c.Param("id")); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := tx.Commit(); err != nil {
+	if err := s.grantNativeTokenFor(c.Request().Context(), c.Param("id"), string(request.OrganizationID), string(request.ProjectID)); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)

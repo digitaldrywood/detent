@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -296,62 +298,33 @@ func (s *Service) logoutHosted(c echo.Context) error {
 }
 
 func (s *Service) createHostedOrganization(c echo.Context) error {
-	session, _, err := s.hostedSession(c)
-	if err != nil || session.Identity.SupportActor != "" || session.Identity.Subject != s.config.Hosted.BootstrapSubject || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-		return s.hostedError(c, http.StatusForbidden, "This Hub is reserved for a different organization creator")
-	}
-	var existingMembers int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM hosted_members").Scan(&existingMembers); err != nil || existingMembers != 0 {
-		return s.hostedError(c, http.StatusForbidden, "This organization has already been created")
-	}
-	name := strings.TrimSpace(c.FormValue("name"))
-	if name == "" || len(name) > 120 {
-		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter an organization name of at most 120 characters")
-	}
-	providerID, err := s.hostedProviderOrganization(c.Request().Context())
+	session, hash, err := s.hostedSession(c)
 	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Organization creation is temporarily unavailable")
+		return s.hostedError(c, http.StatusForbidden, "This account cannot create the organization")
 	}
-	if providerID == "" {
-		organization, err := s.config.Hosted.Provider.CreateOrganization(c.Request().Context(), s.config.Hosted.OrganizationID, name)
-		if err != nil || organization.ExternalID != s.config.Hosted.OrganizationID || !hostedSafeID(organization.ID) {
-			return s.hostedError(c, http.StatusServiceUnavailable, "Organization creation could not be confirmed; retry to recover the same organization")
+	credential := apiCredential{Hosted: session.Identity, SessionHash: hash}
+	if _, err := s.createHostedOrganizationFor(c.Request().Context(), credential, c.FormValue("name")); err != nil {
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, operatortool.ErrAccessDenied) {
+			status = http.StatusForbidden
+		} else if errors.Is(err, operatortool.ErrInvalidArguments) {
+			status = http.StatusUnprocessableEntity
 		}
-		providerID = organization.ID
-		if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_tenant SET provider_id = ? WHERE singleton = 1 AND provider_id = ''", providerID); err != nil {
-			return s.hostedError(c, http.StatusServiceUnavailable, "Organization creation is temporarily unavailable")
-		}
-	}
-	membership, err := s.config.Hosted.Provider.CreateMembership(c.Request().Context(), session.Identity.Subject, providerID, "owner")
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Organization membership could not be confirmed; retry setup")
-	}
-	if err := s.storeHostedMember(c.Request().Context(), auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true}, membership, name); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Organization setup is temporarily unavailable")
+		return s.hostedError(c, status, "Organization setup could not be completed")
 	}
 	return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
 }
 
 func (s *Service) hostedSwitchDestination(c echo.Context, organization string) (string, string) {
 	session, _, err := s.hostedSession(c)
-	if err != nil || session.Identity.SupportActor != "" {
-		return "", "Exit support access before switching organizations"
+	if err != nil {
+		return "", "The selected organization is unavailable to this account"
 	}
-	for _, destination := range s.config.Hosted.Directory {
-		if destination.OrganizationID != organization {
-			continue
-		}
-		memberships, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), session.Identity.Subject, destination.WorkOSOrganizationID)
-		if err != nil {
-			break
-		}
-		for _, membership := range memberships {
-			if membership.Status == "active" && membership.UserID == session.Identity.Subject && membership.OrganizationID == destination.WorkOSOrganizationID {
-				return destination.PublicURL + "/auth/oidc/start", ""
-			}
-		}
+	next, err := s.hostedSwitchFor(c.Request().Context(), session.Identity, organization)
+	if err != nil {
+		return "", "The selected organization is unavailable to this account"
 	}
-	return "", "The selected organization is unavailable to this account"
+	return next, ""
 }
 
 func (s *Service) switchHostedOrganization(c echo.Context) error {
@@ -382,10 +355,22 @@ func (s *Service) acceptHostedInvitationToken(c echo.Context, token string) (str
 }
 
 func (s *Service) acceptHostedInvitationFor(ctx context.Context, identity auth.Identity, token string) error {
-	if token == "" || len(token) > 512 {
+	return s.acceptHostedInvitationReference(ctx, identity, token, false)
+}
+func (s *Service) acceptHostedInvitationIDFor(ctx context.Context, identity auth.Identity, id string) error {
+	return s.acceptHostedInvitationReference(ctx, identity, id, true)
+}
+func (s *Service) acceptHostedInvitationReference(ctx context.Context, identity auth.Identity, token string, byID bool) error {
+	if identity.Hosted == nil || token == "" || len(token) > 512 {
 		return auth.ErrHostedIdentity
 	}
-	invitation, err := s.config.Hosted.Provider.Invitation(ctx, token)
+	var invitation auth.Invitation
+	var err error
+	if byID {
+		invitation, err = auth.LookupInvitationID(ctx, s.config.Hosted.Provider, token)
+	} else {
+		invitation, err = s.config.Hosted.Provider.Invitation(ctx, token)
+	}
 	providerID, providerErr := s.hostedProviderOrganization(ctx)
 	if err != nil || providerErr != nil || invitation.OrganizationID != providerID || !strings.EqualFold(invitation.Email, identity.Email) || !invitation.ExpiresAt.After(s.config.now()) || !identity.EmailVerified {
 		return auth.ErrHostedIdentity
@@ -396,7 +381,13 @@ func (s *Service) acceptHostedInvitationFor(ctx context.Context, identity auth.I
 		return auth.ErrHostedIdentity
 	}
 	if invitation.State == "pending" {
-		if err := s.config.Hosted.Provider.AcceptInvitation(ctx, token, identity.Subject); err != nil {
+		var acceptErr error
+		if byID {
+			acceptErr = auth.AcceptInvitationID(ctx, s.config.Hosted.Provider, token, identity.Subject)
+		} else {
+			acceptErr = s.config.Hosted.Provider.AcceptInvitation(ctx, token, identity.Subject)
+		}
+		if acceptErr != nil {
 			return auth.ErrHostedIdentity
 		}
 	} else if invitation.State != "accepted" || invitation.AcceptedUserID != identity.Subject {

@@ -7,6 +7,7 @@ import (
 )
 
 type ChatData struct {
+	CSRF         string
 	Conversation chatpkg.Conversation
 	Error        string
 	FormToken    string

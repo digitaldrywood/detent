@@ -16,10 +16,10 @@ import (
 )
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
-	// Hosted hubs do not own the daemon's telemetry/explainer. An absent
-	// application service produces an empty catalog and opaque unavailable
-	// calls, rather than using the compatibility API or opening a runtime DB.
-	executor := operatortool.NewAuthorizedExecutor(nil)
+	// Hosted administration reuses application commands; telemetry/explainer
+	// services remain unavailable here.
+	executor := s.operatorAdministration()
+	s.administration = executor
 	s.mcpHTTP = mcp.NewHTTPHandler(executor, s.config.Version, mcp.HTTPConfig{
 		Principal: func(request *http.Request) operatortool.Identity {
 			return operatortool.ConnectionIdentity(request.Context())
@@ -27,6 +27,8 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	})
 	e.Any("/api/v2/organizations/:organization/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	if s.config.Hosted != nil {
+		e.GET("/chat/approval", s.operatorAdministrationApproval, s.operatorAuthority)
+		e.POST("/chat/approval", s.operatorAdministrationApproval, s.operatorAuthority)
 		e.Any("/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	}
 }
@@ -34,6 +36,11 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		credential, status, err := s.authenticateAPIRequest(c)
+		if err != nil && s.config.Hosted != nil && !s.hostedShared() && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
+			if _, hash, sessionErr := s.hostedSession(c); sessionErr == nil {
+				credential, err = s.hostedAccountCredential(c.Request().Context(), hash)
+			}
+		}
 		if err != nil {
 			return c.JSON(status, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
@@ -53,7 +60,12 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		claims, shared := hostedSharedClaims(c)
-		connection := operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		connection := operatortool.Connection{DashboardURL: func() string {
+			if s.config.Hosted != nil {
+				return s.config.Hosted.PublicURL
+			}
+			return ""
+		}(), Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 			current := credential
 			if token != "" {
 				var err error
@@ -72,7 +84,9 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 					}
 					current, _, err = s.hostedSharedCredential(ctx, session, credential.SessionHash, claims.Role)
 				} else {
-					if _, err = s.WebSession(ctx, credential.SessionHash, s.config.now()); err == nil {
+					if credential.HostedRole == "account" {
+						current, err = s.hostedAccountCredential(ctx, credential.SessionHash)
+					} else if _, err = s.WebSession(ctx, credential.SessionHash, s.config.now()); err == nil {
 						current, _, err = s.hostedSessionCredential(ctx, session, credential.SessionHash)
 					}
 				}
@@ -110,12 +124,28 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 	if organization == "" || credential.Runner.RunnerID != "" || credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin || s.config.Hosted != nil && credential.Hosted == nil {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
+	if credential.HostedRole == "account" {
+		if s.config.Hosted == nil || s.hostedShared() || organization != s.config.Hosted.OrganizationID {
+			return operatortool.Authority{}, operatortool.ErrAccessDenied
+		}
+		return operatortool.Authority{Identity: operatorIdentity(credential, organization), Account: operatortool.Account{Subject: credential.Hosted.Subject, Role: "account"}, Check: func(_ context.Context, r operatortool.Requirement) error {
+			if r.ProjectID != "" || r.ResourceID != "" || r.ResourceKind != "" {
+				return operatortool.ErrAccessDenied
+			}
+			return nil
+		}}, nil
+	}
+
 	scope := nativeScope{organization: tracker.OrganizationID(organization), credential: credential}
 	if err := s.authorizeConversationOrganization(ctx, scope); err != nil {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
-	return operatortool.Authority{Identity: operatorIdentity(credential, organization), Check: func(ctx context.Context, requirement operatortool.Requirement) error {
-		if requirement.ResourceID != "" || requirement.ResourceKind != "" {
+	account := operatortool.Account{}
+	if credential.Hosted != nil {
+		account = operatortool.Account{Subject: credential.Hosted.Subject, Role: credential.HostedRole, SupportActor: credential.Hosted.SupportActor}
+	}
+	return operatortool.Authority{Account: account, Identity: operatorIdentity(credential, organization), Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+		if requirement.OrganizationWide && credential.Hosted == nil && credential.NativeOnly || requirement.ResourceID != "" || requirement.ResourceKind != "" {
 			// Resource-specific commands must use their application's ownership
 			// check; this initial read adapter never grants an unknown resource.
 			return operatortool.ErrAccessDenied
@@ -146,4 +176,27 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		}
 		return nil
 	}}, nil
+}
+
+func (s *Service) operatorAdministrationApproval(c echo.Context) error {
+	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
+		return c.NoContent(http.StatusForbidden)
+	}
+	session, hash, err := s.hostedSession(c)
+	if err != nil || session.Identity == nil {
+		return c.NoContent(http.StatusForbidden)
+	}
+	csrf := hostedCSRF(hash)
+	// Dedicated CSRF derives from the cookie token rather than its stored hash.
+	if cookie, err := c.Cookie(hostedCookie); err == nil {
+		csrf = hostedCSRF(cookie.Value)
+	}
+	if s.hostedShared() {
+		if claims, ok := hostedSharedClaims(c); ok {
+			csrf = claims.CSRF
+		} else {
+			return c.NoContent(http.StatusForbidden)
+		}
+	}
+	return s.administration.Approval(c, csrf)
 }

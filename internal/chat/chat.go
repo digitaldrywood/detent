@@ -36,6 +36,7 @@ type Message struct {
 }
 
 type Action struct {
+	resultData        json.RawMessage   // Never serialized into conversation, browser, logs or audit.
 	Mutation          mutation.Metadata `json:"-"`
 	ConnectionID      string            `json:"connection_id"`
 	OrganizationID    string            `json:"organization_id"`
@@ -108,6 +109,7 @@ type ActionExecutor interface {
 // ActionExecution carries the application command's result, including the
 // identity of a newly created resource, into the shared action receipt.
 type ActionExecution struct {
+	Data       json.RawMessage // Deliberate tool result; retained only in this bound chat session.
 	Message    string
 	ResourceID string
 	Identifier string

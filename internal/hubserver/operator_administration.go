@@ -1,0 +1,588 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"sort"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+type hubAdministration struct{ service *Service }
+
+func (s *Service) operatorAdministration() *operatoradmin.Executor {
+	names := []string{operatortool.OrganizationSession, operatortool.OrganizationList}
+	if s.config.Hosted != nil {
+		names = append(names, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationRevoke, operatortool.MemberRemove, operatortool.MemberRole, operatortool.MemberGrant)
+		if !s.hostedShared() {
+			names = append(names, operatortool.OrganizationSwitch, operatortool.OrganizationCreate, operatortool.SupportStart)
+			if _, ok := s.config.Hosted.Provider.(auth.InvitationAdministration); ok {
+				names = append(names, operatortool.InvitationAccept)
+			}
+		}
+	} else {
+		names = append(names, operatortool.OrganizationSwitch, operatortool.OrganizationCreate, operatortool.CredentialList, operatortool.CredentialCreate, operatortool.CredentialRotate, operatortool.CredentialRevoke, operatortool.CredentialGrant)
+	}
+	return operatoradmin.New(hubAdministration{s}, names...)
+}
+
+// Resolve through the original authenticated binding again. The effective role
+// supplied by the entry is still capped by the local member role.
+func (a hubAdministration) credential(ctx context.Context) (apiCredential, error) {
+	c := operatortool.CurrentConnection(ctx)
+	authority, err := c.Resolve(ctx)
+	if err != nil || authority.Identity != c.Identity {
+		return apiCredential{}, operatortool.ErrAccessDenied
+	}
+	s := a.service
+	if c.Identity.SessionID != "" {
+		session, err := s.storedWebSession(ctx, c.Identity.SessionID, s.config.now())
+		if err != nil || session.Identity == nil {
+			return apiCredential{}, operatortool.ErrAccessDenied
+		}
+		if s.hostedShared() {
+			credential, _, err := s.hostedSharedCredential(ctx, session, c.Identity.SessionID, authority.Account.Role)
+			return credential, err
+		}
+		if authority.Account.Role == "account" {
+			return s.hostedAccountCredential(ctx, c.Identity.SessionID)
+		}
+		credential, _, err := s.hostedSessionCredential(ctx, session, c.Identity.SessionID)
+		if err == nil {
+			credential.HostedRole = lesserHostedRole(credential.HostedRole, authority.Account.Role)
+		}
+		return credential, err
+	}
+	var credential apiCredential
+	err = s.database.db.QueryRowContext(ctx, "SELECT id,name,token_hash,scope,native_only FROM api_tokens WHERE id=? AND token_hash=? AND revoked_at IS NULL", c.Identity.PrincipalID, c.Identity.CredentialID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Scope, &credential.NativeOnly)
+	return credential, err
+}
+
+func (a hubAdministration) Authorize(ctx context.Context, name string, in operatoradmin.Input, resource string) error {
+	credential, err := a.credential(ctx)
+	if err != nil {
+		return operatortool.ErrAccessDenied
+	}
+	s := a.service
+	if name == operatortool.OrganizationSession {
+		return nil
+	}
+	if name == operatortool.OrganizationList {
+		if s.config.Hosted == nil && !credential.NativeOnly && credential.Scope != apiScopeAdmin {
+			return operatortool.ErrAccessDenied
+		}
+		return nil
+	}
+	if s.config.Hosted == nil && name == operatortool.OrganizationSwitch {
+		if in.OrganizationID == "" {
+			return nil
+		}
+		return s.authorizeConversationOrganization(ctx, nativeScope{organization: tracker.OrganizationID(in.OrganizationID), credential: credential})
+	}
+
+	if s.config.Hosted == nil {
+		if name == operatortool.CredentialCreate && (len(in.Scopes) > 0 && len(in.Scopes) == 1 && in.Scopes[0] == "read" || in.ExpiresIn != "") || name == operatortool.CredentialRotate && in.Grace != "" {
+			return operatortool.ErrInvalidArguments
+		}
+		if credential.Scope != apiScopeAdmin || credential.NativeOnly || credential.Runner.RunnerID != "" {
+			return operatortool.ErrAccessDenied
+		}
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, OrganizationWide: true}); err != nil {
+			return err
+		}
+		// This deployment has API administration but no authenticated browser
+		// approver. Material MCP operations cannot borrow bearer-token authority
+		// as human confirmation.
+		if name != operatortool.CredentialList {
+			return operatoradmin.ErrUnavailable
+		}
+		for _, project := range in.ProjectIDs {
+			if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: project}); err != nil {
+				return err
+			}
+		}
+
+		if in.CredentialID != "" || resource != "" && (name == operatortool.CredentialCreate || name == operatortool.CredentialRotate) {
+			id := in.CredentialID
+			if resource != "" && (name == operatortool.CredentialCreate || name == operatortool.CredentialRotate) {
+				id = resource
+			}
+			var count int
+			if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM api_tokens WHERE id=? AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)", id).Scan(&count); err != nil || count != 1 {
+				return operatortool.ErrAccessDenied
+			}
+			if resource != "" && (name == operatortool.CredentialCreate || name == operatortool.CredentialRotate) {
+				if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM api_tokens WHERE id=? AND revoked_at IS NULL", id).Scan(&count); err != nil || count != 1 {
+					return operatortool.ErrAccessDenied
+				}
+			}
+		}
+		return nil
+	}
+	if credential.Hosted == nil {
+		return operatortool.ErrAccessDenied
+	}
+	if name == operatortool.SupportStart {
+		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+		if err != nil || credential.Hosted.SupportActor != "" || !hostedEmailListed(s.config.Hosted.SupportActors, session.Email) || in.OrganizationID != "" && in.OrganizationID != s.config.Hosted.OrganizationID {
+			return operatortool.ErrAccessDenied
+		}
+		return nil
+	}
+	if name == operatortool.OrganizationCreate {
+		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+		if err != nil || credential.Hosted.Subject != s.config.Hosted.BootstrapSubject || credential.Hosted.SupportActor != "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+			return operatortool.ErrAccessDenied
+		}
+		var count int
+		if resource != "" {
+			if resource != s.config.Hosted.OrganizationID {
+				return operatortool.ErrAccessDenied
+			}
+			return nil
+		}
+		if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&count); err != nil || count != 0 && in.RequestID == "" {
+			return operatortool.ErrAccessDenied
+		}
+		return nil
+	}
+
+	if name == operatortool.MembershipList {
+		return nil
+	}
+	if name == operatortool.InvitationAccept && in.InvitationID != "" {
+		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+		if err != nil || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+			return operatortool.ErrAccessDenied
+		}
+		invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, in.InvitationID)
+		providerID, providerErr := s.hostedProviderOrganization(ctx)
+		if err != nil || providerErr != nil || providerID == "" || invitation.OrganizationID != providerID || auth.InvitationProblem(invitation, credential.Hosted.Subject, session.Email, s.config.now()) != "" {
+			return operatortool.ErrAccessDenied
+		}
+		var count int
+		if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND (accepted_user_id='' OR accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&count); err != nil || count != 1 {
+			return operatortool.ErrAccessDenied
+		}
+	}
+	if name == operatortool.OrganizationSwitch || name == operatortool.InvitationAccept {
+		if s.hostedShared() || credential.Hosted.SupportActor != "" {
+			return operatortool.ErrAccessDenied
+		}
+		return nil
+	}
+	if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+		return operatortool.ErrAccessDenied
+	}
+	if in.Role == "owner" && credential.HostedRole != "owner" {
+		return operatortool.ErrAccessDenied
+	}
+	if in.MemberID != "" {
+		if name == operatortool.MemberRole || name == operatortool.MemberRemove {
+			if _, err := s.hostedManagedMemberFor(ctx, credential, in.MemberID, name == operatortool.MemberRemove || in.Role != "owner"); err != nil {
+				return operatortool.ErrAccessDenied
+			}
+		} else if _, err := s.hostedMemberByID(ctx, credential, in.MemberID); err != nil {
+			return operatortool.ErrAccessDenied
+		}
+	}
+	invitation := in.InvitationID
+	if name == operatortool.InvitationSend {
+		invitation = resource
+	}
+	if invitation != "" {
+		var count int
+		if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", invitation, s.config.Hosted.OrganizationID).Scan(&count); err != nil || count != 1 {
+			return operatortool.ErrAccessDenied
+		}
+	}
+	return nil
+}
+
+func (a hubAdministration) Read(ctx context.Context, name string, in operatoradmin.Input) (any, error) {
+	s := a.service
+	credential, err := a.credential(ctx)
+	if err != nil {
+		return nil, err
+	}
+	switch name {
+	case operatortool.OrganizationSession:
+		return struct {
+			Principal    string `json:"principal_id"`
+			Organization string `json:"organization_id"`
+			Role         string `json:"role"`
+			SupportActor string `json:"support_actor,omitempty"`
+		}{credential.ID, operatortool.ConnectionIdentity(ctx).OrganizationID, credential.HostedRole, func() string {
+			if credential.Hosted != nil {
+				return credential.Hosted.SupportActor
+			}
+			return ""
+		}()}, nil
+	case operatortool.MembershipList:
+		members, err := s.hostedMembersFor(ctx, credential)
+		if err != nil {
+			return nil, err
+		}
+		return struct {
+			Members     any `json:"members"`
+			Invitations any `json:"invitations"`
+		}{operatoradmin.Page(members.Members, in), operatoradmin.Page(members.Invitations, in)}, nil
+	case operatortool.OrganizationList:
+		if credential.Hosted != nil {
+			choices, err := s.hostedOrganizationChoicesFor(ctx, credential)
+			if err != nil {
+				return nil, err
+			}
+			return operatoradmin.Page(choices, in), nil
+		}
+		rows, err := s.database.db.QueryContext(ctx, "SELECT id,name,local FROM organizations WHERE id=? OR ?=0 ORDER BY id", operatortool.ConnectionIdentity(ctx).OrganizationID, credential.NativeOnly)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var choices []nativeOrganization
+		for rows.Next() {
+			var row nativeOrganization
+			if err := rows.Scan(&row.ID, &row.Name, &row.Local); err != nil {
+				return nil, err
+			}
+			choices = append(choices, row)
+		}
+		return operatoradmin.Page(choices, in), rows.Err()
+	case operatortool.CredentialList:
+		return s.tokenMetadata(ctx, in)
+	default:
+		return nil, operatoradmin.ErrUnavailable
+	}
+}
+
+func (a hubAdministration) Preview(ctx context.Context, name string, in operatoradmin.Input) (operatoradmin.Preview, error) {
+	s := a.service
+	credential, err := a.credential(ctx)
+	if err != nil {
+		return operatoradmin.Preview{}, err
+	}
+	preview := operatoradmin.Preview{Summary: name, Current: in}
+	switch name {
+	case operatortool.MemberRemove, operatortool.MemberRole, operatortool.MemberGrant:
+		member, err := s.hostedMemberByID(ctx, credential, in.MemberID)
+		if err != nil {
+			return preview, err
+		}
+		view, err := s.hostedMemberResponse(ctx, member)
+		if err != nil {
+			return preview, err
+		}
+		preview.ResourceID, preview.Current = member.ID, struct {
+			Member hostedMemberView    `json:"member"`
+			Input  operatoradmin.Input `json:"input"`
+		}{view, in}
+	case operatortool.InvitationRevoke:
+		var email, role string
+		err := s.database.db.QueryRowContext(ctx, "SELECT email,role FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", in.InvitationID, s.config.Hosted.OrganizationID).Scan(&email, &role)
+		if err != nil {
+			return preview, err
+		}
+		preview.ResourceID = in.InvitationID
+		preview.Current = struct{ Email, Role string }{email, role}
+	case operatortool.OrganizationSwitch:
+		if s.config.Hosted == nil {
+			var org nativeOrganization
+			err := s.database.db.QueryRowContext(ctx, "SELECT id,name,local FROM organizations WHERE id=?", in.OrganizationID).Scan(&org.ID, &org.Name, &org.Local)
+			preview.ResourceID = in.OrganizationID
+			preview.Current = org
+			return preview, err
+		}
+		next, err := s.hostedSwitchFor(ctx, credential.Hosted, in.OrganizationID)
+		if err != nil {
+			return preview, err
+		}
+		preview.ResourceID = in.OrganizationID
+		preview.Current = hostedNextResponse{Next: next}
+	case operatortool.InvitationAccept:
+		// The ID identifies the provider invitation, not an identity exchange token.
+		var id, email, role string
+		err := s.database.db.QueryRowContext(ctx, "SELECT i.id,i.email,i.role FROM hosted_invitations i WHERE i.id=? AND i.organization_id=? AND (i.accepted_user_id='' OR i.accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&id, &email, &role)
+		if err != nil {
+			return preview, err
+		}
+		preview.ResourceID = id
+		preview.Current = struct{ Email, Role string }{email, role}
+	case operatortool.CredentialRotate, operatortool.CredentialRevoke, operatortool.CredentialGrant:
+		view, err := s.tokenMetadataByID(ctx, in.CredentialID)
+		if err != nil {
+			return preview, err
+		}
+		preview.ResourceID = in.CredentialID
+		preview.Current = struct {
+			Credential tokenResponse       `json:"credential"`
+			Input      operatoradmin.Input `json:"input"`
+		}{view, in}
+	}
+	return preview, nil
+}
+
+func (a hubAdministration) Execute(ctx context.Context, name string, in operatoradmin.Input, m mutation.Metadata) (operatoradmin.Output, error) {
+	s := a.service
+	credential, err := a.credential(ctx)
+	if err != nil {
+		return operatoradmin.Output{}, err
+	}
+	if s.config.Hosted != nil && (name == operatortool.OrganizationCreate || name == operatortool.SupportStart || name == operatortool.InvitationAccept && credential.HostedRole == "account") {
+		return s.executeHostedAccountFor(ctx, credential, name, in, m)
+	}
+
+	if name == operatortool.InvitationSend {
+		view, err := s.inviteHostedMemberFor(ctx, credential, in.Email, in.Role, in.RequestID)
+		if err != nil {
+			return operatoradmin.Output{}, err
+		}
+		raw, err := json.Marshal(view)
+		return operatoradmin.Output{ResourceID: view.ID, Data: raw}, err
+	}
+	command := hostedCommand{organization: operatortool.ConnectionIdentity(ctx).OrganizationID, actor: credential.ID, operation: name, key: in.RequestID, input: in}
+	claimed, replay, err := s.claimHostedOperation(ctx, command)
+	if err != nil {
+		return operatoradmin.Output{}, err
+	}
+	if !claimed {
+		var output operatoradmin.Output
+		err := json.Unmarshal(replay, &output)
+		return output, err
+	}
+	output := operatoradmin.Output{ResourceID: m.ResourceID}
+	var data any
+	switch name {
+	case operatortool.MemberRemove:
+		err = s.removeHostedMemberFor(ctx, credential, in.MemberID)
+	case operatortool.MemberRole:
+		data, err = s.changeHostedRoleFor(ctx, credential, in.MemberID, in.Role)
+	case operatortool.MemberGrant:
+		data, err = s.changeHostedGrantFor(ctx, credential, in.MemberID, in.ProjectID, in.Write, in.Runner, in.Revoke)
+	case operatortool.InvitationRevoke:
+		err = s.revokeHostedInvitationFor(ctx, in.InvitationID)
+	case operatortool.OrganizationSwitch:
+		if s.config.Hosted == nil {
+			output.URL = "/api/v2/organizations/" + in.OrganizationID + "/mcp"
+			output.Reconnect = true
+			break
+		}
+		output.URL, err = s.hostedSwitchFor(ctx, credential.Hosted, in.OrganizationID)
+		output.Reconnect = true
+	case operatortool.InvitationAccept:
+		session, sessionErr := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+		if sessionErr != nil {
+			return output, sessionErr
+		}
+		err = s.acceptHostedInvitationIDFor(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, in.InvitationID)
+		output.URL = s.config.Hosted.PublicURL + "/auth/oidc/start"
+		output.Reconnect = true
+	case operatortool.SupportStart:
+		output.URL = s.config.Hosted.PublicURL + "/support"
+		output.Reconnect = true
+		data = struct {
+			InteractiveRequired bool `json:"interactive_required"`
+		}{true}
+	case operatortool.OrganizationCreate:
+		if s.config.Hosted != nil {
+			output.ResourceID, err = s.createHostedOrganizationFor(ctx, credential, in.Name)
+			output.URL = s.config.Hosted.PublicURL + "/auth/oidc/start"
+			output.Reconnect = true
+		} else {
+			data, err = s.createNativeOrganizationFor(ctx, in.Name)
+		}
+	case operatortool.CredentialCreate:
+		var token tokenResponse
+		token, err = s.createAPITokenFor(ctx, tokenRequest{Name: in.Name, Scope: nativeToolScope(in.Scopes)})
+		if err == nil {
+			for _, project := range in.ProjectIDs {
+				if err = s.grantNativeTokenFor(ctx, token.ID, operatortool.ConnectionIdentity(ctx).OrganizationID, project); err != nil {
+					break
+				}
+			}
+		}
+		data = token
+	case operatortool.CredentialRotate:
+		data, err = s.rotateAPITokenFor(ctx, in.CredentialID)
+	case operatortool.CredentialRevoke:
+		err = s.revokeAPITokenFor(ctx, in.CredentialID)
+	case operatortool.CredentialGrant:
+		for _, id := range in.ProjectIDs {
+			if err = s.grantNativeTokenFor(ctx, in.CredentialID, operatortool.ConnectionIdentity(ctx).OrganizationID, id); err != nil {
+				break
+			}
+		}
+	default:
+		err = operatoradmin.ErrUnavailable
+	}
+	if err != nil {
+		return operatoradmin.Output{}, err
+	}
+	if token, ok := data.(tokenResponse); ok {
+		output.ResourceID = token.ID
+		view, readErr := s.tokenMetadataByID(ctx, token.ID)
+		if readErr != nil {
+			return operatoradmin.Output{}, readErr
+		}
+		view.Token = token.Token
+		data = view
+	}
+	if org, ok := data.(nativeOrganization); ok {
+		output.ResourceID = string(org.ID)
+		output.URL = "/api/v2/organizations/" + string(org.ID) + "/mcp"
+		output.Reconnect = true
+	}
+	if data != nil {
+		output.Data, err = json.Marshal(data)
+		if err != nil {
+			return operatoradmin.Output{}, err
+		}
+	}
+	receipt := output
+	if name == operatortool.CredentialCreate || name == operatortool.CredentialRotate {
+		receipt.Data = nil
+	}
+	if _, err := s.completeHostedOperation(ctx, command, receipt); err != nil {
+		return operatoradmin.Output{}, mutation.ErrUncertain
+	}
+	return output, nil
+}
+
+func (a hubAdministration) Audit(ctx context.Context, m mutation.Metadata, outcome string) {
+	m.RetryIdentity, m.InputHash = "", ""
+	a.service.config.Logger.InfoContext(ctx, "operator mutation", "audit", m, "outcome", outcome)
+}
+
+func nativeToolScope(scopes []string) apiScope {
+	if apikey.HasScope(scopes, apikey.ScopeAdmin) {
+		return apiScopeAdmin
+	}
+	return apiScopeOperator
+}
+
+func (s *Service) hostedSwitchFor(ctx context.Context, identity *auth.HostedIdentity, organization string) (string, error) {
+	if identity == nil || identity.SupportActor != "" {
+		return "", operatortool.ErrAccessDenied
+	}
+	for _, destination := range s.config.Hosted.Directory {
+		if destination.OrganizationID != organization {
+			continue
+		}
+		memberships, err := s.config.Hosted.Provider.Memberships(ctx, identity.Subject, destination.WorkOSOrganizationID)
+		if err != nil {
+			return "", err
+		}
+		for _, member := range memberships {
+			if member.Status == "active" && member.UserID == identity.Subject && member.OrganizationID == destination.WorkOSOrganizationID {
+				return destination.PublicURL + "/auth/oidc/start", nil
+			}
+		}
+	}
+	return "", operatortool.ErrAccessDenied
+}
+
+// Metadata deliberately omits token hashes and runner credentials.
+func (s *Service) tokenMetadata(ctx context.Context, in operatoradmin.Input) (any, error) {
+	rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM api_tokens WHERE NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id) ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	var views []tokenResponse
+	for _, id := range ids {
+		view, err := s.tokenMetadataByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		views = append(views, view)
+	}
+	sort.Slice(views, func(i, j int) bool { return views[i].ID < views[j].ID })
+	return operatoradmin.Page(views, in), nil
+}
+
+func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenResponse, error) {
+	var view tokenResponse
+	var created string
+	var revoked sql.NullString
+	err := s.database.db.QueryRowContext(ctx, "SELECT id,name,scope,token_fingerprint,created_at,native_only,revoked_at FROM api_tokens WHERE id=?", id).Scan(&view.ID, &view.Name, &view.Scope, &view.Fingerprint, &created, &view.NativeOnly, &revoked)
+	if err != nil {
+		return view, err
+	}
+	view.CreatedAt, err = parseTimeValue(created)
+	if err != nil {
+		return view, err
+	}
+	if revoked.Valid {
+		at, err := parseTimeValue(revoked.String)
+		if err != nil {
+			return view, err
+		}
+		view.RevokedAt = &at
+	}
+	rows, err := s.database.db.QueryContext(ctx, "SELECT organization_id,project_id FROM token_grants WHERE token_id=? ORDER BY organization_id,project_id", id)
+	if err != nil {
+		return view, err
+	}
+	defer rows.Close()
+	view.Grants = []tokenGrantResponse{}
+	for rows.Next() {
+		var grant tokenGrantResponse
+		if err := rows.Scan(&grant.OrganizationID, &grant.ProjectID); err != nil {
+			return view, err
+		}
+		view.Grants = append(view.Grants, grant)
+	}
+	return view, rows.Err()
+}
+
+func (s *Service) hostedOrganizationChoicesFor(ctx context.Context, credential apiCredential) ([]nativeOrganization, error) {
+	choices := []nativeOrganization{{ID: tracker.OrganizationID(s.config.Hosted.OrganizationID), Name: s.config.Hosted.OrganizationID}}
+	if s.hostedShared() || credential.Hosted.SupportActor != "" {
+		return choices, nil
+	}
+	for _, destination := range s.config.Hosted.Directory {
+		if destination.OrganizationID == s.config.Hosted.OrganizationID {
+			continue
+		}
+		if _, err := s.hostedSwitchFor(ctx, credential.Hosted, destination.OrganizationID); err == nil {
+			choices = append(choices, nativeOrganization{ID: tracker.OrganizationID(destination.OrganizationID), Name: destination.OrganizationID})
+		}
+	}
+	sort.Slice(choices, func(i, j int) bool { return choices[i].ID < choices[j].ID })
+	return choices, nil
+}
+
+func (a hubAdministration) AuthorizeOutput(ctx context.Context, name string, in operatoradmin.Input, output operatoradmin.Output) error {
+	if (name != operatortool.CredentialCreate && name != operatortool.CredentialRotate) || len(output.Data) == 0 {
+		return nil
+	}
+	var delivered tokenResponse
+	if json.Unmarshal(output.Data, &delivered) != nil {
+		return operatortool.ErrAccessDenied
+	}
+	current, err := a.service.tokenMetadataByID(ctx, output.ResourceID)
+	if err != nil || current.Fingerprint != delivered.Fingerprint {
+		return operatortool.ErrAccessDenied
+	}
+	return nil
+}

@@ -34,8 +34,12 @@ func authorizeHuman(ctx context.Context, organization string) error {
 }
 
 func authorizeAction(ctx context.Context, connection operatortool.Connection, action Action) (context.Context, error) {
+	scope := apikey.ScopeWrite
+	if operatortool.IsAdministration(string(action.Kind)) {
+		scope = operatortool.AdministrationScope(string(action.Kind))
+	}
 	return operatortool.AuthorizeCurrent(operatortool.WithConnection(ctx, connection), operatortool.Requirement{
-		Scope: apikey.ScopeWrite, OrganizationID: action.OrganizationID, ProjectID: action.ProjectID,
+		Scope: scope, OrganizationID: action.OrganizationID, ProjectID: action.ProjectID,
 	})
 }
 
@@ -92,6 +96,24 @@ func (s *Service) CheckConnection(ctx context.Context) error {
 	return err
 }
 
+// CheckBrowserSession binds hosted approval to the original authenticated
+// browser session without exposing its credential or granting it new powers.
+func (s *Service) CheckBrowserSession(ctx context.Context, id string) error {
+	identity := operatortool.ConnectionIdentity(ctx)
+	s.mu.Lock()
+	current := s.sessions[id]
+	s.mu.Unlock()
+	if current == nil || identity.SessionID == "" {
+		return operatortool.ErrAccessDenied
+	}
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	if current.connection == nil || current.connection.Identity.SessionID != identity.SessionID || current.connection.Identity.OrganizationID != identity.OrganizationID {
+		return operatortool.ErrAccessDenied
+	}
+	return nil
+}
+
 // RetryResult returns the original receipt without proposing a new action against
 // a changed board. Reusing a retry identity with changed arguments is denied.
 func (s *Service) RetryResult(ctx context.Context, kind ActionKind, requestID string, arguments json.RawMessage) (Action, bool, error) {
@@ -139,6 +161,8 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 // Unknown action kinds fail closed, including future billing/access commands.
 func RequiresConfirmation(action Action) bool {
 	switch action.Kind {
+	case ActionKind(operatortool.OrganizationSwitch):
+		return false
 	case ActionSetPriority:
 		return false
 	case ActionFileIssue:
@@ -245,4 +269,24 @@ func (s *Service) RejectConnectionAction(ctx context.Context, id, actionID strin
 	}
 	s.auditAction(ctx, current.actions[index], "rejected")
 	return s.rejectAction(current, index)
+}
+
+// ConnectionResult is the only credential delivery path. Browser conversations
+// never serialize this data. The caller must also recheck resource ownership.
+func (s *Service) ConnectionResult(ctx context.Context, actionID string) (json.RawMessage, error) {
+	current, err := s.connectionSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	index := actionIndex(current.actions, actionID)
+	if index < 0 {
+		return nil, ErrActionNotFound
+	}
+	action := current.actions[index]
+	if _, err := authorizeAction(ctx, *current.connection, action); err != nil {
+		return nil, err
+	}
+	return append(json.RawMessage(nil), action.resultData...), nil
 }

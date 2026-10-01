@@ -27,16 +27,26 @@ func (i Identity) Valid() bool {
 // Requirement is application authority, independent of MCP annotations or
 // confirmation. Resource ownership must be checked by the application adapter.
 type Requirement struct {
-	Scope          apikey.Scope
-	OrganizationID string
-	ProjectID      string
-	ResourceKind   string
-	ResourceID     string
+	OrganizationWide bool // Administration cannot be performed by a project-scoped credential.
+	Scope            apikey.Scope
+	OrganizationID   string
+	ProjectID        string
+	ResourceKind     string
+	ResourceID       string
 }
 
-// Authority delegates permission decisions and read projection to the same
-// application services used by the dashboard. Neither transport defines roles.
+// Account is fresh application identity for account commands. It is not a
+// credential and must never be retained as permission evidence.
+type Account struct {
+	Subject      string
+	Role         string
+	Email        string
+	SupportActor string
+}
+
+// Authority delegates permission decisions and projection to dashboard services.
 type Authority struct {
+	Account  Account
 	Identity Identity
 	Check    func(context.Context, Requirement) error
 	Snapshot func(context.Context, telemetry.Snapshot) (telemetry.Snapshot, error)
