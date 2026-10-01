@@ -39,10 +39,11 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodPatch, itemPath+"/comments/"+firstComment.ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-first"}, ExpectedRevision: firstComment.Revision, Body: "edited first comment"})
 	requireNativeStatus(t, response, http.StatusOK)
-	var ctx context.Context
-	f.service.echo.POST("/api/v2/organizations/:organization/operator-read-fixture", func(c echo.Context) error { ctx = c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+	ctxs := make(chan context.Context, 1)
+	f.service.echo.POST("/api/v2/organizations/:organization/operator-read-fixture", func(c echo.Context) error { ctxs <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/operator-read-fixture", f.token, map[string]any{})
 	requireNativeStatus(t, response, http.StatusOK)
+	ctx := <-ctxs
 	executor := hostedOperatorExecutor{service: f.service}
 	call := func(tool string, args map[string]any) (operatortool.Result, error) {
 		t.Helper()

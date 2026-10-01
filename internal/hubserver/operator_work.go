@@ -7,11 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/google/uuid"
 )
 
 type nativeOperatorScopeKey struct{}
@@ -71,7 +72,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	if !definition.Annotations.ReadOnly {
 		defer func() {
 			metadata.RetryIdentity, metadata.InputHash = "", ""
-			audit, _ := json.Marshal(struct {
+			audit, _ := json.Marshal(struct { //nolint:errcheck // Audit metadata and outcome contain only strings.
 				mutation.Metadata
 				Outcome string `json:"outcome"`
 			}{metadata, outcome})

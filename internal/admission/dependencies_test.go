@@ -213,6 +213,9 @@ func TestAdmissionRevalidatesDependenciesDuringEvaluation(t *testing.T) {
 	if err != nil || len(result.Proposals) != 0 || result.Skipped["stale_or_ineligible"] != 1 {
 		t.Fatalf("result=%+v, %v", result, err)
 	}
+	if len(result.Issues) != 1 || result.Issues[0].Evaluation != nil {
+		t.Fatalf("stale dependency result acquired an outcome: %+v", result.Issues)
+	}
 }
 
 func FuzzAdmissionDependencyReadiness(f *testing.F) {

@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 var errHubOperatorUnavailable = errors.New("operator command is unavailable")
@@ -50,12 +49,6 @@ func currentHubOperator(ctx context.Context) (apiCredential, error) {
 		return apiCredential{}, operatortool.ErrAccessDenied
 	}
 	return resolve(ctx)
-}
-func (s *Service) operatorPublicURL(c echo.Context) string {
-	if s.config.Hosted != nil {
-		return strings.TrimRight(s.config.Hosted.PublicURL, "/")
-	}
-	return "" // A standalone hub has no authenticated operator browser service.
 }
 func (e hubFleetExecutor) OpenConnection(ctx context.Context) error {
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
@@ -246,7 +239,10 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	delete(fields, "request_id")
-	encoded, _ := json.Marshal(fields)
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return operatortool.Result{}, operatortool.ErrInvalidArguments
+	}
 	arguments := json.RawMessage(encoded)
 	if prior, found, err := s.operatorChat.RetryResult(ctx, chatpkg.ActionKind(call.Name), r.RequestID, arguments); found || err != nil {
 		if err != nil {
@@ -271,7 +267,9 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		var outcome struct {
 			Status string `json:"status"`
 		}
-		_ = json.Unmarshal(raw, &outcome)
+		if err := json.Unmarshal(raw, &outcome); err != nil {
+			return operatortool.Result{}, errHubOperatorUnavailable
+		}
 		status := "succeeded"
 		if outcome.Status == "rejected" {
 			status = "rejected"

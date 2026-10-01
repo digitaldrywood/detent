@@ -242,7 +242,10 @@ func (s *Server) fleetActionProposal(ctx context.Context, name string, raw json.
 		return chatpkg.Action{}, operatortool.ErrInvalidArguments
 	}
 	fields["request_id"] = json.RawMessage(`"preview"`)
-	bounded, _ := json.Marshal(fields)
+	bounded, err := json.Marshal(fields)
+	if err != nil {
+		return chatpkg.Action{}, operatortool.ErrInvalidArguments
+	}
 	r, err := decodeFleetRequest(name, bounded)
 	if err != nil {
 		return chatpkg.Action{}, err

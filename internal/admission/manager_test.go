@@ -4690,19 +4690,30 @@ func TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity(t *testing.T) {
 func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name         string
-		automatic    bool
-		confidence   float64
-		failCriteria bool
-		author       string
-		human        bool
-		wantCalls    int
-		wantState    string
+		name          string
+		automatic     bool
+		confidence    float64
+		failCriteria  bool
+		declined      bool
+		malformed     bool
+		missing       bool
+		truncated     bool
+		dependency    bool
+		author        string
+		human         bool
+		wantCalls     int
+		wantState     string
+		wantQualified bool
 	}{
-		{name: "automatic qualifies", automatic: true, confidence: .95, author: "octocat", wantCalls: 1, wantState: "Todo"},
+		{name: "automatic qualifies", automatic: true, confidence: .95, author: "octocat", wantCalls: 1, wantState: "Todo", wantQualified: true},
 		{name: "automatic disabled", confidence: .95, author: "octocat", wantState: "Backlog"},
 		{name: "low confidence", automatic: true, confidence: .83, author: "octocat", wantCalls: 1, wantState: "Backlog"},
 		{name: "failed criteria", automatic: true, confidence: .95, failCriteria: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "valid decline with zero confidence", automatic: true, declined: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "malformed evaluation", automatic: true, malformed: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "missing evaluation", automatic: true, missing: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "failure beyond receipt cap", automatic: true, confidence: .95, truncated: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "dependency blocks readiness", automatic: true, confidence: .95, dependency: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
 		{name: "unknown author", automatic: true, confidence: .95, author: "unknown", wantState: "Backlog"},
 		{name: "human owned", automatic: true, confidence: .95, author: "octocat", human: true, wantState: "Backlog"},
 	} {
@@ -4717,6 +4728,9 @@ func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
 			}
 			candidate := admissionIssueFixture("candidate", "owner/repo#3242", 0, now)
 			candidate.AuthorID = tt.author
+			if tt.dependency {
+				candidate.Description += "\nDepends on: owner/repo#1"
+			}
 			if tt.human {
 				candidate.Labels = []string{"human-owned"}
 			}
@@ -4735,9 +4749,25 @@ func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
 			}
 			agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
 				proposals := proposeEveryCandidateAtConfidence(tt.confidence)(request)
-				if tt.failCriteria {
-					for i := range proposals {
+				for i := range proposals {
+					if tt.failCriteria {
 						proposals[i].Findings[0].Matched = false
+					}
+					if tt.declined {
+						proposals[i].Disposition = admissionDispositionDeclined
+						for j := range proposals[i].Findings {
+							proposals[i].Findings[j].Matched = false
+						}
+					}
+					if tt.truncated {
+						for j := range maxReceiptCriteria {
+							proposals[i].Findings = append(proposals[i].Findings, admissionmodel.Finding{
+								Dimension:      fmt.Sprintf("Private dimension %d", j),
+								CriterionQuote: "private criterion text",
+								Matched:        j != maxReceiptCriteria-1,
+								Rationale:      "private rationale text",
+							})
+						}
 					}
 				}
 				return proposals
@@ -4746,18 +4776,91 @@ func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
 			settings.Config.AutoAdmit = tt.automatic
 			settings.Config.AutoAdmitMinConfidence = .85
 			settings.Config.Authors.Allow = []string{"octocat"}
+			if tt.truncated {
+				for j := range maxReceiptCriteria {
+					settings.Criteria.Dimensions = append(settings.Criteria.Dimensions, config.AdmissionDimension{
+						Name: fmt.Sprintf("Private dimension %d", j), Text: "private criterion text",
+					})
+				}
+			}
+			invalidAgent := &malformedAdmissionRunner{malformedCalls: 1}
+			if tt.missing {
+				invalidAgent.malformedOutputs = []string{`{"evaluations":[]}`}
+			}
+			if tt.malformed || tt.missing {
+				settings.Runner = invalidAgent
+			}
 			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
 			result, err := manager.RunOnce(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
 			fresh, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{candidate.ID})
-			if err != nil || len(fresh) != 1 || fresh[0].State != tt.wantState || agent.calls != tt.wantCalls {
-				t.Fatalf("state=%+v calls=%d wantState=%s wantCalls=%d err=%v result=%+v", fresh, agent.calls, tt.wantState, tt.wantCalls, err, result)
+			calls := agent.calls + invalidAgent.calls
+			if err != nil || len(fresh) != 1 || fresh[0].State != tt.wantState || calls != tt.wantCalls {
+				t.Fatalf("state=%+v calls=%d wantState=%s wantCalls=%d err=%v result=%+v", fresh, calls, tt.wantState, tt.wantCalls, err, result)
 			}
 			open, err := backend.CountOpenAdmissionProposals(t.Context(), settings.ProjectID)
 			if err != nil || open != 10 {
 				t.Fatalf("pending human count=%d err=%v", open, err)
+			}
+			record, found, err := backend.LatestAdmissionRun(t.Context(), settings.ProjectID)
+			if err != nil || !found || len(record.Issues) != tt.wantCalls || len(result.Issues) != tt.wantCalls {
+				t.Fatalf("run receipts=%+v found=%t err=%v result=%+v", record.Issues, found, err, result)
+			}
+			history, err := backend.AdmissionCandidateHistory(t.Context(), settings.ProjectID)
+			if err != nil || len(history) != tt.wantCalls {
+				t.Fatalf("history=%+v err=%v", history, err)
+			}
+			if tt.wantCalls == 0 {
+				return
+			}
+			receipt := history[candidate.ID]
+			if !reflect.DeepEqual(receipt, record.Issues[0]) || !reflect.DeepEqual(receipt.Evaluation, result.Issues[0].Evaluation) {
+				t.Fatalf("history receipt=%+v run=%+v result=%+v", receipt, record.Issues[0], result.Issues[0])
+			}
+			if tt.malformed || tt.missing {
+				if receipt.Evaluation != nil || len(record.Malformed) != 1 {
+					t.Fatalf("invalid output acquired an outcome: %+v malformed=%+v", receipt, record.Malformed)
+				}
+				return
+			}
+			outcome := receipt.Evaluation
+			disposition := admissionDispositionProposed
+			if tt.declined {
+				disposition = admissionDispositionDeclined
+			}
+			total := 2
+			if tt.truncated {
+				total += maxReceiptCriteria
+			}
+			if outcome == nil || outcome.Disposition != disposition || outcome.Confidence != tt.confidence ||
+				outcome.AutoAdmitMinConfidence != .85 || outcome.AutoQualified != tt.wantQualified ||
+				outcome.CriteriaTotal != total || outcome.CriteriaTruncated != tt.truncated || len(outcome.Criteria) != min(total, maxReceiptCriteria) {
+				t.Fatalf("evaluation outcome=%+v", outcome)
+			}
+			fingerprints := make(map[string]bool)
+			for i, criterion := range outcome.Criteria {
+				matched := !tt.declined && !(tt.failCriteria && i == 0) && !(tt.dependency && i == 1)
+				if criterion.Index != i || criterion.Matched != matched || len(criterion.Fingerprint) != 64 || fingerprints[criterion.Fingerprint] {
+					t.Fatalf("criterion[%d]=%+v", i, criterion)
+				}
+				fingerprints[criterion.Fingerprint] = true
+			}
+			raw, err := json.Marshal(outcome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, private := range []string{"criterion_quote", "rationale", "Private dimension", "private criterion text", "serves a stated current priority", "has an actionable problem statement"} {
+				if strings.Contains(string(raw), private) {
+					t.Fatalf("outcome retains private evaluation text %q: %s", private, raw)
+				}
+			}
+			if tt.wantQualified && receipt.ProposalID == "" {
+				t.Fatal("automatic admission lost proposal provenance")
+			}
+			if !tt.wantQualified && receipt.ProposalID != "" {
+				t.Fatalf("unqualified evaluation created proposal %q", receipt.ProposalID)
 			}
 		})
 	}

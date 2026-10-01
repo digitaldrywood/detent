@@ -95,7 +95,7 @@ func report(ctx context.Context, input io.Reader, gh ghCommand, getenv func(stri
 		if (j.Name == "Finalize scheduled validation" && j.Conclusion != "failure") || j.Conclusion == "success" {
 			continue
 		}
-		log, logErr := gh(ctx, "", "api", "--allow-escape-sequences", fmt.Sprintf("repos/%s/actions/jobs/%d/logs", repository, j.ID))
+		log, logErr := gh(ctx, "", "api", fmt.Sprintf("repos/%s/actions/jobs/%d/logs", repository, j.ID), "--allow-escape-sequences")
 		problems := parseProblems(string(log), getenv("GITHUB_WORKSPACE"))
 		if len(problems) == 0 {
 			problems = []problem{{Key: "scheduled-ci:" + repository + ":" + j.Name, Summary: "scheduled " + j.Name + " failure", Evidence: "No reliable failed test or source diagnostic was available; this identity is limited to the job."}}

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -17,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func projectCall[T any](t *testing.T, name, project, key string, input T) operatortool.Call {
@@ -54,8 +55,8 @@ func TestHostedProjectTools(t *testing.T) {
 				f = newHostedSecurityFixture(t)
 			}
 			owner := f.user(t, "owner-tools", "owner", "owner-tools@example.test", "write", "")
-			var captured context.Context
-			f.service.echo.GET("/operator-project-test", func(c echo.Context) error { captured = c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+			captureds := make(chan context.Context, 1)
+			f.service.echo.GET("/operator-project-test", func(c echo.Context) error { captureds <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 			connect := func(id string) context.Context {
 				t.Helper()
 				if deployment == "shared" {
@@ -64,7 +65,7 @@ func TestHostedProjectTools(t *testing.T) {
 				} else {
 					requireNativeStatus(t, f.request(t, owner, http.MethodGet, "/operator-project-test", nil), http.StatusOK)
 				}
-				ctx := operatortool.BindConnection(captured, id, "project fixture")
+				ctx := operatortool.BindConnection(<-captureds, id, "project fixture")
 				if err := (hubProjectExecutor{f.service}).OpenConnection(ctx); err != nil {
 					t.Fatal(err)
 				}
@@ -153,7 +154,7 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			// YOLO suppresses only confirmation; shared policy provenance validation remains.
-			human := chatpkg.WithOperatorApproval(captured, operatortool.ConnectionIdentity(captured))
+			human := chatpkg.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx))
 			if err := f.service.operatorChat.SetConnectionMode(human, "project-tools", chatpkg.YOLOMode); err != nil {
 				t.Fatal(err)
 			}
@@ -224,11 +225,12 @@ func TestHostedProjectTools(t *testing.T) {
 func TestProjectImportToolReceipts(t *testing.T) {
 	backend := &importFixtureBackend{}
 	f := newIntegrationFixture(t, backend)
-	var captured context.Context
+	captureds := make(chan context.Context, 1)
 	// The resolver derives the organization from the registered native entry path.
-	f.service.echo.GET("/api/v2/organizations/:organization/project-import-test", func(c echo.Context) error { captured = c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+	f.service.echo.GET("/api/v2/organizations/:organization/project-import-test", func(c echo.Context) error { captureds <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/project-import-test"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusOK)
+	captured := <-captureds
 	e := hubProjectExecutor{f.service}
 	connect := func(id string) context.Context {
 		ctx := operatortool.BindConnection(captured, id, "import fixture")

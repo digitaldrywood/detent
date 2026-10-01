@@ -75,7 +75,7 @@ type accountReceipt struct {
 // Account setup has no customer token row. Its receipts therefore reuse the
 // existing hosted audit ledger and dashboard mutation serialization.
 func (s *Service) executeHostedAccountFor(ctx context.Context, credential apiCredential, name string, in operatoradmin.Input, m mutation.Metadata) (operatoradmin.Output, error) {
-	if locked, _ := ctx.Value(hostedMutationContext{}).(bool); !locked {
+	if locked, ok := ctx.Value(hostedMutationContext{}).(bool); !ok || !locked {
 		s.hostedMutationMu.Lock()
 		defer s.hostedMutationMu.Unlock()
 	}

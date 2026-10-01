@@ -14,11 +14,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/labstack/echo/v4"
 )
 
 func (p *fakeProvider) InvitationByID(_ context.Context, id string) (auth.Invitation, error) {
@@ -66,14 +67,15 @@ func TestEntryAdministrationContext(t *testing.T) {
 			} else {
 				b.login("/organizations", user+":")
 			}
-			var ctx context.Context
+			ctxs := make(chan context.Context, 1)
 			f.service.echo.POST("/administration-test", func(c echo.Context) error {
-				ctx = operatortool.BindConnection(c.Request().Context(), "entry-test", "fixture")
+				ctxs <- operatortool.BindConnection(c.Request().Context(), "entry-test", "fixture")
 				return c.NoContent(http.StatusOK)
 			}, f.service.administrationAuthority)
 			if response := b.do(http.MethodPost, "/administration-test", nil, nil); response.StatusCode != http.StatusOK {
 				t.Fatalf("entry=%d %s", response.StatusCode, response.Body)
 			}
+			ctx := <-ctxs
 			e := f.service.administration
 			if err := e.OpenConnection(ctx); err != nil {
 				t.Fatal(err)
@@ -141,7 +143,7 @@ func TestEntryAdministrationContext(t *testing.T) {
 				f.provider.removeMember(user, "porg_alpha")
 			}
 			if scenario == "revoked session" {
-				if _, err := f.service.auth.store.db.Exec("UPDATE sessions SET revoked_at='revoked'"); err != nil {
+				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET revoked_at='revoked'"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -358,7 +360,7 @@ func testEntrySessionTransports(t *testing.T, f entryFixture, ctx context.Contex
 			} else {
 				handler := mcp.NewHTTPHandler(f.service.administration, "test", mcp.HTTPConfig{Principal: func(r *http.Request) operatortool.Identity { return operatortool.ConnectionIdentity(r.Context()) }})
 				t.Cleanup(func() {
-					if err := handler.Shutdown(context.Background()); err != nil {
+					if err := handler.Shutdown(context.WithoutCancel(ctx)); err != nil {
 						t.Error(err)
 					}
 				})
