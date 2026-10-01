@@ -22,6 +22,26 @@ type Definition struct {
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
 	Annotations Annotations     `json:"annotations"`
+	Meta        ToolMetadata    `json:"_meta"`
+}
+
+type ToolMetadata struct {
+	Toolset string `json:"detent/toolset"`
+}
+
+func toolset(name string) ToolMetadata {
+	group := "actions"
+	switch name {
+	case BoardState, ExplainItem:
+		group = "board"
+	case FleetHealth:
+		group = "fleet"
+	case TelemetryUsage, RecentActivity:
+		group = "telemetry"
+	case ConnectionInfo:
+		group = "connection"
+	}
+	return ToolMetadata{Toolset: group}
 }
 
 type Annotations struct {
@@ -53,5 +73,5 @@ func Lookup(name string) (Definition, bool) {
 }
 
 func definition(name string, description string, schema string) Definition {
-	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{ReadOnly: true, Idempotent: true}}
+	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: toolset(name)}
 }

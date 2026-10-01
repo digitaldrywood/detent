@@ -432,30 +432,36 @@ loopback direct peer and would receive read access.
 
 ### Remote MCP
 
-The running Detent web server exposes the shared read-only operator catalog at
-`/mcp` using MCP Streamable HTTP. It uses the web server's existing listener and
-shutdown lifecycle; no second port or credential system is created. Configure a
-remote MCP client with a URL such as `https://detent.example.com/mcp` and send a
-scoped API key as `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+The running Detent web server exposes its shared typed operator catalog at
+`/mcp` using the existing listener, application services and shutdown lifecycle.
+Use an existing scoped credential in `Authorization: Bearer <key>` or
+`X-API-Key: <key>` on every request. Existing read/write/admin hierarchy and
+project grants apply; the application rechecks credentials, current authority
+and resource ownership even on a direct `tools/call`. Remote MCP does not infer
+authority from loopback peers or public UI cookies. Existing API rate limits apply.
 
-Remote MCP requires an all-projects key whose only scope is `read`. Static
-`api_token` values, dashboard sessions and cookies, loopback peer trust,
-write/admin-only keys, and project-scoped keys are not accepted. Create a
-dedicated key from the API Keys dashboard or `POST /api/v1/keys`; the server
-applies the existing per-IP and per-key API rate limits to every MCP request.
+`2026-07-28` clients use stateless POSTs: send required protocol metadata and
+matching `MCP-Protocol-Version`, `Mcp-Method` and, for tool calls, `Mcp-Name`
+headers. `server/discover` reports versions, identity and supported capabilities.
+Every successful modern response has `resultType: "complete"`. Older supported
+revisions retain `initialize`, `notifications/initialized` and principal-bound
+`Mcp-Session-Id`; DELETE ends those legacy sessions. GET returns `405`. Modern
+requests ignore protocol session IDs and receive no session header.
 
-The endpoint supports the same protocol revisions and exactly the same five
-tools as `detent mcp` over stdio. Requests, tool arguments, tool results, and
-HTTP response envelopes are bounded. GET streaming is not needed by this
-read-only surface and returns `405`; clients receive each JSON-RPC response on
-the POST that submitted its request. Clients can end a session with `DELETE
-/mcp` and its `Mcp-Session-Id` header.
+Both transports follow the same bounded `tools/list` pages and typed registry.
+Follow `nextCursor` until absent; `_meta["detent/toolset"]` groups definitions.
+Unavailable application services return safe opaque errors. Structured results
+also have serialized JSON text for older clients. See
+[generic MCP setup](mcp-capabilities.md#generic-client-setup) for portable
+operator approval, connection mode, organization selection and retries.
 
-Terminate TLS at Detent or a trusted reverse proxy for remote access. Public
-MCP URLs must use HTTPS; plain HTTP is acceptable only when testing through a
-loopback URL. Configure proxies and tracing systems to redact `Authorization`
-and `X-API-Key` headers; Detent never includes either credential in protocol
-errors, API usage records, or application logs.
+Use HTTPS for remote MCP, terminating TLS at Detent or a trusted reverse proxy;
+plain HTTP is appropriate only for loopback testing. Configure Detent's existing
+public dashboard URL for TLS termination and preserve the intended public origin
+at the proxy. Origin validation uses the trusted application URL when supplied,
+and does not trust arbitrary forwarding headers. Redact `Authorization` and
+`X-API-Key` in proxy logs and tracing. MCP errors do not include credential or
+raw service-error values.
 
 ### Private Dashboard URL Access
 

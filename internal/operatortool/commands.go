@@ -28,5 +28,5 @@ func CommandCatalog() []Definition {
 
 func commandDefinition(name, description, properties, required string, destructive bool) Definition {
 	schema := `{"type":"object","required":["project_id","request_id",` + required + `],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","description":"Business idempotency key; reuse for the same operation across reconnects. Independent of JSON-RPC id.","minLength":1,"maxLength":128},` + properties + `},"additionalProperties":false}`
-	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: true}}
+	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: true}, Meta: toolset(name)}
 }

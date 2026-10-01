@@ -459,7 +459,7 @@ Existing board_state read tool
 - Application: operatortool.Executor.Execute / board_state
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -478,7 +478,7 @@ Existing explain_item read tool
 - Application: operatortool.Executor.Execute / explain_item
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -497,7 +497,7 @@ Existing fleet_health read tool
 - Application: operatortool.Executor.Execute / fleet_health
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -516,7 +516,7 @@ Existing recent_activity read tool
 - Application: operatortool.Executor.Execute / recent_activity
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -535,7 +535,7 @@ Existing telemetry_usage read tool
 - Application: operatortool.Executor.Execute / telemetry_usage
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go
+- Coverage: internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
 - Availability: hosted_dedicated / github,native / telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error
@@ -908,13 +908,13 @@ Sources: [web/conversation/src/app/account/SpritesCard.tsx:43](../web/conversati
 api.ts http adapter
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
-- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions.
+- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: web/conversation/src/app/account/api.ts; bounded same-origin transport adapter; concrete requests are separately inventoried
 - Extraction: None; exact client/protocol sites do not own an operator application command.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.
 - Availability: self_hosted / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_dedicated / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
@@ -1034,13 +1034,13 @@ Sources: [web/conversation/src/app/components/ComposerPromptEditor.tsx:392](../w
 api.ts http adapter
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
-- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions.
+- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: web/conversation/src/app/entry/api.ts; bounded same-origin transport adapter; concrete requests are separately inventoried
 - Extraction: None; exact client/protocol sites do not own an operator application command.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.
 - Availability: self_hosted / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_dedicated / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
@@ -1070,13 +1070,13 @@ Sources: [web/conversation/src/app/fleet/RunnersSection.tsx:266](../web/conversa
 adapter.ts http adapter
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
-- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions.
+- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: web/conversation/src/app/usage/adapter.ts; bounded same-origin transport adapter; concrete requests are separately inventoried
 - Extraction: None; exact client/protocol sites do not own an operator application command.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.
 - Availability: self_hosted / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_dedicated / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
@@ -1107,13 +1107,13 @@ Sources: [web/conversation/src/app/work/lib/workHttp.ts:653](../web/conversation
 workHttp.ts http adapter
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
-- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions.
+- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: web/conversation/src/app/work/lib/workHttp.ts; bounded same-origin transport adapter; concrete requests are separately inventoried
 - Extraction: None; exact client/protocol sites do not own an operator application command.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.
 - Availability: self_hosted / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_dedicated / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
@@ -1269,13 +1269,13 @@ Sources: [web/conversation/src/lib/previewAnnotation.ts:106](../web/conversation
 bootstrap.ts http adapter
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
-- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions.
+- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: web/conversation/src/runtime/bootstrap.ts; bounded same-origin transport adapter; concrete requests are separately inventoried
 - Extraction: None; exact client/protocol sites do not own an operator application command.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.
 - Availability: self_hosted / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_dedicated / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
@@ -1287,13 +1287,13 @@ Sources: [web/conversation/src/runtime/bootstrap.ts:109](../web/conversation/src
 http.ts http adapter
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
-- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions.
+- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: web/conversation/src/runtime/rpc/http.ts; bounded same-origin transport adapter; concrete requests are separately inventoried
 - Extraction: None; exact client/protocol sites do not own an operator application command.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.
 - Availability: self_hosted / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_dedicated / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
@@ -1305,13 +1305,13 @@ Sources: [web/conversation/src/runtime/rpc/http.ts:275](../web/conversation/src/
 sse.ts http adapter
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
-- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions.
+- Decision: Exact http adapter definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions. #3339 supplies shared grouped/paginated typed-tool discovery and modern/legacy transport parity; these frontend adapters remain transport plumbing, not generic MCP operations.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: web/conversation/src/runtime/rpc/sse.ts; bounded same-origin transport adapter; concrete requests are separately inventoried
 - Extraction: None; exact client/protocol sites do not own an operator application command.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.
 - Availability: self_hosted / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_dedicated / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.

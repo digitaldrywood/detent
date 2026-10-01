@@ -8,14 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
-
-const ProtocolVersion = "2025-11-25"
 
 const (
 	maxFrameBytes      = operatortool.MaxArgumentBytes + 64*1024
@@ -129,6 +128,7 @@ type session struct {
 	mu              sync.Mutex
 	state           lifecycleState
 	protocolVersion string
+	bridgeOpened    bool
 	active          map[string]*activeRequest
 	calls           sync.WaitGroup
 	writeMu         sync.Mutex
@@ -189,24 +189,73 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 	if !ok {
 		return s.writeError(nil, codeInvalidRequest, "Invalid Request", nil)
 	}
+	meta, problem := metadata(message)
+	if problem != nil {
+		return s.writeError(message.ID, problem.Code, problem.Message, problem.Data)
+	}
+	version := s.requestVersion()
+	if meta.Modern {
+		version = meta.Version
+	}
 	switch message.Method {
+	case "server/discover":
+		if !meta.Modern {
+			return s.writeError(message.ID, codeInvalidParams, "Protocol metadata is required", nil)
+		}
+		var params struct {
+			Meta json.RawMessage `json:"_meta"`
+		}
+		if decodeObject(message.Params, &params, true) != nil {
+			return s.writeError(message.ID, codeInvalidParams, "Invalid discovery parameters", nil)
+		}
+		return s.writeVersionResult(message.ID, version, map[string]any{"supportedVersions": supportedVersions(), "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": operatorInstructions})
 	case "initialize":
+		if meta.Modern {
+			return s.writeError(message.ID, codeMethodNotFound, "Method not found", nil)
+		}
 		return s.initialize(ctx, message)
 	case "ping":
-		return s.writeResult(message.ID, map[string]any{})
-	case "tools/list":
-		if !s.ready() {
+		return s.writeVersionResult(message.ID, version, map[string]any{})
+	case "tools/list", "tools/call":
+		if meta.Modern {
+			if err := s.ensureBridge(ctx, meta.Client); err != nil {
+				if message.Method == "tools/call" {
+					return s.writeVersionResult(message.ID, version, toolCallResult{Content: []textContent{{Type: "text", Text: safeToolError(err)}}, IsError: true})
+				}
+				return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
+			}
+		}
+		if !meta.Modern && !s.ready() {
 			return s.writeError(message.ID, codeNotInitialized, "Server not initialized", nil)
 		}
-		return s.listTools(ctx, message)
-	case "tools/call":
-		if !s.ready() {
-			return s.writeError(message.ID, codeNotInitialized, "Server not initialized", nil)
+		if message.Method == "tools/list" {
+			return s.listTools(ctx, message, version)
 		}
-		return s.startToolCall(ctx, key, message)
+		return s.startToolCall(ctx, key, message, version)
 	default:
 		return s.writeError(message.ID, codeMethodNotFound, "Method not found", nil)
 	}
+}
+
+const operatorInstructions = "Follow nextCursor in tools/list to discover all typed toolsets. Use current connection authority. Pending actions require a human to use the returned dashboard approval URL; a tool call cannot approve them."
+
+func (s *session) requestVersion() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.protocolVersion
+}
+
+func (s *session) ensureBridge(ctx context.Context, client string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bridgeOpened {
+		return nil
+	}
+	if err := s.openConnection(ctx, client); err != nil {
+		return err
+	}
+	s.bridgeOpened = true
+	return nil
 }
 
 func (s *session) initialize(ctx context.Context, message request) error {
@@ -231,13 +280,12 @@ func (s *session) initialize(ctx context.Context, message request) error {
 		s.mu.Unlock()
 		return s.writeError(message.ID, codeInvalidRequest, "Server is already initialized", nil)
 	}
-	if opener, ok := s.executor.(interface{ OpenConnection(context.Context) error }); ok {
-		connection := operatortool.CurrentConnection(ctx)
-		ctx = operatortool.BindConnection(ctx, connection.ID, params.ClientInfo.Name)
-		if err := opener.OpenConnection(ctx); err != nil {
+	if !s.bridgeOpened {
+		if err := s.openConnection(ctx, params.ClientInfo.Name); err != nil {
 			s.mu.Unlock()
 			return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
 		}
+		s.bridgeOpened = true
 	}
 	s.state = stateInitialized
 	s.protocolVersion = negotiated
@@ -253,16 +301,16 @@ func (s *session) initialize(ctx context.Context, message request) error {
 			"title":   serverTitle,
 			"version": s.version,
 		},
-		"instructions": "Use Detent operator tools through current connection authority. Pending actions require a human to use the returned dashboard approval URL; a tool call cannot approve them.",
+		"instructions": operatorInstructions,
 	})
 }
 
 func negotiateVersion(requested string) string {
 	switch requested {
-	case ProtocolVersion, "2025-06-18", "2025-03-26", "2024-11-05":
+	case LegacyProtocolVersion, "2025-06-18", "2025-03-26", "2024-11-05":
 		return requested
 	default:
-		return ProtocolVersion
+		return LegacyProtocolVersion
 	}
 }
 
@@ -297,28 +345,25 @@ func (s *session) ready() bool {
 	return s.state == stateReady
 }
 
-func (s *session) listTools(ctx context.Context, message request) error {
+func (s *session) listTools(ctx context.Context, message request, version string) error {
 	var params struct {
 		Cursor string          `json:"cursor,omitempty"`
 		Meta   json.RawMessage `json:"_meta,omitempty"`
 	}
-	if err := decodeObject(message.Params, &params, true); err != nil || strings.TrimSpace(params.Cursor) != "" {
+	if err := decodeObject(message.Params, &params, true); err != nil {
 		return s.writeError(message.ID, codeInvalidParams, "Invalid tools/list parameters", nil)
 	}
-	definitions := operatortool.Catalog()
-	if lister, ok := s.executor.(interface {
-		ListTools(context.Context) ([]operatortool.Definition, error)
-	}); ok {
-		var err error
-		definitions, err = lister.ListTools(ctx)
-		if err != nil {
+	page, err := s.catalog(ctx, params.Cursor)
+	if err != nil {
+		if errors.Is(err, operatortool.ErrAccessDenied) {
 			return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
 		}
+		return s.writeError(message.ID, codeInvalidParams, "Invalid or unavailable catalog page", nil)
 	}
-	return s.writeResult(message.ID, map[string]any{"tools": definitions})
+	return s.writeVersionResult(message.ID, version, page)
 }
 
-func (s *session) startToolCall(parent context.Context, key string, message request) error {
+func (s *session) startToolCall(parent context.Context, key string, message request, protocolVersion string) error {
 	var params struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments,omitempty"`
@@ -350,7 +395,6 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 	}
 	s.active[key] = active
 	s.calls.Add(1)
-	protocolVersion := s.protocolVersion
 	s.mu.Unlock()
 
 	call := operatortool.Call{Name: params.Name, Arguments: params.Arguments}
@@ -362,7 +406,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			return
 		}
 		if err != nil {
-			if writeErr := s.writeResult(message.ID, toolCallResult{
+			if writeErr := s.writeVersionResult(message.ID, protocolVersion, toolCallResult{
 				Content: []textContent{{Type: "text", Text: safeToolError(err)}},
 				IsError: true,
 			}); writeErr != nil {
@@ -370,7 +414,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			}
 			return
 		}
-		if writeErr := s.writeResult(message.ID, successfulToolCallResult(protocolVersion, result.Content)); writeErr != nil {
+		if writeErr := s.writeVersionResult(message.ID, protocolVersion, successfulToolCallResult(protocolVersion, result.Content)); writeErr != nil {
 			return
 		}
 	}()
@@ -409,7 +453,7 @@ func successfulToolCallResult(protocolVersion string, content json.RawMessage) t
 	if protocolVersion == "2024-11-05" || protocolVersion == "2025-03-26" {
 		return toolCallResult{Content: []textContent{{Type: "text", Text: string(content)}}}
 	}
-	return toolCallResult{Content: []textContent{}, StructuredContent: content}
+	return toolCallResult{Content: []textContent{{Type: "text", Text: string(content)}}, StructuredContent: content}
 }
 
 func (s *session) completeRequest(key string, active *activeRequest) bool {
@@ -471,6 +515,9 @@ func (s *session) write(message response) error {
 	frame, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("encode MCP response: %w", err)
+	}
+	if len(frame) > MaxHTTPResponseBytes {
+		frame = marshalHTTPResponse(response{JSONRPC: "2.0", ID: message.ID, Error: &rpcError{Code: codeInternalError, Message: "MCP response exceeds the size limit"}})
 	}
 	frame = append(frame, '\n')
 
@@ -536,6 +583,9 @@ func requestIDKey(raw json.RawMessage) (string, bool) {
 	case string:
 		return "string:" + value, true
 	case json.Number:
+		if _, err := strconv.ParseInt(value.String(), 10, 64); err != nil {
+			return "", false
+		}
 		return "number:" + value.String(), true
 	default:
 		return "", false

@@ -34,12 +34,13 @@ func TestInitializeNegotiatesProtocolVersions(t *testing.T) {
 		{name: "June 2025", requested: "2025-06-18", want: "2025-06-18"},
 		{name: "March 2025", requested: "2025-03-26", want: "2025-03-26"},
 		{name: "November 2024", requested: "2024-11-05", want: "2024-11-05"},
-		{name: "unsupported", requested: "2099-01-01", want: ProtocolVersion},
+		{name: "modern version requires metadata, not handshake", requested: ProtocolVersion, want: LegacyProtocolVersion},
+		{name: "unsupported", requested: "2099-01-01", want: LegacyProtocolVersion},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			request := strings.Replace(initializeRequest, ProtocolVersion, test.requested, 1)
+			request := strings.Replace(initializeRequest, LegacyProtocolVersion, test.requested, 1)
 			responses := exchange(t, nil, request)
 			if len(responses) != 1 {
 				t.Fatalf("responses = %d, want 1", len(responses))
@@ -104,6 +105,7 @@ func TestProtocolErrors(t *testing.T) {
 	}{
 		{name: "malformed JSON", messages: []string{`{"jsonrpc":`}, wantCode: codeParseError, wantID: "null"},
 		{name: "non-object request", messages: []string{`[]`}, wantCode: codeInvalidRequest, wantID: "null"},
+		{name: "fractional request ID", messages: []string{`{"jsonrpc":"2.0","id":1.5,"method":"ping"}`}, wantCode: codeInvalidRequest, wantID: "null"},
 		{name: "invalid request ID", messages: []string{`{"jsonrpc":"2.0","id":{},"method":"ping"}`}, wantCode: codeInvalidRequest, wantID: "null"},
 		{name: "operation before initialized", messages: []string{`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`}, wantCode: codeNotInitialized, wantID: "2"},
 		{name: "unknown method", messages: []string{initializeRequest, initializedNotice, `{"jsonrpc":"2.0","id":2,"method":"resources/list"}`}, wantCode: codeMethodNotFound, wantID: "2"},
@@ -128,7 +130,7 @@ func TestProtocolErrors(t *testing.T) {
 	}
 }
 
-func TestToolCallReturnsStructuredContentOnce(t *testing.T) {
+func TestToolCallReturnsStructuredAndTextContent(t *testing.T) {
 	t.Parallel()
 
 	observedAt := time.Date(2026, 8, 8, 2, 30, 0, 0, time.UTC)
@@ -147,7 +149,7 @@ func TestToolCallReturnsStructuredContentOnce(t *testing.T) {
 		IsError           bool                       `json:"isError"`
 	}
 	decodeResult(t, response, &result)
-	if result.IsError || len(result.Content) != 0 || string(result.StructuredContent["freshness"]) != `"live"` {
+	if result.IsError || len(result.Content) != 1 || string(result.StructuredContent["freshness"]) != `"live"` {
 		t.Fatalf("tool result = %#v", result)
 	}
 	if _, wrapped := result.StructuredContent["content"]; wrapped {
@@ -172,7 +174,7 @@ func TestToolCallReturnsTextContentForLegacyVersions(t *testing.T) {
 
 			executor := &staticExecutor{result: operatortool.Result{Content: content}}
 			client := startLiveServer(t, executor)
-			client.write(strings.Replace(initializeRequest, ProtocolVersion, test.version, 1))
+			client.write(strings.Replace(initializeRequest, LegacyProtocolVersion, test.version, 1))
 			client.read()
 			client.write(initializedNotice)
 			client.write(`{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"board_state","arguments":{"limit":1}}}`)
@@ -267,17 +269,27 @@ func TestDuplicateRequestIDCancelsOriginal(t *testing.T) {
 func TestCancellationSuppressesResponse(t *testing.T) {
 	t.Parallel()
 
-	executor := newBlockingExecutor()
-	client := startLiveServer(t, executor)
-	client.write(initializeRequest)
-	client.read()
-	client.write(initializedNotice)
-	client.write(`{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"recent_activity","arguments":{}}}`)
-	executor.waitStarted(t)
-	client.write(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow","reason":"test"}}`)
-	executor.waitCancelled(t)
-	client.close()
-	client.requireNoFrames()
+	for _, version := range []string{LegacyProtocolVersion, ProtocolVersion} {
+		t.Run(version, func(t *testing.T) {
+			executor := newBlockingExecutor()
+			client := startLiveServer(t, executor)
+			if version == LegacyProtocolVersion {
+				client.write(initializeRequest)
+				client.read()
+				client.write(initializedNotice)
+			}
+			meta := ""
+			if version == ProtocolVersion {
+				meta = `,"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+			}
+			client.write(`{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"recent_activity","arguments":{}` + meta + `}}`)
+			executor.waitStarted(t)
+			client.write(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow","reason":"test"}}`)
+			executor.waitCancelled(t)
+			client.close()
+			client.requireNoFrames()
+		})
+	}
 }
 
 func TestConcurrentCallsAreRaceSafe(t *testing.T) {
@@ -488,11 +500,16 @@ type liveClient struct {
 
 func startLiveServer(t *testing.T, executor Executor) *liveClient {
 	t.Helper()
+	return startLiveServerContext(t, executor, t.Context())
+}
+
+func startLiveServerContext(t *testing.T, executor Executor, ctx context.Context) *liveClient {
+	t.Helper()
 	reader, writer := io.Pipe()
 	frames := make(chan []byte, 64)
 	done := make(chan error, 1)
 	go func() {
-		done <- NewServer(executor, "test-version").Serve(t.Context(), reader, frameWriter{frames: frames})
+		done <- NewServer(executor, "test-version").Serve(ctx, reader, frameWriter{frames: frames})
 	}()
 	t.Cleanup(func() {
 		_ = writer.Close()
