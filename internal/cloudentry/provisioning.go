@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -488,11 +489,60 @@ func (s *Service) creatorOrganization(c echo.Context) (accountSession, Organizat
 	if err != nil {
 		return accountSession{}, Organization{}, err
 	}
-	organization, err := s.registry.Organization(c.Request().Context(), c.Param("organization"))
-	if err != nil || !organization.Managed || organization.CreatorSubject != session.Subject || organization.State == "deleted" {
-		return accountSession{}, Organization{}, ErrOrganizationNotFound
+	organization, err := s.creatorOrganizationFor(c.Request().Context(), session, c.Param("organization"))
+	return session, organization, err
+}
+
+func (s *Service) creatorOrganizationFor(ctx context.Context, session accountSession, id string) (Organization, error) {
+	if s.config.Allocation == nil {
+		return Organization{}, operatoradmin.ErrUnavailable
 	}
-	return session, organization, nil
+	organization, err := s.registry.Organization(ctx, id)
+	if err != nil || !organization.Managed || organization.CreatorSubject != session.Subject || organization.State == "deleted" {
+		return Organization{}, operatortool.ErrAccessDenied
+	}
+	return organization, nil
+}
+
+// provisioningResult deliberately excludes allocation diagnostics, provider
+// payloads and credentials. Browser diagnostics remain in provisioningStatus.
+type provisioningResult struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	State     string `json:"state"`
+	Step      string `json:"step"`
+	CanResume bool   `json:"can_resume"`
+	Next      string `json:"next,omitempty"`
+}
+
+func (s *Service) provisioningResult(organization Organization) (provisioningResult, error) {
+	if !ValidOrganizationID(organization.ID) || len(organization.Name) > 120 || len(organization.State) > 64 || len(organization.Step) > 64 {
+		return provisioningResult{}, operatoradmin.ErrUnavailable
+	}
+	result := provisioningResult{ID: organization.ID, Name: organization.Name, State: organization.State, Step: organization.Step, CanResume: provisioningRetryable(organization)}
+	if organization.State == "ready" {
+		result.Next = s.organizationHome(organization.ID)
+	}
+	return result, nil
+}
+
+func (s *Service) resumeProvisioningFor(ctx context.Context, session accountSession, id string) (Organization, error) {
+	organization, err := s.creatorOrganizationFor(ctx, session, id)
+	if err != nil {
+		return Organization{}, err
+	}
+	if !provisioningRetryable(organization) {
+		return organization, nil
+	}
+	state := "allocating"
+	if organization.Step == "" {
+		state = "requested"
+	}
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
+		return Organization{}, err
+	}
+	s.wakeAllocator()
+	return s.creatorOrganizationFor(ctx, session, id)
 }
 
 func provisioningRetryable(organization Organization) bool {
@@ -543,11 +593,14 @@ func (s *Service) provisioningJSON(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
 	status := provisioningStatus(organization, s.retryLimit())
-	result := map[string]any{"id": status.ID, "name": status.Name, "state": status.State, "step": status.Step, "error": status.Error, "can_resume": status.CanResume}
-	if organization.State == "ready" {
-		result["next"] = s.organizationHome(organization.ID)
+	result, err := s.provisioningResult(organization)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Setup status is unavailable"})
 	}
-	return c.JSON(http.StatusOK, result)
+	return c.JSON(http.StatusOK, struct {
+		provisioningResult
+		Error string `json:"error"`
+	}{result, status.Error})
 }
 
 func (s *Service) resumeProvisioning(c echo.Context) error {
@@ -558,17 +611,9 @@ func (s *Service) resumeProvisioning(c echo.Context) error {
 	if !s.csrfValid(c, session, "") {
 		return s.refuse(c, http.StatusForbidden, "invalid_csrf", "Reload the page and try again")
 	}
-	if !provisioningRetryable(organization) {
-		return s.next(c, http.StatusOK, "/organizations/"+organization.ID+"/provisioning", nil)
-	}
-	state := "allocating"
-	if organization.Step == "" {
-		state = "requested"
-	}
-	if _, err := s.registry.store.db.ExecContext(c.Request().Context(), "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := s.resumeProvisioningFor(c.Request().Context(), session, organization.ID); err != nil {
 		return s.refuse(c, http.StatusServiceUnavailable, "unavailable", "Setup could not be resumed")
 	}
-	s.wakeAllocator()
 	return s.next(c, http.StatusOK, "/organizations/"+organization.ID+"/provisioning", nil)
 }
 

@@ -258,20 +258,20 @@ Sources: [GET /platform](../internal/cloudentry/service.go#L213)
 
 Provisioning page
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending.
-- Tool: `work_reads.provisioning_page` — Bounded provisioningPageRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → provisioningPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.provisioningJSON; s.creatorOrganization, s.organizationHome, s.retryLimit
-- Extraction: Extract cloudentry.provisioningJSON application inputs/results and validation from Echo; reuse s.creatorOrganization, s.organizationHome, s.retryLimit. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3663 using the existing creator-bound browser command and shared administration executor. Current session, allocation ownership and deployment availability are rechecked on direct calls, approval, execution and replay. Resume retains provisioningRetryable, retry/admission/capacity limits and wakeAllocator; safe status is polled for fresh readiness. Parent #3259 retains final conformance and zero-pending acceptance.
+- Tool: `organization.provisioning_page` — organization_id: 1–256 bytes; no mutation input. No credentials, identity, confirmation or YOLO input. → Bounded safe ID/name/state/step/can_resume projection; fresh next destination when ready. Status carries fresh_at; resume carries the shared action receipt, safe result, approval_url and action_result. Allocation error_detail, endpoints, provider payloads and credentials are omitted.
+- Authority: role current creator account session; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership managed allocation creator_subject matches the current account; deleted and foreign allocations are denied even without discovery.
+- Application: cloudentry.entryAdministration uses creatorOrganizationFor, provisioningResult and resumeProvisioningFor, shared with browser provisioning handlers and the existing allocator.
+- Extraction: Creator lookup, bounded safe status projection and the existing retryable allocation reset/wake command are shared application operations. Browser diagnostics remain separate; no allocator, recovery loop or transport persistence is added.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestEntryProvisioningAdministration (creator/session/deployment authority, retryable/non-retryable/ready browser parity, approval/rejection, YOLO, reconnect receipts, audit redaction and stdio/HTTP catalog execution); TestAdministrationInputBounds; TestActionConfirmationClassification; TestProvisioningCapacityAndRecovery; TestProvisioningTenantStartFailure; TestProvisioningPollsReuseProviderSessionVerification.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: read-only provisioning status → none
 
 Sources: [GET /api/cloud/organizations/:organization/provisioning](../internal/cloudentry/service.go#L206), [GET /organizations/:organization/provisioning](../internal/cloudentry/service.go#L204)
 ## cloudentry.proxy
@@ -297,20 +297,20 @@ Sources: [Any /api/v2/organizations/:organization/*](../internal/cloudentry/serv
 
 Resume provisioning
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending.
-- Tool: `work_reads.resume_provisioning` — Bounded resumeProvisioningRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → resumeProvisioningResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.resumeProvisioning; s.config.now, s.creatorOrganization, s.csrfValid, s.next, s.refuse, s.registry.store.db.ExecContext, s.wakeAllocator
-- Extraction: Extract cloudentry.resumeProvisioning application inputs/results and validation from Echo; reuse s.config.now, s.creatorOrganization, s.csrfValid, s.next, s.refuse, s.registry.store.db.ExecContext, s.wakeAllocator. The HTTP handler and MCP must delegate to this same application operation.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Implemented by #3663 using the existing creator-bound browser command and shared administration executor. Current session, allocation ownership and deployment availability are rechecked on direct calls, approval, execution and replay. Resume retains provisioningRetryable, retry/admission/capacity limits and wakeAllocator; safe status is polled for fresh readiness. Parent #3259 retains final conformance and zero-pending acceptance.
+- Tool: `organization.resume_provisioning` — organization_id: 1–256 bytes; request_id: 1–128 bytes, bound to shared audit/retry receipts. No credentials, identity, confirmation or YOLO input. → Bounded safe ID/name/state/step/can_resume projection; fresh next destination when ready. Status carries fresh_at; resume carries the shared action receipt, safe result, approval_url and action_result. Allocation error_detail, endpoints, provider payloads and credentials are omitted.
+- Authority: role current creator account session; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership managed allocation creator_subject matches the current account; deleted and foreign allocations are denied even without discovery.
+- Application: cloudentry.entryAdministration uses creatorOrganizationFor, provisioningResult and resumeProvisioningFor, shared with browser provisioning handlers and the existing allocator.
+- Extraction: Creator lookup, bounded safe status projection and the existing retryable allocation reset/wake command are shared application operations. Browser diagnostics remain separate; no allocator, recovery loop or transport persistence is added.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestEntryProvisioningAdministration (creator/session/deployment authority, retryable/non-retryable/ready browser parity, approval/rejection, YOLO, reconnect receipts, audit redaction and stdio/HTTP catalog execution); TestAdministrationInputBounds; TestActionConfirmationClassification; TestProvisioningCapacityAndRecovery; TestProvisioningTenantStartFailure; TestProvisioningPollsReuseProviderSessionVerification.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: material provisioning resume; connection YOLO suppresses confirmation only → operator
 
 Sources: [POST /organizations/:organization/provisioning/resume](../internal/cloudentry/service.go#L205)
 ## cloudentry.session_json

@@ -28,7 +28,7 @@ func (s *Service) registerAdministration() {
 		names = append(names, operatortool.InvitationAccept)
 	}
 	if s.config.Allocation != nil {
-		names = append(names, operatortool.OrganizationCreate, operatortool.OrganizationDelete)
+		names = append(names, operatortool.OrganizationCreate, operatortool.OrganizationDelete, operatortool.ProvisioningPage, operatortool.ResumeProvisioning)
 	}
 	s.administration = operatoradmin.New(entryAdministration{s}, names...)
 	handler := mcp.NewHTTPHandler(s.administration, "", mcp.HTTPConfig{Principal: func(r *http.Request) operatortool.Identity { return operatortool.ConnectionIdentity(r.Context()) }})
@@ -93,6 +93,18 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 		return err
 	}
 	switch name {
+	case operatortool.ProvisioningPage, operatortool.ResumeProvisioning:
+		if s.config.Allocation == nil {
+			return operatoradmin.ErrUnavailable
+		}
+		if in.OrganizationID == "" { // Catalog discovery conveys no resource authority.
+			return nil
+		}
+		if resource != "" && resource != in.OrganizationID {
+			return operatortool.ErrAccessDenied
+		}
+		_, err = s.creatorOrganizationFor(ctx, session, in.OrganizationID)
+		return err
 	case operatortool.OrganizationSession, operatortool.OrganizationList:
 		return nil
 	case operatortool.SupportStart:
@@ -194,6 +206,13 @@ func (a entryAdministration) Read(ctx context.Context, name string, in operatora
 	if err != nil {
 		return nil, err
 	}
+	if name == operatortool.ProvisioningPage {
+		organization, err := s.creatorOrganizationFor(ctx, session, in.OrganizationID)
+		if err != nil {
+			return nil, err
+		}
+		return s.provisioningResult(organization)
+	}
 	if name == operatortool.OrganizationSession {
 		canCreate, err := s.canCreate(ctx, session)
 		return struct {
@@ -228,6 +247,21 @@ func (a entryAdministration) Preview(ctx context.Context, name string, in operat
 	}
 	p := operatoradmin.Preview{Summary: name, Current: in}
 	switch name {
+	case operatortool.ResumeProvisioning:
+		org, err := s.creatorOrganizationFor(ctx, session, in.OrganizationID)
+		if err != nil {
+			return p, err
+		}
+		status, err := s.provisioningResult(org)
+		if err != nil {
+			return p, err
+		}
+		p.ResourceID = org.ID
+		p.Current = struct {
+			Status     provisioningResult `json:"status"`
+			Attempts   int                `json:"attempts"`
+			Generation int64              `json:"generation"`
+		}{status, org.Attempts, org.Generation}
 	case operatortool.OrganizationDelete:
 		org, err := s.ownerOrganizationFor(ctx, session, in.OrganizationID)
 		if err != nil {
@@ -279,6 +313,11 @@ func (a entryAdministration) Execute(ctx context.Context, name string, in operat
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
+	if name == operatortool.ResumeProvisioning {
+		if err := a.Authorize(ctx, name, in, m.ResourceID); err != nil {
+			return operatoradmin.Output{}, err
+		}
+	}
 	if out, found, err := s.administrationReceipt(ctx, session, m); err != nil || found {
 		return out, err
 	}
@@ -287,6 +326,20 @@ func (a entryAdministration) Execute(ctx context.Context, name string, in operat
 	}
 	out := operatoradmin.Output{ResourceID: m.ResourceID, Reconnect: true}
 	switch name {
+	case operatortool.ResumeProvisioning:
+		var org Organization
+		org, err = s.resumeProvisioningFor(ctx, session, in.OrganizationID)
+		if err == nil {
+			var status provisioningResult
+			status, err = s.provisioningResult(org)
+			if err == nil {
+				out.Data, err = json.Marshal(status)
+				out.URL = s.config.PublicURL + "/organizations/" + org.ID + "/provisioning"
+				if status.Next != "" {
+					out.URL = s.config.PublicURL + status.Next
+				}
+			}
+		}
 	case operatortool.OrganizationSwitch:
 		var choice organizationChoice
 		choice, err = s.switchOrganizationFor(ctx, session, in.OrganizationID)
