@@ -662,6 +662,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Fallback dependency hydration uses the existing fresh comment reader when comment
+or Workpad evidence is missing. The former issue-timestamp comment cache is
+removed because its diagnostic comments also became Workpad decision authority.
+`TestDependencyCommentEvidenceFreshWorkpad` covers authorized edits of the same
+comment and cleared human action in Todo, including unchanged, missing, and zero
+issue timestamps. Native dependency relations remain authoritative and fresh;
+comment references remain diagnostic notes. No replacement cache or recovery
+mechanism is added.
+
 Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
 existing optional feature negotiation. The `runner_local_checks` capability
 permits `local_checks`; older Hubs receive the original heartbeat without that
