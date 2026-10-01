@@ -167,7 +167,7 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 	current := s.session(id)
 	current.mu.Lock()
 	defer current.mu.Unlock()
-	if current.connection == nil || mode != ConfirmationMode && mode != YOLOMode {
+	if current.connection == nil || mode != ConfirmationMode && mode != YOLOMode || current.connection.RequireConfirmation && mode != ConfirmationMode {
 		return operatortool.ErrAccessDenied
 	}
 	if err := authorizeHuman(ctx, current.connection.Identity.OrganizationID); err != nil {
@@ -188,6 +188,9 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 // RequiresConfirmation classifies arguments, independently of tool annotations.
 // Unknown action kinds fail closed, including future billing/access commands.
 func RequiresConfirmation(action Action) bool {
+	if action.Mutation.Source == "chat" {
+		return true
+	}
 	if required, known := operatortool.ProjectConfirmation(string(action.Kind), action.Arguments); known {
 		return required
 	}
@@ -286,7 +289,7 @@ func (s *Service) Submit(ctx context.Context, action Action) (Action, error) {
 	if RequiresConfirmation(action) {
 		action.Mutation.Confirmation = "pending"
 	}
-	if RequiresConfirmation(action) && current.mode == YOLOMode {
+	if RequiresConfirmation(action) && current.mode == YOLOMode && !current.connection.RequireConfirmation {
 		action.Mutation.Confirmation = "yolo"
 	}
 	var idErr error
@@ -301,7 +304,7 @@ func (s *Service) Submit(ctx context.Context, action Action) (Action, error) {
 	}
 	current.actions = append(current.actions, cloneActions([]Action{action})[0])
 	index := len(current.actions) - 1
-	if !RequiresConfirmation(action) || current.mode == YOLOMode {
+	if !current.connection.RequireConfirmation && (!RequiresConfirmation(action) || current.mode == YOLOMode) {
 		if s.actions == nil {
 			return Action{}, ErrUnavailable
 		}
@@ -359,4 +362,25 @@ func (s *Service) ConnectionResult(ctx context.Context, actionID string) (json.R
 		return nil, err
 	}
 	return append(json.RawMessage(nil), action.resultData...), nil
+}
+
+func (s *Service) OriginatingContext(ctx context.Context, id, principal, organization string) (context.Context, error) {
+	s.mu.Lock()
+	current := s.sessions[id]
+	s.mu.Unlock()
+	if current == nil {
+		return nil, operatortool.ErrAccessDenied
+	}
+	current.mu.Lock()
+	if current.connection == nil || current.connection.Identity.PrincipalID != principal || current.connection.Identity.OrganizationID != organization {
+		current.mu.Unlock()
+		return nil, operatortool.ErrAccessDenied
+	}
+	connection := *current.connection
+	current.mu.Unlock()
+	ctx = operatortool.WithConnection(ctx, connection)
+	if err := s.CheckConnection(ctx); err != nil {
+		return nil, err
+	}
+	return operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead})
 }

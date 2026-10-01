@@ -424,6 +424,9 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Action) (execution chat.ActionExecution, err error) {
+	if action.Mutation.Source == "chat" {
+		return e.service.executeCoordinatorAction(ctx, action)
+	}
 	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
 		return (workspaceOperatorExecutor{server: e.service}).ExecuteAction(ctx, action)
 	}

@@ -737,6 +737,9 @@ func TestHostedBrowserPreviewSeed(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
+		f.seedCoordinatorActions(t)
+	}
 	base := browserHostedOrganizationBase + "/projects/" + f.project
 	tests := []struct {
 		name, account, path string
@@ -773,6 +776,9 @@ func TestHostedBrowserPreview(t *testing.T) {
 		})}
 	}
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
+		f.seedCoordinatorActions(t)
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
 		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
 			t.Fatal(err)

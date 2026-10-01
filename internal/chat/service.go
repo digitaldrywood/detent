@@ -380,6 +380,7 @@ func (s *Service) conversation(current *session) Conversation {
 		Unavailable: s.provider == nil && current.connection == nil,
 	}
 	if current.connection != nil {
+		conversation.RequireConfirmation = current.connection.RequireConfirmation
 		conversation.PrincipalID = current.connection.Identity.PrincipalID
 		conversation.ConnectionID = current.connection.ID
 		conversation.ApprovalBaseURL = current.connection.DashboardURL

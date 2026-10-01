@@ -243,6 +243,11 @@ export function DetentTimelineRow({
   }
   return (
     <>
+      {cards.approvalURL === undefined ? null : (
+        <TranscriptCard testId="operator-approval-card">
+          <iframe src={cards.approvalURL} title="Approve project change" className="h-[28rem] w-full rounded-lg border-0" />
+        </TranscriptCard>
+      )}
       {cards.proposal === undefined ? null : (
         <ProposalCard
           proposal={cards.proposal}
