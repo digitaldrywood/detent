@@ -739,10 +739,6 @@ func TestOperationalCompletionSpendBreakerContract(t *testing.T) {
 					DiffStats:  DiffStats{Status: "clean"},
 				},
 			})
-			if tt.authorized {
-				orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{refreshed}, base.Add(time.Second))
-			}
-
 			if len(attempts.completions) != 1 {
 				t.Fatalf("completions = %#v, want one", attempts.completions)
 			}
