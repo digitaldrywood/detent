@@ -39,7 +39,9 @@ type Requirement struct {
 type Authority struct {
 	Identity Identity
 	Check    func(context.Context, Requirement) error
-	Snapshot func(context.Context, telemetry.Snapshot) (telemetry.Snapshot, error)
+	// ApplicationContext attaches freshly resolved, adapter-private authority.
+	ApplicationContext func(context.Context) context.Context
+	Snapshot           func(context.Context, telemetry.Snapshot) (telemetry.Snapshot, error)
 }
 
 type Connection struct {
@@ -95,6 +97,9 @@ func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Con
 	}
 	if err := authority.Check(ctx, requirement); err != nil {
 		return ctx, ErrAccessDenied
+	}
+	if authority.ApplicationContext != nil {
+		ctx = authority.ApplicationContext(ctx)
 	}
 	return context.WithValue(ctx, authorityKey{}, authority), nil
 }

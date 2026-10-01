@@ -51,7 +51,10 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 	if err != nil {
 		return nil, err
 	}
-	for _, definition := range operatortool.CommandCatalog() {
+	for _, definition := range append(operatortool.CommandCatalog(), operatortool.OperatorChatCatalog()...) {
+		if definition.Name == "post_operator_chat" && !e.server.chat.HasProvider() {
+			continue
+		}
 		if definition.Annotations.ReadOnly {
 			definitions = append(definitions, definition)
 		} else if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err == nil {
@@ -64,6 +67,8 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.server
 	switch call.Name {
+	case "get_operator_chat", "post_operator_chat":
+		return s.operatorChatTool(ctx, call)
 	case operatortool.ConnectionInfo:
 		if err := operatortool.DecodeArguments(call.Arguments, &struct{}{}); err != nil {
 			return operatortool.Result{}, err

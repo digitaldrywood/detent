@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -227,29 +226,9 @@ func terminalRecordingReadable(scope nativeScope, record terminalRecordingRecord
 // listWorkspaceTerminalRecordings implements
 // GET {nativeBase}/workspaces/:workspace/terminal-recordings.
 func (s *Service) listWorkspaceTerminalRecordings(c echo.Context) error {
-	service, err := s.requireWorkspaces()
+	recordings, err := s.readRecordings(c.Request().Context(), nativeRequestScope(c), c.Param("workspace"), c.QueryParam("relay_session"), 0)
 	if err != nil {
 		return s.nativeAPIError(c, err)
-	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	record, err := service.readWorkspaceForActor(ctx, s.database.db, scope, c.Param("workspace"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	stored, err := readTerminalRecordings(ctx, s.database.db, record.ID, c.QueryParam("relay_session"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	recordings := []TerminalRecording{}
-	for _, item := range stored {
-		if !terminalRecordingReadable(scope, item) {
-			// A recording this actor may not read is absent rather than
-			// refused: telling somebody a recording exists that they may not
-			// see is itself a disclosure about who was in the worktree.
-			continue
-		}
-		recordings = append(recordings, item.resource())
 	}
 	return c.JSON(http.StatusOK, map[string]any{"recordings": recordings})
 }
@@ -263,26 +242,9 @@ func (s *Service) listWorkspaceTerminalRecordings(c echo.Context) error {
 // again. That is the same judgement the action run output endpoint makes about
 // a log.
 func (s *Service) getWorkspaceTerminalRecording(c echo.Context) error {
-	service, err := s.requireWorkspaces()
+	recording, err := s.readRecording(c.Request().Context(), nativeRequestScope(c), c.Param("workspace"), c.Param("recording"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
-	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	record, err := service.readWorkspaceForActor(ctx, s.database.db, scope, c.Param("workspace"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	recording, err := readTerminalRecordingByID(ctx, s.database.db, record.ID, c.Param("recording"))
-	if errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if !terminalRecordingReadable(scope, recording) {
-		// Not found rather than forbidden, for the reason the listing omits it.
-		return s.nativeAPIError(c, nativeNotFound())
 	}
 	return c.Blob(http.StatusOK, "application/x-asciicast; charset=utf-8", []byte(recording.Cast))
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -19,7 +20,8 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	// Hosted hubs do not own the daemon's telemetry/explainer. An absent
 	// application service produces an empty catalog and opaque unavailable
 	// calls, rather than using the compatibility API or opening a runtime DB.
-	executor := operatortool.NewAuthorizedExecutor(nil)
+	executor := workspaceOperatorExecutor{server: s}
+	s.operatorChat = chat.NewService(nil, nil, executor)
 	s.mcpHTTP = mcp.NewHTTPHandler(executor, s.config.Version, mcp.HTTPConfig{
 		Principal: func(request *http.Request) operatortool.Identity {
 			return operatortool.ConnectionIdentity(request.Context())
@@ -27,6 +29,8 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	})
 	e.Any("/api/v2/organizations/:organization/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	if s.config.Hosted != nil {
+		e.GET("/chat/approval", s.workspaceApprovalPage, s.workspaceApprovalAuth)
+		e.POST("/chat/approval", s.workspaceApprovalDecision, s.workspaceApprovalAuth)
 		e.Any("/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	}
 }
@@ -53,7 +57,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		claims, shared := hostedSharedClaims(c)
-		connection := operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		connection := operatortool.Connection{DashboardURL: s.workspaceApprovalURL(""), Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 			current := credential
 			if token != "" {
 				var err error
@@ -114,12 +118,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 	if err := s.authorizeConversationOrganization(ctx, scope); err != nil {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
-	return operatortool.Authority{Identity: operatorIdentity(credential, organization), Check: func(ctx context.Context, requirement operatortool.Requirement) error {
-		if requirement.ResourceID != "" || requirement.ResourceKind != "" {
-			// Resource-specific commands must use their application's ownership
-			// check; this initial read adapter never grants an unknown resource.
-			return operatortool.ErrAccessDenied
-		}
+	return operatortool.Authority{Identity: operatorIdentity(credential, organization), ApplicationContext: func(ctx context.Context) context.Context { return context.WithValue(ctx, operatorScopeKey{}, scope) }, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
 		checkScope := scope
 		if requirement.ProjectID != "" {
 			checkScope.project = tracker.ProjectID(requirement.ProjectID)
@@ -138,12 +137,15 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 					return err
 				}
 				defer tx.Rollback()
-				return s.recheckHostedMutation(ctx, tx, checkScope)
+				if err := s.recheckHostedMutation(ctx, tx, checkScope); err != nil {
+					return err
+				}
+				return s.checkOperatorResource(ctx, tx, checkScope, requirement)
 			}
-			if requirement.Scope == apikey.ScopeAdmin && credential.Scope != apiScopeAdmin {
+			if requirement.Scope == apikey.ScopeAdmin && credential.Hosted == nil && credential.Scope != apiScopeAdmin {
 				return operatortool.ErrAccessDenied
 			}
 		}
-		return nil
+		return s.checkOperatorResource(ctx, s.database.db, checkScope, requirement)
 	}}, nil
 }

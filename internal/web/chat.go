@@ -194,6 +194,10 @@ func (e *dashboardToolExecutor) ExecuteTool(ctx context.Context, call chatpkg.To
 	case "propose_file_issue":
 		return e.server.chatFileIssueProposal(ctx, call.Arguments)
 	default:
+		if operatortool.CurrentConnection(ctx).ID != "" {
+			result, err := operatortool.NewAuthorizedExecutor(e.readOnly).Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
+			return chatpkg.ToolResult{Content: string(result.Content)}, err
+		}
 		result, err := e.readOnly.Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
 		return chatpkg.ToolResult{Content: string(result.Content)}, err
 	}

@@ -284,22 +284,38 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 // nativeMutationStatus is nativeMutation with the success status the route
 // reports. A replay answers with the same status as the first call, so a
 // created resource stays 201 on every retry of its key.
-func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (resultErr error) {
-	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativeInvalid("An idempotency key of at most 128 bytes is required"))
-	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	encoded, err := json.Marshal(input)
+func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
+	value, err := s.executeNativeCommand(c.Request().Context(), nativeRequestScope(c), c.Request().Method+" "+c.Request().URL.EscapedPath(), command, input, nativeCommandOptions{
+		feature: hostedMutationFeature(c), completion: hostedCompletionMutation(c, input), changeCheck: changeCheckRequest(c), item: c.Param("item"), workerEvent: strings.HasSuffix(c.Path(), "/events") || c.Path() == changeBase+"/:change/versions/:version/checks",
+	}, operation)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(status, value)
+}
+
+// nativeCommandOptions preserves application feature/worker checks across adapters.
+type nativeCommandOptions struct {
+	feature                              string
+	completion, changeCheck, workerEvent bool
+	item                                 string
+}
+
+// executeNativeCommand is the dashboard's transactional receipt contract. MCP
+// supplies an application operation identity, never an HTTP handler or proxy.
+func (s *Service) executeNativeCommand(ctx context.Context, scope nativeScope, operationID string, command tracker.Mutation, input any, options nativeCommandOptions, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (value json.RawMessage, resultErr error) {
+	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
+		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
+	}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
 	}
 	hash := sha256.Sum256(encoded)
 	requestHash := hex.EncodeToString(hash[:])
-	operationID := c.Request().Method + " " + c.Request().URL.EscapedPath()
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	defer func() {
 		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
@@ -307,11 +323,11 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 		}
 	}()
 	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && changeCheckRequest(c) {
+	if s.config.Hosted != nil && scope.credential.Hosted == nil && scope.credential.Runner.RunnerID == "" && options.changeCheck {
 		if err := s.requireHostedChangeCheckPrincipal(ctx, tx, scope); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
 	// Older hosted receipts included the originating session in operation.
@@ -320,56 +336,56 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 	err = tx.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, command.IdempotencyKey, operationID, operationID, operationID).Scan(&storedHash, &response)
 	if err == nil {
 		if storedHash != requestHash {
-			return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict})
+			return nil, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
 		}
 		if err := tx.Commit(); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
-		return c.JSONBlob(status, []byte(response))
+		return json.RawMessage(response), nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	if scope.credential.Scope == apiScopeWorker && c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks" {
-		if err := requireNativeMutationLease(ctx, tx, scope, c.Param("item"), command, now); err != nil {
-			return s.nativeAPIError(c, err)
+	if scope.credential.Scope == apiScopeWorker && options.item != "" && !options.workerEvent {
+		if err := requireNativeMutationLease(ctx, tx, scope, options.item, command, now); err != nil {
+			return nil, err
 		}
 	}
 	before, err := s.database.hostedConsumption(ctx, tx, now)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	completion := hostedCompletionMutation(c, input)
+	completion := options.completion
 	if !completion {
-		if err := s.database.requireHostedFeature(ctx, tx, hostedMutationFeature(c), now); err != nil {
-			return s.nativeAPIError(c, err)
+		if err := s.database.requireHostedFeature(ctx, tx, options.feature, now); err != nil {
+			return nil, err
 		}
 	}
-	value, err := operation(ctx, tx, scope, now)
+	applicationValue, err := operation(ctx, tx, scope, now)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	response, err = marshalNative(value)
+	response, err = marshalNative(applicationValue)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, scope.organization, scope.credential.ID, operationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	return c.JSONBlob(status, []byte(response))
+	return json.RawMessage(response), nil
 }
 
 func (s *Service) requireCompatibilityResource(c echo.Context) error {

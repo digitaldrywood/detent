@@ -65,6 +65,7 @@ type Action struct {
 	ProviderSessionID string            `json:"provider_session_id"`
 	ScenarioID        string            `json:"scenario_id"`
 	Status            ActionStatus      `json:"status"`
+	ResultData        json.RawMessage   `json:"data,omitempty"`
 	Result            string            `json:"result,omitempty"`
 	CreatedAt         time.Time         `json:"created_at"`
 	ResolvedAt        *time.Time        `json:"resolved_at,omitempty"`
@@ -108,6 +109,7 @@ type ActionExecutor interface {
 // ActionExecution carries the application command's result, including the
 // identity of a newly created resource, into the shared action receipt.
 type ActionExecution struct {
+	Data       json.RawMessage
 	Message    string
 	ResourceID string
 	Identifier string

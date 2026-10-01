@@ -128,6 +128,11 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 	if err := authorizeHuman(ctx, current.connection.Identity.OrganizationID); err != nil {
 		return err
 	}
+	browser, ok := ctx.Value(humanApprovalKey{}).(operatortool.Identity)
+	if !ok || current.connection.Identity.SessionID != "" && browser.PrincipalID != current.connection.Identity.PrincipalID {
+		return operatortool.ErrAccessDenied
+	}
+
 	if _, err := operatortool.AuthorizeCurrent(operatortool.WithConnection(ctx, *current.connection), operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return err
 	}
@@ -139,8 +144,29 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 // Unknown action kinds fail closed, including future billing/access commands.
 func RequiresConfirmation(action Action) bool {
 	switch action.Kind {
-	case ActionSetPriority:
+	case ActionSetPriority, "create_workspace", "create_conversation", "patch_conversation", "upload_conversation_attachment":
 		return false
+	case "post_conversation_command":
+		var request struct {
+			Input struct {
+				Kind string `json:"kind"`
+			} `json:"input"`
+		}
+		if json.Unmarshal(action.Arguments, &request) != nil {
+			return true
+		}
+		return request.Input.Kind != "message" && request.Input.Kind != "answer"
+	case "create_project_action", "patch_project_action":
+		var request struct {
+			Input struct {
+				Command               *string `json:"command"`
+				RunOnWorktreeCreation *bool   `json:"run_on_worktree_creation"`
+			} `json:"input"`
+		}
+		if json.Unmarshal(action.Arguments, &request) != nil {
+			return true
+		}
+		return request.Input.Command != nil || request.Input.RunOnWorktreeCreation != nil
 	case ActionFileIssue:
 		return strings.EqualFold(action.State, "Done") || strings.EqualFold(action.State, "Cancelled")
 	case ActionMoveItem:

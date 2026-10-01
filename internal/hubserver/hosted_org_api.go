@@ -338,6 +338,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 // native mutation replays from.
 type hostedCommand struct {
 	actor, operation, key string
+	organization          string
 	input                 any
 }
 
@@ -370,7 +371,7 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 	if err != nil {
 		return false, nil, err
 	}
-	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
+	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, s.commandOrganization(command), command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
 	if err != nil {
 		return false, nil, err
 	}
@@ -381,8 +382,25 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 	if count == 1 {
 		return true, nil, nil
 	}
+	found, raw, err := s.readHostedOperation(ctx, command)
+	if err == nil && !found {
+		err = mutation.ErrUncertain
+	}
+	return false, raw, err
+}
+
+// readHostedOperation uses the same durable receipt identity as a claim.
+func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand) (bool, json.RawMessage, error) {
+	command = command.forContext(ctx)
+	hash, err := command.hash()
+	if err != nil {
+		return false, nil, err
+	}
 	var storedHash, raw string
-	if err := s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key).Scan(&storedHash, &raw); err != nil {
+	if err := s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(command), command.actor, command.operation, command.key).Scan(&storedHash, &raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil, nil
+		}
 		return false, nil, err
 	}
 	if storedHash != hash {
@@ -391,7 +409,7 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 	if raw == hostedPendingCommand {
 		return false, nil, mutation.ErrUncertain
 	}
-	return false, json.RawMessage(raw), nil
+	return true, json.RawMessage(raw), nil
 }
 
 func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
@@ -419,7 +437,7 @@ func (s *Service) completeHostedOperation(ctx context.Context, command hostedCom
 	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand)
+	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, s.commandOrganization(command), command.actor, command.operation, command.key, hostedPendingCommand)
 	if err != nil {
 		return nil, err
 	}
@@ -447,7 +465,7 @@ func (s *Service) abandonHostedCommand(c echo.Context, command hostedCommand) {
 	command = command.forContext(c.Request().Context())
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), 2*time.Second)
 	defer cancel()
-	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ? AND response_json = ?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
+	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ? AND response_json = ?`, s.commandOrganization(command), command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
 		s.config.Logger.Warn("hosted command claim could not be released")
 	}
 }
@@ -723,4 +741,11 @@ func (command hostedCommand) forContext(ctx context.Context) hostedCommand {
 		command.key = m.RetryIdentity
 	}
 	return command
+}
+
+func (s *Service) commandOrganization(command hostedCommand) string {
+	if command.organization != "" {
+		return command.organization
+	}
+	return s.config.Hosted.OrganizationID
 }

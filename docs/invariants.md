@@ -63,6 +63,27 @@ resource projection and entry/session binding. `TestConnectionActions` and
 `TestMCPActionApprovalBoundary` cover exact preview, replay, rejection, stale
 targets, closed protocol sessions, self-approval and operator-selected YOLO.
 
+Workspace/conversation/action MCP commands (#3346) share extracted native dashboard
+commands and the existing `native_commands` receipts. Direct calls and approved
+execution resolve current project/resource authority and runner grants; hosted
+checks use the same transaction to avoid reacquiring the hub's sole connection.
+Conversation command keys, attachment ownership/size rules and configured action
+revision checks remain application-owned. Successful action deletions replay their
+principal-bound, input-bound receipt after checking current project authority. Workspace paths and relay-session internals
+are omitted from MCP projections; terminal/file/SSE requests return explicit
+transport decisions with authorized state and polling alternatives. Bounded message
+history preserves continuation cursors, and attachment/output/recording reads use
+bounded byte chunks. Hosted confirmation reuses connection chat actions and existing
+browser session/CSRF authority; bearer credentials never approve. Only the originating hosted
+browser principal may choose that session connection's YOLO mode. Daemon chat history and provider turns
+bind to the current connection and durable retry identity; a nested provider receives
+only authorized read tools, while operator actions use the named command tools.
+`TestWorkspaceOperatorConversation`, `TestWorkspaceOperatorAttachments`,
+`TestWorkspaceOperatorActions`, `TestWorkspaceOperatorRunnerAuthority`,
+`TestWorkspaceOperatorHistoryBudget`, `TestWorkspaceOperatorBrowserApproval`,
+`TestWorkspaceOperatorUnavailable` and `TestMCPOperatorChatRetry` cover these boundaries.
+No MCP adapter writes tracker lanes or introduces a new protection/recovery mechanism.
+
 SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
 
 Hub-native SSH runs capture Git artifacts and attempt diffs on the selected
