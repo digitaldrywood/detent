@@ -492,15 +492,15 @@ func ChatApproval(data ChatData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if action.Kind == chatpkg.ActionKind("create_project_action_run") {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "<p class=\"mt-2 text-sm\">Configured command:</p><pre class=\"my-2 overflow-auto whitespace-pre-wrap break-words text-xs\">")
+			if action.Description != "" {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "<pre class=\"my-2 overflow-auto whitespace-pre-wrap break-words text-xs\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var25 string
 				templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(action.Description)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 119, Col: 98}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 118, Col: 98}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 				if templ_7745c5c3_Err != nil {
@@ -523,7 +523,7 @@ func ChatApproval(data ChatData) templ.Component {
 				var templ_7745c5c3_Var26 templ.SafeURL
 				templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(action.ResourceURL))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 122, Col: 49}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 121, Col: 49}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 				if templ_7745c5c3_Err != nil {
@@ -541,7 +541,7 @@ func ChatApproval(data ChatData) templ.Component {
 			var templ_7745c5c3_Var27 string
 			templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(string(action.Arguments))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 124, Col: 103}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 123, Col: 103}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 			if templ_7745c5c3_Err != nil {
@@ -559,7 +559,7 @@ func ChatApproval(data ChatData) templ.Component {
 				var templ_7745c5c3_Var28 templ.SafeURL
 				templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinURLErrs(chatApprovalPath(data))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 126, Col: 57}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 125, Col: 57}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 				if templ_7745c5c3_Err != nil {
@@ -572,7 +572,7 @@ func ChatApproval(data ChatData) templ.Component {
 				var templ_7745c5c3_Var29 string
 				templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(data.CSRF)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 127, Col: 57}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 126, Col: 57}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 				if templ_7745c5c3_Err != nil {
@@ -585,7 +585,7 @@ func ChatApproval(data ChatData) templ.Component {
 				var templ_7745c5c3_Var30 string
 				templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(data.ActionTokens[action.ID])
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 128, Col: 80}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 127, Col: 80}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 				if templ_7745c5c3_Err != nil {
@@ -598,7 +598,7 @@ func ChatApproval(data ChatData) templ.Component {
 				var templ_7745c5c3_Var31 string
 				templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(data.Conversation.ConnectionID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 129, Col: 87}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 128, Col: 87}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 				if templ_7745c5c3_Err != nil {
@@ -611,7 +611,7 @@ func ChatApproval(data ChatData) templ.Component {
 				var templ_7745c5c3_Var32 string
 				templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(action.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 130, Col: 62}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 129, Col: 62}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 				if templ_7745c5c3_Err != nil {
@@ -667,7 +667,7 @@ func ChatActionPreview(action chatpkg.Action) templ.Component {
 		var templ_7745c5c3_Var34 string
 		templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(chatActionStatus(action))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 146, Col: 101}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 145, Col: 101}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 		if templ_7745c5c3_Err != nil {
@@ -680,7 +680,7 @@ func ChatActionPreview(action chatpkg.Action) templ.Component {
 		var templ_7745c5c3_Var35 string
 		templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(chatpkg.ActionSummary(action))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 147, Col: 93}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 146, Col: 93}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 		if templ_7745c5c3_Err != nil {
@@ -698,7 +698,7 @@ func ChatActionPreview(action chatpkg.Action) templ.Component {
 			var templ_7745c5c3_Var36 string
 			templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(action.Reason)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 149, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 148, Col: 73}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 			if templ_7745c5c3_Err != nil {
@@ -717,7 +717,7 @@ func ChatActionPreview(action chatpkg.Action) templ.Component {
 			var templ_7745c5c3_Var37 string
 			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(action.Result)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 152, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/chat.templ`, Line: 151, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 			if templ_7745c5c3_Err != nil {

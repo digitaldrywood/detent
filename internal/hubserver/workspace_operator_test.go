@@ -59,6 +59,17 @@ func workspaceOperatorAction(t *testing.T, result operatortool.Result) chat.Acti
 	return response.Action
 }
 
+func workspaceOperatorData(t *testing.T, result operatortool.Result) json.RawMessage {
+	t.Helper()
+	var response struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(result.Content, &response); err != nil {
+		t.Fatal(err)
+	}
+	return response.Data
+}
+
 // Catches duplicated externally visible messages after reconnect, foreign
 // conversation access, and model-controlled authority/approval arguments.
 func TestWorkspaceOperatorConversation(t *testing.T) {
@@ -74,10 +85,25 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 		t.Fatalf("create=%+v", action)
 	}
 	var created conversationCreatedResponse
-	if err := json.Unmarshal(action.ResultData, &created); err != nil {
+	if err := json.Unmarshal(workspaceOperatorData(t, result), &created); err != nil {
 		t.Fatal(err)
 	}
 	id := created.Conversation.ID
+	// Result payloads belong to the authorized tool reply, never the public
+	// action preview or browser conversation shared with approval surfaces.
+	var reply struct {
+		Preview map[string]json.RawMessage `json:"preview"`
+	}
+	if err := json.Unmarshal(result.Content, &reply); err != nil {
+		t.Fatal(err)
+	}
+	if _, exposed := reply.Preview["data"]; exposed {
+		t.Fatal("workspace result leaked into action preview")
+	}
+	public, err := json.Marshal(f.service.operatorChat.Conversation("first"))
+	if err != nil || strings.Contains(string(public), `"data"`) {
+		t.Fatalf("public conversation exposes result: %s %v", public, err)
+	}
 	reconnect := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "second")
 	result, err = workspaceOperatorCall(t, f.service, reconnect, "create_conversation", args)
 	if err != nil {
@@ -237,9 +263,12 @@ func TestWorkspaceOperatorActions(t *testing.T) {
 	if _, err := f.service.operatorChat.Confirm(human, "actions", action.ID); err != nil {
 		t.Fatal(err)
 	}
-	action, _ = f.service.operatorChat.Action("actions", action.ID)
+	result, err = workspaceOperatorCall(t, f.service, ctx, operatortool.ActionResult, map[string]any{"action_id": action.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var configured workspacesession.Action
-	if err := json.Unmarshal(action.ResultData, &configured); err != nil {
+	if err := json.Unmarshal(workspaceOperatorData(t, result), &configured); err != nil {
 		t.Fatal(err)
 	}
 	result, err = workspaceOperatorCall(t, f.service, ctx, "create_project_action_run", map[string]any{"project_id": f.project.ID, "action_id": configured.ID, "workspace_id": workspace, "request_id": "unbound", "expected_revision": 1})
@@ -264,9 +293,12 @@ func TestWorkspaceOperatorActions(t *testing.T) {
 	if _, err := f.service.operatorChat.Confirm(human, "actions", run.ID); err != nil {
 		t.Fatal(err)
 	}
-	run, _ = f.service.operatorChat.Action("actions", run.ID)
+	result, err = workspaceOperatorCall(t, f.service, ctx, operatortool.ActionResult, map[string]any{"action_id": run.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var queued projectActionRunReceipt
-	if err := json.Unmarshal(run.ResultData, &queued); err != nil {
+	if err := json.Unmarshal(workspaceOperatorData(t, result), &queued); err != nil {
 		t.Fatal(err)
 	}
 	reconnect := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "reconnect")
@@ -275,7 +307,7 @@ func TestWorkspaceOperatorActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var replay projectActionRunReceipt
-	if err := json.Unmarshal(workspaceOperatorAction(t, result).ResultData, &replay); err != nil || replay.RunID != queued.RunID {
+	if err := json.Unmarshal(workspaceOperatorData(t, result), &replay); err != nil || replay.RunID != queued.RunID {
 		t.Fatalf("replay=%+v %v", replay, err)
 	}
 	var count int

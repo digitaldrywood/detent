@@ -202,14 +202,14 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		}
 		if rejection.Rejected {
 			outcome = "replayed"
-			return e.actionResult(rejection.Action)
+			return e.actionResult(rejection.Action, nil)
 		}
 		var receipt workspaceCompletedAction
 		if json.Unmarshal(raw, &receipt) != nil || receipt.Action.Status != chat.ActionSucceeded {
 			return operatortool.Result{}, errWorkspaceOperationUnavailable
 		}
 		outcome, m = "replayed", receipt.Action.Mutation
-		return e.actionResult(receipt.Action)
+		return e.actionResult(receipt.Action, receipt.Execution.Data)
 	}
 	if call.Name == "delete_project_action" {
 		ctx, err = operatortool.AuthorizeCurrent(ctx, workspaceRequirement(call.Name, request, true))
@@ -241,7 +241,11 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 	}
 	outcome = string(action.Status)
 	m = action.Mutation
-	return e.actionResult(action)
+	data, err := e.server.operatorChat.ConnectionResult(ctx, action.ID)
+	if err != nil {
+		return operatortool.Result{}, safeWorkspaceError(err)
+	}
+	return e.actionResult(action, data)
 }
 func resourceSelector(r workspaceToolRequest) string {
 	for _, id := range []string{r.ConversationID, r.WorkspaceID, r.ActionID, r.WorkItemID} {
@@ -328,7 +332,7 @@ func (e workspaceOperatorExecutor) ExecuteAction(ctx context.Context, action cha
 		}
 	}
 	completed := action
-	completed.Status, completed.ResultData, completed.Result = chat.ActionSucceeded, execution.Data, execution.Message
+	completed.Status, completed.Result = chat.ActionSucceeded, execution.Message
 	completed.IssueID = execution.ResourceID
 	now := e.server.config.now()
 	completed.ResolvedAt = &now
@@ -386,7 +390,7 @@ func (e workspaceOperatorExecutor) auditMutation(ctx context.Context, m mutation
 	}
 
 }
-func (e workspaceOperatorExecutor) actionResult(action chat.Action) (operatortool.Result, error) {
+func (e workspaceOperatorExecutor) actionResult(action chat.Action, data json.RawMessage) (operatortool.Result, error) {
 	return operatortool.WorkspaceResult(struct {
 		Action     chat.Action       `json:"preview"`
 		ID         string            `json:"action_id"`
@@ -394,7 +398,7 @@ func (e workspaceOperatorExecutor) actionResult(action chat.Action) (operatortoo
 		Data       json.RawMessage   `json:"data,omitempty"`
 		URL        string            `json:"approval_url"`
 		ResultTool string            `json:"result_tool"`
-	}{action, action.ID, action.Status, action.ResultData, e.server.billingApprovalURL(action.ConnectionID), operatortool.ActionResult})
+	}{action, action.ID, action.Status, data, e.server.billingApprovalURL(action.ConnectionID), operatortool.ActionResult})
 }
 func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	var request struct {
@@ -439,7 +443,11 @@ func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call op
 	if _, err := operatortool.AuthorizeCurrent(ctx, requirement); err != nil {
 		return operatortool.Result{}, err
 	}
-	return e.actionResult(action)
+	data, err := e.server.operatorChat.ConnectionResult(ctx, action.ID)
+	if err != nil {
+		return operatortool.Result{}, safeWorkspaceError(err)
+	}
+	return e.actionResult(action, data)
 }
 
 func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name string, r workspaceToolRequest) (json.RawMessage, error) {

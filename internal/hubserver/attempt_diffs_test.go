@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -152,6 +154,59 @@ func TestAttemptDiffStoreAndRead(t *testing.T) {
 	requireNativeStatus(t, f.get(t, "?source=workspace"), http.StatusNotFound)
 	requireNativeCode(t, f.get(t, "?at=0"), http.StatusUnprocessableEntity, "invalid_request")
 	requireNativeCode(t, f.get(t, "?source=relay"), http.StatusUnprocessableEntity, "invalid_request")
+
+	// Catches direct MCP selectors joining an authorized item to another item's
+	// attempt, while preserving exact diff generations and run identity.
+	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	executor := hubOperatorExecutor{f.service}
+	other := f.create(t, "other-diff-item")
+	for _, test := range []struct {
+		name, tool string
+		item       tracker.NativeWorkItemID
+		sequence   int64
+		denied     bool
+	}{
+		{"latest", operatortool.GetAttemptDiff, f.issue.WorkItemID, 0, false},
+		{"pinned", operatortool.GetAttemptDiff, f.issue.WorkItemID, 2, false},
+		{"work item", operatortool.GetWorkItemDiff, f.issue.WorkItemID, 0, false},
+		{"run", operatortool.GetNativeRun, f.issue.WorkItemID, 0, false},
+		{"foreign diff", operatortool.GetAttemptDiff, other.WorkItemID, 0, true},
+		{"foreign run", operatortool.GetNativeRun, other.WorkItemID, 0, true},
+	} {
+		t.Run("operator/"+test.name, func(t *testing.T) {
+			args := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(test.item), Sequence: test.sequence}
+			if test.tool != operatortool.GetWorkItemDiff {
+				args.AttemptID = f.attempt
+			}
+			result, err := executor.Execute(ctx, changeToolCall(test.tool, args))
+			if test.denied {
+				if !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("foreign ownership: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var value operatortool.ChangeResult
+			if err := json.Unmarshal(result.Content, &value); err != nil {
+				t.Fatal(err)
+			}
+			if test.tool == operatortool.GetNativeRun {
+				if value.Attempt == nil || value.Attempt.AttemptID != f.attempt {
+					t.Fatal("missing run identity")
+				}
+			} else {
+				want := int64(5)
+				if test.sequence != 0 {
+					want = test.sequence
+				}
+				if value.Diff == nil || value.Diff.Generation.Seq != want || value.Diff.AttemptID != f.attempt {
+					t.Fatal("incorrect diff identity")
+				}
+			}
+		})
+	}
 }
 
 // "A seq at or below the stored one is rejected with stale_generation."

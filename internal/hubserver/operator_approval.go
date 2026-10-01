@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 	"github.com/labstack/echo/v4"
@@ -24,39 +24,6 @@ func (s *Service) hostedOperatorBrowser(c echo.Context, next echo.HandlerFunc) e
 		credential, err := currentHubOperator(c.Request().Context())
 		if err != nil || credential.SessionHash == "" || credential.Hosted == nil || s.operatorFormCSRF(c) == "" {
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-		}
-		id := c.QueryParam("connection_id")
-		if c.Request().Method == http.MethodPost {
-			c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
-			id = c.FormValue("connection_id")
-		}
-		conversation := s.operatorChat.Conversation(id)
-		billing, fleet, workspace := false, false, false
-		for _, action := range conversation.Actions {
-			if action.Kind == chat.ActionKind(operatortool.BillingCheckout) || action.Kind == chat.ActionKind(operatortool.BillingPortal) {
-				billing = true
-			}
-			fleet = fleet || hubFleetTool(string(action.Kind))
-			if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
-				workspace = true
-			}
-		}
-		if fleet {
-			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-			}
-		}
-		if billing {
-			if _, err := s.hostedBillingOwner(c); err != nil {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-			}
-		} else if !fleet && !workspace {
-			// Owners can configure billing confirmation before their first preview.
-			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
-				if _, err := s.hostedBillingOwner(c); err != nil {
-					return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-				}
-			}
 		}
 		return next(c)
 	})(c)
@@ -106,16 +73,13 @@ func (s *Service) renderBillingApproval(c echo.Context, id string) error {
 	if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
 		return echo.NewHTTPError(http.StatusNotFound, "Connection is unavailable")
 	}
+	if err := s.authorizeOperatorBrowserActions(c, id, conversation.Actions); err != nil {
+		return err
+	}
 	tokens := make(map[string]string, len(conversation.Actions))
-	visible := make([]chat.Action, 0, len(conversation.Actions))
 	for _, action := range conversation.Actions {
-		if err := s.authorizeHostedApprovalAction(c.Request().Context(), action, false); err != nil {
-			continue
-		}
-		visible = append(visible, action)
 		tokens[action.ID] = s.billingDecisionToken(c, id, action.ID)
 	}
-	conversation.Actions = visible
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
 	c.Response().Header().Set("Cache-Control", "no-store")
 	c.Response().Header().Set("Referrer-Policy", "same-origin")
@@ -133,13 +97,16 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 		if conversation.ConnectionID == "" || conversation.OrganizationID != operatortool.ConnectionIdentity(c.Request().Context()).OrganizationID {
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 		}
+		actions := conversation.Actions
 		if actionID != "" {
 			action, ok := s.operatorChat.Action(id, actionID)
-			if !ok || s.authorizeHostedApprovalAction(c.Request().Context(), action, true) != nil {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			if !ok {
+				return echo.NewHTTPError(http.StatusNotFound, "Action is unavailable")
 			}
-		} else if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeWrite}); err != nil {
-			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			actions = []chat.Action{action}
+		}
+		if err := s.authorizeOperatorBrowserActions(c, id, actions); err != nil {
+			return err
 		}
 		ctx := chat.WithOperatorApproval(c.Request().Context(), operatortool.ConnectionIdentity(c.Request().Context()))
 		var err error
@@ -160,28 +127,44 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 	})
 }
 
-// Browser approval checks the operator's current grants as well as the original
-// connection's authority, which is resolved again by the shared action executor.
-func (s *Service) authorizeHostedApprovalAction(ctx context.Context, action chat.Action, write bool) error {
-	requirement := operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: action.ProjectID}
-	if write {
-		requirement.Scope = apikey.ScopeWrite
-	}
-	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
-		var request workspaceToolRequest
-		if operatortool.DecodeArguments(action.Arguments, &request) != nil {
-			return operatortool.ErrAccessDenied
+// Administration approvals use the originating browser and the exact operation's
+// powers. Billing approvals retain the application's owner-only policy.
+func (s *Service) authorizeOperatorBrowserActions(c echo.Context, id string, actions []chat.Action) error {
+	for _, action := range actions {
+		if operatortool.IsAdministration(string(action.Kind)) {
+			if err := s.operatorChat.CheckBrowserSession(c.Request().Context(), id); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+			in, err := operatoradmin.Decode(string(action.Kind), action.Arguments)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+			if err := s.administration.App.Authorize(c.Request().Context(), string(action.Kind), in, ""); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID}); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
+			var request workspaceToolRequest
+			if operatortool.DecodeArguments(action.Arguments, &request) != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+			requirement := workspaceRequirement(string(action.Kind), request, true)
+			if action.Kind == "delete_project_action" && action.Status == chat.ActionSucceeded {
+				requirement.ResourceKind, requirement.ResourceID = "", ""
+			}
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), requirement); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if hubFleetTool(string(action.Kind)) {
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(string(action.Kind))); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if _, err := s.hostedBillingOwner(c); err != nil {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 		}
-		requirement = workspaceRequirement(string(action.Kind), request, write)
-		if action.Kind == "delete_project_action" && action.Status == chat.ActionSucceeded {
-			requirement.ResourceKind, requirement.ResourceID = "", ""
-		}
-	} else if hubFleetTool(string(action.Kind)) {
-		requirement = hubFleetRequirement(string(action.Kind))
-	} else if action.Kind == chat.ActionKind(operatortool.BillingCheckout) || action.Kind == chat.ActionKind(operatortool.BillingPortal) {
-		_, err := s.operatorBillingCredential(ctx, "billing", write)
-		return err
 	}
-	_, err := operatortool.AuthorizeCurrent(ctx, requirement)
-	return err
+	return nil
 }

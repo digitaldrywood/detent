@@ -26,6 +26,14 @@ func TestConnectionActions(t *testing.T) {
 			}
 		}},
 
+		{"ordinary organization context selection", func(t *testing.T, s *Service, executor *actionExecutorStub, ctx, human context.Context, revoked *bool) {
+			action := connectionTestAction()
+			action.Kind = ActionKind(operatortool.OrganizationSwitch)
+			result, err := s.Submit(ctx, action)
+			if err != nil || result.Status != ActionSucceeded || executor.calls != 1 {
+				t.Fatalf("context selection=%+v %v", result, err)
+			}
+		}},
 		{"ordinary write", func(t *testing.T, s *Service, executor *actionExecutorStub, ctx, human context.Context, revoked *bool) {
 			action := connectionTestAction()
 			action.Kind = ActionSetPriority

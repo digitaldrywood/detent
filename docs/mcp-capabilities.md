@@ -16,12 +16,11 @@ whole operation, including risky argument variants. Reads are retry-safe; mutati
 remain non-idempotent hints until their shared retry contract is implemented. A route registration is a source site, not a
 capability count. Browser/JSON aliases and frontend calls can share a row.
 `pending` means required operator parity remains unfinished. It is never an
-accepted exclusion. `implemented` describes the existing read slice with current
-connection authority (#3336), not parent acceptance. `excluded` is reserved for
+accepted exclusion. `implemented` describes delivered child behavior with current
+connection authority, not parent acceptance. `excluded` is reserved for
 explicit current asset, local presentation, authentication exchange, worker,
 transport or staff authority sites. Staff decisions do not give organization
-operators staff privileges. Existing delete/revoke actions remain pending
-operator work where their current authority allows them.
+operators staff privileges. Each child records the availability of its delivered delete/revoke actions.
 
 Deployment availability distinguishes the self-hosted dashboard and unhosted
 hub, hosted dedicated organization hub, shared entry plus organization hub,
@@ -115,19 +114,45 @@ Hosted machine-token restrictions and staff/support boundaries remain those of
 the application; worker and runner credentials never gain operator access.
 CSRF is still required for browser POSTs. The credential-maintenance listener
 does not mount MCP. Hubs currently have no daemon telemetry/explainer service:
-their authenticated read catalog is empty and direct legacy read calls return
+the five telemetry/explanation reads are unavailable and direct legacy read calls return
 opaque unavailable errors after resource authorization. The read/service children
 must supply shared application reads, not a compatibility HTTP proxy.
 
-Session/account/logout/context-selection and broader dashboard operations in
-the matrix remain pending typed application work; this authority contract does
-not claim their implementation or complete #3259.
+Organization and credential administration (#3344) uses typed application tools:
+`organization_session`, `organization_list`, `organization_switch`,
+`organization_create`, `organization_delete`, `invitation_accept`,
+`invitation_send`, `invitation_revoke`, `membership_list`, `member_remove`,
+`member_role`, `member_grant`, `credential_list`, `credential_create`,
+`credential_rotate`, `credential_revoke`, `credential_grant`, and `support_start`.
+Discovery filters these by installed services and current authority; direct calls
+perform the same checks. The account entry is `/api/cloud/mcp`. Context selection
+returns a destination requiring a fresh connection; it never changes the original
+connection's grants. Organization lists include owned provisioning status where
+that application offers it. Support entry returns the existing interactive browser
+flow only to configured support actors.
+
+Self-hosted dashboard API-key commands use its existing browser approver. Hosted
+membership/account commands use the originating browser session and its existing
+CSRF boundary. Native hubs expose credential metadata and context selection;
+material native administration is unavailable through MCP because those deployments
+have no browser approver. Their existing API commands remain available. Providers
+without invitation-by-ID administration do not advertise invitation acceptance.
+Absent services return opaque unavailable errors. No new approval credentials or
+platform powers are installed.
+
+Access-changing and destructive commands require an exact preview and a real
+browser decision by default. YOLO is a human connection decision and still checks
+current authority. Durable application receipts omit credential material; deliberate
+credential results stay on their originating connection, recheck current authority
+and the delivered credential's validity, and are never restored from durable retry
+receipts. A fresh connection retry returns the resource receipt without its secret.
+These implementations do not complete parent #3259.
 
 Meaningful forms and redirects produce structured application data, command
 receipts or destination URLs. Provider login/callback exchanges are connection
 setup. Billing checkout/portal/export are meaningful owner-only operations, not
-excluded redirects. Organization invitation, creation, selection, provisioning,
-deletion, role/grant changes and project onboarding remain application work.
+excluded redirects. Organization administration uses the shared commands above; project onboarding
+remains separate application work.
 Workspace relay frames are transport; bounded file reads and predefined project
 actions belong to the shared application surface, never an arbitrary shell or
 relay proxy. The frontend PR-action request currently has no registered hub

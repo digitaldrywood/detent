@@ -292,7 +292,7 @@ func (s *Service) providerFailureAfterUser(current *session, err error) (Convers
 
 func (s *Service) resolveExecution(current *session, index int, result ActionExecution, actionErr error) (Conversation, error) {
 	if actionErr == nil {
-		current.actions[index].ResultData = append(json.RawMessage(nil), result.Data...)
+		current.actions[index].resultData = append(json.RawMessage(nil), result.Data...)
 	}
 	if actionErr == nil && result.ResourceID != "" {
 		current.actions[index].IssueID = result.ResourceID
@@ -388,9 +388,9 @@ func cloneActions(actions []Action) []Action {
 	out := make([]Action, len(actions))
 	copy(out, actions)
 	for index := range out {
+		out[index].resultData = nil
 		out[index].Labels = append([]string(nil), out[index].Labels...)
 		out[index].Arguments = append(json.RawMessage(nil), out[index].Arguments...)
-		out[index].ResultData = append(json.RawMessage(nil), out[index].ResultData...)
 		if out[index].Work != nil {
 			work := *out[index].Work
 			if work.Title != nil {

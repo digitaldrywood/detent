@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -112,6 +113,12 @@ func (s *Server) operatorApprovalDecision(c echo.Context) error {
 		credential, ok := apiCredentialFromContext(ctx)
 		if !ok || !apikey.HasScope(credential.Scopes, apikey.ScopeWrite) || !apikey.AllowsProject(credential.ProjectIDs, action.ProjectID) {
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
+		if operatortool.IsAdministration(string(action.Kind)) {
+			input, err := operatoradmin.Decode(string(action.Kind), action.Arguments)
+			if err != nil || s.credentialExecutor().App.Authorize(ctx, string(action.Kind), input, action.IssueID) != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
 		}
 	}
 	ctx = chatpkg.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx))
