@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1052,17 +1054,41 @@ func TestSharedEntrySupportAccess(t *testing.T) {
 
 func TestStoreDSN(t *testing.T) {
 	t.Parallel()
-	for _, tt := range []struct{ path, want string }{
-		{"/tmp/registry.db", "/tmp/registry.db"},
-		{"C:/entry/registry.db", "/C:/entry/registry.db"},
-		{"c:/entry/a #?.db", "/c:/entry/a #?.db"},
+	for _, tt := range []struct{ path, want, escaped string }{
+		{"/tmp/registry.db", "/tmp/registry.db", "/tmp/registry.db"},
+		{"/tmp/cloud entry/café #?%.db", "/tmp/cloud entry/café #?%.db", "/tmp/cloud%20entry/caf%C3%A9%20%23%3F%25.db"},
+		{"C:/entry/registry.db", "/C:/entry/registry.db", "/C:/entry/registry.db"},
+		{"c:/entry/a #?.db", "/c:/entry/a #?.db", "/c:/entry/a%20%23%3F.db"},
+		{"C:/cloud entry/数据库 %23.db", "/C:/cloud entry/数据库 %23.db", "/C:/cloud%20entry/%E6%95%B0%E6%8D%AE%E5%BA%93%20%2523.db"},
 	} {
 		t.Run(tt.path, func(t *testing.T) {
-			parsed, err := url.Parse(storeDSN(tt.path))
-			if err != nil || parsed.Host != "" || parsed.Path != tt.want {
-				t.Fatalf("store URI = %v, %v; want local path %q", parsed, err, tt.want)
+			if tt.want != tt.path {
+				// The former URL construction makes the drive letter an authority.
+				// SQLite rejects it at the first query, before touching the file.
+				legacy := &url.URL{Scheme: "file", Path: tt.path}
+				db, err := sql.Open("sqlite", legacy.String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := db.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				var applicationID int64
+				if err := db.QueryRowContext(t.Context(), "PRAGMA application_id").Scan(&applicationID); err == nil || !strings.Contains(err.Error(), "invalid uri authority: "+tt.path[:2]) {
+					t.Fatalf("legacy store query = %v; want invalid drive authority", err)
+				}
 			}
-			if len(parsed.Query()["_pragma"]) != 4 {
+			parsed, err := url.Parse(storeDSN(tt.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.Scheme != "file" || parsed.Host != "" || parsed.Path != tt.want || parsed.Fragment != "" || parsed.EscapedPath() != tt.escaped {
+				t.Fatalf("store URI = %v; want local path %q escaped as %q", parsed, tt.want, tt.escaped)
+			}
+			wantPragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "locking_mode(EXCLUSIVE)", "synchronous(FULL)"}
+			if len(parsed.Query()) != 1 || !slices.Equal(parsed.Query()["_pragma"], wantPragmas) {
 				t.Fatalf("pragmas = %v", parsed.Query())
 			}
 		})
