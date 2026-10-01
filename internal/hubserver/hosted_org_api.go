@@ -389,19 +389,8 @@ func (s *Service) completeHostedOperation(ctx context.Context, command hostedCom
 	return json.RawMessage(response), nil
 }
 
-func (s *Service) completeHostedCommand(c echo.Context, command hostedCommand, status int, value any) error {
-	response, err := s.completeHostedOperation(c.Request().Context(), command, value)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(status, response)
-}
-
-// abandonHostedCommand gives back a claim whose mutation did not happen, so
+// abandonHostedOperation gives back a claim whose mutation did not happen, so
 // the same key can be retried.
-func (s *Service) abandonHostedCommand(c echo.Context, command hostedCommand) {
-	s.abandonHostedOperation(c.Request().Context(), command)
-}
 func (s *Service) abandonHostedOperation(parent context.Context, command hostedCommand) {
 	command = command.forContext(parent)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 2*time.Second)

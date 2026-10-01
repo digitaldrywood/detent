@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"time"
@@ -41,7 +40,7 @@ func (a dashboardChangeApplication) client(args operatortool.ChangeArguments) (*
 	return source.NativeClient().ArtifactReader(a.token), nil
 }
 func (a dashboardChangeApplication) result(args operatortool.ChangeArguments) operatortool.ChangeResult {
-	result := operatortool.ChangeResult{ProjectID: args.ProjectID, WorkItemID: args.ItemID, ChangeID: args.ChangeID, URL: fmt.Sprintf("/projects/%s", url.PathEscape(args.ProjectID)), GeneratedAt: time.Now().UTC(), Freshness: "live"}
+	result := operatortool.ChangeResult{ProjectID: args.ProjectID, WorkItemID: args.ItemID, ChangeID: args.ChangeID, URL: "/projects/" + url.PathEscape(args.ProjectID), GeneratedAt: time.Now().UTC(), Freshness: "live"}
 	if args.ItemID != "" {
 		result.URL += "/issues/" + url.PathEscape(args.ItemID)
 	}

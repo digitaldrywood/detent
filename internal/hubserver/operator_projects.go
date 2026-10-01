@@ -199,7 +199,7 @@ func (e hubProjectExecutor) AuditAction(ctx context.Context, action chatpkg.Acti
 	if outcome == "approved" || outcome == "rejected" {
 		m.Confirmation = outcome
 	}
-	raw, _ := json.Marshal(struct {
+	raw, _ := json.Marshal(struct { //nolint:errcheck // Audit metadata and outcome contain only strings.
 		mutation.Metadata
 		Outcome string `json:"outcome"`
 	}{m, outcome})

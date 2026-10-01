@@ -15,11 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/labstack/echo/v4"
 )
 
 // Catches allocation payload leaks, creator/session bypasses, material effects
@@ -57,14 +58,15 @@ func TestEntryProvisioningAdministration(t *testing.T) {
 			<-f.service.allocatorDone
 			b := newBrowser(t, f.service.Handler())
 			b.login("/organizations", "user_dana:")
-			var ctx context.Context
+			ctxs := make(chan context.Context, 1)
 			f.service.echo.POST("/provisioning-administration-test", func(c echo.Context) error {
-				ctx = operatortool.BindConnection(c.Request().Context(), "provisioning-test", "fixture")
+				ctxs <- operatortool.BindConnection(c.Request().Context(), "provisioning-test", "fixture")
 				return c.NoContent(http.StatusOK)
 			}, f.service.administrationAuthority)
 			if response := b.do(http.MethodPost, "/provisioning-administration-test", nil, nil); response.StatusCode != http.StatusOK {
 				t.Fatalf("entry=%d %s", response.StatusCode, response.Body)
 			}
+			ctx := <-ctxs
 			session, err := f.service.currentAdministrationSession(ctx, operatortool.ConnectionIdentity(ctx))
 			if err != nil {
 				t.Fatal(err)

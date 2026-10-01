@@ -450,6 +450,9 @@ func WithExpectedRevision(ctx context.Context, revision Revision) context.Contex
 	return context.WithValue(ctx, expectedRevisionKey{}, revision)
 }
 func ExpectedRevision(ctx context.Context) Revision {
-	revision, _ := ctx.Value(expectedRevisionKey{}).(Revision)
+	revision, ok := ctx.Value(expectedRevisionKey{}).(Revision)
+	if !ok {
+		return 0
+	}
 	return revision
 }

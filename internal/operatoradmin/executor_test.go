@@ -151,7 +151,7 @@ func TestAdministrationExecution(t *testing.T) {
 			if err != nil || !strings.Contains(string(retry.Content), "secret-value-sentinel") || app.calls != 1 {
 				t.Fatalf("bound replay=%s %v calls=%d", retry.Content, err, app.calls)
 			}
-			if scenario == "safe error" && safe(errors.New("secret-value-sentinel")) != ErrUnavailable {
+			if scenario == "safe error" && !errors.Is(safe(errors.New("secret-value-sentinel")), ErrUnavailable) {
 				t.Fatal("raw error exposed")
 			}
 		})

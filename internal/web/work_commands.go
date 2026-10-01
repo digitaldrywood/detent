@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -19,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
-	"github.com/google/uuid"
 )
 
 type workCommandTarget struct {
@@ -151,7 +152,7 @@ func (s *Server) workActionProposal(ctx context.Context, name string, arguments 
 
 func nativeCommentForCommand(ctx context.Context, client *hubclient.NativeClient, id tracker.NativeWorkItemID, commentID string) (tracker.NativeComment, error) {
 	cursor := ""
-	for pageNumber := 0; pageNumber < 20; pageNumber++ {
+	for range 20 {
 		page, err := client.Comments(ctx, id, cursor)
 		if err != nil {
 			return tracker.NativeComment{}, err

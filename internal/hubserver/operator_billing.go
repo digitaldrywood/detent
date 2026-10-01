@@ -59,11 +59,11 @@ func (e hostedOperatorExecutor) OpenConnection(ctx context.Context) error {
 }
 
 func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
-	definitions, err := (nativeOperatorExecutor{service: e.service}).ListTools(ctx)
+	definitions, err := nativeOperatorExecutor(e).ListTools(ctx)
 	if err != nil {
 		return nil, err
 	}
-	projectDefinitions, err := (hubProjectExecutor{e.service}).ListTools(ctx)
+	projectDefinitions, err := hubProjectExecutor(e).ListTools(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +81,7 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 			definitions = append(definitions, definition)
 		}
 	}
-	changes, err := (hubOperatorExecutor{service: e.service}).ListTools(ctx)
+	changes, err := hubOperatorExecutor(e).ListTools(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 			definitions = append(definitions, definition)
 		}
 	}
-	fleet, err := (hubFleetExecutor{service: e.service}).ListTools(ctx)
+	fleet, err := hubFleetExecutor(e).ListTools(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -154,10 +154,10 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return (workspaceOperatorExecutor{server: e.service}).Execute(ctx, call)
 	}
 	if definition, ok := operatortool.Lookup(call.Name); ok && definition.Meta.Toolset == "projects" {
-		return (hubProjectExecutor{e.service}).Execute(ctx, call)
+		return hubProjectExecutor(e).Execute(ctx, call)
 	}
 	if _, ok := operatortool.ChangeDefinition(call.Name); ok {
-		return (hubOperatorExecutor{service: e.service}).Execute(ctx, call)
+		return hubOperatorExecutor(e).Execute(ctx, call)
 	}
 	if operatortool.IsAdministration(call.Name) {
 		return e.service.administration.Execute(ctx, call)
@@ -172,7 +172,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 					return (workspaceOperatorExecutor{server: e.service}).Execute(ctx, call)
 				}
 				if definition, known := operatortool.Lookup(string(action.Kind)); known && definition.Meta.Toolset == "projects" {
-					return (hubProjectExecutor{e.service}).connectionRead(ctx, call)
+					return hubProjectExecutor(e).connectionRead(ctx, call)
 				}
 			}
 			if action, ok := e.service.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok && operatortool.IsAdministration(string(action.Kind)) {
@@ -181,10 +181,10 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		}
 	}
 	if hubFleetTool(call.Name) {
-		return (hubFleetExecutor{service: e.service}).Execute(ctx, call)
+		return hubFleetExecutor(e).Execute(ctx, call)
 	}
 	if call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) {
-		return (nativeOperatorExecutor{service: e.service}).Execute(ctx, call)
+		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}
 	defer func() {
 		if err != nil {
@@ -414,7 +414,7 @@ func (s *Service) billingActionBinding(price string) string {
 	if cfg == nil {
 		return ""
 	}
-	raw, _ := json.Marshal(struct {
+	raw, _ := json.Marshal(struct { //nolint:errcheck // The binding contains only strings and concrete plan references.
 		Account, Mode, Portal, Return string
 		Prices                        []HostedBillingPrice
 		Price                         string
@@ -428,16 +428,16 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 		return (workspaceOperatorExecutor{server: e.service}).ExecuteAction(ctx, action)
 	}
 	if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" {
-		return (hubProjectExecutor{e.service}).ExecuteAction(ctx, action)
+		return hubProjectExecutor(e).ExecuteAction(ctx, action)
 	}
 	if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
-		return (hubOperatorExecutor{service: e.service}).ExecuteAction(ctx, action)
+		return hubOperatorExecutor(e).ExecuteAction(ctx, action)
 	}
 	if operatortool.IsAdministration(string(action.Kind)) {
 		return e.service.administration.ExecuteAction(ctx, action)
 	}
 	if hubFleetTool(string(action.Kind)) {
-		return (hubFleetExecutor{service: e.service}).ExecuteAction(ctx, action)
+		return hubFleetExecutor(e).ExecuteAction(ctx, action)
 	}
 	defer func() {
 		if err != nil {
@@ -481,11 +481,11 @@ func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Act
 		return
 	}
 	if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" {
-		(hubProjectExecutor{e.service}).AuditAction(ctx, action, outcome)
+		hubProjectExecutor(e).AuditAction(ctx, action, outcome)
 		return
 	}
 	if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
-		(hubOperatorExecutor{service: e.service}).AuditAction(ctx, action, outcome)
+		hubOperatorExecutor(e).AuditAction(ctx, action, outcome)
 		return
 	}
 	if operatortool.IsAdministration(string(action.Kind)) {
@@ -493,7 +493,7 @@ func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Act
 		return
 	}
 	if hubFleetTool(string(action.Kind)) {
-		(hubFleetExecutor{service: e.service}).AuditAction(ctx, action, outcome)
+		hubFleetExecutor(e).AuditAction(ctx, action, outcome)
 		return
 	}
 	credential, err := e.service.operatorBillingCredential(ctx, "billing", true)

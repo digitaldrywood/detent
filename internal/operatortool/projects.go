@@ -107,7 +107,7 @@ func ProjectCatalog() []Definition {
 			required = append(required, "import_id")
 		}
 		schema["required"] = required
-		raw, _ := json.Marshal(schema)
+		raw, _ := json.Marshal(schema) //nolint:errcheck // Generated schemas contain only JSON primitives, slices and maps.
 		out = append(out, Definition{Name: name, Description: "Read authorized project application data: " + strings.ReplaceAll(name, "_", " ") + ". Setup returns the existing browser flow and requirements.", InputSchema: raw, Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}})
 	}
 	out = append(out,
@@ -133,7 +133,7 @@ func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 	if name == "create_native_project" || name == "create_hosted_project" {
 		schema["required"] = []string{"request_id", "input"}
 	}
-	raw, _ := json.Marshal(schema)
+	raw, _ := json.Marshal(schema) //nolint:errcheck // Generated schemas contain only JSON primitives, slices and maps.
 	return Definition{Name: name, Description: "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Material arguments require browser operator approval; request_id is the business retry key.", InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
 }
 
@@ -147,7 +147,7 @@ func projectSchema(t reflect.Type) map[string]any {
 	case reflect.Struct:
 		props := map[string]any{}
 		required := []string{}
-		for i := 0; i < t.NumField(); i++ {
+		for i := range t.NumField() {
 			f := t.Field(i)
 			tag := strings.Split(f.Tag.Get("json"), ",")
 			if tag[0] == "-" || tag[0] == "" {

@@ -168,10 +168,10 @@ func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r 
 		if err != nil {
 			return operatorProjectPage{}, err
 		}
+		defer rows.Close()
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
-				rows.Close()
 				return operatorProjectPage{}, err
 			}
 			ids = append(ids, id)

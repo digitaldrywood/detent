@@ -159,7 +159,7 @@ func ChangeCatalog() []Definition {
 		for _, k := range strings.Fields(optional) {
 			fields[k] = props[k]
 		}
-		schema, _ := json.Marshal(struct {
+		schema, _ := json.Marshal(struct { //nolint:errcheck // Properties are fixed, valid JSON schema fragments.
 			Type       string                     `json:"type"`
 			Required   []string                   `json:"required"`
 			Properties map[string]json.RawMessage `json:"properties"`
@@ -340,11 +340,11 @@ func ChangeDiffPage(diff *tracker.AttemptDiff, args ChangeArguments) (*tracker.A
 	files := make([]tracker.AttemptDiffFile, 0, len(page))
 	budget := MaxResultBytes / 2
 	for _, file := range page {
-		encoded, _ := json.Marshal(file)
+		encoded, _ := json.Marshal(file) //nolint:errcheck // AttemptDiffFile contains only strings, integers and booleans.
 		if len(encoded) > budget && file.Patch != "" {
 			file.Patch = ""
 			file.Truncated = true
-			encoded, _ = json.Marshal(file)
+			encoded, _ = json.Marshal(file) //nolint:errcheck // AttemptDiffFile contains only strings, integers and booleans.
 		}
 		if len(encoded) > budget {
 			offset := args.Offset + len(files)

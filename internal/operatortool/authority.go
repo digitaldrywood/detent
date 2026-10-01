@@ -140,7 +140,7 @@ func (e *AuthorizedExecutor) ListTools(ctx context.Context) ([]Definition, error
 			definitions = append(definitions, definition)
 		}
 	}
-	authority, _ := authorized.Value(authorityKey{}).(Authority)
+	authority, _ := authorized.Value(authorityKey{}).(Authority) //nolint:errcheck // AuthorizeCurrent always attaches the resolved Authority on success.
 	if e.executor.workReads != nil || authority.WorkReads != nil {
 		reader := e.executor.workReads
 		if authority.WorkReads != nil {

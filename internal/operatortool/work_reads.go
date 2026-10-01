@@ -106,14 +106,15 @@ func WorkReadCatalog() []Definition {
 				if field == "cursor" {
 					bound = 4096
 				}
-				properties[field] = map[string]any{"type": "string", "maxLength": bound}
+				property := map[string]any{"type": "string", "maxLength": bound}
+				properties[field] = property
 				if field == "reference" {
 					required = append(required, field)
-					properties[field].(map[string]any)["minLength"] = 1
+					property["minLength"] = 1
 				}
 			}
 		}
-		schema, _ := json.Marshal(map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false})
+		schema, _ := json.Marshal(map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}) //nolint:errcheck // The schema contains only JSON primitives, slices and maps.
 		d := definition(spec.name, spec.description, string(schema))
 		d.Meta = toolset(BoardState)
 		d.Annotations.OpenWorld = true
