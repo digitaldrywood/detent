@@ -1026,10 +1026,37 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	}
 	tests := []struct {
 		name           string
+		ready          bool
+		mutate         func(*connector.Issue, *Config)
+		wantState      string
 		history        []store.WorkAttempt
 		wantTerminal   store.WorkAttemptTerminalState
 		wantHydrations int
 	}{
+		{name: "ready current head promotes immediately", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1, wantState: "Merging"},
+		{name: "real CI pending waits without continuation", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, _ *Config) { issue.PullRequest.CIStatus = "pending" }},
+		{name: "omitted checks with no CI producer remains held", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, _ *Config) { issue.PullRequest.CIStatus = "" }},
+		{name: "native required checks remain held", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, cfg *Config) {
+				issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "native-required", Status: "completed", Conclusion: "failure"}}
+				issue.PullRequest.CIStatus = "failure"
+				cfg.AutoPromote.Gate.CIFailureAction = gate.CIFailureActionSkip
+			}},
+		{name: "automated review remains pending", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, _ *Config) { issue.PullRequest.CodexReviewState = "PENDING" }},
+		{name: "validator evidence remains pending", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 2,
+			mutate: func(_ *connector.Issue, cfg *Config) { cfg.AutoPromote.Gate.Validator.Enabled = true }},
+		{name: "unknown PR authority remains held", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+			mutate: func(issue *connector.Issue, _ *Config) {
+				issue.PullRequest.HydrationUnavailableReason = associationUnavailable
+			}},
+		{name: "human review remains required", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1, wantState: "Human Review",
+			mutate: func(_ *connector.Issue, cfg *Config) {
+				cfg.AutoPromote.HumanReview = new(true)
+				cfg.AutoPromote.Gate.Kind = gate.KindHumanReview
+			}},
 		{
 			name:           "initial success waits for gate without continuation",
 			wantTerminal:   store.WorkAttemptTerminalSuccess,
@@ -1046,7 +1073,15 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tracker := &implementProgressConnector{hydrated: issue}
+			current := cloneIssue(issue)
+			if tt.ready {
+				current.PullRequest.RequiredCheckFailures = nil
+				current.PullRequest.CIStatus = "success"
+				current.PullRequest.MergeableState = "clean"
+				current.PullRequest.CodexReviewState = "COMMENTED"
+				current.PullRequest.CodexReviewSubmittedAt = new(base.Add(-time.Hour))
+				current.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
+			}
 			attempts := &implementProgressAttemptStore{history: tt.history}
 			cfg := normalizeConfig(Config{
 				Project: scheduler.ProjectCandidate{ID: "detent"},
@@ -1062,6 +1097,13 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 				TerminalStates:         []string{"Done", "Cancelled"},
 				ContinuationRetryDelay: time.Minute,
 			})
+			if tt.ready {
+				cfg.AutoPromote.HumanReview = new(false)
+			}
+			if tt.mutate != nil {
+				tt.mutate(&current, &cfg)
+			}
+			tracker := &implementProgressConnector{hydrated: current, refreshed: current}
 			orch := &Orchestrator{
 				cfg:          cfg,
 				connector:    tracker,
@@ -1070,7 +1112,7 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			}
 			state := newState(cfg)
 			state.Running[issue.ID] = Running{
-				Issue:         issue,
+				Issue:         current,
 				Attempt:       2,
 				WorkAttemptID: 42,
 				Mode:          runpkg.RunModeImplement,
@@ -1107,8 +1149,12 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			if _, ok := state.Blocked[issue.ID]; ok {
 				t.Fatalf("Blocked[%q] present after gate-wait completion", issue.ID)
 			}
-			if len(tracker.updates) != 0 {
-				t.Fatalf("state updates = %#v, want breaker untouched", tracker.updates)
+			if tt.wantState == "" {
+				if len(tracker.updates) != 0 {
+					t.Fatalf("state updates = %#v, want existing hold", tracker.updates)
+				}
+			} else if len(tracker.updates) != 1 || tracker.updates[0] != (implementProgressUpdate{issueID: issue.ID, state: tt.wantState}) {
+				t.Fatalf("state updates = %#v, want immediate %s", tracker.updates, tt.wantState)
 			}
 		})
 	}
