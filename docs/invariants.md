@@ -2462,6 +2462,10 @@ Project run completion, lease release, and increased project capacity recheck
 candidates from the last refresh on the orchestrator event loop. The pass reads
 current tracker evidence and uses the tick's eligibility planner before claiming,
 so a stale higher-ranked candidate cannot keep a free project slot idle.
+The same event-loop owner handles the bounded cohort of already queued worker
+completions before one fresh candidate refill. Each result retains its generation,
+completion fence and stop handling; all completed operator stops remain excluded
+from that refill. New arrivals wait for the next event-loop pass.
 All modes use the same lifecycle; strict priority is
 only an ordering rule. Authorization, dependencies, retry readiness, and local
 lane ceilings are checked by the callers before acquisition. Admission reads
