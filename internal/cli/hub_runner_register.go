@@ -17,6 +17,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -200,7 +201,17 @@ func prepareRunnerIdentity(path, base string, org tracker.OrganizationID) error 
 }
 
 func runnerCheckoutReady(ctx context.Context, selected globalconfig.Project) bool {
-	return runnerCheckoutRepository(ctx, selected) != ""
+	if selected.Workdir == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(selected.Workdir, ".git")); err != nil {
+		return false
+	}
+	if strings.TrimSpace(selected.Workflow) == "" && strings.TrimSpace(selected.WorkflowRef) == "" {
+		selected.Workflow = filepath.Join(selected.Workdir, "WORKFLOW.md")
+	}
+	_, err := project.LoadWorkflowContext(ctx, selected)
+	return err == nil
 }
 
 // existingRunnerConfigMatches refuses to keep a configuration written for a

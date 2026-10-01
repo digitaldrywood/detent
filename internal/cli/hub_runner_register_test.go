@@ -28,18 +28,23 @@ func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
 		name, remote, want string
 		externalWorkflow   bool
 		missingWorkflow    bool
+		invalidWorkflow    bool
 		missingGit         bool
 		refWorkflow        bool
+		wantReady          bool
 	}{
-		{name: "registration default workflow", remote: "git@github.com:Acme/Private.git", want: "Acme/Private"},
-		{name: "private HTTPS origin", remote: "https://alice:private-secret@github.com/Acme/Private.git", want: "Acme/Private"},
-		{name: "unsupported origin", remote: "https://alice:private-secret@example.test/Acme/Private.git"},
-		{name: "configured workflow outside checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, want: "Acme/Private"},
+		{name: "registration default workflow", remote: "git@github.com:Acme/Private.git", want: "Acme/Private", wantReady: true},
+		{name: "private HTTPS origin", remote: "https://alice:private-secret@github.com/Acme/Private.git", want: "Acme/Private", wantReady: true},
+		{name: "unsupported origin", remote: "https://alice:private-secret@example.test/Acme/Private.git", wantReady: true},
+		{name: "GitLab origin with external workflow", remote: "git@gitlab.com:Acme/Private.git", externalWorkflow: true, wantReady: true},
+		{name: "local origin", remote: "../source.git", wantReady: true},
+		{name: "configured workflow outside checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, want: "Acme/Private", wantReady: true},
 		{name: "missing configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingWorkflow: true},
+		{name: "invalid configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, invalidWorkflow: true},
 		{name: "missing default workflow", remote: "git@github.com:Acme/Private.git", missingWorkflow: true},
-		{name: "missing Git origin", externalWorkflow: true},
+		{name: "missing Git origin", externalWorkflow: true, wantReady: true},
 		{name: "missing Git checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingGit: true},
-		{name: "configured Git ref workflow absent locally", remote: "git@github.com:Acme/Private.git", refWorkflow: true, want: "Acme/Private"},
+		{name: "configured Git ref workflow absent locally", remote: "git@github.com:Acme/Private.git", refWorkflow: true, want: "Acme/Private", wantReady: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -53,7 +58,11 @@ func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
 			selected := globalconfig.Project{Workdir: workdir}
 			if test.externalWorkflow {
 				selected.Workflow = filepath.Join(root, "WORKFLOW.md")
-				if !test.missingWorkflow {
+				if test.invalidWorkflow {
+					if err := os.WriteFile(selected.Workflow, []byte("---\ntracker: [\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else if !test.missingWorkflow {
 					if err := os.WriteFile(selected.Workflow, []byte(mustRead(t, filepath.Join(workdir, "WORKFLOW.md"))), 0o600); err != nil {
 						t.Fatal(err)
 					}
@@ -79,8 +88,8 @@ func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
 			if got := runnerCheckoutRepository(t.Context(), selected); got != test.want || strings.Contains(got, "private-secret") {
 				t.Fatalf("repository = %q, want %q", got, test.want)
 			}
-			if got := runnerCheckoutReady(t.Context(), selected); got != (test.want != "") {
-				t.Fatalf("checkout ready = %v, want %v", got, test.want != "")
+			if got := runnerCheckoutReady(t.Context(), selected); got != test.wantReady {
+				t.Fatalf("checkout ready = %v, want %v", got, test.wantReady)
 			}
 		})
 	}

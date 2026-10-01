@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -135,16 +134,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 }
 
 func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project) string {
-	if selected.Workdir == "" {
-		return ""
-	}
-	if _, err := os.Stat(filepath.Join(selected.Workdir, ".git")); err != nil {
-		return ""
-	}
-	if strings.TrimSpace(selected.Workflow) == "" && strings.TrimSpace(selected.WorkflowRef) == "" {
-		selected.Workflow = filepath.Join(selected.Workdir, "WORKFLOW.md")
-	}
-	if _, err := project.LoadWorkflowContext(ctx, selected); err != nil {
+	if !runnerCheckoutReady(ctx, selected) {
 		return ""
 	}
 	remote, err := defaultGitRemoteURL(ctx, selected.Workdir)

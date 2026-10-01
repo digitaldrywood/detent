@@ -1184,13 +1184,16 @@ encoder. `TestNativeOptionalReportsNegotiateHubSupport`,
 strict older/current schemas, failed/missing evidence, routing identity, and the
 single startup heartbeat owner. No compatibility retry loop or gate is added.
 
-Runner checkout readiness and repository reporting share the project owner's
-configured workflow loader and the source checkout's verified Git origin.
+Runner checkout readiness checks the source checkout's `.git` and shares the
+project owner's configured workflow loader with repository reporting. Readiness
+is independent of Git origin and forge; optional GitHub repository association
+requires readiness and a canonical GitHub origin from that source checkout.
 An explicitly configured workflow may live outside that checkout; registration
 defaults to checkout-local `WORKFLOW.md` only without a configured workflow.
 `TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin` and
 `TestCollectRunnerLocalChecks` cover external and ref-backed workflows, the
-registration default, missing workflow/origin evidence, and private-output
+registration default, invalid/missing workflows, missing Git checkouts, ready
+non-GitHub and origin-less checkouts with no association, and private-output
 redaction. This consolidates the existing reporting checks without another
 heartbeat owner or mechanism (native Cloud work item #2).
 

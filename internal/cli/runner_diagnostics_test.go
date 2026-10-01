@@ -27,6 +27,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		checkout                               bool
 		externalWorkflow                       bool
 		missingOrigin                          bool
+		unsupportedOrigin                      bool
 		missingWorkflow                        bool
 		doctor                                 doctorStatus
 		auth                                   bool
@@ -39,7 +40,8 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		{name: "warnings", checkout: true, doctor: doctorWarn, auth: true, wantCheckout: "passed", wantDoctor: "warning", wantProvider: "passed"},
 		{name: "Pi auth unknown", pi: true, checkout: true, doctor: doctorOK, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "pending"},
 		{name: "configured workflow outside committed checkout", checkout: true, externalWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
-		{name: "missing Git origin", checkout: true, missingOrigin: true, doctor: doctorOK, auth: true, wantCheckout: "failed", wantDoctor: "pending", wantProvider: "pending"},
+		{name: "missing Git origin", checkout: true, missingOrigin: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
+		{name: "GitLab origin with external workflow", checkout: true, externalWorkflow: true, unsupportedOrigin: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
 		{name: "missing configured workflow", checkout: true, externalWorkflow: true, missingWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "failed", wantDoctor: "pending", wantProvider: "pending"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -80,7 +82,11 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 				runDoctorWorkflowSourceGit(t, workdir, "add", ".")
 				runDoctorWorkflowSourceGit(t, workdir, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "source checkout")
 				if !tt.missingOrigin {
-					runDoctorWorkflowSourceGit(t, workdir, "remote", "add", "origin", "git@github.com:acme/orders.git")
+					remote := "git@github.com:acme/orders.git"
+					if tt.unsupportedOrigin {
+						remote = "git@gitlab.com:acme/orders.git"
+					}
+					runDoctorWorkflowSourceGit(t, workdir, "remote", "add", "origin", remote)
 				}
 				if !tt.missingWorkflow {
 					if _, _, _, err := resolveRunnerSetupPolicy(t.Context(), path, "orders"); err != nil {
