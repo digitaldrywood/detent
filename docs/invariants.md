@@ -680,6 +680,15 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Fallback dependency hydration uses the existing fresh comment reader when comment
+or Workpad evidence is missing. The former issue-timestamp comment cache is
+removed because its diagnostic comments also became Workpad decision authority.
+`TestDependencyCommentEvidenceFreshWorkpad` covers authorized edits of the same
+comment and cleared human action in Todo, including unchanged, missing, and zero
+issue timestamps. Native dependency relations remain authoritative and fresh;
+comment references remain diagnostic notes. No replacement cache or recovery
+mechanism is added.
+
 Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
 existing optional feature negotiation. The `runner_local_checks` capability
 permits `local_checks`; older Hubs receive the original heartbeat without that
@@ -1052,13 +1061,20 @@ links closure across direct completion and stale merged/Merging reconciliation.
 The reviewed transition fingerprints preserve existing reason
 selection and add no mechanism, reason code, or recovery path.
 
-Provider capacity retries use the existing provider resume deadline (including
-reset jitter) while it is in the future (#2912). Speculative probe backoff cannot
-shorten that pause; elapsed deadlines retain normal probe backoff and operator
-capacity clear still removes the outage immediately. This consolidates retry
-scheduling without adding a pause or recovery mechanism.
-`TestBackendCapacityProviderResetWindow` covers the reported dispatch times,
-reset boundary, and operator clear; safety fuzz seeds retain resume arithmetic.
+Provider capacity retries use the earlier future provider resume deadline
+(including reset jitter) or existing bounded probe deadline. A historical reset
+time cannot suppress recovery probes after an external quota reset or account
+change. The existing five-minute exponential backoff, capped at one hour, and
+single in-flight probe still prevent full-width retry storms. Failed probes retain
+the provider window and backoff; successful probes or authoritative available
+status release existing capacity retries. Credential-file changes keep their
+existing immediate probe notification. This replaces the deadline precedence from
+#2912 without adding a watcher, pause, configuration, or recovery mechanism.
+`TestBackendCapacityProviderResetWindow`,
+`TestBackendCapacityDispatchAllowsOneResetProbe`, and
+`TestBackendCapacityProbeFailureRefreshesProviderWindow` cover future reset
+metadata, early restored capacity, single-probe ownership, retry release, backoff,
+reset boundaries, and operator clear; safety fuzz seeds retain resume arithmetic.
 
 Workspace cleanup (#2913) uses one cancellable background execution of the existing
 reaper instead of synchronous tick and completion sweeps. Each pass bounds tracker
