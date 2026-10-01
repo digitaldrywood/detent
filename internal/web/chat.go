@@ -243,6 +243,11 @@ type chatExplanationSnapshots struct {
 
 func (s chatExplanationSnapshots) Snapshot(ctx context.Context) (explain.SnapshotObservation, error) {
 	snapshot := s.server.chatSnapshot(ctx)
+	var err error
+	snapshot, err = operatortool.ProjectSnapshot(ctx, snapshot)
+	if err != nil {
+		return explain.SnapshotObservation{}, err
+	}
 	observation := explain.SnapshotObservation{State: explain.SourceLive, Snapshot: snapshot}
 	if snapshot.GeneratedAt.IsZero() {
 		observation.State = explain.SourceUnavailable

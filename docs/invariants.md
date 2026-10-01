@@ -17,6 +17,20 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+MCP and the stdio daemon bridge resolve current application authority for each
+discovery/direct call (#3336). Principal, organization, credential and session
+are bound together; scope and project grants come from the existing credential
+and hosted membership services. HTTP dispatch preserves the request authority
+without retaining discovered permissions. Both hosted entry paths use the
+existing lesser-role rule, so local downgrades apply immediately. Workers and
+runners receive no operator authority, and neither transport writes tracker
+lanes. Future approved actions must call `operatortool.AuthorizeCurrent` again;
+approval and YOLO never confer permission. This consolidates authorization in
+application adapters without adding a revocation/recovery mechanism (INV-3).
+`TestCurrentAuthorityExecution`, `TestRemoteMCPCurrentProjectAuthority`,
+`TestHostedOperatorCurrentAuthority` and the shared-origin pilot cover denial,
+resource projection and entry/session binding.
+
 SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
 
 Hub-native SSH runs capture Git artifacts and attempt diffs on the selected

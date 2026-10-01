@@ -97,7 +97,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -112,7 +112,6 @@
         {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "action={ templ.SafeURL(\"/organizations/\" + data.Provisioning.ID + \"/provisioning/resume\") }", "occurrence": 1, "line": 415},
         {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "href=\"/organizations\"", "occurrence": 1, "line": 400},
         {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "href=\"/organizations\"", "occurrence": 2, "line": 420},
-        {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "href=\"/organizations\"", "occurrence": 3, "line": 447},
         {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "href=\"/organizations/new\"", "occurrence": 1, "line": 382},
         {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "href=\"/organizations?switch=1\"", "occurrence": 1, "line": 139},
         {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "href={ templ.SafeURL(\"/organizations/\" + organization.ID + \"/organization\") }", "occurrence": 1, "line": 362},
@@ -240,43 +239,6 @@
       "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
     },
     {
-      "id": "cloudentry.join_invitation",
-      "summary": "Join invitation",
-      "audience": "operator",
-      "sources": [
-        {"source": "internal/cloudentry/service.go", "kind": "route", "definition": "e.GET(\"/invitations/join\", s.joinPage) [route=\"/invitations/join\"]", "occurrence": 1, "line": 223, "method": "GET", "path": "\"/invitations/join\"", "handler": "s.joinPage", "resolved_path": "/invitations/join"},
-        {"source": "internal/cloudentry/service.go", "kind": "route", "definition": "e.POST(\"/invitations/join\", s.joinInvitation) [route=\"/invitations/join\"]", "occurrence": 1, "line": 224, "method": "POST", "path": "\"/invitations/join\"", "handler": "s.joinInvitation", "resolved_path": "/invitations/join"},
-        {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "action=\"/invitations/join\"", "occurrence": 1, "line": 441},
-        {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "href=\"/invitations/join\"", "occurrence": 1, "line": 384},
-        {"source": "internal/web/templates/hosted.templ", "kind": "form", "definition": "<form method=\"post\" action=\"/invitations/join\" class=\"space-y-3\">", "occurrence": 1, "line": 441},
-        {"source": "web/conversation/src/app/entry/api.ts", "kind": "request", "definition": "submit(NextResult,\"/invitations/join\",input.csrf,{ token: input.token })", "occurrence": 1, "line": 253},
-        {"source": "web/conversation/src/app/entry/EntryScreens.tsx", "kind": "attribute", "definition": "onSubmit={(event) => { event.preventDefault(); const value = token.trim(); if (value.length > 0) void join.call(value); }}", "occurrence": 1, "line": 397},
-        {"source": "web/conversation/src/app/entry/EntryScreens.tsx", "kind": "form", "definition": "<form className=\"flex flex-col gap-3\" onSubmit={(event) => { event.preventDefault(); const value = token.trim(); if (value.length > 0) void join.call(value); }} >", "occurrence": 1, "line": 395}
-      ],
-      "availability": [
-        {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "shared entry account/organization service", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
-        {"deployment": "hosted_dedicated", "trackers": ["github", "native"], "service": "shared entry account/organization service", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
-        {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "shared entry account/organization service"},
-        {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "shared entry account/organization service", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
-      ],
-      "authority": {"role": "current account identity and organization membership", "credential_scope": "hosted account session; CSRF for mutation", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
-      "preconditions": [
-        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
-        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
-      ],
-      "confirmation": [
-        {"when": "read or ordinary non-destructive write", "class": "none"}
-      ],
-      "application": "s.joinPage; s.clientShell, s.platformStaff, s.render",
-      "extraction": "Extract cloudentry.joinPage application inputs/results and validation from Echo; reuse s.clientShell, s.platformStaff, s.render. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "join_invitation", "arguments": "Bounded joinInvitationRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "joinInvitationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": false, "idempotent": false, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
-    },
-    {
       "id": "cloudentry.logout",
       "summary": "Logout",
       "audience": "operator",
@@ -304,7 +266,7 @@
       "tool": {"set": "connection", "name": "logout", "arguments": "Bounded logoutRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "logoutResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": false, "idempotent": false, "openWorld": true}},
       "owner": "digitaldrywood/detent#3336",
       "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
     },
     {
@@ -571,7 +533,7 @@
       "tool": {"set": "connection", "name": "session_json", "arguments": "Bounded sessionJSONRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "sessionJSONResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3336",
       "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
     },
     {
@@ -599,7 +561,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -627,7 +589,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -766,8 +728,8 @@
       "tool": {"set": "existing_reads", "name": "board_state", "arguments": "definition(BoardState, \"Read live board items, lanes, priorities, blockers, and active run identity. Use this before answering board questions or proposing item actions.\", limitedSchema)", "result": "board_state existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity",
-      "decision": "Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows."
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
       "id": "existing.explain_item",
@@ -793,8 +755,8 @@
       "tool": {"set": "existing_reads", "name": "explain_item", "arguments": "definition(ExplainItem, \"Explain an issue's current lane, latest transition reason, eligibility, active or latest attempt, sessions, pull request, required gate, freshness, and evidence from the versioned issue explanation read model.\", `{\"type\":\"object\",\"required\":[\"project_id\",\"reference\"],\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1},\"reference\":{\"type\":\"string\",\"minLength\":1}},\"additionalProperties\":false}`)", "result": "explain_item existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity",
-      "decision": "Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows."
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
       "id": "existing.fleet_health",
@@ -820,8 +782,8 @@
       "tool": {"set": "existing_reads", "name": "fleet_health", "arguments": "definition(FleetHealth, \"Read live fleet health, capacity outages, failure breakers, rate limits, refresh state, and running counts.\", `{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}`)", "result": "fleet_health existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3343",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity",
-      "decision": "Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows."
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
       "id": "existing.recent_activity",
@@ -847,8 +809,8 @@
       "tool": {"set": "existing_reads", "name": "recent_activity", "arguments": "definition(RecentActivity, \"Read recent events and completed work retained in the current live telemetry snapshot, including merge timestamps. This is live-only activity, not the durable issue activity stream.\", activitySchema)", "result": "recent_activity existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity",
-      "decision": "Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows."
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
       "id": "existing.telemetry_usage",
@@ -874,8 +836,8 @@
       "tool": {"set": "existing_reads", "name": "telemetry_usage", "arguments": "definition(TelemetryUsage, \"Read live token, spend, throughput, and per-project usage telemetry.\", `{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\"}},\"additionalProperties\":false}`)", "result": "telemetry_usage existing typed executor result with freshness", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}},
       "owner": "digitaldrywood/detent#3345",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity",
-      "decision": "Preserve existing name/schema and bounded read behavior. Authority extension is #3336; expanded dashboard coverage stays pending in separate rows."
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go",
+      "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
       "id": "frontend.internal_web_templates_ai_debug_templ.local_ui",
@@ -940,7 +902,11 @@
         {"source": "internal/web/templates/auth.templ", "kind": "attribute", "definition": "href=\"/static/fonts/Geist-Variable.woff2\"", "occurrence": 1, "line": 13},
         {"source": "internal/web/templates/auth.templ", "kind": "attribute", "definition": "href=\"/static/fonts/GeistMono-Variable.woff2\"", "occurrence": 1, "line": 14},
         {"source": "internal/web/templates/auth.templ", "kind": "attribute", "definition": "href={ faviconPath(data.Assets) }", "occurrence": 1, "line": 12},
-        {"source": "internal/web/templates/auth.templ", "kind": "attribute", "definition": "href={ stylesheetPath(data.Assets) }", "occurrence": 1, "line": 15}
+        {"source": "internal/web/templates/auth.templ", "kind": "attribute", "definition": "href={ stylesheetPath(data.Assets) }", "occurrence": 1, "line": 15},
+        {"source": "internal/web/templates/invitation.templ", "kind": "attribute", "definition": "href=\"/static/css/output.css\"", "occurrence": 1, "line": 13},
+        {"source": "internal/web/templates/invitation.templ", "kind": "attribute", "definition": "href=\"/static/img/detent-mark.svg\"", "occurrence": 1, "line": 12},
+        {"source": "internal/web/templates/invitation.templ", "kind": "attribute", "definition": "href=\"https://detent.build\"", "occurrence": 1, "line": 18},
+        {"source": "internal/web/templates/invitation.templ", "kind": "attribute", "definition": "href=\"https://detent.build\"", "occurrence": 2, "line": 22}
       ],
       "availability": [
         {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "shared application read/command for this frontend source", "unsupported": "This source is a browser asset; no standalone MCP transport or tool service."},
@@ -1378,7 +1344,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Exact login definitions below are client/transport/identity plumbing; application requests and meaningful results have separate decisions."
     },
     {
@@ -2156,10 +2122,6 @@
       "audience": "operator",
       "sources": [
         {"source": "internal/hubserver/hosted_org_api.go", "kind": "route", "definition": "e.POST(hostedOrganizationBase+\"/invitations/accept\", s.acceptHostedInvitationJSON, session) [route=\"/api/v2/organizations/:organization/invitations/accept\"]", "occurrence": 1, "line": 44, "method": "POST", "path": "hostedOrganizationBase + \"/invitations/accept\"", "handler": "s.acceptHostedInvitationJSON", "resolved_path": "/api/v2/organizations/:organization/invitations/accept"},
-        {"source": "internal/hubserver/hosted_ui.go", "kind": "route", "definition": "e.POST(\"/organization/join\", s.acceptHostedInvitation) [route=\"/organization/join\"]", "occurrence": 1, "line": 42, "method": "POST", "path": "\"/organization/join\"", "handler": "s.acceptHostedInvitation", "resolved_path": "/organization/join"},
-        {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "action={ hostedURL(data, \"/organization/join\") }", "occurrence": 1, "line": 170},
-        {"source": "internal/web/templates/hosted.templ", "kind": "form", "definition": "<form method=\"post\" action={ hostedURL(data, \"/organization/join\") } class=\"space-y-3 border-t border-line pt-5\">", "occurrence": 1, "line": 170},
-        {"source": "internal/web/templates/hosted.templ", "kind": "attribute", "definition": "href={ hostedJoinURL(data) }", "occurrence": 1, "line": 31},
         {"source": "web/conversation/src/app/account/api.ts", "kind": "request", "definition": "send(NextResponse,\"POST\",`${base}/invitations/accept`,{ token: input.token, idempotency_key: input.key, })", "occurrence": 1, "line": 204}
       ],
       "availability": [
@@ -2275,7 +2237,7 @@
       "tool": {"set": "connection", "name": "app_bootstrap_payload", "arguments": "Bounded appBootstrapPayloadRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "appBootstrapPayloadResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3336",
       "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
     },
     {
@@ -2337,7 +2299,7 @@
       "tool": {"set": "connection", "name": "app_updates", "arguments": "Bounded appUpdatesRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "appUpdatesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": true, "destructive": false, "idempotent": true, "openWorld": true}},
       "owner": "digitaldrywood/detent#3336",
       "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
     },
     {
@@ -3153,7 +3115,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -6052,8 +6014,39 @@
       "tool": {"set": "connection", "name": "logout_hosted", "arguments": "Bounded logoutHostedRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "logoutHostedResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": false, "idempotent": false, "openWorld": true}},
       "owner": "digitaldrywood/detent#3336",
       "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+    },
+    {
+      "id": "hubserver.mcp_transport",
+      "summary": "Authenticated MCP transport",
+      "audience": "transport",
+      "sources": [
+        {"source": "internal/hubserver/operator_authority.go", "kind": "route", "definition": "e.Any(\"/api/v2/organizations/:organization/mcp\", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority) [route=\"/api/v2/organizations/:organization/mcp\"]", "occurrence": 1, "line": 28, "method": "Any", "path": "\"/api/v2/organizations/:organization/mcp\"", "handler": "echo.WrapHandler(s.mcpHTTP)", "resolved_path": "/api/v2/organizations/:organization/mcp"},
+        {"source": "internal/hubserver/operator_authority.go", "kind": "route", "definition": "e.Any(\"/mcp\", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority) [route=\"/mcp\"]", "occurrence": 1, "line": 30, "method": "Any", "path": "\"/mcp\"", "handler": "echo.WrapHandler(s.mcpHTTP)", "resolved_path": "/mcp"}
+      ],
+      "availability": [
+        {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "organization hub authority adapter; daemon telemetry/explainer absent until shared read services are supplied"},
+        {"deployment": "hosted_dedicated", "trackers": ["github", "native"], "service": "organization hub authority adapter; daemon telemetry/explainer absent until shared read services are supplied"},
+        {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "organization hub authority adapter; daemon telemetry/explainer absent until shared read services are supplied"},
+        {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "organization hub authority adapter; daemon telemetry/explainer absent until shared read services are supplied", "unsupported": "Not registered on the credential-maintenance listener."}
+      ],
+      "authority": {"role": "current organization member/provider and local role, or unhosted operator/admin token; no runner/worker or staff-only authority", "credential_scope": "existing hosted session/native token authority; hosted machine-token restrictions retained", "project_grant": "existing requireHostedProject and authorizeNativeProject checks per execution", "ownership": "organization path, credential hash and session binding; shared entry verifies signed audience/path/body/generation and access/session validity"},
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {"when": "transport authority establishment", "class": "connection"}
+      ],
+      "application": "operatortool.AuthorizeCurrent; Service.operatorCurrentAuthority, hostedCredential, authorizeConversationOrganization, requireHostedProject, database.authorizeNativeProject",
+      "extraction": "Shared application authority adapter; no raw/fake HTTP handler invocation.",
+      "tool": {"set": "", "name": "", "arguments": "", "result": ""},
+      "owner": "digitaldrywood/detent#3336",
+      "status": "excluded",
+      "coverage": "internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/cli/mcp_test.go; internal/web/mcp_http_test.go",
+      "decision": "Exact protocol/discovery bridge only; no separate operator capability. Current application authorization is resolved at discovery and execution; no authority derives from annotations."
     },
     {
       "id": "hubserver.mint_workspace_relay_ticket",
@@ -7488,7 +7481,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -7519,7 +7512,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -7680,7 +7673,7 @@
       "tool": {"set": "organization", "name": "switch_hosted_organization", "arguments": "Bounded switchHostedOrganizationRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "switchHostedOrganizationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": false, "idempotent": false, "openWorld": true}},
       "owner": "digitaldrywood/detent#3336",
       "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
     },
     {
@@ -9265,7 +9258,7 @@
       "summary": "Api operator tool",
       "audience": "transport",
       "sources": [
-        {"source": "internal/web/server.go", "kind": "route", "definition": "s.echo.POST(\"/api/v1/operator-tools/:tool_name\", s.apiOperatorTool, apiReadAuth, apiReadScope) [route=\"/api/v1/operator-tools/:tool_name\"]", "occurrence": 1, "line": 512, "method": "POST", "path": "\"/api/v1/operator-tools/:tool_name\"", "handler": "s.apiOperatorTool", "resolved_path": "/api/v1/operator-tools/:tool_name"}
+        {"source": "internal/web/server.go", "kind": "route", "definition": "s.echo.POST(\"/api/v1/operator-tools/:tool_name\", s.apiOperatorTool, apiReadAuth, apiReadScope, s.operatorAuthority) [route=\"/api/v1/operator-tools/:tool_name\"]", "occurrence": 1, "line": 512, "method": "POST", "path": "\"/api/v1/operator-tools/:tool_name\"", "handler": "s.apiOperatorTool", "resolved_path": "/api/v1/operator-tools/:tool_name"}
       ],
       "availability": [
         {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "dashboard daemon"},
@@ -9289,6 +9282,36 @@
       "status": "excluded",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
       "decision": "Exact authenticated transport entry for existing governed application services. No MCP raw HTTP/relay/tool-forwarding proxy; meaningful typed application operations and the five existing read tools are separate rows."
+    },
+    {
+      "id": "web.api_operator_tools",
+      "summary": "Authenticated daemon tool discovery",
+      "audience": "transport",
+      "sources": [
+        {"source": "internal/web/server.go", "kind": "route", "definition": "s.echo.GET(\"/api/v1/operator-tools\", s.apiOperatorTools, apiReadAuth, apiReadScope, s.operatorAuthority) [route=\"/api/v1/operator-tools\"]", "occurrence": 1, "line": 511, "method": "GET", "path": "\"/api/v1/operator-tools\"", "handler": "s.apiOperatorTools", "resolved_path": "/api/v1/operator-tools"}
+      ],
+      "availability": [
+        {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "dashboard daemon"},
+        {"deployment": "hosted_dedicated", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
+        {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
+        {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
+      ],
+      "authority": {"role": "local operator (dashboard authentication when configured)", "credential_scope": "read/write/admin (project scope where route supplies project)", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {"when": "transport authority establishment", "class": "connection"}
+      ],
+      "application": "operatortool.AuthorizeCurrent; Server.operatorAuthority; apikey.Service.Authenticate; operatortool.AuthorizedExecutor.ListTools",
+      "extraction": "Shared application authority adapter; no raw/fake HTTP handler invocation.",
+      "tool": {"set": "", "name": "", "arguments": "", "result": ""},
+      "owner": "digitaldrywood/detent#3336",
+      "status": "excluded",
+      "coverage": "internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/cli/mcp_test.go; internal/web/mcp_http_test.go",
+      "decision": "Exact protocol/discovery bridge only; no separate operator capability. Current application authorization is resolved at discovery and execution; no authority derives from annotations."
     },
     {
       "id": "web.api_project",
@@ -9925,7 +9948,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -9953,7 +9976,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -10034,9 +10057,9 @@
     {
       "id": "web.echo__wrap_handler(s_mcp_h_t_t_p)",
       "summary": "Echo. wrap handler(s.mcp h t t p)",
-      "audience": "operator",
+      "audience": "transport",
       "sources": [
-        {"source": "internal/web/server.go", "kind": "route", "definition": "s.echo.Any(\"/mcp\", echo.WrapHandler(s.mcpHTTP), mcpReadAuth) [route=\"/mcp\"]", "occurrence": 1, "line": 513, "method": "Any", "path": "\"/mcp\"", "handler": "echo.WrapHandler(s.mcpHTTP)", "resolved_path": "/mcp"}
+        {"source": "internal/web/server.go", "kind": "route", "definition": "s.echo.Any(\"/mcp\", echo.WrapHandler(s.mcpHTTP), mcpReadAuth, s.operatorAuthority) [route=\"/mcp\"]", "occurrence": 1, "line": 513, "method": "Any", "path": "\"/mcp\"", "handler": "echo.WrapHandler(s.mcpHTTP)", "resolved_path": "/mcp"}
       ],
       "availability": [
         {"deployment": "self_hosted", "trackers": ["github", "native"], "service": "dashboard daemon"},
@@ -10044,7 +10067,7 @@
         {"deployment": "hosted_shared", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."},
         {"deployment": "credential_maintenance", "trackers": ["github", "native"], "service": "dashboard daemon", "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."}
       ],
-      "authority": {"role": "local operator (dashboard authentication when configured)", "credential_scope": "write", "project_grant": "not project-scoped; organization/instance authority still enforced", "ownership": "current organization/account; no cross-organization resource lookup"},
+      "authority": {"role": "self-hosted operator credential", "credential_scope": "existing read hierarchy; workers denied", "project_grant": "current API key project restrictions at each call", "ownership": "self-hosted organization and authenticated credential/session identity; forged organization context denied"},
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
@@ -10054,12 +10077,12 @@
         {"when": "read or ordinary non-destructive write", "class": "none"}
       ],
       "application": "echo.WrapHandler(s.mcpHTTP); handler-owned application validation/read/command",
-      "extraction": "Extract web.echo.WrapHandler(s.mcpHTTP) application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.",
-      "tool": {"set": "work_reads", "name": "echo__wrap_handler(s_mcp_h_t_t_p)", "arguments": "Bounded echo.WrapHandler(s.mcpHTTP)Request: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation", "result": "echo.WrapHandler(s.mcpHTTP)Result: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors", "annotations": {"readOnly": false, "destructive": false, "idempotent": false, "openWorld": true}},
-      "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "extraction": "None: MCP JSON-RPC protocol; application reads are catalog rows.",
+      "tool": {"set": "", "name": "", "arguments": "", "result": ""},
+      "owner": "digitaldrywood/detent#3336",
+      "status": "excluded",
+      "coverage": "internal/web/mcp_http_test.go; internal/mcp/http_test.go",
+      "decision": "Exact MCP HTTP protocol route. Authenticated connection identity, session binding and per-request application authority are implemented by #3336. Tools/list and tools/call delegate to the shared application executor; this route is not a separate operator tool."
     },
     {
       "id": "web.events",
@@ -10305,7 +10328,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -10905,7 +10928,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {
@@ -11004,7 +11027,7 @@
       "tool": {"set": "", "name": "", "arguments": "", "result": ""},
       "owner": "digitaldrywood/detent#3336",
       "status": "excluded",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
+      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
       "decision": "Identity-provider login exchange belongs to connection setup, not model-controlled tool arguments. Meaningful organization/session commands are separate rows."
     },
     {

@@ -208,6 +208,9 @@ func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result
 	if err != nil {
 		return Result{}, err
 	}
+	if _, authorized := ctx.Value(authorityKey{}).(Authority); authorized && result.Identity.ProjectID != request.ProjectID {
+		return Result{}, ErrAccessDenied
+	}
 	return encodeResult(result)
 }
 
@@ -222,7 +225,7 @@ func (e *Executor) snapshot(ctx context.Context) (telemetry.Snapshot, error) {
 	if snapshot.GeneratedAt.IsZero() {
 		return telemetry.Snapshot{}, ErrSnapshotUnavailable
 	}
-	return snapshot, nil
+	return ProjectSnapshot(ctx, snapshot)
 }
 
 func decodeArguments(raw json.RawMessage, target any) error {

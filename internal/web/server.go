@@ -379,10 +379,9 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		chatProvider = server.demoChatProvider()
 	}
 	server.operatorTools = server.newReadOnlyToolExecutor()
-	server.mcpHTTP = mcp.NewHTTPHandler(server.operatorTools, server.version, mcp.HTTPConfig{
-		Principal: func(req *http.Request) string {
-			credential, _ := apiCredentialFromContext(req.Context())
-			return credential.ID
+	server.mcpHTTP = mcp.NewHTTPHandler(operatortool.NewAuthorizedExecutor(server.operatorTools), server.version, mcp.HTTPConfig{
+		Principal: func(req *http.Request) operatortool.Identity {
+			return operatortool.ConnectionIdentity(req.Context())
 		},
 	})
 	server.chat = chatpkg.NewService(chatProvider, server.newChatToolExecutor(), server)
@@ -509,8 +508,9 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/operations", s.apiOperations, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
-	s.echo.POST("/api/v1/operator-tools/:tool_name", s.apiOperatorTool, apiReadAuth, apiReadScope)
-	s.echo.Any("/mcp", echo.WrapHandler(s.mcpHTTP), mcpReadAuth)
+	s.echo.GET("/api/v1/operator-tools", s.apiOperatorTools, apiReadAuth, apiReadScope, s.operatorAuthority)
+	s.echo.POST("/api/v1/operator-tools/:tool_name", s.apiOperatorTool, apiReadAuth, apiReadScope, s.operatorAuthority)
+	s.echo.Any("/mcp", echo.WrapHandler(s.mcpHTTP), mcpReadAuth, s.operatorAuthority)
 	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/security-audits/dispositions", s.apiSecurityAuditDisposition, apiMutateAuth, apiAuditDispositionScope)
 	s.echo.POST("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideSet, apiDashboardMutateAuth, apiProjectWriteScope)

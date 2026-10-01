@@ -16,8 +16,8 @@ whole operation, including risky argument variants. Reads are retry-safe; mutati
 remain non-idempotent hints until their shared retry contract is implemented. A route registration is a source site, not a
 capability count. Browser/JSON aliases and frontend calls can share a row.
 `pending` means required operator parity remains unfinished. It is never an
-accepted exclusion. `implemented` describes the existing read slice only, not
-completed principal binding or parent acceptance. `excluded` is reserved for
+accepted exclusion. `implemented` describes the existing read slice with current
+connection authority (#3336), not parent acceptance. `excluded` is reserved for
 explicit current asset, local presentation, authentication exchange, worker,
 transport or staff authority sites. Staff decisions do not give organization
 operators staff privileges. Existing delete/revoke actions remain pending
@@ -26,13 +26,65 @@ operator work where their current authority allows them.
 Deployment availability distinguishes the self-hosted dashboard and unhosted
 hub, hosted dedicated organization hub, shared entry plus organization hub,
 and the private credential-maintenance listener. Hosted application routes
-require hosted configuration. The shared entry proxies organization API and
-browser traffic, not arbitrary MCP HTTP requests. GitHub/native availability
+require hosted configuration. The shared entry proxies organization-bound MCP
+requests through the same authenticated assertion boundary as application API
+and browser traffic. GitHub/native availability
 is recorded per operation; native-only policy/workspace/changes services cannot
 be assumed present in a GitHub-only daemon. Every proposed tool must return a
 safe opaque unavailable result when its application service is absent; this
 inventory does not install services or change current authority. The current
 read executors already handle missing telemetry/explanation dependencies.
+
+## Current connection authority
+
+`operatortool.Identity` binds principal, organization, credential and session;
+it contains no permissions. `Connection.Resolve` resolves current application
+authority for every discovery/call. `AuthorizeCurrent` checks identity equality
+and organization binding before delegating scope, project and resource ownership
+to the application adapter. Approval/audit children must invoke it again with
+the current authenticated connection when an approved action executes. Never
+persist a resolved authority or derive permission from discovery, annotations,
+approval or YOLO. Unknown resource kinds deny until their shared application
+ownership check is implemented. Tool arguments cannot select credentials,
+principals or organization authority.
+
+Self-hosted `/mcp` requires an existing credential with read authority; write
+and admin credentials retain their existing hierarchy without adding mutation
+tools. Scoped keys are supported and are authenticated again at execution.
+An optional `X-Detent-Organization` header must match `self-hosted`. HTTP sessions
+bind the full identity tuple; each HTTP request carries its own authority through
+dispatch. The stdio client delegates both discovery and calls to the daemon's
+application bridge, including legacy daemon-authorized loopback reads. It never
+opens SQLite or creates an administrator identity. A loopback read bridge
+connection has read authority only. Read-only private dashboard sessions retain
+that limit and their existing token validity.
+
+Project-scoped reads reuse the dashboard project projection, combine only
+authorized counts and tokens, and omit global events, rate limits, host outages,
+budgets and lifetime totals that have no project attribution. Structured blocker
+references require an identity in the authorized snapshot. Explanation reads use
+the same projection. Omitted global fields retain the old result schema's empty
+values; per-project throughput remains in `projects`, while unscoped throughput
+has no safe aggregation and remains empty for restricted credentials.
+
+Unhosted hubs use `/api/v2/organizations/:organization/mcp`; hosted dedicated
+hubs also mount `/mcp`, and shared entry exposes
+`/organizations/:organization/mcp`. The hub adapter reuses existing token,
+organization, provider/session/membership and project grant checks. Both hosted
+paths take the lesser provider/assertion and local role. Shared entry still
+validates audience, path/body, allocation generation, browser binding and access
+expiry; the tenant rechecks the stored session, active membership and grants.
+Hosted machine-token restrictions and staff/support boundaries remain those of
+the application; worker and runner credentials never gain operator access.
+CSRF is still required for browser POSTs. The credential-maintenance listener
+does not mount MCP. Hubs currently have no daemon telemetry/explainer service:
+their authenticated read catalog is empty and direct legacy read calls return
+opaque unavailable errors after resource authorization. The read/service children
+must supply shared application reads, not a compatibility HTTP proxy.
+
+Session/account/logout/context-selection and broader dashboard operations in
+the matrix remain pending typed application work; this authority contract does
+not claim their implementation or complete #3259.
 
 Meaningful forms and redirects produce structured application data, command
 receipts or destination URLs. Provider login/callback exchanges are connection

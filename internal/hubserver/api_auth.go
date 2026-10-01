@@ -134,11 +134,20 @@ func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, er
 	if err != nil {
 		return apiCredential{}, http.StatusUnauthorized, err
 	}
+	renewalRunner, renewalOrganization := "", ""
+	if c.Request().Method == http.MethodPost && c.Path() == runnerBase+"/:runner/renew" {
+		renewalRunner, renewalOrganization = c.Param("runner"), c.Param("organization")
+	}
+	return s.authenticateAPIToken(c.Request().Context(), token, renewalRunner, renewalOrganization)
+}
+
+// authenticateAPIToken is shared by HTTP authentication and operator execution.
+func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
 	hash := apikey.HashToken(token)
 	var credential apiCredential
 	var storedHash, createdAt, operations string
 	var revokedAt, expiresAt sql.NullString
-	err = s.database.db.QueryRowContext(c.Request().Context(), `
+	err := s.database.db.QueryRowContext(ctx, `
 SELECT t.id, t.name, t.scope, t.token_hash, t.revoked_at, t.native_only, t.expires_at, t.created_at,
 coalesce(r.id, ''), coalesce(r.machine_id, ''), coalesce(r.organization_id, ''), coalesce(r.operations_json, '[]')
 FROM api_tokens t LEFT JOIN runner_identities r ON r.token_id = t.id
@@ -157,8 +166,7 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 	if err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
-	credential.runnerRenewal = credential.Runner.Valid() && c.Request().Method == http.MethodPost && c.Path() == runnerBase+"/:runner/renew" &&
-		credential.Runner.RunnerID == c.Param("runner") && string(credential.Runner.OrganizationID) == c.Param("organization")
+	credential.runnerRenewal = credential.Runner.Valid() && renewalRunner != "" && credential.Runner.RunnerID == renewalRunner && string(credential.Runner.OrganizationID) == renewalOrganization
 	if !credential.timeValid(now, createdAt, expiresAt) {
 		return apiCredential{}, http.StatusUnauthorized, errors.New("token is outside its validity interval")
 	}
@@ -172,7 +180,7 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
 	credential.Hash = hash
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
+	if _, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, fmt.Errorf("record hub API token use: %w", err)
 	}
 	return credential, http.StatusOK, nil

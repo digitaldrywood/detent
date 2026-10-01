@@ -20,6 +20,10 @@ func TestMCPCommandUsesDaemonBridgeAndProtocolOnlyStdout(t *testing.T) {
 
 	requested := make(chan struct{}, 1)
 	httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/api/v1/operator-tools" {
+			_, _ = io.WriteString(writer, `{"tools":[]}`)
+			return
+		}
 		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/operator-tools/fleet_health" {
 			t.Errorf("request = %s %s", request.Method, request.URL.Path)
 		}
@@ -59,6 +63,11 @@ func TestMCPCommandUsesDaemonBridgeAndProtocolOnlyStdout(t *testing.T) {
 	writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`)
 	readProtocolResponse(t, output.frames)
 	writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","id":9,"method":"tools/list"}`)
+	discovery := readProtocolResponse(t, output.frames)
+	if !bytes.Contains(discovery, []byte(`"tools":[]`)) {
+		t.Fatalf("discovery did not use daemon authority: %s", discovery)
+	}
 	writeProtocolRequest(t, writer, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fleet_health","arguments":{}}}`)
 	response := readProtocolResponse(t, output.frames)
 	select {

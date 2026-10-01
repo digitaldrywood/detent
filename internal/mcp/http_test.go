@@ -40,7 +40,7 @@ func TestHTTPTransportUsesSharedProtocolCatalog(t *testing.T) {
 		t.Fatalf("decode tools/list response: %v", err)
 	}
 	var result struct {
-		Tools []listedTool `json:"tools"`
+		Tools []operatortool.Definition `json:"tools"`
 	}
 	decodeResult(t, response, &result)
 	want := operatortool.Catalog()
@@ -82,6 +82,9 @@ func TestHTTPTransportRequestBoundaries(t *testing.T) {
 		{name: "missing session", method: http.MethodPost, body: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, principal: "read-key", wantStatus: http.StatusBadRequest},
 		{name: "unknown session", method: http.MethodPost, body: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, sessionID: "missing", principal: "read-key", wantStatus: http.StatusNotFound},
 		{name: "session bound to principal", method: http.MethodPost, body: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, sessionID: sessionID, principal: "different-key", wantStatus: http.StatusNotFound},
+		{name: "session bound to organization", method: http.MethodPost, body: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, sessionID: sessionID, principal: "read-key", headers: map[string]string{"X-Test-Organization": "other"}, wantStatus: http.StatusNotFound},
+		{name: "session bound to credential", method: http.MethodPost, body: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, sessionID: sessionID, principal: "read-key", headers: map[string]string{"X-Test-Credential": "other"}, wantStatus: http.StatusNotFound},
+		{name: "session bound to browser session", method: http.MethodPost, body: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, sessionID: sessionID, principal: "read-key", headers: map[string]string{"X-Test-Session": "other"}, wantStatus: http.StatusNotFound},
 		{name: "protocol mismatch", method: http.MethodPost, body: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, sessionID: sessionID, principal: "read-key", headers: map[string]string{httpProtocolHeader: "2024-11-05"}, wantStatus: http.StatusBadRequest},
 	}
 	for _, test := range tests {
@@ -225,8 +228,8 @@ func TestHTTPTransportShutdownCancelsCallsAndRejectsSessions(t *testing.T) {
 
 func newTestHTTPHandler(executor Executor) *HTTPHandler {
 	return NewHTTPHandler(executor, "test-version", HTTPConfig{
-		Principal: func(req *http.Request) string {
-			return req.Header.Get("X-Test-Principal")
+		Principal: func(req *http.Request) operatortool.Identity {
+			return operatortool.Identity{PrincipalID: req.Header.Get("X-Test-Principal"), OrganizationID: req.Header.Get("X-Test-Organization"), CredentialID: req.Header.Get("X-Test-Credential"), SessionID: req.Header.Get("X-Test-Session")}
 		},
 		GenerateSessionID: func() (string, error) {
 			return "test-session", nil

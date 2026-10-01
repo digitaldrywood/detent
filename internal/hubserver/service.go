@@ -18,6 +18,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,6 +28,7 @@ const (
 )
 
 type Service struct {
+	mcpHTTP           *mcp.HTTPHandler
 	billing           *hostedBillingWorker
 	hostedMutationMu  sync.Mutex
 	hostedAuthLogger  *slog.Logger
@@ -321,6 +323,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	s.ready.Store(false)
+	var mcpErr error
+	if s.mcpHTTP != nil {
+		mcpErr = s.mcpHTTP.Shutdown(ctx)
+	}
 	httpErr := s.echo.Shutdown(ctx)
 	if errors.Is(httpErr, http.ErrServerClosed) {
 		httpErr = nil
@@ -329,7 +335,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		httpErr = fmt.Errorf("shut down hub server: %w", httpErr)
 	}
 	s.stopHostedBilling()
-	return errors.Join(httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
+	return errors.Join(mcpErr, httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
 }
 
 func (s *Service) Backup(ctx context.Context, destination string) error {
@@ -345,6 +351,10 @@ func (s *Service) Close() error {
 	}
 	s.closeOnce.Do(func() {
 		s.ready.Store(false)
+		var mcpErr error
+		if s.mcpHTTP != nil {
+			mcpErr = s.mcpHTTP.Shutdown(context.Background())
+		}
 		httpErr := s.echo.Close()
 		if errors.Is(httpErr, http.ErrServerClosed) {
 			httpErr = nil
@@ -361,7 +371,7 @@ func (s *Service) Close() error {
 		if s.workspaces != nil {
 			s.workspaces.Stop()
 		}
-		s.closeErr = errors.Join(httpErr, webhookErr, reconcileErr, s.database.Close())
+		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, reconcileErr, s.database.Close())
 	})
 	return s.closeErr
 }

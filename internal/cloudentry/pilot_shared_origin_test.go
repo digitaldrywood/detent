@@ -569,6 +569,37 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		})
 	})
 
+	pilotStage(t, "MCP authority survives the shared entry boundary", func() {
+		initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"pilot","version":"1"}}}`
+		path := "/organizations/" + alpha.id + "/mcp"
+		headers := map[string]string{"Content-Type": "application/json", "Origin": p.base, "X-CSRF-Token": alpha.ownerCSRF}
+		initialized := alpha.owner.request(http.MethodPost, path, strings.NewReader(initialize), headers)
+		pilotStatus(t, "MCP initialize", initialized, http.StatusOK)
+		session := initialized.header.Get("Mcp-Session-Id")
+		if session == "" {
+			t.Fatal("shared entry lost MCP session identity")
+		}
+		headers["Mcp-Session-Id"] = session
+		pilotStatus(t, "MCP initialized notification", alpha.owner.request(http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers), http.StatusAccepted)
+		listed := alpha.owner.request(http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`), headers)
+		pilotStatus(t, "MCP list", listed, http.StatusOK)
+		if !strings.Contains(listed.body, `"tools":[]`) {
+			t.Fatalf("absent daemon services advertised: %s", listed.body)
+		}
+		call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"board_state","arguments":{"project_id":"foreign"}}}`
+		denied := alpha.owner.request(http.MethodPost, path, strings.NewReader(call), headers)
+		pilotStatus(t, "MCP foreign project", denied, http.StatusOK)
+		if !strings.Contains(denied.body, `"isError":true`) {
+			t.Fatalf("foreign project authorized: %s", denied.body)
+		}
+		for _, browser := range []*pilotBrowser{beta.owner, p.browser(t)} {
+			response := browser.request(http.MethodPost, path, strings.NewReader(call), headers)
+			if response.status < 400 || strings.Contains(response.body, "Alpha secret") {
+				t.Fatalf("foreign identity: %d %s", response.status, response.body)
+			}
+		}
+	})
+
 	pilotStage(t, "capacity refusal keeps ready organizations", func() {
 		gus := p.browser(t)
 		gus.login("/auth/oidc/start", "user_gus:")
