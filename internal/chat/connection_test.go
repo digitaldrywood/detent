@@ -306,6 +306,7 @@ func TestActionConfirmationClassification(t *testing.T) {
 		{Action{Kind: "update_project_integration", Arguments: json.RawMessage(`{"input":{"intake":"manual","projection":"disabled","repository_enabled":false}}`)}, false},
 		{Action{Kind: "update_project_integration", Arguments: json.RawMessage(`{"input":{"projection":"summary"}}`)}, true},
 		{Action{Kind: "update_project_integration", Arguments: json.RawMessage(`{"input":{"projection":"disabled","repository_enabled":true}}`)}, true},
+		{Action{Kind: "update_project_integration", Arguments: json.RawMessage(`{"input":{"projection":"disabled","states":[{"name":"Backlog","dispatchable":false}]}}`)}, true},
 		{Action{Kind: "cutover_project", Arguments: json.RawMessage(`{"input":{"dry_run":true},"yolo":true}`)}, true},
 		{Action{Kind: "approve_project_policy"}, true},
 		{Action{Kind: "approve_change_review_policy"}, true},

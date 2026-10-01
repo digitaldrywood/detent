@@ -17,6 +17,18 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Hosted project workflow configuration uses the existing administrator-owned
+integration settings command and revision/idempotency boundary. Reviewed
+NativeState definitions remain project-specific, retain existing workflow row
+identities and item/dependency records, and cannot remove states occupied by
+active or archived items. Compatibility workflows retain source ownership;
+worker operator-only transition rules and approved repository policy remain
+authoritative. Native creation forms use the first configured state as their
+initial lane. Workflow edits through MCP retain exact material-action approval.
+`TestHostedProjectWorkflowConfiguration`, `TestActionConfirmationClassification`
+and the client workflow settings/default-state regressions cover these boundaries.
+No tracker lane writer or recovery mechanism is introduced (INV-3).
+
 Permission outcome authority (#3758) belongs to the existing completion owners.
 Ordinary tracker runs use fresh canonical Workpad comments, dependencies,
 completion evidence and project gates; final prose or a final-only status block

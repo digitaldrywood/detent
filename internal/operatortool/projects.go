@@ -30,17 +30,19 @@ type ProjectCreateInput struct {
 	RequireDependencies *bool                 `json:"require_dependencies,omitempty"`
 }
 type HostedProjectCreateInput struct {
-	Name        string `json:"name"`
-	GrantAccess bool   `json:"grant_access"`
+	States      *[]tracker.NativeState `json:"states,omitempty"`
+	Name        string                 `json:"name"`
+	GrantAccess bool                   `json:"grant_access"`
 }
 type OnboardingInput struct {
 	Progress onboarding.Progress `json:"progress"`
 }
 type IntegrationInput struct {
-	ExpectedRevision  tracker.Revision `json:"expected_revision,string"`
-	Intake            string           `json:"intake"`
-	Projection        string           `json:"projection"`
-	RepositoryEnabled bool             `json:"repository_enabled"`
+	States            *[]tracker.NativeState `json:"states,omitempty"`
+	ExpectedRevision  tracker.Revision       `json:"expected_revision,string"`
+	Intake            string                 `json:"intake"`
+	Projection        string                 `json:"projection"`
+	RepositoryEnabled bool                   `json:"repository_enabled"`
 }
 type RepositoryInput struct {
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
@@ -205,7 +207,7 @@ func ProjectConfirmation(name string, raw json.RawMessage) (bool, bool) {
 		if DecodeProjectArguments(raw, &r) != nil {
 			return true, true
 		}
-		return r.Input.Projection != "disabled" || r.Input.RepositoryEnabled, true
+		return r.Input.States != nil || r.Input.Projection != "disabled" || r.Input.RepositoryEnabled, true
 	case "command_git_hub_batch":
 		var r ProjectRequest[GitHubBatchInput]
 		if DecodeProjectArguments(raw, &r) != nil {

@@ -220,7 +220,7 @@ func (s *Service) createHostedProject(c echo.Context) error {
 	if name == "" || len(name) > 120 || !hostedFormTrue(c, "grant_access") {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter a project name and explicitly grant yourself project access")
 	}
-	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name)
+	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name, nil)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
@@ -231,7 +231,7 @@ func (s *Service) createHostedProject(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/projects/"+project))
 }
 
-func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string) (project string, resultErr error) {
+func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -241,15 +241,20 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	project, err = s.createHostedProjectInTx(ctx, tx, credential, name)
+	project, err = s.createHostedProjectInTx(ctx, tx, credential, name, states)
 	if err != nil {
 		return "", err
 	}
 	return project, tx.Commit()
 }
-func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, credential apiCredential, name string) (project string, resultErr error) {
+func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
 	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return "", err
+	}
+	if states != nil {
+		if err := validateNativeStates(states); err != nil {
+			return "", err
+		}
 	}
 	err := tx.QueryRowContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id=p.id WHERE p.organization_id=? AND p.name=? AND g.user_id=? AND g.can_write=1`, s.config.Hosted.OrganizationID, name, credential.Hosted.Subject).Scan(&project)
 	if err == nil {
@@ -267,7 +272,9 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 		return "", err
 	}
 	project = newNativeID("prj")
-	states := HostedProjectStates()
+	if states == nil {
+		states = HostedProjectStates()
+	}
 	now := formatHubTime(s.config.now())
 	encoded, err := marshalNative(states)
 	if err != nil {
