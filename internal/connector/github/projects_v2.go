@@ -190,7 +190,7 @@ var thinRefreshProjectItemsQuery = strings.NewReplacer(
 
 const refreshProjectRevisionQuery = `query DetentGitHubRefreshProjectRevision($projectId: ID!) {
   node(id: $projectId) { ... on ProjectV2 { updatedAt } }
-  rateLimit { cost remaining }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const statusFieldQuery = `

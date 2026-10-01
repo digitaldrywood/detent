@@ -35,8 +35,9 @@ func (c *Connector) FetchWorkflowSources(ctx context.Context, repository string)
   defaultBranchRef { name }
   object(expression: "HEAD:.github/workflows") { ... on Tree { entries { name object { ... on Blob { text isTruncated } } } } }
  }
+ rateLimit { limit used remaining cost resetAt }
 }`
-	if err := c.client.GraphQL(ctx, query, map[string]any{"owner": owner, "name": name}, &response); err != nil {
+	if err := c.client.GraphQLWithType(ctx, "audit", query, map[string]any{"owner": owner, "name": name}, &response); err != nil {
 		return nil, fmt.Errorf("read workflow sources: %w", err)
 	}
 	if response.Repository == nil || response.Repository.DefaultBranchRef == nil {

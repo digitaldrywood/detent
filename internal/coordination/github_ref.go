@@ -7,34 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 )
-
-const githubRefStateQuery = `
-query DetentCoordinationState($owner: String!, $name: String!, $qualifiedName: String!, $expression: String!, $path: String!) {
-  repository(owner: $owner, name: $name) {
-    id
-    defaultBranchRef { target { oid } }
-    ref(qualifiedName: $qualifiedName) {
-      target {
-        oid
-        ... on Commit {
-          history(first: 1, path: $path) { nodes { committedDate } }
-        }
-      }
-    }
-    object(expression: $expression) {
-      ... on Blob { oid text }
-    }
-  }
-}`
-
-const githubRefCreateMutation = `
-mutation DetentCoordinationCreateRef($input: CreateRefInput!) {
-  createRef(input: $input) { ref { id target { oid } } }
-}`
 
 const githubRefCommitMutation = `
 mutation DetentCoordinationCommit($input: CreateCommitOnBranchInput!) {
@@ -46,31 +25,35 @@ var (
 	ErrInvalidGitHubResponse  = errors.New("github ref coordination response is invalid")
 )
 
-type GraphQLClient interface {
+type GitHubClient interface {
 	GraphQL(context.Context, string, map[string]any, any) error
+	REST(context.Context, string, string, any, any) error
 }
 
 type GitHubRefConfig struct {
 	Repository string
 	Branch     string
-	Client     GraphQLClient
+	Client     GitHubClient
+	Purpose    string
 	Now        func() time.Time
 }
 
 type GitHubRefStore struct {
-	client GraphQLClient
-	owner  string
-	name   string
-	branch string
-	now    func() time.Time
+	client    GitHubClient
+	owner     string
+	name      string
+	branch    string
+	purpose   string
+	now       func() time.Time
+	mu        sync.Mutex
+	lastKey   string
+	lastState githubRefState
 }
 
 type githubRefState struct {
-	record           Record
-	found            bool
-	repositoryID     string
-	defaultBranchOID string
-	branchFound      bool
+	record      Record
+	found       bool
+	branchFound bool
 }
 
 func NewGitHubRefStore(cfg GitHubRefConfig) (*GitHubRefStore, error) {
@@ -83,18 +66,19 @@ func NewGitHubRefStore(cfg GitHubRefConfig) (*GitHubRefStore, error) {
 		return nil, fmt.Errorf("%w: branch is required", ErrInvalidGitHubRefConfig)
 	}
 	if cfg.Client == nil {
-		return nil, fmt.Errorf("%w: graphql client is required", ErrInvalidGitHubRefConfig)
+		return nil, fmt.Errorf("%w: github client is required", ErrInvalidGitHubRefConfig)
 	}
 	now := cfg.Now
 	if now == nil {
 		now = time.Now
 	}
 	return &GitHubRefStore{
-		client: cfg.Client,
-		owner:  strings.TrimSpace(owner),
-		name:   strings.TrimSpace(name),
-		branch: branch,
-		now:    now,
+		client:  cfg.Client,
+		owner:   strings.TrimSpace(owner),
+		name:    strings.TrimSpace(name),
+		branch:  branch,
+		purpose: strings.TrimSpace(cfg.Purpose),
+		now:     now,
 	}, nil
 }
 
@@ -103,6 +87,9 @@ func (s *GitHubRefStore) Get(ctx context.Context, key string) (Record, bool, err
 	if err != nil {
 		return Record{}, false, err
 	}
+	s.mu.Lock()
+	s.lastKey, s.lastState = key, state
+	s.mu.Unlock()
 	return state.record, state.found, nil
 }
 
@@ -118,9 +105,16 @@ func (s *GitHubRefStore) Close() error {
 }
 
 func (s *GitHubRefStore) CompareAndSwap(ctx context.Context, key string, expectedVersion string, value []byte) (Record, bool, error) {
-	state, err := s.read(ctx, key)
-	if err != nil {
-		return Record{}, false, err
+	s.mu.Lock()
+	state, cached := s.lastState, s.lastKey == key && s.lastState.record.Version == strings.TrimSpace(expectedVersion)
+	s.lastKey = ""
+	s.mu.Unlock()
+	if !cached {
+		var err error
+		state, err = s.read(ctx, key)
+		if err != nil {
+			return Record{}, false, err
+		}
 	}
 	if state.record.Version != strings.TrimSpace(expectedVersion) {
 		return Record{}, false, nil
@@ -129,7 +123,7 @@ func (s *GitHubRefStore) CompareAndSwap(ctx context.Context, key string, expecte
 		if expectedVersion != "" {
 			return Record{}, false, nil
 		}
-		if err := s.createBranch(ctx, state.repositoryID, state.defaultBranchOID); err != nil {
+		if err := s.createBranch(ctx); err != nil {
 			refreshed, readErr := s.read(ctx, key)
 			if readErr == nil && refreshed.branchFound {
 				return Record{}, false, nil
@@ -167,7 +161,22 @@ func (s *GitHubRefStore) CompareAndSwap(ctx context.Context, key string, expecte
 			} `json:"commit"`
 		} `json:"createCommitOnBranch"`
 	}
-	if err := s.client.GraphQL(ctx, githubRefCommitMutation, variables, &response); err != nil {
+	purpose := s.purpose
+	if purpose == "" {
+		purpose = "schedule_ownership"
+	}
+	if coordinationPurpose(ctx) != "" {
+		purpose = coordinationPurpose(ctx)
+	}
+	var commitErr error
+	if typed, ok := s.client.(interface {
+		GraphQLWithType(context.Context, string, string, map[string]any, any) error
+	}); ok {
+		commitErr = typed.GraphQLWithType(ctx, purpose, githubRefCommitMutation, variables, &response)
+	} else {
+		commitErr = s.client.GraphQL(ctx, githubRefCommitMutation, variables, &response)
+	}
+	if err := commitErr; err != nil {
 		refreshed, readErr := s.read(ctx, cleanKey)
 		if readErr == nil {
 			if refreshed.record.Version != state.record.Version && bytes.Equal(refreshed.record.Value, value) {
@@ -198,88 +207,100 @@ func (s *GitHubRefStore) read(ctx context.Context, key string) (githubRefState, 
 	if err != nil {
 		return githubRefState{}, err
 	}
-	variables := map[string]any{
-		"owner":         s.owner,
-		"name":          s.name,
-		"qualifiedName": "refs/heads/" + s.branch,
-		"expression":    s.branch + ":" + cleanKey,
-		"path":          cleanKey,
+	var ref struct {
+		Object struct {
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
+		} `json:"object"`
 	}
-	var response struct {
-		Repository *struct {
-			ID               string `json:"id"`
-			DefaultBranchRef *struct {
-				Target struct {
-					OID string `json:"oid"`
-				} `json:"target"`
-			} `json:"defaultBranchRef"`
-			Ref *struct {
-				Target struct {
-					OID     string `json:"oid"`
-					History struct {
-						Nodes []struct {
-							CommittedDate time.Time `json:"committedDate"`
-						} `json:"nodes"`
-					} `json:"history"`
-				} `json:"target"`
-			} `json:"ref"`
-			Object *struct {
-				OID  string `json:"oid"`
-				Text string `json:"text"`
-			} `json:"object"`
-		} `json:"repository"`
-	}
-	if err := s.client.GraphQL(ctx, githubRefStateQuery, variables, &response); err != nil {
+	base := "/repos/" + url.PathEscape(s.owner) + "/" + url.PathEscape(s.name)
+	if err := s.client.REST(ctx, http.MethodGet, base+"/git/ref/heads/"+escapePath(s.branch), nil, &ref); err != nil {
+		if isGitHubNotFound(err) {
+			return githubRefState{}, nil
+		}
 		return githubRefState{}, err
 	}
-	if response.Repository == nil || strings.TrimSpace(response.Repository.ID) == "" {
+	if strings.TrimSpace(ref.Object.SHA) == "" || ref.Object.Type != "commit" {
 		return githubRefState{}, ErrInvalidGitHubResponse
 	}
-	state := githubRefState{repositoryID: strings.TrimSpace(response.Repository.ID)}
-	if response.Repository.DefaultBranchRef != nil {
-		state.defaultBranchOID = strings.TrimSpace(response.Repository.DefaultBranchRef.Target.OID)
-	}
-	if response.Repository.Ref == nil {
-		return state, nil
-	}
+	state := githubRefState{}
 	state.branchFound = true
-	state.record.Version = strings.TrimSpace(response.Repository.Ref.Target.OID)
-	if response.Repository.Object == nil {
-		return state, nil
+	state.record.Version = strings.TrimSpace(ref.Object.SHA)
+	var content struct {
+		Encoding string `json:"encoding"`
+		Content  string `json:"content"`
+		Type     string `json:"type"`
+	}
+	contentPath := base + "/contents/" + escapePath(cleanKey) + "?ref=" + url.QueryEscape(state.record.Version)
+	if err := s.client.REST(ctx, http.MethodGet, contentPath, nil, &content); err != nil {
+		if isGitHubNotFound(err) {
+			return state, nil
+		}
+		return githubRefState{}, err
+	}
+	if content.Type != "file" || content.Encoding != "base64" {
+		return githubRefState{}, ErrInvalidGitHubResponse
+	}
+	decoded, err := base64.StdEncoding.DecodeString(content.Content)
+	if err != nil {
+		return githubRefState{}, fmt.Errorf("%w: decode coordination contents: %w", ErrInvalidGitHubResponse, err)
 	}
 	state.found = true
-	state.record.Value = []byte(response.Repository.Object.Text)
-	if nodes := response.Repository.Ref.Target.History.Nodes; len(nodes) > 0 {
-		state.record.ModifiedAt = nodes[0].CommittedDate.UTC()
+	state.record.Value = decoded
+	var commits []struct {
+		Commit struct {
+			Committer struct {
+				Date time.Time `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
 	}
+	commitPath := base + "/commits?sha=" + url.QueryEscape(state.record.Version) + "&path=" + url.QueryEscape(cleanKey) + "&per_page=1"
+	if err := s.client.REST(ctx, http.MethodGet, commitPath, nil, &commits); err != nil {
+		return githubRefState{}, err
+	}
+	if len(commits) == 0 || commits[0].Commit.Committer.Date.IsZero() {
+		return githubRefState{}, ErrInvalidGitHubResponse
+	}
+	state.record.ModifiedAt = commits[0].Commit.Committer.Date.UTC()
 	return state, nil
 }
 
-func (s *GitHubRefStore) createBranch(ctx context.Context, repositoryID string, oid string) error {
-	if strings.TrimSpace(repositoryID) == "" || strings.TrimSpace(oid) == "" {
-		return fmt.Errorf("%w: default branch is unavailable", ErrInvalidGitHubResponse)
+func (s *GitHubRefStore) createBranch(ctx context.Context) error {
+	base := "/repos/" + url.PathEscape(s.owner) + "/" + url.PathEscape(s.name)
+	var repository struct {
+		DefaultBranch string `json:"default_branch"`
 	}
-	variables := map[string]any{
-		"input": map[string]any{
-			"repositoryId": repositoryID,
-			"name":         "refs/heads/" + s.branch,
-			"oid":          oid,
-		},
-	}
-	var response struct {
-		CreateRef *struct {
-			Ref *struct {
-				ID string `json:"id"`
-			} `json:"ref"`
-		} `json:"createRef"`
-	}
-	if err := s.client.GraphQL(ctx, githubRefCreateMutation, variables, &response); err != nil {
+	if err := s.client.REST(ctx, http.MethodGet, base, nil, &repository); err != nil {
 		return err
 	}
-	if response.CreateRef == nil || response.CreateRef.Ref == nil || strings.TrimSpace(response.CreateRef.Ref.ID) == "" {
+	if repository.DefaultBranch == "" {
 		return ErrInvalidGitHubResponse
 	}
-	return nil
+	var ref struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := s.client.REST(ctx, http.MethodGet, base+"/git/ref/heads/"+escapePath(repository.DefaultBranch), nil, &ref); err != nil {
+		return err
+	}
+	if ref.Object.SHA == "" {
+		return ErrInvalidGitHubResponse
+	}
+	return s.client.REST(ctx, http.MethodPost, base+"/git/refs", map[string]string{"ref": "refs/heads/" + s.branch, "sha": ref.Object.SHA}, nil)
+}
+
+func escapePath(value string) string {
+	parts := strings.Split(value, "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return strings.Join(parts, "/")
+}
+
+func isGitHubNotFound(err error) bool {
+	var status interface{ HTTPStatus() int }
+	return errors.As(err, &status) && status.HTTPStatus() == http.StatusNotFound
 }
 
 func cleanCoordinationKey(key string) (string, error) {
