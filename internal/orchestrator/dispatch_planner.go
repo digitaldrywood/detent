@@ -102,11 +102,26 @@ func (p dispatchPlanner) plan(
 	dueRetries := dueRetriesByIssue(state, now)
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
 	dueRetries = dueRetriesByIssue(state, now)
+	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
+	knownWaits := make(map[string]bool, len(plannedCandidates))
+	for _, issue := range plannedCandidates {
+		if _, retryDue := dueRetries[issue.ID]; retryDue {
+			continue
+		}
+		_, running := state.Running[issue.ID]
+		_, deferred := state.deferredCompletions[issue.ID]
+		_, retry := state.Retry[issue.ID]
+		_, claimed := state.Claimed[issue.ID]
+		_, blocked := state.Blocked[issue.ID]
+		knownWaits[issue.ID] = running || deferred || retry || claimed || blocked ||
+			(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, p.cfg.TerminalStates)) ||
+			(normalizeState(issue.State) == normalizeState(p.cfg.AutoPromote.ReworkState) && issue.PullRequest != nil &&
+				(currentHeadCIStatusPending(issue.PullRequest.CIStatus) || len(mergeWorkerCurrentHeadCIPendingChecks(issue)) > 0)) ||
+			artifactGateWaitStatusBlocksDispatch(issue, p.cfg.AutoPromote.Gate) ||
+			autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote)
+	}
 	slices.SortStableFunc(plannedCandidates, func(a, b connector.Issue) int {
-		_, retryA := dueRetries[a.ID]
-		_, retryB := dueRetries[b.ID]
-		waitingA := !retryA && a.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(a, p.cfg.TerminalStates)
-		waitingB := !retryB && b.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(b, p.cfg.TerminalStates)
+		waitingA, waitingB := knownWaits[a.ID], knownWaits[b.ID]
 		if waitingA == waitingB {
 			return 0
 		}
@@ -115,7 +130,6 @@ func (p dispatchPlanner) plan(
 		}
 		return -1
 	})
-	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
 	logDecision := func(decision dispatchPlanDecision) {
 		decision.SelectionReason = mergePriority.reasons[strings.TrimSpace(decision.Issue.ID)]
 		p.logDecision(hooks, decision)
