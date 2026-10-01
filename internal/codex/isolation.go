@@ -33,6 +33,7 @@ func IsolationSettings(p isolation.Policy) (Options, map[string]any, error) {
 		roots[root] = true
 	}
 	settings["features.network_proxy"] = true
+	settings["default_permissions"] = options.PermissionProfile
 	settings["permissions"] = map[string]any{options.PermissionProfile: map[string]any{"filesystem": map[string]any{"/": "read", ":workspace_roots": "write"}, "workspace_roots": roots, "network": network}}
 	return options, settings, nil
 }

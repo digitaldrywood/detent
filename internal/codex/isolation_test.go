@@ -94,6 +94,9 @@ func TestBackendAppliesRunnerIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tier == isolation.Sandbox {
+				if params.Config["default_permissions"] != params.Permissions {
+					t.Fatalf("retained permission profile = %v, want %q", params.Config["default_permissions"], params.Permissions)
+				}
 				if params.Permissions != "detent-runner" || params.Sandbox != "" || params.Config["features.network_proxy"] != !test.restricted {
 					t.Fatalf("thread = %#v", params)
 				}

@@ -1244,6 +1244,9 @@ with `sandbox` and extends existing claim compatibility to backend-probed tiers.
 Missing or withdrawn tier reports use the existing no-compatible-work result;
 no new reason code, recovery path, lane writer, or configuration key is introduced.
 Backend policy mapping fails closed instead of retrying as a native process.
+Codex sandbox threads retain the selected `default_permissions` alongside the
+named profile in session configuration, so workspace-requirements reloads keep
+the same filesystem and limited command-network policy (#3753).
 The existing lease owns execution isolation; the mutable routing cache is removed
 from backend enforcement rather than adding another cache revision guard.
 Claude verifies effective policy on its worker before sending a model prompt.
