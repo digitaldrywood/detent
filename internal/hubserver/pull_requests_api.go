@@ -384,46 +384,51 @@ func (s *Service) listWorkItemPullRequests(c echo.Context) error {
 	if refresh != "" && refresh != "1" {
 		return s.nativeAPIError(c, nativeInvalid("refresh accepts only 1"))
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	item := c.Param("item")
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+	views, err := s.readWorkItemPullRequests(c.Request().Context(), nativeRequestScope(c), c.Param("item"), refresh)
+	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, views)
+}
+
+func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScope, item, refresh string) ([]pullRequestView, error) {
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+		return nil, err
 	}
 	now := s.config.now()
 	key := pullRequestCacheKey(scope, item)
 	if refresh == "" {
 		if cached, ok := s.pullRequests.get(key, now); ok {
-			return c.JSON(http.StatusOK, cached)
+			return cached, nil
 		}
 	} else if !s.pullRequests.allowRefresh(scope.organization, now) {
-		return s.nativeAPIError(c, pullRequestRefreshLimited())
+		return nil, pullRequestRefreshLimited()
 	}
 	connector, repositoryID, err := projectConnector(ctx, s.database.db, scope)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	changes, err := changeRows[tracker.ChangeRequest](ctx, s.database.db, `SELECT c.record_json FROM change_requests c
 JOIN change_issue_links l ON l.change_id = c.id
 WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	views := []pullRequestView{}
 	for _, change := range changes {
 		view, err := s.changePullRequestView(ctx, scope, item, change, connector, repositoryID, now)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		views = append(views, view)
 	}
 	if refresh == "1" && connector != nil {
 		if err := s.requestPullRequestHydration(ctx, repositoryID, views, now); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
 	s.pullRequests.set(key, views, now)
-	return c.JSON(http.StatusOK, views)
+	return views, nil
 }
 
 // requestPullRequestHydration asks the reconciler to re-fetch every pull

@@ -152,13 +152,7 @@ func (c *NativeClient) Dependency(ctx context.Context, id tracker.NativeWorkItem
 }
 
 func (c *NativeClient) Comments(ctx context.Context, id tracker.NativeWorkItemID, cursor string) (tracker.Page[tracker.NativeComment], error) {
-	var result tracker.Page[tracker.NativeComment]
-	path, err := nativeItemPath(id)
-	if err != nil {
-		return result, err
-	}
-	err = c.client.request(ctx, http.MethodGet, c.base()+path+"/comments?limit=10&cursor="+url.QueryEscape(cursor), nil, &result)
-	return result, err
+	return c.CommentsPage(ctx, id, cursor, 10)
 }
 
 func (c *NativeClient) CreateComment(ctx context.Context, id tracker.NativeWorkItemID, request tracker.CreateComment) (tracker.NativeComment, error) {
@@ -194,13 +188,7 @@ func (c *NativeClient) UpdateComment(ctx context.Context, id tracker.NativeWorkI
 }
 
 func (c *NativeClient) History(ctx context.Context, id tracker.NativeWorkItemID, cursor string) (tracker.Page[tracker.CollaborationEvent], error) {
-	var result tracker.Page[tracker.CollaborationEvent]
-	path, err := nativeItemPath(id)
-	if err != nil {
-		return result, err
-	}
-	err = c.client.request(ctx, http.MethodGet, c.base()+path+"/history?limit=100&cursor="+url.QueryEscape(cursor), nil, &result)
-	return result, err
+	return c.HistoryPage(ctx, id, cursor, 100)
 }
 
 func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkItemID, request tracker.NativeRunEvent) error {

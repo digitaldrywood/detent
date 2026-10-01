@@ -2,20 +2,12 @@ package hubclient
 
 import (
 	"context"
-	"net/http"
-	"net/url"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (c *NativeClient) Attempts(ctx context.Context, id tracker.NativeWorkItemID, cursor string) (tracker.Page[tracker.NativeAttempt], error) {
-	var result tracker.Page[tracker.NativeAttempt]
-	path, err := nativeItemPath(id)
-	if err != nil {
-		return result, err
-	}
-	err = c.client.request(ctx, http.MethodGet, c.base()+path+"/attempts?limit=100&cursor="+url.QueryEscape(cursor), nil, &result)
-	return result, err
+	return c.AttemptsPage(ctx, id, cursor, 100)
 }
 
 func (c *NativeClient) Recovery(ctx context.Context, id tracker.NativeWorkItemID) (tracker.NativeRecovery, error) {

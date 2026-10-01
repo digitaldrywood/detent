@@ -104,28 +104,27 @@ Sources: [GET /organizations/:organization/delete](../internal/cloudentry/servic
 
 Health
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.health` — Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
+- Decision: Public HTTP liveness probe returning only status=ok. This is a transport boundary with no operator resource, organization data or command; MCP discovery already provides protocol liveness. No operator capability is excluded.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role anonymous liveness probe; credential none; project not project-scoped; ownership no organization or application resource data.
 - Application: func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{"status": "ok"}) }; handler-owned application validation/read/command
-- Extraction: Extract cloudentry.health application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
+- Extraction: No application extraction: this anonymous transport liveness route has no operator business data.
+- Preconditions: Public transport liveness; no operator resource or action
 - Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: transport liveness probe → not_applicable
 
 Sources: [GET /health](../internal/cloudentry/service.go#L197)
 ## cloudentry.home
 
 Home
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending.
 - Tool: `work_reads.home` — Bounded homeRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → homeResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.home; s.clientShell, s.landing, s.render
@@ -259,8 +258,8 @@ Sources: [GET /platform](../internal/cloudentry/service.go#L213)
 
 Provisioning page
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending.
 - Tool: `work_reads.provisioning_page` — Bounded provisioningPageRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → provisioningPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.provisioningJSON; s.creatorOrganization, s.organizationHome, s.retryLimit
@@ -298,8 +297,8 @@ Sources: [Any /api/v2/organizations/:organization/*](../internal/cloudentry/serv
 
 Resume provisioning
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending.
 - Tool: `work_reads.resume_provisioning` — Bounded resumeProvisioningRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → resumeProvisioningResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.resumeProvisioning; s.config.now, s.creatorOrganization, s.csrfValid, s.next, s.refuse, s.registry.store.db.ExecContext, s.wakeAllocator
@@ -1695,8 +1694,8 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Bind artifact service
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3347 scope; required parity remains pending.
 - Tool: `work_reads.bind_artifact_service` — Bounded bindArtifactServiceRequest: organization, project, service; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → bindArtifactServiceResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.bindArtifactService; s.database.db.ExecContext, s.database.db.QueryRowContext
@@ -1973,8 +1972,8 @@ Sources: [POST /api/v1/claims](../internal/hubserver/api_http.go#L64)
 
 Command git hub batch
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
 - Tool: `work_reads.command_git_hub_batch` — Bounded commandGitHubBatchRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → commandGitHubBatchResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.commandGitHubBatch; s.nativeMutation
@@ -2411,8 +2410,8 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Get attempt diff
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
+- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
 - Tool: `work_reads.get_attempt_diff` — Bounded getAttemptDiffRequest: organization, project, attempt; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getAttemptDiffResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.getAttemptDiff; handler-owned application validation/read/command
@@ -2530,8 +2529,8 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/integration/
 
 Get git hub batch
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
 - Tool: `work_reads.get_git_hub_batch` — Bounded getGitHubBatchRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getGitHubBatchResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.getGitHubBatch; handler-owned application validation/read/command
@@ -2570,15 +2569,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/imports/:imp
 
 Get native issue
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.get_native_issue` — Bounded getNativeIssueRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getNativeIssueResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_item` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.getNativeIssue; handler-owned application validation/read/command
-- Extraction: Extract hubserver.getNativeIssue application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -2610,15 +2609,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project](../internal
 
 Get native version
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.get_native_version` — Bounded getNativeVersionRequest: organization, project, item, comment, revision; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getNativeVersionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_version exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_version` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.getNativeVersion; s.database.db.QueryRowContext
-- Extraction: Extract hubserver.getNativeVersion application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -2769,14 +2768,14 @@ Sources: [GET /api/v2/organizations/:organization/runners/:runner/routing](../in
 
 Get work item
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.get_work_item` — Bounded getWorkItemRequest: id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getWorkItemResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: The broad instance compatibility API is not proxied. Its organization work-item read is consolidated into authorized native work_item/work_list, with comments, durable history and run/reference reads available separately. Existing instance API remains unchanged.
+- Tool: `board.work_item` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.getWorkItem; s.applyRepositorySyncHealth, s.database.latestWorkpad, s.database.workItemBody, s.database.workItemTimeline, s.tracker.GetWorkItems
-- Extraction: Extract hubserver.getWorkItem application inputs/results and validation from Echo; reuse s.applyRepositorySyncHealth, s.database.latestWorkpad, s.database.workItemBody, s.database.workItemTimeline, s.tracker.GetWorkItems. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
@@ -2789,8 +2788,8 @@ Sources: [GET /api/v1/work-items/:id](../internal/hubserver/api_http.go#L63)
 
 Get work item diff
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
+- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
 - Tool: `work_reads.get_work_item_diff` — Bounded getWorkItemDiffRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → getWorkItemDiffResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.getWorkItemDiff; handler-owned application validation/read/command
@@ -2927,8 +2926,8 @@ Sources: [POST /api/v2/tokens/:id/grants](../internal/hubserver/credential_maint
 
 Health
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending.
 - Tool: `work_reads.health` — Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.health; s.OutboxHealth, s.config.now, s.database.health, s.database.repositoryFreshness, s.ready.Load
@@ -3123,8 +3122,8 @@ Sources: [POST /api/v2/organizations/:organization/billing/portal](../internal/h
 
 Hosted events
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3346 scope; required parity remains pending.
 - Tool: `work_reads.hosted_events` — Bounded hostedEventsRequest: project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → hostedEventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.hostedEvents; s.database.db.QueryRowContext, s.hostedCredential, s.requireHostedProject
@@ -3163,8 +3162,8 @@ Sources: [GET /api/v2/organizations/:organization/fleet](../internal/hubserver/h
 
 Hosted landing
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3344 scope; required parity remains pending.
 - Tool: `work_reads.hosted_landing` — Bounded hostedLandingRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → hostedLandingResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedLanding; s.appShell, s.hostedCredential, s.hostedHome
@@ -3535,15 +3534,15 @@ Sources: [GET /api/v2/organizations/:organization/projects](../internal/hubserve
 
 List native attempts
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.list_native_attempts` — Bounded listNativeAttemptsRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listNativeAttemptsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_runs exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_runs` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.listNativeAttempts; s.config.now, s.database.db.QueryContext, s.nativePage
-- Extraction: Extract hubserver.listNativeAttempts application inputs/results and validation from Echo; reuse s.config.now, s.database.db.QueryContext, s.nativePage. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -3555,15 +3554,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 List native comments
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_commands.list_native_comments` — Bounded listNativeCommentsRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listNativeCommentsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_comments exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_comments` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.listNativeComments; s.nativePage
-- Extraction: Extract hubserver.listNativeComments application inputs/results and validation from Echo; reuse s.nativePage. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -3575,15 +3574,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 List native history
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.list_native_history` — Bounded listNativeHistoryRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listNativeHistoryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_history exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_history` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.listNativeHistory; s.database.db.QueryContext, s.database.db.QueryRowContext, s.nativePage
-- Extraction: Extract hubserver.listNativeHistory application inputs/results and validation from Echo; reuse s.database.db.QueryContext, s.database.db.QueryRowContext, s.nativePage. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -3595,15 +3594,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 List native issues
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.list_native_issues` — Bounded listNativeIssuesRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listNativeIssuesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_list exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_list` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.listNativeIssues; s.nativePage
-- Extraction: Extract hubserver.listNativeIssues application inputs/results and validation from Echo; reuse s.nativePage. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -3615,15 +3614,15 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items](
 
 List native labels
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.list_native_labels` — Bounded listNativeLabelsRequest: organization, project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listNativeLabelsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_config exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_config` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.listNativeLabels; handler-owned application validation/read/command
-- Extraction: Extract hubserver.listNativeLabels application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
@@ -3735,8 +3734,8 @@ Sources: [GET /api/v2/organizations/:organization/runners](../internal/hubserver
 
 List work item pull requests
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
+- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
 - Tool: `work_reads.list_work_item_pull_requests` — Bounded listWorkItemPullRequestsRequest: organization, project, item; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listWorkItemPullRequestsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.listWorkItemPullRequests; s.changePullRequestView, s.config.now, s.pullRequests.allowRefresh, s.pullRequests.get, s.pullRequests.set, s.requestPullRequestHydration
@@ -3775,14 +3774,14 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 List work items
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.list_work_items` — Bounded listWorkItemsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → listWorkItemsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: The broad instance compatibility API is not proxied. Its organization work-item read is consolidated into authorized native work_item/work_list, with comments, durable history and run/reference reads available separately. Existing instance API remains unchanged.
+- Tool: `board.work_list` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.listWorkItems; s.allWorkItems
-- Extraction: Extract hubserver.listWorkItems application inputs/results and validation from Echo; reuse s.allWorkItems. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service
 - Availability: hosted_dedicated / github,native / hub application service — unavailable: Current requireAPIScope refuses hosted-session calls outside nativeBase and rejects global credentials; use the corresponding native/hosted application operation. This row remains pending parity work.
@@ -3893,8 +3892,8 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/
 
 Native capabilities
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 runtime/fleet scope; required parity remains pending.
 - Tool: `work_reads.native_capabilities` — Bounded nativeCapabilitiesRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → nativeCapabilitiesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.nativeCapabilities; s.database.db.QueryRowContext
@@ -3990,8 +3989,8 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:
 
 Outbox health
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending.
 - Tool: `work_reads.outbox_health` — Bounded outboxHealthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → outboxHealthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.outboxHealth; s.OutboxHealth
@@ -5172,8 +5171,8 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 Ai debug prompt
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending.
 - Tool: `work_reads.ai_debug_prompt` — Bounded aiDebugPromptRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → aiDebugPromptResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.aiDebugPrompt; s.aiDebugProjection
@@ -5192,8 +5191,8 @@ Sources: [GET /api/v1/ai-debug](../internal/web/server.go#L544), [internal/web/t
 
 Analytics dashboard
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3345 scope; required parity remains pending.
 - Tool: `work_reads.analytics_dashboard` — Bounded analyticsDashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → analyticsDashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.analyticsDashboard; s.analyticsDashboardData, s.demoAnalyticsDashboard, s.latestSnapshot
@@ -5212,14 +5211,14 @@ Sources: [GET /analytics](../internal/web/server.go#L469), [internal/web/templat
 
 Api board activity
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_board_activity` — Bounded apiBoardActivityRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBoardActivityResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed board_activity exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.board_activity` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiBoardActivity; s.boardActivityData, s.demoDashboardData, s.latestSnapshot
-- Extraction: Extract web.apiBoardActivity application inputs/results and validation from Echo; reuse s.boardActivityData, s.demoDashboardData, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5232,14 +5231,14 @@ Sources: [GET /api/v1/board/activity](../internal/web/server.go#L549), [internal
 
 Api board activity events
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_board_activity_events` — Bounded apiBoardActivityEventsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBoardActivityEventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed board_activity exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.board_activity` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiBoardActivityEvents; s.hub.Subscribe, s.latestSnapshot, s.sendBoardActivity
-- Extraction: Extract web.apiBoardActivityEvents application inputs/results and validation from Echo; reuse s.hub.Subscribe, s.latestSnapshot, s.sendBoardActivity. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5252,14 +5251,14 @@ Sources: [GET /api/v1/board/activity/events](../internal/web/server.go#L550)
 
 Api board card
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_board_card` — Bounded apiBoardCardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBoardCardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_item` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiBoardCard; s.boardCardDashboardData, s.kanbanConversationShellData, s.loadBoardAttemptCosts
-- Extraction: Extract web.apiBoardCard application inputs/results and validation from Echo; reuse s.boardCardDashboardData, s.kanbanConversationShellData, s.loadBoardAttemptCosts. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5272,14 +5271,14 @@ Sources: [GET /api/v1/board/card](../internal/web/server.go#L545), [internal/web
 
 Api board card core
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_board_card_core` — Bounded apiBoardCardCoreRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBoardCardCoreResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_item` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiBoardCardCore; s.boardCardDashboardData
-- Extraction: Extract web.apiBoardCardCore application inputs/results and validation from Echo; reuse s.boardCardDashboardData. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5312,14 +5311,14 @@ Sources: [GET /api/v1/board/conversation](../internal/web/server.go#L548), [inte
 
 Api board receipt
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_board_receipt` — Bounded apiBoardReceiptRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBoardReceiptResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed board_receipt exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.board_receipt` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiBoardReceipt; s.boardCardDashboardData, s.store.EfficiencyReceipt
-- Extraction: Extract web.apiBoardReceipt application inputs/results and validation from Echo; reuse s.boardCardDashboardData, s.store.EfficiencyReceipt. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5332,14 +5331,14 @@ Sources: [GET /api/v1/board/receipt](../internal/web/server.go#L547), [internal/
 
 Api board session
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_board_session` — Bounded apiBoardSessionRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBoardSessionResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed board_session exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.board_session` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiBoardSession; s.demoDashboardData, s.latestSnapshot
-- Extraction: Extract web.apiBoardSession application inputs/results and validation from Echo; reuse s.demoDashboardData, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5352,14 +5351,14 @@ Sources: [GET /api/v1/board/session](../internal/web/server.go#L551), [internal/
 
 Api board session events
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_board_session_events` — Bounded apiBoardSessionEventsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBoardSessionEventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed board_session exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.board_session` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiBoardSessionEvents; s.activity.Subscribe, s.latestSnapshot
-- Extraction: Extract web.apiBoardSessionEvents application inputs/results and validation from Echo; reuse s.activity.Subscribe, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5372,14 +5371,14 @@ Sources: [GET /api/v1/board/session/events](../internal/web/server.go#L552)
 
 Api board session history
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_board_session_history` — Bounded apiBoardSessionHistoryRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBoardSessionHistoryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed board_session_history exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.board_session_history` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiBoardSessionHistory; s.history.Page, s.latestSnapshot
-- Extraction: Extract web.apiBoardSessionHistory application inputs/results and validation from Echo; reuse s.history.Page, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5552,8 +5551,8 @@ Sources: [POST /api/v1/projects/:project_id/work-items](../internal/web/server.g
 
 Api demo scenarios
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
 - Tool: `work_reads.api_demo_scenarios` — Bounded apiDemoScenariosRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiDemoScenariosResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiDemoScenarios; handler-owned application validation/read/command
@@ -5612,14 +5611,14 @@ Sources: [POST /api/v1/forge/availability/clear](../internal/web/server.go#L537)
 
 Api issue
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_issue` — Bounded apiIssueRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiIssueResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_item` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiIssue; s.cachedEnrichedSnapshot, s.hub.Latest
-- Extraction: Extract web.apiIssue application inputs/results and validation from Echo; reuse s.cachedEnrichedSnapshot, s.hub.Latest. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5632,15 +5631,15 @@ Sources: [GET /api/v1/*](../internal/web/server.go#L566), [internal/web/template
 
 Api issue explanation
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `billing_usage.api_issue_explanation` — Bounded apiIssueExplanationRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiIssueExplanationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: The existing explain_item tool remains the canonical explanation/freshness read; its name and arguments are unchanged.
+- Tool: `board.explain_item` — Bounded apiIssueExplanationRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.apiIssueExplanation; s.issueExplanation
-- Extraction: Extract web.apiIssueExplanation application inputs/results and validation from Echo; reuse s.issueExplanation. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6070,15 +6069,15 @@ Sources: [POST /api/v1/projects/:project_id/staleness-warnings/acknowledge](../i
 
 Api state
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_state` — Bounded apiStateRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiStateResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed board_state exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.board_state` — Bounded apiStateRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiState; s.hub.Latest, s.instanceName, s.now, s.stateEndpoints.begin, s.stateSnapshot, s.withManualRefresh
-- Extraction: Extract web.apiState application inputs/results and validation from Echo; reuse s.hub.Latest, s.instanceName, s.now, s.stateEndpoints.begin, s.stateSnapshot, s.withManualRefresh. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6110,8 +6109,8 @@ Sources: [GET /api/v1/projects/:project_id/runs/:attempt/stop](../internal/web/s
 
 Api time series
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3345 scope; required parity remains pending.
 - Tool: `work_reads.api_time_series` — Bounded apiTimeSeriesRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiTimeSeriesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiTimeSeries; s.latestSnapshot, s.projectSmallMultiples
@@ -6190,14 +6189,14 @@ Sources: [GET /api/v1/usage](../internal/web/server.go#L542)
 
 Api work attempt receipt
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.api_work_attempt_receipt` — Bounded apiWorkAttemptReceiptRequest: project_id, attempt_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiWorkAttemptReceiptResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_attempt_receipt exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_attempt_receipt` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.apiWorkAttemptReceipt; s.recovery.WorkAttemptReceipt
-- Extraction: Extract web.apiWorkAttemptReceipt application inputs/results and validation from Echo; reuse s.recovery.WorkAttemptReceipt. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6270,14 +6269,14 @@ Sources: [POST /projects/:project_id/issues/:issue_ref/artifacts/:artifact/acces
 
 Board
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.board` — Bounded boardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → boardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_list exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_list` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.board; s.boardFirstPaintData, s.demoBoard, s.latestBoardSnapshot, s.withKanbanRefreshFeedback
-- Extraction: Extract web.board application inputs/results and validation from Echo; reuse s.boardFirstPaintData, s.demoBoard, s.latestBoardSnapshot, s.withKanbanRefreshFeedback. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6290,14 +6289,14 @@ Sources: [GET /](../internal/web/server.go#L462), [internal/web/templates/board.
 
 Board live session page
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.board_live_session_page` — Bounded boardLiveSessionPageRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → boardLiveSessionPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed board_session exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.board_session` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.boardLiveSessionPage; s.boardData, s.demoDashboardData, s.latestSnapshot
-- Extraction: Extract web.boardLiveSessionPage application inputs/results and validation from Echo; reuse s.boardData, s.demoDashboardData, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6447,15 +6446,15 @@ Sources: [Any /mcp](../internal/web/server.go#L513)
 
 Events
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.events` — Bounded eventsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → eventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed board_state exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.board_state` — Bounded eventsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.events; s.cachedEnrichedSnapshot, s.dashboardData, s.demoEvents, s.hub.Subscribe, s.now, s.projectDashboardData, s.snapshotMissingRequiredChecks, s.sseSnapshotComponent, s.withManualRefresh
-- Extraction: Extract web.events application inputs/results and validation from Echo; reuse s.cachedEnrichedSnapshot, s.dashboardData, s.demoEvents, s.hub.Subscribe, s.now, s.projectDashboardData, s.snapshotMissingRequiredChecks, s.sseSnapshotComponent, s.withManualRefresh. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6486,8 +6485,8 @@ Sources: [POST /api/v1/webhooks/github](../internal/web/server.go#L539)
 
 Health
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3343.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3343 scope; required parity remains pending.
 - Tool: `work_reads.health` — Bounded healthRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → healthResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.health; s.connectorName, s.enforcedBudgets, s.healthNotifications.Failures, s.hub.Latest, s.now, s.orphanedAgentProcesses, s.projectHealth, s.startupLifecycle.State, s.stateEndpoints.health, s.tickLiveness.TickLiveness, s.workflowSources
@@ -6545,14 +6544,14 @@ Sources: [POST /api/v1/intake/:project_id/:source](../internal/web/server.go#L54
 
 Issue detail
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.issue_detail` — Bounded issueDetailRequest: project_id, issue_ref; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → issueDetailResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_item` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.issueDetail; s.latestSnapshot, s.loadNativeWork, s.projectDashboardData, s.registry.Get
-- Extraction: Extract web.issueDetail application inputs/results and validation from Echo; reuse s.latestSnapshot, s.loadNativeWork, s.projectDashboardData, s.registry.Get. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6565,8 +6564,8 @@ Sources: [GET /projects/:project_id/issues/:issue_ref](../internal/web/server.go
 
 Library
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
+- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
 - Tool: `work_reads.library` — Bounded libraryRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → libraryResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.library; s.libraryData
@@ -6623,14 +6622,14 @@ Sources: [GET /api/v1/refresh](../internal/web/server.go#L541), [internal/web/te
 
 Native issue export
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.native_issue_export` — Bounded nativeIssueExportRequest: project_id, issue_ref; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → nativeIssueExportResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_export exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_export` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.nativeIssueExport; s.nativeFormData
-- Extraction: Extract web.nativeIssueExport application inputs/results and validation from Echo; reuse s.nativeFormData. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6643,8 +6642,8 @@ Sources: [GET /projects/:project_id/issues/:issue_ref/export](../internal/web/se
 
 Native issue submit
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3341.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3341 scope; required parity remains pending.
 - Tool: `work_reads.native_issue_submit` — Bounded nativeIssueSubmitRequest: project_id, issue_ref; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → nativeIssueSubmitResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.nativeIssueForm; s.nativeFormData
@@ -6664,8 +6663,8 @@ Sources: [GET /projects/:project_id/issues/:issue_ref/edit](../internal/web/serv
 
 Native run detail
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3347.
+- Decision: work_references (#3340) supplies authorized PR/change/version/artifact identifiers and links, including availability and observation times. #3347 owns PR/change/diff/artifact detail and review operations and must reuse the extracted application reads; this detail row remains pending.
 - Tool: `work_reads.native_run_detail` — Bounded nativeRunDetailRequest: project_id, issue_ref, attempt; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → nativeRunDetailResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.nativeRunDetail; s.changePageData, s.loadArtifacts
@@ -6863,14 +6862,14 @@ Sources: [GET /projects/*](../internal/web/server.go#L479), [internal/web/templa
 
 Redirect to board
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `work_reads.redirect_to_board` — Bounded redirectToBoardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → redirectToBoardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Typed work_list exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Tool: `board.work_list` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.redirectToBoard; handler-owned application validation/read/command
-- Extraction: Extract web.redirectToBoard application inputs/results and validation from Echo; reuse the current handler-owned service logic. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -6883,8 +6882,8 @@ Sources: [GET /kanban](../internal/web/server.go#L466)
 
 Redirect to dashboard
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
 - Tool: `work_reads.redirect_to_dashboard` — Bounded redirectToDashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → redirectToDashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.redirectToDashboard; s.demoOnboarding
@@ -6923,8 +6922,8 @@ Sources: [GET /](../internal/web/server.go#L452)
 
 Reports
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3345 scope; required parity remains pending.
 - Tool: `work_reads.reports` — Bounded reportsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → reportsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.reports; s.demoReports, s.reportsData
@@ -6982,8 +6981,8 @@ Sources: [GET /fleet/runners](../internal/web/server.go#L465), [internal/web/tem
 
 Settings
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3342.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3342 scope; required parity remains pending.
 - Tool: `work_reads.settings` — Bounded settingsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → settingsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.settings; s.demoSettings, s.settingsData

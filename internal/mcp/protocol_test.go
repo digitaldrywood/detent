@@ -18,6 +18,7 @@ import (
 // This fake is an application command, not a protocol dispatcher. Both
 // transports must preserve its typed selector and current authority checks.
 type protocolApplication struct {
+	reads       *operatortool.AuthorizedExecutor
 	denied      atomic.Bool
 	writeDenied atomic.Bool
 }
@@ -30,6 +31,9 @@ func (a *protocolApplication) ListTools(ctx context.Context) ([]operatortool.Def
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return nil, err
 	}
+	if a.reads != nil {
+		return a.reads.ListTools(ctx)
+	}
 	tools := operatortool.Catalog()
 	for _, d := range operatortool.CommandCatalog() {
 		if d.Annotations.ReadOnly {
@@ -41,6 +45,9 @@ func (a *protocolApplication) ListTools(ctx context.Context) ([]operatortool.Def
 	return tools, nil
 }
 func (a *protocolApplication) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	if a.reads != nil && operatortool.IsWorkRead(call.Name) {
+		return a.reads.Execute(ctx, call)
+	}
 	var args struct {
 		ProjectID  string `json:"project_id"`
 		RequestID  string `json:"request_id"`
@@ -387,4 +394,58 @@ func TestModernHTTPRequestCancellation(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Catch transport-specific authority/schema bypass for application reads.
+func TestProtocolWorkReadParity(t *testing.T) {
+	for _, transport := range []string{"stdio", "http"} {
+		for _, version := range supportedVersions() {
+			t.Run(transport+"/"+version, func(t *testing.T) {
+				fixture := newProtocolFixture(t, transport, version)
+				fixture.application.reads = operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{WorkReads: protocolWorkReader{}}))
+				for _, definition := range operatortool.WorkReadCatalog() {
+					arguments := map[string]any{"project_id": "project"}
+					if definition.Name != operatortool.WorkList && definition.Name != operatortool.WorkConfig {
+						arguments["reference"] = "#1"
+					}
+					if definition.Name == operatortool.WorkVersion {
+						arguments["revision"] = 1
+					}
+					if definition.Name == operatortool.WorkAttemptReceipt {
+						arguments["attempt_id"] = 1
+					}
+					for _, project := range []string{"project", "foreign"} {
+						arguments["project_id"] = project
+						response := fixture.request("tools/call", map[string]any{"name": definition.Name, "arguments": arguments})
+						var result toolCallResult
+						decodeResult(t, response, &result)
+						if result.IsError != (project == "foreign") {
+							t.Fatalf("%s result=%#v", definition.Name, result)
+						}
+						if project == "project" && (len(result.Content) == 0 || !strings.Contains(result.Content[0].Text, "item-1")) {
+							t.Fatalf("%s result=%#v", definition.Name, result)
+						}
+					}
+				}
+				fixture.application.denied.Store(true)
+				var result toolCallResult
+				decodeResult(t, fixture.request("tools/call", map[string]any{"name": operatortool.WorkItem, "arguments": map[string]any{"project_id": "project", "reference": "#1"}}), &result)
+				if !result.IsError {
+					t.Fatal("removed authority accepted a direct read")
+				}
+				fixture.application.denied.Store(false)
+				fixture.application.reads = operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{}))
+				decodeResult(t, fixture.request("tools/call", map[string]any{"name": operatortool.WorkItem, "arguments": map[string]any{"project_id": "project", "reference": "#1"}}), &result)
+				if !result.IsError {
+					t.Fatal("absent application read service accepted a direct read")
+				}
+			})
+		}
+	}
+}
+
+type protocolWorkReader struct{}
+
+func (protocolWorkReader) ReadWork(context.Context, string, operatortool.WorkReadRequest) (operatortool.Result, error) {
+	return operatortool.Result{Content: json.RawMessage(`{"project_id":"project","reference":"item-1","url":"/projects/project/issues/item-1","data":{"title":"Work item"}}`)}, nil
 }

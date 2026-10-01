@@ -213,6 +213,7 @@ func (s *Server) newReadOnlyToolExecutor() *operatortool.Executor {
 			return s.chatSnapshot(ctx), nil
 		}),
 		Explainer: explainer,
+		WorkReads: dashboardWorkReads{server: s},
 	})
 }
 
