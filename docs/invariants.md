@@ -267,6 +267,30 @@ only authorized read tools, while operator actions use the named command tools.
 `TestWorkspaceOperatorUnavailable` and `TestMCPOperatorChatRetry` cover these boundaries.
 No MCP adapter writes tracker lanes or introduces a new protection/recovery mechanism.
 
+Effective runner capacity (native #90) uses the existing runner administration,
+native command receipt, routing heartbeat, selected global configuration writer
+and runtime reload owners. UI routing capacity edits and MCP/API capacity requests
+deliver the same typed runner-bound application request. Capacity-only requests
+preserve grants, isolation, accounts, models and project execution policies.
+Expected runner/configuration revisions and current principal authority apply
+before effects, and current resource authority is rechecked before receipt replay.
+Reads do not record mutation usage. No raw file path, credential, shell command,
+new YAML configuration key, polling loop or recovery owner is exposed.
+
+Desired Cloud limits are distinct from observed saved/runtime limits and the
+effective runner configuration ceiling. Fresh runner/provider evidence is required;
+missing, future or stale evidence remains unknown. Shared host limits and plan
+execution permission retain their existing owners. Project, pool and lane admission
+remains authoritative at claim time. External provider-capacity producers are
+unmanaged: responses name the account/backend ceiling and instruct the operator to
+change the producer configuration, never the generated report.
+
+`TestRunnerCapacityOwner`, `TestRunnerCapacityHeartbeat`,
+`TestRunnerCapacityApplication`, the capacity cases in `TestHostedMCPFleetControls`
+and `TestFleetArgumentBoundary` cover persistence, reload, old-Hub compatibility,
+current authority, bounded input, revisions, replay, redaction and real additional
+claims. This extends INV-1 adapters without another capacity policy or lane writer.
+
 Fleet/operator MCP adapters (#3343) share the dashboard refresh, availability
 clear, canary, update, progress-credit, warning-acknowledgment, recovery and
 runner administration commands. Runner display edits execute directly; capacity,
@@ -2834,6 +2858,17 @@ and discovered ready work still uses the existing global acquisition lifecycle.
 - When a slot frees, dispatch the highest-ranked READY request; if none of the
   higher-ranked projects has anything ready, dispatch whatever is ready.
 - The system never cancels, stops, or preempts running work. Only a user cancels work.
+
+Provider capacity application (native #90) removes active reservation snapshots as
+a second ceiling when a fresh report covers the same provider, backend, account,
+sharing identity and reserved model. Reservations still count as occupied slots
+and keep their original execution identity and history. Without matching fresh
+evidence their existing conservative bound remains; shared reporter ceilings and
+exhaustion still apply. `TestRunnerCapacityApplication` raises concurrency with two
+active reservations intact, refuses a claim while the external producer remains at
+two, and admits six only after fresh authoritative evidence. This consolidates
+configuration ceiling authority under the current report owner (INV-3); it does
+not change expired report handling, introduce recovery, or alter priority.
 
 Hosted organization subscriptions price project and unarchived-issue capacity,
 never seats or concurrent agent work (#3268). The Hub removes plan membership

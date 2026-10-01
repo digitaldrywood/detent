@@ -7258,3 +7258,43 @@ Account administration transport and existing operator approval
 - Confirmation: this non-operator source site → not_applicable
 
 Sources: [Any /api/cloud/mcp](../internal/cloudentry/operator_administration.go#L31), [GET /chat/approval](../internal/cloudentry/operator_administration.go#L32), [POST /chat/approval](../internal/cloudentry/operator_administration.go#L33)
+## hubserver.get_runner_capacity
+
+Read effective enrolled runner capacity
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Native work item prj_6d4919bebd73446798e6cd807feda10e#90 extends the existing fleet capability owner. Report partial or unknown application instead of forging capacity evidence.
+- Tool: `runs_fleet.get_runner_capacity` — Typed FleetCatalog schema: exact runner, optional backend; mutation requires request_id, expected_revision, opaque expected_config_revision and capacity 1–10000. No authority, credential, path, model or command inputs. → Desired, applied and effective runner configuration ceiling, status, attributed binding limits and freshness. External provider producers remain unmanaged; unknown evidence is explicit. Claims retain project, pool, provider and plan admission.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership current organization and exact enrolled runner/machine; selected local config remains runner-owned.
+- Application: Service.readRunnerCapacity / runnerCapacityView
+- Extraction: HTTP, fleet UI capacity edits and MCP share runner administration and the existing heartbeat/configuration application owner. No new polling, raw editor or capacity policy. Native #90 consolidates historical reservation ceilings under matching fresh reports.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Fresh selected local configuration revision and expected runner revision for mutation; capacity 1–10000; no credential, file path or shell arguments.
+- Coverage: TestRunnerCapacityOwner; TestRunnerCapacityHeartbeat; TestRunnerCapacityApplication; capacity cases in TestHostedMCPFleetControls and TestFleetArgumentBoundary.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: read → none
+
+Sources: [GET /api/v2/organizations/:organization/runners/:runner/capacity](../internal/hubserver/runner_enrollment.go#L35)
+## hubserver.update_runner_capacity
+
+Apply enrolled runner capacity
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Native work item prj_6d4919bebd73446798e6cd807feda10e#90 extends the existing fleet capability owner. Report partial or unknown application instead of forging capacity evidence.
+- Tool: `runs_fleet.update_runner_capacity` — Typed FleetCatalog schema: exact runner, optional backend; mutation requires request_id, expected_revision, opaque expected_config_revision and capacity 1–10000. No authority, credential, path, model or command inputs. → Desired, applied and effective runner configuration ceiling, status, attributed binding limits and freshness. External provider producers remain unmanaged; unknown evidence is explicit. Claims retain project, pool, provider and plan admission.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership current organization and exact enrolled runner/machine; selected local config remains runner-owned.
+- Application: Service.updateRunnerCapacityCommand / CLI runnerCapacityOwner / existing global writer and reload
+- Extraction: HTTP, fleet UI capacity edits and MCP share runner administration and the existing heartbeat/configuration application owner. No new polling, raw editor or capacity policy. Native #90 consolidates historical reservation ceilings under matching fresh reports.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Fresh selected local configuration revision and expected runner revision for mutation; capacity 1–10000; no credential, file path or shell arguments.
+- Coverage: TestRunnerCapacityOwner; TestRunnerCapacityHeartbeat; TestRunnerCapacityApplication; capacity cases in TestHostedMCPFleetControls and TestFleetArgumentBoundary.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured.
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: capacity mutation → operator
+
+Sources: [PUT /api/v2/organizations/:organization/runners/:runner/capacity](../internal/hubserver/runner_enrollment.go#L36)

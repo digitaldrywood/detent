@@ -21,8 +21,9 @@ import (
 )
 
 type hubSchedulingOptions struct {
-	intakeToken githubconnector.TokenSource
-	problems    func() []runnerauth.Problem
+	runtimeConfig func() globalconfig.Config
+	intakeToken   githubconnector.TokenSource
+	problems      func() []runnerauth.Problem
 }
 
 func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
@@ -100,18 +101,23 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	if err != nil {
 		return nil, err
 	}
+	var capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
+	if len(options) > 0 {
+		capacityConfiguration = runnerCapacityOwner(cfg, options[0].runtimeConfig)
+	}
 	var reportProblems func() []runnerauth.Problem
 	if len(options) > 0 {
 		reportProblems = options[0].problems
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
-		LocalChecks:     localChecks,
-		GitHubIntake:    github.FetchIssueSnapshot,
-		GitHubDiscovery: github.DiscoverIssues,
-		Problems:        reportProblems,
-		IsolationReport: func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
-		ProviderReports: providerReports,
-		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		CapacityConfiguration: capacityConfiguration,
+		LocalChecks:           localChecks,
+		GitHubIntake:          github.FetchIssueSnapshot,
+		GitHubDiscovery:       github.DiscoverIssues,
+		Problems:              reportProblems,
+		IsolationReport:       func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
+		ProviderReports:       providerReports,
+		OrganizationID:        tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		CheckoutRepository: func(project string) string {
 			return runnerCheckoutRepository(ctx, checkoutRoots[project])
 		},

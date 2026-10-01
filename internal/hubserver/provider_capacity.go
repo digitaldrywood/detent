@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -91,6 +92,7 @@ func providerView(ctx context.Context, query nativeQueryer, organization tracker
 		return view, err
 	}
 	defer rows.Close()
+	var freshReports []providercapacity.Report
 	for rows.Next() {
 		var raw string
 		var reports []providercapacity.Report
@@ -101,6 +103,9 @@ func providerView(ctx context.Context, query nativeQueryer, organization tracker
 			return view, err
 		}
 		for _, other := range reports {
+			if !now.Before(other.ObservedAt) && now.Before(other.ObservedAt.Add(providercapacity.MaxAge)) {
+				freshReports = append(freshReports, other)
+			}
 			if !sharedProviderAccount(report, other) {
 				continue
 			}
@@ -144,7 +149,11 @@ func providerView(ctx context.Context, query nativeQueryer, organization tracker
 		}
 		if sharedProviderAccount(report, reservation.Report) {
 			view.Used++
-			view.MaxConcurrent = min(view.MaxConcurrent, reservation.Report.MaxConcurrent)
+			if !slices.ContainsFunc(freshReports, func(current providercapacity.Report) bool {
+				return current.Provider == reservation.Report.Provider && current.Backend == reservation.Report.Backend && current.AccountAlias == reservation.Report.AccountAlias && current.SharedAccountAlias == reservation.Report.SharedAccountAlias && current.Supports(reservation.Requirement)
+			}) {
+				view.MaxConcurrent = min(view.MaxConcurrent, reservation.Report.MaxConcurrent)
+			}
 		}
 	}
 	switch {
