@@ -323,6 +323,7 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 	const source = "digitaldrywood/detent#685"
 	for _, tt := range []struct {
 		name           string
+		comments       []connector.IssueComment
 		body           string
 		authorized     bool
 		commentAt      time.Time
@@ -334,6 +335,16 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 		wantState      string
 		wantTransition bool
 	}{
+		{name: "edited earlier clearance defeats stale later hold", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true,
+			comments: []connector.IssueComment{
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", AuthorAuthorized: true, CreatedAt: new(parkedAt.Add(-time.Hour)), UpdatedAt: &now},
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: approve release\n```", AuthorAuthorized: true, CreatedAt: &parkedAt, UpdatedAt: &parkedAt},
+			}},
+		{name: "edited earlier hold defeats stale later clearance", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason,
+			comments: []connector.IssueComment{
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: approve release\n```", AuthorAuthorized: true, CreatedAt: new(parkedAt.Add(-time.Hour)), UpdatedAt: &now},
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", AuthorAuthorized: true, CreatedAt: &parkedAt, UpdatedAt: &parkedAt},
+			}},
 		{name: "unknown project-status hold remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, metadataAbsent: true, started: true},
 		{name: "legacy Todo does not start fresh work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Todo", started: true},
 		{name: "legacy clearance restores In Progress", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, wantState: "In Progress", wantTransition: true},
@@ -362,7 +373,13 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 			}
 			body := "## Codex Workpad\n\n```detent-status\nschema: 1\n" + tt.body + "\n```"
 			issue.Comments = []connector.IssueComment{{Body: body, AuthorAuthorized: tt.authorized, CreatedAt: &tt.commentAt}}
+			if tt.comments != nil {
+				issue.Comments = tt.comments
+			}
 			issue.WorkpadSignal, _ = workpad.SignalFromComment(body, "", "digitaldrywood/detent")
+			if tt.comments != nil {
+				issue.WorkpadSignal, _ = rawIssueWorkpadSignal(issue)
+			}
 			if tt.legacyBlocker {
 				issue.DependencySource = connector.BlockedRefSourceNative
 				issue.BlockedBy = []connector.BlockedRef{{Identifier: source, Source: connector.BlockedRefSourceNative}}

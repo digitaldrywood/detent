@@ -148,12 +148,30 @@ func parseBlockerReason(issue githubIssueNode) string {
 
 func parseWorkpadSignal(issue githubIssueNode) *workpad.Signal {
 	repo := strings.TrimSpace(issue.Repository.NameWithOwner)
+	selected := -1
+	fallback := -1
+	var recordedAt *time.Time
 	for index := len(issue.Comments.Nodes) - 1; index >= 0; index-- {
 		comment := issue.Comments.Nodes[index]
-		body := comment.Body
-		if !workpadCommentBody(body) {
+		if !workpadCommentBody(comment.Body) {
 			continue
 		}
+		if fallback < 0 {
+			fallback = index
+		}
+		updatedAt := parseWorkpadRecordedAt(comment.CreatedAt, comment.UpdatedAt)
+		if updatedAt == nil {
+			selected = fallback
+			break
+		}
+		if selected < 0 || updatedAt.After(*recordedAt) {
+			selected = index
+			recordedAt = updatedAt
+		}
+	}
+	if selected >= 0 {
+		comment := issue.Comments.Nodes[selected]
+		body := comment.Body
 		if signal, ok := workpad.SignalFromWorkpad(body, comment.URL, repo); ok {
 			signal.RecordedAt = parseWorkpadRecordedAt(comment.CreatedAt, comment.UpdatedAt)
 			return signal
@@ -183,10 +201,13 @@ func parseWorkpadSignal(issue githubIssueNode) *workpad.Signal {
 }
 
 func parseWorkpadRecordedAt(createdAt *string, updatedAt *string) *time.Time {
-	if parsed := parseGitHubTime(updatedAt); parsed != nil {
+	if parsed := parseGitHubTime(updatedAt); parsed != nil && !parsed.IsZero() {
 		return parsed
 	}
-	return parseGitHubTime(createdAt)
+	if parsed := parseGitHubTime(createdAt); parsed != nil && !parsed.IsZero() {
+		return parsed
+	}
+	return nil
 }
 
 func workpadCommentBody(body string) bool {

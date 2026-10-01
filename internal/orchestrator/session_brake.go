@@ -12,7 +12,6 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const sessionBrakeMetadataKey = "session_brake"
@@ -27,12 +26,7 @@ func (o *Orchestrator) sessionProgressProbe(issue connector.Issue) runpkg.Sessio
 		if err != nil {
 			return "", err
 		}
-		for index := len(comments) - 1; index >= 0; index-- {
-			if autoPromoteIsWorkpadComment(comments[index].Body) {
-				return workpad.ContentHash(strings.TrimSpace(comments[index].Body)), nil
-			}
-		}
-		return "", nil
+		return artifactCompletionReceiptHash(comments), nil
 	}
 }
 

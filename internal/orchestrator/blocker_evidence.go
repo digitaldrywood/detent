@@ -154,8 +154,16 @@ func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) 
 }
 
 func clearedHumanActionRecordedAt(issue connector.Issue, parkedAt time.Time, preserveCompleted bool) *time.Time {
-	for index := len(issue.Comments) - 1; index >= 0; index-- {
-		comment := issue.Comments[index]
+	comments := issue.Comments
+	if !preserveCompleted {
+		index := currentWorkpadCommentIndex(comments)
+		if index < 0 {
+			return nil
+		}
+		comments = comments[index : index+1]
+	}
+	for index := len(comments) - 1; index >= 0; index-- {
+		comment := comments[index]
 		if !autoPromoteIsWorkpadComment(comment.Body) {
 			continue
 		}

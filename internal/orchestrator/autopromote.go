@@ -737,12 +737,9 @@ func autoPromoteIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool
 }
 
 func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
-	for index := len(issue.Comments) - 1; index >= 0; index-- {
+	if index := currentWorkpadCommentIndex(issue.Comments); index >= 0 {
 		comment := issue.Comments[index]
 		body := comment.Body
-		if !autoPromoteIsWorkpadComment(body) {
-			continue
-		}
 		if signal, ok := workpad.SignalFromWorkpad(body, comment.URL, dependencyIssueRepo(issue.Identifier)); ok {
 			signal.RecordedAt = autoPromoteWorkpadRecordedAt(comment)
 			return signal, true
@@ -767,6 +764,30 @@ func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 		}, true
 	}
 	return nil, false
+}
+
+func currentWorkpadCommentIndex(comments []connector.IssueComment) int {
+	selected := -1
+	fallback := -1
+	var recordedAt *time.Time
+	for index := len(comments) - 1; index >= 0; index-- {
+		comment := comments[index]
+		if !autoPromoteIsWorkpadComment(comment.Body) {
+			continue
+		}
+		if fallback < 0 {
+			fallback = index
+		}
+		updatedAt := autoPromoteWorkpadRecordedAt(comment)
+		if updatedAt == nil {
+			return fallback
+		}
+		if selected < 0 || updatedAt.After(*recordedAt) {
+			selected = index
+			recordedAt = updatedAt
+		}
+	}
+	return selected
 }
 
 func autoPromoteWorkpadRecordedAt(comment connector.IssueComment) *time.Time {

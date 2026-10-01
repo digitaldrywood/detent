@@ -3945,6 +3945,10 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
+		comments    []issueComment
+		wantURL     string
+		wantStatus  string
+		wantNil     bool
 		bodyOnly    bool
 		name        string
 		body        string
@@ -3952,6 +3956,16 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 		wantSource  string
 		wantInvalid string
 	}{
+		{name: "earlier created edited complete supersedes stale in progress", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-09-02T00:00:00Z")}}, wantURL: "https://github.test/comment/earlier", wantStatus: "complete", wantReason: "", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "earlier edited human hold supersedes complete", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-09-02T00:00:00Z")}}, wantURL: "https://github.test/comment/earlier", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "earlier edited invalid supersedes complete", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-09-02T00:00:00Z")}}, wantURL: "https://github.test/comment/earlier", wantStatus: "blocked", wantReason: "", wantSource: "structured", wantInvalid: "status blocked requires", wantNil: false},
+		{name: "edited clearing suppresses prior and body receipt", comments: []issueComment{{Body: "## Codex Workpad\n\nCurrent status cleared.", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-09-02T00:00:00Z")}}, wantURL: "https://github.test/comment/earlier", wantStatus: "", wantReason: "", wantSource: "structured", wantInvalid: "", wantNil: true},
+		{name: "equal edit time retains reverse input precedence", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}}, wantURL: "https://github.test/comment/later", wantStatus: "in_progress", wantReason: "", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "zero edit timestamp falls back to created time", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-10-01T00:00:00Z"), UpdatedAt: new("0001-01-01T00:00:00Z")}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "invalid edit timestamp falls back to created time", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-10-01T00:00:00Z"), UpdatedAt: new("not-a-date")}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "invalid dates retain input precedence", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: new("not-a-date"), UpdatedAt: new("not-a-date")}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "undated later human hold keeps input precedence", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later"}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "no dates keep reverse input precedence", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier"}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later"}}, wantURL: "https://github.test/comment/later", wantStatus: "in_progress", wantReason: "", wantSource: "structured", wantInvalid: "", wantNil: false},
 		{
 			name:       "canonical body operational receipt",
 			bodyOnly:   true,
@@ -4002,7 +4016,21 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 				issue.Comments.Nodes = nil
 				wantURL = issue.URL
 			}
+			if tt.comments != nil {
+				issue.Comments.Nodes = tt.comments
+				issue.Body = "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+				wantURL = tt.wantURL
+			}
 			signal := parseWorkpadSignal(issue)
+			if tt.wantNil {
+				if signal != nil {
+					t.Fatalf("selected cleared Workpad retained older signal: %#v", signal)
+				}
+				return
+			}
+			if tt.wantStatus != "" && tt.wantInvalid == "" && (signal == nil || signal.Status != tt.wantStatus) {
+				t.Fatalf("selected status = %#v, want %q", signal, tt.wantStatus)
+			}
 			if signal == nil {
 				t.Fatal("parseWorkpadSignal() = nil, want signal")
 				return

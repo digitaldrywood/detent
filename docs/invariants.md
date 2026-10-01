@@ -403,8 +403,17 @@ retain rejection without changing lane ownership or adding a recovery mechanism.
 Authorized no-PR operational delivery reads the structured receipt from the
 canonical issue-body Workpad as well as Workpad comments (#3425). GitHub
 hydration and completion classification share the section parser; protocol
-examples outside that section cannot complete an issue. Existing Workpad-comment
-precedence remains authoritative. Acceptance still requires the dispatch-time
+examples outside that section cannot complete an issue. Current canonical
+Workpad selection uses the comment's updated time, falling back to its created
+time. Equal timestamps retain reverse input precedence; unavailable ordering
+metadata retains that same precedence for the entire canonical comment set.
+Selection precedes parsing: a selected invalid, cleared, or human-held Workpad
+cannot fall back to older comments or issue-body evidence. Signal parsing,
+artifact receipt/status hashes, session progress, and current human clearance
+share this selection owner. The explicit completed-receipt history search keeps
+its existing reverse traversal and skip semantics. This consolidates current
+comment authority under INV-3 without changing authorization, native dependency
+proof, or adding a recovery mechanism. Acceptance still requires the dispatch-time
 and current operational authorization, clean delivered workspace, and matching
 attempt/generation when the receipt supplies them. The accepted signal and
 generation persist with the existing successful attempt. Both cached promotion
