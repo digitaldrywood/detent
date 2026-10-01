@@ -1431,7 +1431,7 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 	previousState := strings.TrimSpace(entry.Event.PreviousPhaseName)
 	parkedAt := workflowLaneTransitionAt(entry.Event)
 	if entry.Event.Reason != string(AutoPromoteReasonWorkpadBlocker) || !stateIn(previousState, normalizedStates([]string{"In Progress", autoPromoteReworkState})) ||
-		clearedHumanActionRecordedAt(issue, parkedAt) == nil {
+		clearedHumanActionRecordedAt(issue, parkedAt, false) == nil {
 		return workflowLaneBlockedRecoveryMetadata{}, false
 	}
 	return workflowLaneBlockedRecoveryMetadata{

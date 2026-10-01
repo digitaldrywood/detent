@@ -191,7 +191,7 @@ func (o *Orchestrator) retainUnacknowledgedRecoveryParks(ctx context.Context, st
 				}
 				continue
 			}
-			if park != nil && o.recoveryParkAcknowledged(event, metadata, *park) {
+			if park != nil && o.recoveryParkAcknowledged(event, metadata, *park, issue, parkedAt) {
 				acknowledgedPark = park
 				parkReleasedAt = workflowLaneTransitionAt(event)
 				if operatorAcknowledgesRecoveryPark(event, metadata) {
@@ -263,7 +263,7 @@ func recoveryParkEventMatchesIssue(event store.WorkflowPhaseEvent, issue connect
 	return event.IssueURL != "" && event.IssueURL == issue.URL
 }
 
-func (o *Orchestrator) recoveryParkAcknowledged(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata, park workflowLaneBlockedRecoveryMetadata) bool {
+func (o *Orchestrator) recoveryParkAcknowledged(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata, park workflowLaneBlockedRecoveryMetadata, issue connector.Issue, parkedAt time.Time) bool {
 	if operatorAcknowledgesRecoveryPark(event, metadata) {
 		return true
 	}
@@ -276,7 +276,9 @@ func (o *Orchestrator) recoveryParkAcknowledged(event store.WorkflowPhaseEvent, 
 	switch event.Reason {
 	case workflowActionRecordedBlockerRecovery:
 		return park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason &&
-			metadata.BlockedRecovery != nil && sameBlockedRecoveryPark(*metadata.BlockedRecovery, park) &&
+			(metadata.BlockedRecovery != nil && sameBlockedRecoveryPark(*metadata.BlockedRecovery, park) ||
+				metadata.BlockedRecovery == nil && park.CauseFingerprint != "" && !parkedAt.IsZero() &&
+					!issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) && clearedHumanActionRecordedAt(issue, parkedAt, true) != nil) &&
 			normalizeState(event.PreviousPhaseName) == normalizeState(blockedStatusState)
 	case workflowActionCauseBlockedRecovery:
 		return park.Owner == blockedRecoveryOwnerOrchestrator || deliverableRecoveryPark(park)

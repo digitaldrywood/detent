@@ -293,7 +293,7 @@ func TestRecoveryParkAcknowledgementBoundaries(t *testing.T) {
 				cause = spendProgressReason
 			}
 			host := &Orchestrator{cfg: normalizeConfig(Config{})}
-			got := host.recoveryParkAcknowledged(store.WorkflowPhaseEvent{Reason: tt.reason, PreviousPhaseName: tt.from, PhaseName: tt.to}, workflowLaneMetadata{Provenance: provenance.AttributionFromSource(tt.source, provenance.Actor{Login: "shared-user", Kind: "User"})}, workflowLaneBlockedRecoveryMetadata{Owner: tt.owner, Cause: cause})
+			got := host.recoveryParkAcknowledged(store.WorkflowPhaseEvent{Reason: tt.reason, PreviousPhaseName: tt.from, PhaseName: tt.to}, workflowLaneMetadata{Provenance: provenance.AttributionFromSource(tt.source, provenance.Actor{Login: "shared-user", Kind: "User"})}, workflowLaneBlockedRecoveryMetadata{Owner: tt.owner, Cause: cause}, connector.Issue{}, time.Time{})
 			if got != tt.want {
 				t.Fatalf("acknowledged = %t, want %t", got, tt.want)
 			}
@@ -717,5 +717,118 @@ func TestDeliverableRecoveryRetirementAcknowledgement(t *testing.T) {
 				t.Fatalf("later independent park was not retained: %+v", blocked)
 			}
 		})
+	}
+}
+
+func TestLegacyRecordedHumanClearanceRetainsNativeAuthority(t *testing.T) {
+	parkedAt := time.Date(2026, 9, 28, 10, 40, 58, 0, time.UTC)
+	answerAt := parkedAt.Add(time.Hour)
+	releasedAt := answerAt.Add(time.Minute)
+	answers := []struct {
+		identifier string
+		decision   string
+	}{
+		{"digitaldrywood/pyroapex#2783", "Do not wait for #2784. Add the header menu to the existing Edit Product page. Resume implementation."},
+		{"digitaldrywood/pyroapex#2864", "Use user dates, current destination season, or tenant calendar year as specified. Resume implementation."},
+		{"digitaldrywood/pyroapex#2894", "Drop the Where did things go line and dialog completely. Everything else in the plan stands."},
+	}
+	for _, answer := range answers {
+		for _, tt := range []struct {
+			name             string
+			authorized       bool
+			stale            bool
+			completed        bool
+			completeOnly     bool
+			newBlocked       bool
+			newUnauthorized  bool
+			newMalformed     bool
+			metadataMismatch bool
+			metadataMissing  bool
+			newPark          bool
+			externalRelease  bool
+			dependency       bool
+			wantHeld         bool
+		}{
+			{name: "authorized operator answer", authorized: true},
+			{name: "completed worker preserves earlier clearance", authorized: true, completed: true},
+			{name: "worker complete cannot authorize alone", authorized: true, completeOnly: true, completed: true, wantHeld: true},
+			{name: "unauthorized answer", wantHeld: true},
+			{name: "stale answer", authorized: true, stale: true, wantHeld: true},
+			{name: "new blocked request", authorized: true, newBlocked: true, wantHeld: true},
+			{name: "new unauthorized Workpad", authorized: true, newUnauthorized: true, wantHeld: true},
+			{name: "new malformed Workpad", authorized: true, newMalformed: true, wantHeld: true},
+			{name: "supplied mismatched park", authorized: true, metadataMismatch: true, wantHeld: true},
+			{name: "untyped old park", authorized: true, metadataMissing: true, wantHeld: true},
+			{name: "later human park", authorized: true, newPark: true, wantHeld: true},
+			{name: "external release", authorized: true, externalRelease: true, wantHeld: true},
+			{name: "unresolved current dependency", authorized: true, dependency: true, wantHeld: true},
+		} {
+			t.Run(answer.identifier+"/"+tt.name, func(t *testing.T) {
+				db := openWorkAttemptRecoveryStore(t, t.Context())
+				host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+				host.cfg.ActiveStates = append(host.cfg.ActiveStates, "rework")
+				issue := recoveryTestIssue()
+				issue.Identifier = answer.identifier
+				issue.State = "In Progress"
+				park := &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerHuman, Cause: workpadBlockedUnactionedReason, CauseFingerprint: "native-human-request", TargetState: "Rework"}
+				parkMetadata := workflowLaneMetadata{BlockedRecovery: park}
+				if tt.metadataMissing {
+					untyped := *park
+					untyped.CauseFingerprint = ""
+					parkMetadata.BlockedRecovery = &untyped
+				}
+				host.recordLaneTransition(t.Context(), issue, blockedStatusState, parkedAt, workpadBlockedUnactionedReason, parkMetadata)
+				issue.State = blockedStatusState
+				releaseMetadata := workflowLaneMetadata{}
+				if tt.metadataMismatch {
+					mismatch := *park
+					mismatch.CauseFingerprint = "unrelated-request"
+					releaseMetadata.BlockedRecovery = &mismatch
+				}
+				if tt.externalRelease {
+					releaseMetadata.Provenance = provenance.AttributionFromSource(provenance.SourceTrackerObservation, provenance.Actor{Login: "operator", Kind: "User"})
+				}
+				host.recordLaneTransition(t.Context(), issue, "Rework", releasedAt, workflowActionRecordedBlockerRecovery, releaseMetadata)
+				issue.State = "Rework"
+				issue.StageUpdatedAt = &releasedAt
+				at := answerAt
+				if tt.stale {
+					at = parkedAt.Add(-time.Minute)
+				}
+				if !tt.completeOnly {
+					issue.Comments = []connector.IssueComment{{
+						Body:        "## Codex Workpad\n\n### Decision (operator)\n" + answer.decision + "\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```",
+						AuthorLogin: "operator", AuthorAuthorized: tt.authorized, CreatedAt: &at,
+					}}
+				}
+				if tt.completed || tt.newBlocked || tt.newUnauthorized || tt.newMalformed {
+					later := releasedAt.Add(time.Minute)
+					body := "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+					if tt.newBlocked {
+						body = "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: approve revised design\n```"
+					}
+					if tt.newMalformed {
+						body = "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: [broken\n```"
+					}
+					issue.Comments = append(issue.Comments, connector.IssueComment{Body: body, AuthorLogin: "instance", AuthorAuthorized: !tt.newUnauthorized, CreatedAt: &later})
+				}
+				if tt.newPark {
+					host.recordLaneTransition(t.Context(), issue, blockedStatusState, releasedAt.Add(2*time.Minute), workpadBlockedUnactionedReason, parkMetadata)
+				}
+				if tt.dependency {
+					issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/pyroapex#9999", State: "Todo"}}
+				}
+				for _, restarted := range []bool{false, true} {
+					state := newState(host.cfg)
+					if !restarted {
+						state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: park.Cause, BlockedAt: parkedAt, Recovery: park, RecoveryReason: "park_acknowledgement_required"}
+					}
+					host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{issue})
+					if _, held := state.Blocked[issue.ID]; held != tt.wantHeld {
+						t.Fatalf("held = %t, want %t after restart=%t", held, tt.wantHeld, restarted)
+					}
+				}
+			})
+		}
 	}
 }

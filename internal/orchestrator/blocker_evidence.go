@@ -143,7 +143,7 @@ func recordedHumanActionEvidence(state *State, issue connector.Issue, now time.T
 // Workpad park. The newest authorized Workpad must explicitly clear the action
 // after the Blocked entry; an ordinary reply cannot silently release it.
 func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) *telemetry.BlockerEvidence {
-	recordedAt := clearedHumanActionRecordedAt(issue, parkedAt)
+	recordedAt := clearedHumanActionRecordedAt(issue, parkedAt, false)
 	if recordedAt == nil {
 		return nil
 	}
@@ -153,7 +153,7 @@ func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) 
 	return &evidence
 }
 
-func clearedHumanActionRecordedAt(issue connector.Issue, parkedAt time.Time) *time.Time {
+func clearedHumanActionRecordedAt(issue connector.Issue, parkedAt time.Time, preserveCompleted bool) *time.Time {
 	for index := len(issue.Comments) - 1; index >= 0; index-- {
 		comment := issue.Comments[index]
 		if !autoPromoteIsWorkpadComment(comment.Body) {
@@ -164,8 +164,13 @@ func clearedHumanActionRecordedAt(issue connector.Issue, parkedAt time.Time) *ti
 		}
 		signal, ok := workpad.SignalFromComment(comment.Body, comment.URL, dependencyIssueRepo(issue.Identifier))
 		if !ok || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
-			strings.TrimSpace(signal.Status) != workpad.StatusInProgress ||
 			strings.TrimSpace(signal.HumanAction) != "" || strings.TrimSpace(signal.ReasonCode) != "" || len(signal.Blockers) != 0 {
+			return nil
+		}
+		if preserveCompleted && strings.TrimSpace(signal.Status) == workpad.StatusComplete {
+			continue
+		}
+		if strings.TrimSpace(signal.Status) != workpad.StatusInProgress {
 			return nil
 		}
 		recordedAt := autoPromoteWorkpadRecordedAt(comment)
