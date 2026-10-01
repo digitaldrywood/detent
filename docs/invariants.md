@@ -189,6 +189,17 @@ human actions, unavailable native evidence, and failing checks retain their
 existing behavior. `TestMergedCompletionReconcilesClosedDraft` covers stale draft
 associations, native reopening, and both completion and refusal controls.
 
+Successful persisted worker completion delegates an already-merged PR to this
+same owner before scheduling a continuation (#3576). A finished worker's retained
+claim no longer excludes merged delivery; running workers and claimed open PRs
+remain excluded. Resolving a merged operational receipt preserves its supplied
+attempt/generation attribution and requires native merged evidence, rather than
+falling back to assertion-only operational completion.
+`TestMergedCompletionRefreshReplacesClosedDraft` replays #3533's attempt 7516,
+generation 118, clean workspace and merged PR #3555: Done replaces the continuation
+that redispatched attempt 7522. Its stale-attribution and missing-evidence cases
+retain rejection without changing lane ownership or adding a recovery mechanism.
+
 Authorized no-PR operational delivery reads the structured receipt from the
 canonical issue-body Workpad as well as Workpad comments (#3425). GitHub
 hydration and completion classification share the section parser; protocol

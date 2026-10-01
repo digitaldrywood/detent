@@ -813,18 +813,22 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 				t.Fatalf("work attempt completions = %#v, want successful reconciliation", attempts.completions)
 			}
+			if tt.wantMergedReason {
+				record := implementProgressRecordFromCompletion(t, attempts.completions[0])
+				if record.Reason != implementMergedCompletionReason {
+					t.Fatalf("completion reason = %q, want %q", record.Reason, implementMergedCompletionReason)
+				}
+				if got := tracker.transitionStates(); !slices.Equal(got, []string{"Done"}) || len(state.Retry) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 {
+					t.Fatalf("merged recovery: transitions=%v retry=%d claimed=%d completed=%d, want Done without continuation", got, len(state.Retry), len(state.Claimed), len(state.Completed))
+				}
+				return
+			}
 			completed := state.Completed[issue.ID]
 			if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.Number != tt.wantPRNumber {
 				t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want reconciled PR %d", issue.ID, completed.Issue.PullRequest, tt.wantPRNumber)
 			}
 			if tt.wantActive && completed.FinalState != issue.State {
 				t.Fatalf("Completed[%q].FinalState = %q, want active state %q", issue.ID, completed.FinalState, issue.State)
-			}
-			if tt.wantMergedReason {
-				record := implementProgressRecordFromCompletion(t, attempts.completions[0])
-				if record.Reason != implementMergedCompletionReason {
-					t.Fatalf("completion reason = %q, want %q", record.Reason, implementMergedCompletionReason)
-				}
 			}
 		})
 	}
