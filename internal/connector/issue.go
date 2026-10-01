@@ -204,6 +204,27 @@ type PullRequestCheck struct {
 	DurationSeconds int64  `json:"duration_seconds,omitempty" yaml:"duration_seconds,omitempty"`
 }
 
+// IsMissingLocalStatus reports work whose only producer is Detent's local gate.
+// Posted pending or failed statuses remain CI evidence and must still be honored.
+func (c PullRequestCheck) IsMissingLocalStatus(localStatus string) bool {
+	localStatus = strings.TrimSpace(localStatus)
+	return localStatus != "" && strings.TrimSpace(c.Name) == localStatus &&
+		strings.EqualFold(strings.TrimSpace(c.Status), "missing")
+}
+
+// HasMissingLocalStatus identifies a head that still needs Detent to run its gate.
+func (pr *PullRequest) HasMissingLocalStatus(localStatus string) bool {
+	if pr == nil {
+		return false
+	}
+	for _, check := range pr.RequiredCheckFailures {
+		if check.IsMissingLocalStatus(localStatus) {
+			return true
+		}
+	}
+	return false
+}
+
 type PullRequestFinding struct {
 	Body string `json:"body,omitempty" yaml:"body,omitempty"`
 	URL  string `json:"url,omitempty" yaml:"url,omitempty"`
