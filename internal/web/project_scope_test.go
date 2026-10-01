@@ -73,6 +73,10 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			{Issue: telemetry.Issue{ID: "detent-blocked", Identifier: "digitaldrywood/detent#4", ProjectID: "detent"}},
 			{Issue: telemetry.Issue{ID: "pyro-blocked", Identifier: "digitaldrywood/pyroapex#4", ProjectID: "pyroapex"}},
 		},
+		Shipped: []telemetry.Completed{
+			{Issue: telemetry.Issue{ID: "same-native-id", ProjectID: "detent", State: "Done"}, CompletedAt: now},
+			{Issue: telemetry.Issue{ID: "same-native-id", ProjectID: "pyroapex", State: "Done"}, CompletedAt: now},
+		},
 		Completed: []telemetry.Completed{
 			{Issue: telemetry.Issue{ID: "detent-completed", Identifier: "digitaldrywood/detent#5", ProjectID: "detent"}},
 			{Issue: telemetry.Issue{ID: "pyro-completed", Identifier: "digitaldrywood/pyroapex#5", ProjectID: "pyroapex"}},
@@ -148,6 +152,9 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if len(got.Blocked) != 1 || got.Blocked[0].ID != "detent-blocked" {
 		t.Fatalf("Blocked = %#v, want only detent row", got.Blocked)
+	}
+	if len(got.Shipped) != 1 || got.Shipped[0].ProjectID != "detent" || !got.Shipped[0].CompletedAt.Equal(now) {
+		t.Fatalf("Shipped = %#v, want only authorized detent delivery", got.Shipped)
 	}
 	if len(got.Completed) != 1 || got.Completed[0].ID != "detent-completed" {
 		t.Fatalf("Completed = %#v, want only detent row", got.Completed)

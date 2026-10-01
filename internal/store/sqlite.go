@@ -799,7 +799,7 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 }
 
 func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWindow) ([]DailyDigestDay, error) {
-	outcomes, err := s.dailyShippedOutcomes(ctx)
+	outcomes, err := s.ShippedOutcomes(ctx)
 	if err != nil {
 		return nil, err
 	}
