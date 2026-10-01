@@ -568,9 +568,10 @@ writes followed by successful persistence and normal turn completion.
 Dispatch Workpad comment-read failures use the existing tracker availability observer
 and tracker-unavailable dispatch reason; they never become issue dependency evidence.
 
-Worker credential classification uses the connector's shared GraphQL secondary
-cooldown, including Retry-After. A failed `GET /rate_limit` observation now
-logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
+Worker credential classification reads `GET /user` and uses the connector's shared REST
+cooldown, including Retry-After (#3002). Shared/distinct principal classification
+and bounded probes are unchanged; no GraphQL identity query is sent.
+A failed `GET /rate_limit` observation now logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
 A successful response still enforces the configured worker reserve. The old
 credential-wide monitor condition, canary, retry restoration, and scheduler
 skip reason are retired. Historical monitor attempts remain visible in attempt
