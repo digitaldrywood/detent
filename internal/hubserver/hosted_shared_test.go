@@ -93,6 +93,7 @@ func (f hostedSharedFixture) claims(user *hostedSecurityUser, kind, method, targ
 }
 
 type hostedSharedRequest struct {
+	headers  map[string]string
 	user     *hostedSecurityUser
 	kind     string
 	method   string
@@ -116,6 +117,9 @@ func (f hostedSharedFixture) serve(t *testing.T, r hostedSharedRequest) *httptes
 		r.kind = cloudassert.KindBrowser
 	}
 	request := httptest.NewRequest(r.method, r.target, strings.NewReader(r.body))
+	for name, value := range r.headers {
+		request.Header.Set(name, value)
+	}
 	if r.form {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	} else if r.body != "" {

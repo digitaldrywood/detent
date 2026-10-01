@@ -115,14 +115,15 @@ func TestHostedProjectTools(t *testing.T) {
 				requireNativeStatus(t, f.request(t, viewer, http.MethodGet, "/chat/approval?connection_id="+a.ConnectionID, nil), http.StatusForbidden)
 			}
 			// Only the existing authenticated browser page supplies an exact form token.
+			approver := f.user(t, "policy-approver", "admin", "approver@example.test", "write", "")
 			target := "/chat/approval?connection_id=" + a.ConnectionID
 			var page string
 			if deployment == "shared" {
-				r := shared.serve(t, hostedSharedRequest{user: &owner, method: http.MethodGet, target: "/organizations/org_security" + target})
+				r := shared.serve(t, hostedSharedRequest{user: &approver, method: http.MethodGet, target: "/organizations/org_security" + target})
 				requireNativeStatus(t, r, http.StatusOK)
 				page = r.Body.String()
 			} else {
-				r := f.request(t, owner, http.MethodGet, target, nil)
+				r := f.request(t, approver, http.MethodGet, target, nil)
 				requireNativeStatus(t, r, http.StatusOK)
 				page = r.Body.String()
 			}
@@ -135,14 +136,18 @@ func TestHostedProjectTools(t *testing.T) {
 			}
 			form := url.Values{"connection_id": {a.ConnectionID}, "action_id": {a.ID}, "decision": {"confirm"}, "form_token": {tokens[len(tokens)-1][1]}}
 			if deployment == "shared" {
-				r := shared.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: "/organizations/org_security/chat/approval", csrf: cloudassert.CSRFToken("shared-"+owner.identity.Subject, "org_security"), body: form.Encode(), form: true})
+				r := shared.serve(t, hostedSharedRequest{user: &approver, method: http.MethodPost, target: "/organizations/org_security/chat/approval", csrf: cloudassert.CSRFToken("shared-"+approver.identity.Subject, "org_security"), body: form.Encode(), form: true})
 				requireNativeStatus(t, r, http.StatusSeeOther)
 			} else {
-				requireNativeStatus(t, f.request(t, owner, http.MethodPost, "/chat/approval", form), http.StatusSeeOther)
+				requireNativeStatus(t, f.request(t, approver, http.MethodPost, "/chat/approval", form), http.StatusSeeOther)
 			}
 			approved, ok := f.service.operatorChat.Action(a.ConnectionID, a.ID)
 			if !ok || approved.Status != chatpkg.ActionSucceeded {
 				t.Fatalf("approved=%+v", approved)
+			}
+			var attribution policy.Approval
+			if json.Unmarshal([]byte(approved.Result), &attribution) != nil || attribution.ApprovedBy != operatortool.ConnectionIdentity(ctx).PrincipalID {
+				t.Fatalf("project command lost originating principal: approval=%+v requester=%s", attribution, operatortool.ConnectionIdentity(ctx).PrincipalID)
 			}
 			if _, err := e.Execute(ctx, read("get_change_review_policy")); err != nil {
 				t.Fatal(err)

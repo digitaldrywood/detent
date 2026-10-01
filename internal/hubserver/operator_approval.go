@@ -34,16 +34,23 @@ func (s *Service) operatorProjectBrowser(next echo.HandlerFunc) echo.HandlerFunc
 		if c.Request().Method == http.MethodPost {
 			id = c.FormValue("connection_id")
 		}
+		if id == "" || len(id) > 256 || len(c.FormValue("action_id")) > 256 {
+			return echo.NewHTTPError(http.StatusNotFound, "Connection is unavailable")
+		}
 		conversation := s.operatorChat.Conversation(id)
 		if conversation.ConnectionID == "" || conversation.OrganizationID != identity.OrganizationID {
 			return echo.NewHTTPError(http.StatusNotFound, "Connection is unavailable")
 		}
-		scope := apikey.ScopeWrite
 		if conversation.PrincipalID != identity.PrincipalID {
-			scope = apikey.ScopeAdmin
-		}
-		if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: scope}); err != nil {
-			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeAdmin}); err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+			}
+		} else if len(conversation.Actions) == 0 {
+			if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeWrite}); err != nil {
+				if _, err := operatortool.AuthorizeCurrent(c.Request().Context(), hubFleetRequirement(operatortool.UpdateRunnerRouting)); err != nil {
+					return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+				}
+			}
 		}
 		for _, action := range conversation.Actions {
 			if err := s.authorizeOperatorPreview(c.Request().Context(), action); err != nil {
@@ -94,6 +101,7 @@ func (s *Service) hostedOperatorApproval(c echo.Context) error {
 		tokens[action.ID] = s.billingDecisionToken(c, id, action.ID)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
+	c.Response().Header().Set("Referrer-Policy", "same-origin")
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
 	return templates.ChatApproval(templates.ChatData{Conversation: conversation, FormToken: s.billingDecisionToken(c, id, ""), ActionTokens: tokens, CSRF: s.hostedPageCSRF(c), ApprovalPath: s.hostedPath("/chat/approval"), ApprovalBasePath: s.hostedBase()}).Render(c.Request().Context(), c.Response())
 }
@@ -140,6 +148,10 @@ func (s *Service) authorizeOperatorPreview(ctx context.Context, action chatpkg.A
 			return err
 		}
 		return (hubProjectExecutor{s}).authorizeCreatedProjectResult(ctx, string(action.Kind), json.RawMessage(action.Result), action.Status)
+	}
+	if hubFleetTool(string(action.Kind)) {
+		_, err := operatortool.AuthorizeCurrent(ctx, hubFleetRequirement(string(action.Kind)))
+		return err
 	}
 	if string(action.Kind) == operatortool.BillingCheckout || string(action.Kind) == operatortool.BillingPortal {
 		_, err := s.operatorBillingCredential(ctx, "billing", true)

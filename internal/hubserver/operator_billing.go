@@ -72,6 +72,15 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 			definitions = append(definitions, definition)
 		}
 	}
+	fleet, err := (hubFleetExecutor{service: e.service}).ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, definition := range fleet {
+		if definition.Name != operatortool.ActionResult && definition.Name != operatortool.ConnectionInfo {
+			definitions = append(definitions, definition)
+		}
+	}
 	if e.service.config.Hosted == nil {
 		for _, name := range []string{operatortool.ActionResult, operatortool.ConnectionInfo} {
 			definition, _ := operatortool.Lookup(name)
@@ -125,6 +134,9 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	if definition, ok := operatortool.Lookup(call.Name); ok && definition.Meta.Toolset == "projects" {
 		return (hubProjectExecutor{e.service}).Execute(ctx, call)
 	}
+	if hubFleetTool(call.Name) {
+		return (hubFleetExecutor{service: e.service}).Execute(ctx, call)
+	}
 	if call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) {
 		return (nativeOperatorExecutor{service: e.service}).Execute(ctx, call)
 	}
@@ -154,6 +166,12 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" {
 			return (hubProjectExecutor{s}).connectionRead(ctx, call)
 		}
+		if hubFleetTool(string(action.Kind)) {
+			if _, err := operatortool.AuthorizeCurrent(ctx, hubFleetRequirement(string(action.Kind))); err != nil {
+				return result, err
+			}
+			return (hubFleetExecutor{service: s}).actionResult(ctx, action)
+		}
 		if _, err := s.operatorBillingCredential(ctx, "billing", true); err != nil {
 			return result, err
 		}
@@ -170,10 +188,11 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		}
 		conversation := s.operatorChat.Conversation(operatortool.CurrentConnection(ctx).ID)
 		return billingResult(struct {
-			ConnectionID string              `json:"connection_id"`
-			Mode         chat.ConnectionMode `json:"mode"`
-			URL          string              `json:"setup_url"`
-		}{conversation.ConnectionID, conversation.Mode, s.billingApprovalURL(conversation.ConnectionID)})
+			ConnectionID   string              `json:"connection_id"`
+			OrganizationID string              `json:"organization_id"`
+			Mode           chat.ConnectionMode `json:"mode"`
+			URL            string              `json:"setup_url"`
+		}{conversation.ConnectionID, conversation.OrganizationID, conversation.Mode, s.billingApprovalURL(conversation.ConnectionID)})
 	case operatortool.BillingStatus, operatortool.BillingUsage, operatortool.BillingExport, operatortool.HostedPlan, operatortool.HostedUsage:
 		kind := "billing"
 		var request struct {
@@ -362,6 +381,9 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" {
 		return (hubProjectExecutor{e.service}).ExecuteAction(ctx, action)
 	}
+	if hubFleetTool(string(action.Kind)) {
+		return (hubFleetExecutor{service: e.service}).ExecuteAction(ctx, action)
+	}
 	defer func() {
 		if err != nil {
 			err = safeBillingError(err)
@@ -401,6 +423,10 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Action, outcome string) {
 	if definition, ok := operatortool.Lookup(string(action.Kind)); ok && definition.Meta.Toolset == "projects" {
 		(hubProjectExecutor{e.service}).AuditAction(ctx, action, outcome)
+		return
+	}
+	if hubFleetTool(string(action.Kind)) {
+		(hubFleetExecutor{service: e.service}).AuditAction(ctx, action, outcome)
 		return
 	}
 	credential, err := e.service.operatorBillingCredential(ctx, "billing", true)

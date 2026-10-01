@@ -106,6 +106,9 @@ func (s *Server) operatorApprovalDecision(c echo.Context) error {
 		if !ok {
 			return echo.NewHTTPError(http.StatusNotFound, "Action is unavailable")
 		}
+		if _, err := operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(string(action.Kind), action.ProjectID)); err != nil {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
+		}
 		credential, ok := apiCredentialFromContext(ctx)
 		if !ok || !apikey.HasScope(credential.Scopes, apikey.ScopeWrite) || !apikey.AllowsProject(credential.ProjectIDs, action.ProjectID) {
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())

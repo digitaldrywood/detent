@@ -464,13 +464,10 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 	if o == nil || state == nil {
 		return durableGateWaitCompletionRestore{issues: cloneIssues(issues)}
 	}
-	issues = o.refreshRequiredGateEvidence(ctx, state, issues)
+	issues = cloneIssues(issues)
 	result := durableGateWaitCompletionRestore{
 		issues:                 issues,
 		validatorHeadHydration: map[string]bool{},
-	}
-	if o.workAttempts == nil {
-		return result
 	}
 	autoCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	gateWaitTracking := autoPromoteDurableGateWaitTrackingEnabled(autoCfg)
@@ -480,6 +477,14 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 	for index, issue := range issues {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
+			continue
+		}
+		reworkCurrent := false
+		if issue.PullRequest != nil && normalizeState(issue.State) == normalizeState(autoCfg.ReworkState) {
+			issue, reworkCurrent = o.refreshImplementCompletionIssue(ctx, issue)
+			issues[index] = issue
+		}
+		if o.workAttempts == nil {
 			continue
 		}
 		completed, completedOK := state.Completed[issueID]
@@ -519,7 +524,8 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 		}
 		if completedOK {
 			if completed.GateWaitReason == completedReworkGateWaitReason &&
-				(!completedReworkGateWaitEvidenceCurrent(completed, issue) || !o.reworkGateWaitCurrent(ctx, issue)) {
+				(!reworkCurrent || !completedReworkGateWaitEvidenceCurrent(completed, issue) ||
+					!reworkGateWaitWorkpadComplete(issue) || !reworkGateWaitAuditReady(autoCfg.Gate, o.securityAuditEvaluation(ctx, issue))) {
 				delete(state.Completed, issueID)
 			}
 			continue
@@ -533,10 +539,14 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 		case operational:
 			attempt, ok, err = o.latestSuccessfulOperationalCompletionAttempt(ctx, issue)
 		case gateWaitTracking && autoPromoteDurableGateWaitTrackedIssue(issue, o.cfg, autoCfg):
-			if recentAttemptsLoaded {
+			if normalizeState(issue.State) == normalizeState(autoCfg.ReworkState) && !reworkCurrent {
+				continue
+			}
+			if !recentAttemptsLoaded {
+				recentAttempts, err = o.recentAgentTerminalAttempts(ctx, issue)
+			}
+			if err == nil {
 				attempt, ok = o.latestSuccessfulGateWaitAttemptFromHistory(ctx, issue, recentAttempts)
-			} else {
-				attempt, ok, err = o.latestSuccessfulGateWaitAttempt(ctx, issue)
 			}
 		default:
 			continue
@@ -550,6 +560,7 @@ func (o *Orchestrator) restoreDurableGateWaitCompletionState(
 		}
 		state.Completed[issueID] = completedFromGateWaitAttempt(issue, attempt)
 	}
+	result.issues = o.refreshRequiredGateEvidence(ctx, state, issues)
 	return result
 }
 
@@ -606,6 +617,16 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
 	if err != nil {
 		return store.WorkAttempt{}, false, err
 	}
+	if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) {
+		if !reworkGateWaitPullRequestReady(issue) || reworkGateWaitWorkpadBlocked(issue) {
+			return store.WorkAttempt{}, false, nil
+		}
+		var current bool
+		issue, current = o.refreshImplementCompletionIssue(ctx, issue)
+		if !current {
+			return store.WorkAttempt{}, false, nil
+		}
+	}
 	attempt, ok := o.latestSuccessfulGateWaitAttemptFromHistory(ctx, issue, attempts)
 	return attempt, ok, nil
 }
@@ -615,7 +636,9 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttemptFromHistory(
 	issue connector.Issue,
 	attempts []store.WorkAttempt,
 ) (store.WorkAttempt, bool) {
-	if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) && !o.reworkGateWaitCurrent(ctx, issue) {
+	if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) &&
+		(!reworkGateWaitPullRequestReady(issue) || !reworkGateWaitWorkpadComplete(issue) ||
+			!reworkGateWaitAuditReady(o.cfg.AutoPromote.Gate, o.securityAuditEvaluation(ctx, issue))) {
 		return store.WorkAttempt{}, false
 	}
 	for _, attempt := range attempts {
@@ -984,15 +1007,6 @@ func completedReworkGateWaitEvidenceCurrent(completed Completed, issue connector
 		return false
 	}
 	return true
-}
-
-func (o *Orchestrator) reworkGateWaitCurrent(ctx context.Context, issue connector.Issue) bool {
-	if !reworkGateWaitPullRequestReady(issue) || reworkGateWaitWorkpadBlocked(issue) {
-		return false
-	}
-	refreshed, current := o.refreshImplementCompletionIssue(ctx, issue)
-	return current && reworkGateWaitWorkpadComplete(refreshed) &&
-		reworkGateWaitAuditReady(o.cfg.AutoPromote.Gate, o.securityAuditEvaluation(ctx, refreshed))
 }
 
 func reworkGateWaitWorkpadComplete(issue connector.Issue) bool {

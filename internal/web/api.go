@@ -436,20 +436,35 @@ func (s *Server) apiRefresh(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, errorResponse("orchestrator_unavailable", "Orchestrator is unavailable"))
 	}
 
+	payload, err := s.requestOperatorRefresh(c.Request().Context())
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("orchestrator_unavailable", "Orchestrator is unavailable"))
+	}
+	if htmxRequest(c) {
+		return renderManualRefreshFeedback(c, refreshAttemptFromResponse(payload))
+	}
+	status := http.StatusAccepted
+	if payload.Refused {
+		status = http.StatusTooManyRequests
+	}
+	return c.JSON(status, payload)
+}
+
+func (s *Server) requestOperatorRefresh(ctx context.Context) (RefreshResponse, error) {
+	if s.refresher == nil {
+		return RefreshResponse{}, errOperatorCommandUnavailable
+	}
 	now := apiNow()
 	if payload, ok := s.refreshRefusal(now); ok {
 		if s.refreshes != nil {
 			s.refreshes.recordResponse(payload)
 		}
-		if htmxRequest(c) {
-			return renderManualRefreshFeedback(c, refreshAttemptFromResponse(payload))
-		}
-		return c.JSON(http.StatusTooManyRequests, payload)
+		return payload, nil
 	}
 
-	payload, err := s.refresher.RequestRefresh(c.Request().Context())
+	payload, err := s.refresher.RequestRefresh(ctx)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("orchestrator_unavailable", "Orchestrator is unavailable"))
+		return RefreshResponse{}, errOperatorCommandUnavailable
 	}
 	if payload.RequestedAt.IsZero() {
 		payload.RequestedAt = now
@@ -473,10 +488,7 @@ func (s *Server) apiRefresh(c echo.Context) error {
 		s.refreshes.recordResponse(payload)
 	}
 
-	if htmxRequest(c) {
-		return renderManualRefreshFeedback(c, refreshAttemptFromResponse(payload))
-	}
-	return c.JSON(http.StatusAccepted, payload)
+	return payload, nil
 }
 
 func renderManualRefreshFeedback(c echo.Context, attempt *telemetry.RefreshAttempt) error {

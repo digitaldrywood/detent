@@ -393,7 +393,7 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			return chatpkg.ActionExecution{}, err
 		}
 		var err error
-		ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, OrganizationID: action.OrganizationID, ProjectID: action.ProjectID})
+		ctx, err = operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(string(action.Kind), action.ProjectID))
 		if err != nil {
 			return chatpkg.ActionExecution{}, err
 		}
@@ -458,7 +458,11 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			execution, executionErr = s.executeWorkAction(ctx, action)
 			return execution, executionErr
 		}
-		return chatpkg.ActionExecution{}, errors.New("chat action is unsupported")
+		if dashboardFleetTool(string(action.Kind)) {
+			result, err = s.executeFleetAction(ctx, action)
+		} else {
+			return chatpkg.ActionExecution{}, errors.New("chat action is unsupported")
+		}
 	}
 	if err != nil {
 		if action.ConnectionID != "" {
@@ -466,7 +470,7 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 		}
 		return chatpkg.ActionExecution{Message: result}, err
 	}
-	if source, ok := s.registry.Get(project.ID(action.ProjectID)); ok && source != nil {
+	if source, ok := s.registry.Get(project.ID(action.ProjectID)); !dashboardFleetTool(string(action.Kind)) && ok && source != nil {
 		if native, ok := source.Connector().(nativeClientSource); ok && native.NativeClient() != nil && action.Kind != chatpkg.ActionStopRun {
 			item, readErr := native.NativeClient().Issue(ctx, tracker.NativeWorkItemID(action.IssueID))
 			if readErr != nil {
@@ -475,7 +479,7 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			action.Revision = int64(item.Revision)
 		}
 	}
-	if action.ConnectionID != "" {
+	if action.ConnectionID != "" && !dashboardFleetTool(string(action.Kind)) {
 		result = "Action completed."
 	}
 	if action.ConnectionID == "" {
