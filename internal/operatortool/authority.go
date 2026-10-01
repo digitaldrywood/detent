@@ -40,6 +40,10 @@ type Authority struct {
 	Identity Identity
 	Check    func(context.Context, Requirement) error
 	Snapshot func(context.Context, telemetry.Snapshot) (telemetry.Snapshot, error)
+	// BindContext attaches current application command inputs after authorization.
+	// It is resolved anew with Check, never retained as a permission or supplied
+	// by a transport. Approval must bind the originating connection's inputs.
+	BindContext func(context.Context) context.Context
 }
 
 type Connection struct {
@@ -95,6 +99,9 @@ func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Con
 	}
 	if err := authority.Check(ctx, requirement); err != nil {
 		return ctx, ErrAccessDenied
+	}
+	if authority.BindContext != nil {
+		ctx = authority.BindContext(ctx)
 	}
 	return context.WithValue(ctx, authorityKey{}, authority), nil
 }

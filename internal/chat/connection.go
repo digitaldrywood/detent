@@ -34,9 +34,16 @@ func authorizeHuman(ctx context.Context, organization string) error {
 }
 
 func authorizeAction(ctx context.Context, connection operatortool.Connection, action Action) (context.Context, error) {
-	return operatortool.AuthorizeCurrent(operatortool.WithConnection(ctx, connection), operatortool.Requirement{
+	requirement := operatortool.Requirement{
 		Scope: apikey.ScopeWrite, OrganizationID: action.OrganizationID, ProjectID: action.ProjectID,
-	})
+	}
+	switch string(action.Kind) {
+	case operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost:
+		// The hub dashboard grants runner administration separately from project
+		// writes; a member with all current runner grants need not be an owner.
+		requirement.Scope, requirement.ResourceKind = apikey.ScopeAdmin, "runners"
+	}
+	return operatortool.AuthorizeCurrent(operatortool.WithConnection(ctx, connection), requirement)
 }
 
 // AttachConnection stores the original authority in the existing bounded chat
@@ -139,8 +146,12 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 // Unknown action kinds fail closed, including future billing/access commands.
 func RequiresConfirmation(action Action) bool {
 	switch action.Kind {
-	case ActionSetPriority:
+	case ActionSetPriority, ActionKind(operatortool.Refresh), ActionKind(operatortool.AcknowledgeWarnings):
 		return false
+	case ActionKind(operatortool.RecoverAttempt):
+		return action.Destination != "inspect"
+	case ActionKind(operatortool.UpdateFleetRunner), ActionKind(operatortool.UpdateFleetHost), ActionKind(operatortool.UpdateRunnerRouting), ActionKind(operatortool.UpdateRunnerHost):
+		return action.MaterialChange
 	case ActionFileIssue:
 		return strings.EqualFold(action.State, "Done") || strings.EqualFold(action.State, "Cancelled")
 	case ActionMoveItem:

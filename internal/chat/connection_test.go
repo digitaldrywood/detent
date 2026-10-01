@@ -249,6 +249,10 @@ func TestActionConfirmationClassification(t *testing.T) {
 		{Action{Kind: ActionMoveItem, CurrentState: "In Progress", TargetState: "Backlog"}, true},
 		{Action{Kind: ActionSetPriority}, false}, {Action{Kind: ActionStopRun}, true},
 		{Action{Kind: ActionFileIssue}, false}, {Action{Kind: ActionFileIssue, State: "Done"}, true},
+		{Action{Kind: ActionKind(operatortool.UpdateRunnerHost)}, false},
+		{Action{Kind: ActionKind(operatortool.UpdateRunnerHost), MaterialChange: true}, true},
+		{Action{Kind: ActionKind(operatortool.RecoverAttempt), Destination: "inspect"}, false},
+		{Action{Kind: ActionKind(operatortool.RecoverAttempt), Destination: "abandon"}, true},
 		{Action{Kind: "billing"}, true}, {Action{Kind: "access"}, true},
 	} {
 		if got := RequiresConfirmation(tt.action); got != tt.want {

@@ -50,6 +50,7 @@ type Action struct {
 	Identifier        string            `json:"identifier"`
 	ResourceURL       string            `json:"resource_url,omitempty"`
 	CurrentState      string            `json:"current_state"`
+	MaterialChange    bool              `json:"material_change,omitempty"`
 	TargetState       string            `json:"target_state"`
 	Priority          string            `json:"priority"`
 	PriorityRank      int               `json:"priority_rank"`
