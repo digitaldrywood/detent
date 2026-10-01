@@ -2633,6 +2633,14 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — Local pull-request validation and scheduled release evidence
 
+Scheduled and manual full validation always inspect the pinned current
+`develop` commit, including one carrying a release-provenance tag. Release
+annotations are not proof that the scheduled suite passed and do not suppress
+its run. The existing full-suite finalizer alone publishes scheduled success,
+creates a validated tag and closes scheduled repair issues; ordinary shipping
+does not wait for that run. `TestRepositoryWorkflow` executes the preflight
+with an emergency provenance annotation for both event types.
+
 **Scope:** This is the Detent repository's development policy. Managed projects
 choose their own workflow triggers, required checks, validation commands, and
 release policies. Detent honors each project's configuration and branch rules;
@@ -2672,9 +2680,9 @@ inside its own worktree. The pinned-linter tests also require the parallel-runne
 flag (#3253).
 
 GitHub Actions schedules the full suite hourly from the repository's default branch.
-Preflight pins the current `develop` SHA and skips when that commit already has
-a validated release tag. Every full-suite job runs on the pinned commit. A green
-run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
+Preflight pins the current `develop` SHA for every scheduled or manual run,
+independently of existing release tags. Every full-suite job runs on the pinned
+commit. A green run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
 exact status evidence, and dispatches the release workflow. It does not merge
 to `main` or deploy production. A failing run opens or updates one fingerprinted
 Todo hotfix issue per concrete failed test or source diagnostic, attaching each
