@@ -13,7 +13,7 @@ Change platform entitlement
 - Application: s.changePlatformEntitlement; s.config.now, s.csrfValid, s.machineCall, s.registry.recordEntitlementChange, s.tenantEntitlementFailure, s.tenantEntitlements
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestPlatformComplimentaryPlansThroughTenantHub; TestEntitlementAdministratorsMustBeStaff (internal/cloudentry); TestHostedBillingMCP direct organization-tool denial (internal/hubserver).
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
@@ -190,7 +190,7 @@ Platform entitlements j s o n
 - Application: s.platformEntitlementsJSON; s.config.now, s.tenantEntitlementFailure, s.tenantEntitlements
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestPlatformComplimentaryPlansThroughTenantHub; TestEntitlementAdministratorsMustBeStaff (internal/cloudentry); TestHostedBillingMCP direct organization-tool denial (internal/hubserver).
 - Availability: self_hosted / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / shared entry account/organization service
@@ -3005,14 +3005,14 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/
 
 Hosted artifact allowances
 
-- Audience: staff; status: **excluded**; owner: digitaldrywood/detent#3345.
-- Decision: Requires entitlementAdministrator/current configured platform administration identity. Organization owners/operators do not receive this staff-only power.
+- Audience: worker; status: **excluded**; owner: digitaldrywood/detent#3345.
+- Decision: This is a publisher usage/allowance callback, not an operator allowance-edit command. Retain the native-only worker, exact service/project/organization, hosted opt-in and quota boundary; no organization MCP tool impersonates a publisher.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
-- Authority: role configured entitlement administrator; not organization owner/admin; credential staff session or dedicated private instance-admin credential; not an organization operator credential; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
-- Application: s.hostedArtifactAllowances; s.authenticateAPIRequest, s.config.now, s.database.db.BeginTx, s.database.hostedEntitlement
+- Authority: role Scoped artifact publisher worker; not organization owner/admin or platform staff; credential Current native-only publisher worker bearer token; hosted sessions and runner identities refused; project Current publisher token grant for its artifact service project and organization; ownership current organization/account; no cross-organization resource lookup.
+- Application: s.hostedArtifactAllowances; existing publisher/service ownership, hosted opt-in, usage bounds and entitlement limits
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestHostedArtifactAllowanceBoundary; TestHostedBillingMCP direct organization-tool denial (internal/hubserver). Publisher, foreign organization, allowance and second-service limit coverage.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
@@ -3024,100 +3024,100 @@ Sources: [POST /api/v2/organizations/:organization/artifact-allowances/:service]
 
 Hosted billing
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the owner-only billing operation using hostedBillingOwner and shared billing intent/idempotency services.
-- Tool: `billing_usage.hosted_billing` — Typed billing context and validated price/idempotency key for checkout; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → Typed bounded billing report or checkout/portal URL and request correlation; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role hosted organization owner only; reject support impersonation; credential staff session or dedicated private instance-admin credential; not an organization operator credential; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.hosted_billing` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBilling; s.database.hostedMetadata, s.hostedBillingOwner, s.hostedUsage
-- Extraction: None for this protocol/authority boundary; no operator command extraction.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedBillingOwner(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedBillingMCP; TestBillingCommandResponseLoss; TestHostedBillingJSONForTheClient; TestHostedOperatorCurrentAuthority (internal/hubserver); TestSharedBillingJourney (internal/cloudentry). Isolated Chrome verified exact browser approval and one fixture provider effect.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: this non-operator source site → not_applicable
+- Confirmation: authorized application read/export → none
 
 Sources: [GET /api/cloud/billing](../internal/hubserver/hosted_ui.go#L51), [internal/web/templates/hosted.templ:348](../internal/web/templates/hosted.templ#L348), [internal/web/templates/hosted_billing.templ:62](../internal/web/templates/hosted_billing.templ#L62)
 ## hubserver.hosted_billing_checkout
 
 Hosted billing checkout
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the owner-only billing operation using hostedBillingOwner and shared billing intent/idempotency services.
-- Tool: `billing_usage.hosted_billing_checkout` — Bounded hostedBillingCheckoutRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → hostedBillingCheckoutResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role hosted organization owner only; reject support impersonation; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.hosted_billing_checkout` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBillingCheckout; s.database.readHostedBilling, s.ensureHostedCustomer, s.hostedBillingDestination, s.hostedBillingFailure, s.hostedBillingOwner, s.hostedBillingReturn, s.prepareHostedCheckout, s.saveHostedCheckout
-- Extraction: Extract hubserver.hostedBillingCheckout application inputs/results and validation from Echo; reuse s.database.readHostedBilling, s.ensureHostedCustomer, s.hostedBillingDestination, s.hostedBillingFailure, s.hostedBillingOwner, s.hostedBillingReturn, s.prepareHostedCheckout, s.saveHostedCheckout. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedBillingOwner(c); s.hostedBillingOwner(c); err != nil
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedBillingMCP; TestBillingCommandResponseLoss; TestHostedBillingJSONForTheClient; TestHostedOperatorCurrentAuthority (internal/hubserver); TestSharedBillingJourney (internal/cloudentry). Isolated Chrome verified exact browser approval and one fixture provider effect.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: material purchase, portal or budget change → operator
 
-Sources: [POST /api/v2/organizations/:organization/billing/checkout](../internal/hubserver/hosted_ui.go#L37), [POST /organization/billing/checkout](../internal/hubserver/hosted_ui.go#L34), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [web/conversation/src/app/account/api.ts:416](../web/conversation/src/app/account/api.ts#L416)
+Sources: [POST /api/v2/organizations/:organization/billing/checkout](../internal/hubserver/hosted_ui.go#L37), [POST /organization/billing/checkout](../internal/hubserver/hosted_ui.go#L34), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [web/conversation/src/app/account/api.ts:416](../web/conversation/src/app/account/api.ts#L416), [internal/web/templates/chat.templ:118](../internal/web/templates/chat.templ#L118)
 ## hubserver.hosted_billing_export
 
 Hosted billing export
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Return the meaningful owner-only billing export as a typed result, using the same hostedBillingOwner and hostedBillingReport paths.
-- Tool: `billing_usage.billing_export` — Authenticated organization context; bounded export selection; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → Typed hostedBillingReport with subscription, audit, identifiers and freshness; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role hosted organization owner; no support impersonation; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.billing_export` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role hosted organization owner; no support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBillingExport; s.hostedBillingOwner, s.hostedBillingReport
-- Extraction: Extract the authorized hostedBillingReport application read shared by export, JSON and browser handlers.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedBillingOwner(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedBillingMCP; TestBillingCommandResponseLoss; TestHostedBillingJSONForTheClient; TestHostedOperatorCurrentAuthority (internal/hubserver); TestSharedBillingJourney (internal/cloudentry). Isolated Chrome verified exact browser approval and one fixture provider effect.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: billing export read → none
+- Confirmation: authorized application read/export → none
 
 Sources: [GET /api/cloud/billing/subscription](../internal/hubserver/hosted_ui.go#L40), [internal/web/templates/hosted_billing.templ:61](../internal/web/templates/hosted_billing.templ#L61)
 ## hubserver.hosted_billing_page
 
 Hosted billing page
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the owner-only billing operation using hostedBillingOwner and shared billing intent/idempotency services.
-- Tool: `billing_usage.hosted_billing_page` — Bounded hostedBillingPageRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → hostedBillingPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role hosted organization owner only; reject support impersonation; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.hosted_billing_page` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBillingJSON; s.config.now, s.database.db.QueryRowContext, s.database.hostedBillingBinding, s.hostedBillingOwner, s.hostedBillingReport, s.hostedPriceLabel
-- Extraction: Extract hubserver.hostedBillingJSON application inputs/results and validation from Echo; reuse s.config.now, s.database.db.QueryRowContext, s.database.hostedBillingBinding, s.hostedBillingOwner, s.hostedBillingReport, s.hostedPriceLabel. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedBillingOwner(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedBillingMCP; TestBillingCommandResponseLoss; TestHostedBillingJSONForTheClient; TestHostedOperatorCurrentAuthority (internal/hubserver); TestSharedBillingJourney (internal/cloudentry). Isolated Chrome verified exact browser approval and one fixture provider effect.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: authorized application read/export → none
 
 Sources: [GET /api/v2/organizations/:organization/billing](../internal/hubserver/hosted_ui.go#L36), [GET /organization/billing](../internal/hubserver/hosted_ui.go#L33), [internal/web/templates/hosted.templ:185](../internal/web/templates/hosted.templ#L185), [internal/web/templates/hosted.templ:347](../internal/web/templates/hosted.templ#L347), [web/conversation/src/app/account/api.ts:414](../web/conversation/src/app/account/api.ts#L414)
 ## hubserver.hosted_billing_portal
 
 Hosted billing portal
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the owner-only billing operation using hostedBillingOwner and shared billing intent/idempotency services.
-- Tool: `billing_usage.hosted_billing_portal` — Bounded hostedBillingPortalRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → hostedBillingPortalResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role hosted organization owner only; reject support impersonation; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.hosted_billing_portal` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBillingPortal; s.database.hostedBillingBinding, s.hostedBillingDestination, s.hostedBillingFailure, s.hostedBillingOwner, s.hostedBillingReturn, s.recordBillingAction
-- Extraction: Extract hubserver.hostedBillingPortal application inputs/results and validation from Echo; reuse s.database.hostedBillingBinding, s.hostedBillingDestination, s.hostedBillingFailure, s.hostedBillingOwner, s.hostedBillingReturn, s.recordBillingAction. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedBillingOwner(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedBillingMCP; TestBillingCommandResponseLoss; TestHostedBillingJSONForTheClient; TestHostedOperatorCurrentAuthority (internal/hubserver); TestSharedBillingJourney (internal/cloudentry). Isolated Chrome verified exact browser approval and one fixture provider effect.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: material purchase, portal or budget change → operator
 
 Sources: [POST /api/v2/organizations/:organization/billing/portal](../internal/hubserver/hosted_ui.go#L38), [POST /organization/billing/portal](../internal/hubserver/hosted_ui.go#L35), [internal/web/templates/hosted_billing.templ:43](../internal/web/templates/hosted_billing.templ#L43), [internal/web/templates/hosted_billing.templ:43](../internal/web/templates/hosted_billing.templ#L43), [web/conversation/src/app/account/api.ts:421](../web/conversation/src/app/account/api.ts#L421)
 ## hubserver.hosted_events
@@ -3203,20 +3203,20 @@ Sources: [GET /api/cloud/metadata](../internal/hubserver/hosted_ui.go#L50)
 
 Hosted plan page
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `billing_usage.hosted_plan_page` — Bounded hostedPlanPageRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → hostedPlanPageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.hosted_plan_page` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedPlanJSON; s.config.now, s.database.hostedPlanUsage, s.hostedAdministrator, s.hostedCredential
-- Extraction: Extract hubserver.hostedPlanJSON application inputs/results and validation from Echo; reuse s.config.now, s.database.hostedPlanUsage, s.hostedAdministrator, s.hostedCredential. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedCredential(c); err != nil
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedBillingMCP; TestHostedOperatorCurrentAuthority; TestHostedPlanPages (internal/hubserver). Organization owner/admin reads; platform mutations remain excluded.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: authorized application read/export → none
 
 Sources: [GET /api/v2/organizations/:organization/plan](../internal/hubserver/hosted_org_api.go#L42), [GET /organization/plan](../internal/hubserver/hosted_ui.go#L32), [internal/web/templates/hosted.templ:188](../internal/web/templates/hosted.templ#L188), [internal/web/templates/hosted_billing.templ:60](../internal/web/templates/hosted_billing.templ#L60), [web/conversation/src/app/account/api.ts:413](../web/conversation/src/app/account/api.ts#L413)
 ## hubserver.hosted_plan_report
@@ -3230,7 +3230,7 @@ Hosted plan report
 - Application: s.hostedPlanReport; s.database.hostedEntitlementReport, s.entitlementAdministrator
 - Extraction: Extract hubserver.hostedPlanReport application inputs/results and validation from Echo; reuse s.database.hostedEntitlementReport, s.entitlementAdministrator. The HTTP handler and MCP must delegate to this same application operation.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Current handler authority checks: s.entitlementAdministrator(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestHostedPlanCommandsAndPermissions; TestHostedPlanReportRequiresEntitlementAdministrator; TestHostedBillingMCP direct organization-tool denial (internal/hubserver).
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
@@ -3337,20 +3337,20 @@ Sources: [GET /support](../internal/hubserver/hosted_ui.go#L30), [internal/web/t
 
 Hosted usage report
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `billing_usage.hosted_usage_report` — Bounded hostedUsageReportRequest: organization; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → hostedUsageReportResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.hosted_usage_report` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedUsageReport; s.chatUsageRows, s.config.now, s.database.chatUsageSummary, s.hostedCredential, s.usageLimits, s.usagePrices, s.usageReadableProjects, s.usageRows, s.usageRunnerCapacity
-- Extraction: Extract hubserver.hostedUsageReport application inputs/results and validation from Echo; reuse s.chatUsageRows, s.config.now, s.database.chatUsageSummary, s.hostedCredential, s.usageLimits, s.usagePrices, s.usageReadableProjects, s.usageRows, s.usageRunnerCapacity. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.hostedCredential(c); s.usageReadableProjects(ctx, credential)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedBillingMCP; TestHostedUsageReportAccess; TestHostedOperatorCurrentAuthority (internal/hubserver). Shared readHostedUsage selects current project grants.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: Hosted organization/billing/identity service is absent in an unhosted hub.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: authorized application read/export → none
 
 Sources: [GET /api/v2/organizations/:organization/usage](../internal/hubserver/hosted_usage_api.go#L43), [web/conversation/src/app/usage/adapter.ts:232](../web/conversation/src/app/usage/adapter.ts#L232)
 ## hubserver.intake_linked_issue
@@ -4978,7 +4978,7 @@ Update hosted plan
 - Application: s.updateHostedPlan; s.database.applyHostedPlanCommand, s.entitlementAdministrator
 - Extraction: None for this protocol/authority boundary; no operator command extraction.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Current handler authority checks: s.entitlementAdministrator(c)
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Coverage: TestHostedPlanCommandsAndPermissions; TestHostedPlanReportRequiresEntitlementAdministrator; TestHostedBillingMCP direct organization-tool denial (internal/hubserver).
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_dedicated / github,native / hub application service
 - Availability: hosted_shared / github,native / hub application service
@@ -5392,40 +5392,40 @@ Sources: [GET /api/v1/board/session/history](../internal/web/server.go#L553)
 
 Api budget override clear
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `billing_usage.api_budget_override_clear` — Bounded apiBudgetOverrideClearRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBudgetOverrideClearResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.api_budget_override_clear` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role local operator (dashboard authentication when configured); credential Current daemon credential read/write scope and project grant; browser login/private dashboard session for approval.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.apiBudgetOverrideClear; s.renderProjectBudgetPanel
-- Extraction: Extract web.apiBudgetOverrideClear application inputs/results and validation from Echo; reuse s.renderProjectBudgetPanel. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPDaemonBilling; TestMCPActionApprovalBoundary; TestServerBudgetOverrideUIUsesSharedStore (internal/web); TestUsageReportAggregates (internal/store). Exact approval, stale allowances, YOLO limits, project grants, replay and scoped totals.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: material purchase, portal or budget change → operator
 
 Sources: [DELETE /api/v1/projects/:project_id/budget/override](../internal/web/server.go#L517)
 ## web.api_budget_override_set
 
 Api budget override set
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `billing_usage.api_budget_override_set` — Bounded apiBudgetOverrideSetRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiBudgetOverrideSetResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.api_budget_override_set` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role local operator (dashboard authentication when configured); credential Current daemon credential read/write scope and project grant; browser login/private dashboard session for approval.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.apiBudgetOverrideSet; s.registry.Get, s.renderProjectBudgetPanel
-- Extraction: Extract web.apiBudgetOverrideSet application inputs/results and validation from Echo; reuse s.registry.Get, s.renderProjectBudgetPanel. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPDaemonBilling; TestMCPActionApprovalBoundary; TestServerBudgetOverrideUIUsesSharedStore (internal/web); TestUsageReportAggregates (internal/store). Exact approval, stale allowances, YOLO limits, project grants, replay and scoped totals.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
+- Confirmation: material purchase, portal or budget change → operator
 
 Sources: [POST /api/v1/projects/:project_id/budget/override](../internal/web/server.go#L516), [internal/web/templates/project.templ:158](../internal/web/templates/project.templ#L158), [internal/web/templates/project.templ:142](../internal/web/templates/project.templ#L142), [internal/web/templates/project.templ:142](../internal/web/templates/project.templ#L142)
 ## web.api_capacity_clear
@@ -5459,7 +5459,7 @@ Api chat confirm
 - Application: chat.Service.Confirm/RejectConnectionAction and shared dashboard action commands; operatorApprovalDecision authenticates the human browser and exact stored preview.
 - Extraction: Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool.
-- Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending. Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner.
+- Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending. Shared audit/retry prerequisite implemented by digitaldrywood/detent#3338: trusted mutation.Metadata; current authorization on replay; durable workflow operator receipts/native_commands or existing billing intent/provider keys. Tests: TestOperatorMutationDurableRetry, TestMCPActionApprovalBoundary, TestNativeMutationRetryAfterResponseLoss, TestHostedInvitationIdempotency, TestHostedBillingJSONForTheClient. Pending typed tool parity remains with this row owner. Hosted billing reuses this browser surface (#3345): TestHostedBillingMCP and isolated Chrome provider fixture.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -5467,7 +5467,7 @@ Api chat confirm
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: real operator confirms the pending material action → operator
 
-Sources: [POST /api/v1/chat/actions/:action_id/confirm](../internal/web/server.go#L556), [internal/web/templates/chat.templ:98](../internal/web/templates/chat.templ#L98), [POST /chat/approval](../internal/web/server.go#L513), [internal/web/templates/chat.templ:117](../internal/web/templates/chat.templ#L117), [internal/web/templates/chat.templ:117](../internal/web/templates/chat.templ#L117)
+Sources: [POST /api/v1/chat/actions/:action_id/confirm](../internal/web/server.go#L556), [internal/web/templates/chat.templ:98](../internal/web/templates/chat.templ#L98), [POST /chat/approval](../internal/web/server.go#L513), [internal/web/templates/chat.templ:122](../internal/web/templates/chat.templ#L122), [internal/web/templates/chat.templ:122](../internal/web/templates/chat.templ#L122), [POST /chat/approval](../internal/hubserver/operator_authority.go#L36)
 ## web.api_chat_message
 
 Api chat message
@@ -5632,20 +5632,20 @@ Sources: [GET /api/v1/*](../internal/web/server.go#L566), [internal/web/template
 
 Api issue explanation
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `billing_usage.api_issue_explanation` — Bounded apiIssueExplanationRequest: project_id; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiIssueExplanationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.api_issue_explanation` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role local operator (dashboard authentication when configured); credential Current daemon credential read/write scope and project grant; browser login/private dashboard session for approval.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.apiIssueExplanation; s.issueExplanation
-- Extraction: Extract web.apiIssueExplanation application inputs/results and validation from Echo; reuse s.issueExplanation. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPDaemonBilling; TestRemoteMCPCurrentProjectAuthority (internal/web); existing explain_item authorization tests (internal/operatortool). Bounded typed alias uses the existing authorized explanation executor.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: authorized application read/export → none
 
 Sources: [GET /api/v1/projects/:project_id/issues/explanation](../internal/web/server.go#L519)
 ## web.api_issue_park_acknowledgement
@@ -6174,20 +6174,20 @@ Sources: [POST /api/v1/update/apply](../internal/web/server.go#L534), [internal/
 
 Api usage
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3345.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `billing_usage.api_usage` — Bounded apiUsageRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1–256 bytes, pagination 1–200, request at most 64 KiB, action fields use existing application validation → apiUsageResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1–200, opaque service-unavailable errors
-- Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
+- Tool: `billing_usage.api_usage` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Authority: role local operator (dashboard authentication when configured); credential Current daemon credential read/write scope and project grant; browser login/private dashboard session for approval.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiUsage; s.store.UsageReport
-- Extraction: Extract web.apiUsage application inputs/results and validation from Echo; reuse s.store.UsageReport. The HTTP handler and MCP must delegate to this same application operation.
+- Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
-- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestMCPDaemonBilling; TestMCPActionApprovalBoundary; TestServerBudgetOverrideUIUsesSharedStore (internal/web); TestUsageReportAggregates (internal/store). Exact approval, stale allowances, YOLO limits, project grants, replay and scoped totals.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: hosted_shared / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: read or ordinary non-destructive write → none
+- Confirmation: authorized application read/export → none
 
 Sources: [GET /api/v1/usage](../internal/web/server.go#L542)
 ## web.api_work_attempt_receipt
@@ -7110,7 +7110,7 @@ Bind local/remote operator connection confirmation mode
 - Application: chat.Service.AttachConnection/SetConnectionMode; operatorBrowserFormAuth; mcp HTTP session binding and DashboardReadClient.OpenConnection
 - Extraction: Authenticated transports bind connection identity and default confirmation mode. Only a same-origin authenticated dashboard form can select YOLO; mode never grants scope or workflow authority.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Real operator approval/rejection is required at the existing approval surface; an MCP model cannot approve its own action by invoking a confirmation tool.
-- Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending.
+- Coverage: internal/chat/connection_test.go; internal/web/operator_commands_test.go; internal/cli/mcp_test.go. Browser verification uses isolated Chrome and server; parent parity remains pending. Hosted billing reuses this browser surface (#3345): TestHostedBillingMCP and isolated Chrome provider fixture.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / dashboard daemon
 - Availability: hosted_dedicated / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
@@ -7118,7 +7118,7 @@ Bind local/remote operator connection confirmation mode
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: operator selects connection mode through the authenticated dashboard form → connection
 
-Sources: [GET /chat/approval](../internal/web/server.go#L512), [POST /api/v1/operator-connections](../internal/web/server.go#L511), [internal/web/templates/chat.templ:105](../internal/web/templates/chat.templ#L105), [internal/web/templates/chat.templ:105](../internal/web/templates/chat.templ#L105)
+Sources: [GET /chat/approval](../internal/web/server.go#L512), [POST /api/v1/operator-connections](../internal/web/server.go#L511), [internal/web/templates/chat.templ:106](../internal/web/templates/chat.templ#L106), [internal/web/templates/chat.templ:106](../internal/web/templates/chat.templ#L106), [GET /chat/approval](../internal/hubserver/operator_authority.go#L35)
 ## web.chat_approval_stylesheet
 
 Chat approval stylesheet

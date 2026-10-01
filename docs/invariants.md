@@ -17,6 +17,21 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Billing/usage MCP parity (#3345) delegates checkout/portal, plan and usage reads,
+exports, and daemon budget overrides to the dashboard application operations.
+Organization billing remains owner-only without support impersonation; plan
+reads require owner/admin, while usage totals include only current project grants.
+Platform entitlement administration and publisher artifact allowance callbacks
+remain separate authority boundaries and are never organization tools. Material
+actions use the existing exact browser approval conversation; YOLO changes only
+confirmation. Approved checkout retries resume the existing durable purchase
+intent/provider key, including after response loss; uncertain portal effects keep
+their existing receipt. No billing ledger, recovery loop or tracker writer is
+introduced. `TestHostedBillingMCP`, `TestBillingCommandResponseLoss`,
+`TestMCPDaemonBilling`, `TestHostedOperatorCurrentAuthority`,
+`TestUsageReportAggregates`, `TestHostedArtifactAllowanceBoundary`, and
+`TestPlatformComplimentaryPlansThroughTenantHub` cover these boundaries.
+
 Work-item MCP parity (#3341) reuses the dashboard work creation, discussion,
 priority, native collaboration, park acknowledgement and security-disposition
 commands. Native edits keep expected revisions and workflow authority; connection

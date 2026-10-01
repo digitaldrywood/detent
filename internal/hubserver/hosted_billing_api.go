@@ -41,93 +41,34 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 		if err := decodeAPIJSON(c, &request); err != nil {
 			return invalidAPIRequest(c, err)
 		}
-	}
-	if api {
 		if err := request.validate(true); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	if _, err := s.hostedBillingOwner(c); err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
-	}
-	if s.billing == nil {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Subscription checkout is not enabled for this organization")
-	}
-	w := s.billing
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	credential, err := s.hostedBillingOwner(c)
-	if err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusForbidden, "Organization ownership changed; sign in again")
-	}
-	cfg := s.config.Hosted.Billing
-	if cfg.CheckoutDisabled {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "New subscriptions are paused. Existing subscriptions and the billing portal keep working.")
-	}
-	priceID := request.Price
 	if !api {
-		priceID = c.FormValue("price")
+		request.Price = c.FormValue("price")
 	}
-	approved := false
-	for _, price := range cfg.Prices {
-		approved = approved || price.PriceID == priceID
-	}
-	if !approved {
-		return s.hostedBillingFailure(c, api, http.StatusBadRequest, "Choose an approved subscription plan")
-	}
-	var command hostedCommand
-	if api {
-		command = hostedCommand{actor: credential.ID, operation: "billing.checkout", key: request.IdempotencyKey, input: struct{ Price, Account, Mode, ReturnURL string }{priceID, cfg.AccountID, cfg.mode(), s.hostedBillingReturn(api)}}
-		_, response, err := s.claimHostedOperation(c.Request().Context(), command)
-		if errors.Is(err, mutation.ErrConflict) {
+	authorize := func(context.Context) (apiCredential, error) { return s.hostedBillingOwner(c) }
+	result, err := s.checkoutBilling(c.Request().Context(), authorize, request.Price, request.IdempotencyKey)
+	if err != nil {
+		var failure *nativeError
+		switch {
+		case errors.Is(err, auth.ErrHostedIdentity):
+			return s.hostedBillingFailure(c, api, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
+		case errors.Is(err, mutation.ErrConflict):
 			return s.hostedBillingFailure(c, api, http.StatusConflict, mutation.ErrConflict.Error())
-		}
-		if err != nil && !errors.Is(err, mutation.ErrUncertain) {
-			return s.nativeAPIError(c, err)
-		}
-		if response != nil {
-			return c.JSONBlob(http.StatusOK, response)
-		}
-		// The billing mutex serializes callers; a pending receipt resumes the
-		// existing checkout intent, whose provider key remains unchanged.
-	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 45*time.Second)
-	defer cancel()
-	binding, err := s.ensureHostedCustomer(ctx, credential.Hosted.Subject)
-	if errors.Is(err, billing.ErrCustomerConflict) {
-		return s.hostedBillingFailure(c, api, http.StatusConflict, "Billing needs operator repair before a purchase. No charge was made.")
-	}
-	if err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Billing is temporarily unavailable. Retry to resume the same purchase.")
-	}
-	if err := w.reconcile(ctx); err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Billing is temporarily unavailable. Your current access deadline is unchanged.")
-	}
-	state, err := s.database.readHostedBilling(ctx)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if state.Snapshot.SubscriptionID != "" || state.Status == "multiple_subscriptions" {
-		return s.hostedBillingFailure(c, api, http.StatusConflict, "An existing subscription must be managed through the billing portal")
-	}
-	checkout, err := s.prepareHostedCheckout(ctx, credential.Hosted.Subject, priceID)
-	if err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusConflict, "A checkout is already pending. Retry the same plan or wait for that checkout to expire.")
-	}
-	if checkout.Session.URL == "" {
-		session, err := cfg.Provider.Checkout(ctx, billing.CheckoutRequest{Binding: binding, PriceID: checkout.PriceID, IdempotencyKey: checkout.Key, ExpiresAt: checkout.ExpiresAt, ReturnURL: s.hostedBillingReturn(api)})
-		if err != nil {
-			return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Checkout is temporarily unavailable. Retry to resume the same purchase.")
-		}
-		checkout.Session = session
-		if err := s.saveHostedCheckout(ctx, credential.Hosted.Subject, checkout, "checkout_created"); err != nil {
+		case errors.Is(err, mutation.ErrUncertain):
+			return s.hostedBillingFailure(c, api, http.StatusConflict, mutation.ErrUncertain.Error())
+		case errors.As(err, &failure):
+			return s.hostedBillingFailure(c, api, failure.status, failure.Message)
+		default:
 			return s.nativeAPIError(c, err)
 		}
 	}
 	if api {
-		return s.completeHostedCommand(c, command, http.StatusOK, map[string]string{"url": checkout.Session.URL})
+		return c.JSON(http.StatusOK, result)
 	}
-	return s.hostedBillingDestination(c, api, checkout.Session.URL)
+	return s.hostedBillingDestination(c, api, result.URL)
 }
 
 func (s *Service) prepareHostedCheckout(ctx context.Context, actor, price string) (hostedCheckout, error) {
@@ -178,58 +119,37 @@ func (s *Service) saveHostedCheckout(ctx context.Context, actor string, checkout
 
 func (s *Service) hostedBillingPortal(c echo.Context) error {
 	api := hostedBillingAPI(c)
-	var request hostedIdempotent
+	var request struct{ hostedIdempotent }
 	if api {
 		if err := decodeAPIJSON(c, &request); err != nil {
 			return invalidAPIRequest(c, err)
 		}
-	}
-	if api {
 		if err := request.validate(true); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	credential, err := s.hostedBillingOwner(c)
+
+	authorize := func(context.Context) (apiCredential, error) { return s.hostedBillingOwner(c) }
+	result, err := s.portalBilling(c.Request().Context(), authorize, request.IdempotencyKey)
 	if err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
-	}
-	cfg := s.config.Hosted.Billing
-	if cfg == nil {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "The subscription portal is not enabled for this organization")
-	}
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "billing_portal_requested", "/organization/billing/portal", "", http.StatusOK); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := s.recordBillingAction(c.Request().Context(), credential.Hosted.Subject, "portal_requested"); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 45*time.Second)
-	defer cancel()
-	binding, err := s.database.hostedBillingBinding(ctx, cfg)
-	if errors.Is(err, errHostedBillingUnbound) {
-		return s.hostedBillingFailure(c, api, http.StatusConflict, "There is no subscription to manage yet. Choose a plan to start one.")
-	}
-	if err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Billing is temporarily unavailable")
-	}
-	var command hostedCommand
-	if api {
-		command = hostedCommand{actor: credential.ID, operation: "billing.portal", key: request.IdempotencyKey, input: struct {
-			Configuration, ReturnURL, Mode string
-			Binding                        billing.Binding
-		}{cfg.PortalConfigurationID, s.hostedBillingReturn(api), cfg.mode(), binding}}
-		if claimed, err := s.claimHostedCommand(c, command, http.StatusOK); !claimed || err != nil {
-			return err
+		var failure *nativeError
+		switch {
+		case errors.Is(err, auth.ErrHostedIdentity):
+			return s.hostedBillingFailure(c, api, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
+		case errors.Is(err, mutation.ErrConflict):
+			return s.hostedBillingFailure(c, api, http.StatusConflict, mutation.ErrConflict.Error())
+		case errors.Is(err, mutation.ErrUncertain):
+			return s.hostedBillingFailure(c, api, http.StatusConflict, mutation.ErrUncertain.Error())
+		case errors.As(err, &failure):
+			return s.hostedBillingFailure(c, api, failure.status, failure.Message)
+		default:
+			return s.nativeAPIError(c, err)
 		}
 	}
-	session, err := cfg.Provider.Portal(ctx, binding, cfg.PortalConfigurationID, s.hostedBillingReturn(api))
-	if err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "The billing portal is temporarily unavailable. Existing data and exports remain available.")
-	}
 	if api {
-		return s.completeHostedCommand(c, command, http.StatusOK, map[string]string{"url": session.URL})
+		return c.JSON(http.StatusOK, result)
 	}
-	return s.hostedBillingDestination(c, api, session.URL)
+	return s.hostedBillingDestination(c, api, result.URL)
 }
 
 func (s *Service) recordBillingAction(ctx context.Context, actor, action string) error {
