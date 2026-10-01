@@ -386,10 +386,21 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			setBlockedEvidence(state, issue.ID, recorded.Evidence)
 			return false
 		}
+		if !currentParkFound {
+			if handled, transitioned := o.reconcileAttemptTriagePark(ctx, state, withDependencies, now); handled {
+				return transitioned
+			}
+			if o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now) {
+				return true
+			}
+			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", "transition_failed", nil, "")
+			setBlockedEvidence(state, issue.ID, recorded.Evidence)
+			return false
+		}
 		setBlockedEvidence(state, issue.ID, recorded.Evidence)
 	}
 	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
-	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg, workpadCurrent && !recorded.Found)
+	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg, workpadCurrent)
 	if holdReason != "" && holdReason != "invalid_workpad_signal" {
 		o.recordBlockedRecoveryDecision(
 			ctx,
@@ -429,17 +440,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			return false
 		}
 		if handled, transitioned := o.reconcileAttemptTriagePark(ctx, state, issue, now); handled {
-			if !transitioned {
-				o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", attemptAllowanceExhaustedReason, nil, "")
-			}
 			return transitioned
-		}
-		if recorded.Found {
-			if o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now) {
-				return true
-			}
-			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", "transition_failed", nil, "")
-			return false
 		}
 		recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
 		reasonCode, reasonFound := o.latestWorkflowLaneReason(ctx, issue, issue.State)
@@ -574,6 +575,9 @@ func (o *Orchestrator) reconcileAttemptTriagePark(ctx context.Context, state *St
 	if !ok || entry.Event.Reason != attemptAllowanceExhaustedReason ||
 		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
 		return false, false
+	}
+	if BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel) != "" {
+		return true, false
 	}
 	if o.workAttempts != nil && stateIn(entry.Event.PreviousPhaseName, normalizedStates([]string{"In Progress", autoPromoteReworkState})) {
 		allowance, err := o.issueAttemptAllowance(ctx, issue)

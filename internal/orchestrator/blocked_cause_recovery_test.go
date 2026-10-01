@@ -2742,6 +2742,7 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 		clearedBlocker               bool
 		operationalClaim             bool
 		closedDraft                  bool
+		newerOperatorClearance       bool
 		dependencyState              string
 		wantLane                     string
 	}{
@@ -2753,6 +2754,7 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 		{name: "older cleared blocker permits corrected allowance", priorLane: "Rework", failures: 2, clearedBlocker: true, wantLane: "Rework"},
 		{name: "sparse operational claim does not erase failures", priorLane: "In Progress", failures: 3, operationalClaim: true},
 		{name: "hydrated closed draft agrees with sparse claim", priorLane: "In Progress", failures: 3, operationalClaim: true, closedDraft: true},
+		{name: "newer Workpad clearance does not reset exhausted allowance", priorLane: "Rework", failures: 3, newerOperatorClearance: true},
 		{name: "human hold remains", priorLane: "Rework", failures: 2, humanAction: "approve data migration"},
 		{name: "active dependency remains", priorLane: "Rework", failures: 2, dependencyState: "In Progress"},
 		{name: "incomplete success remains charged", priorLane: "Rework", failures: 2, incomplete: true},
@@ -2806,6 +2808,12 @@ func TestAttemptTriageParkRechecksFailedAllowance(t *testing.T) {
 			if tt.closedDraft {
 				issue.PullRequest = &connector.PullRequest{Number: 3424, State: "CLOSED", Draft: true, HeadSHA: "old-draft", BaseRef: "develop"}
 				issue.PRNumber = &issue.PullRequest.Number
+			}
+			if tt.newerOperatorClearance {
+				clearedAt := at.Add(time.Second)
+				body := "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
+				issue.Comments = []connector.IssueComment{{Body: body, AuthorAuthorized: true, CreatedAt: &clearedAt}}
+				issue.WorkpadSignal, _ = workpad.SignalFromComment(body, "", "digitaldrywood/detent")
 			}
 			if tt.humanAction != "" {
 				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: tt.humanAction}
