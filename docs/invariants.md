@@ -17,6 +17,15 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Permission outcome authority (#3758) belongs to the existing completion owners.
+Ordinary tracker runs use fresh canonical Workpad comments, dependencies,
+completion evidence and project gates; final prose or a final-only status block
+cannot supersede a canonical comment. Native runs retain their final-only
+contract: the existing native workflow completion owner settles human attention
+before unchanged work can finish, including outcomes with no produced change.
+Typed native landing results and immutable current-version review remain
+authoritative. Workers never write tracker lane state.
+
 Project MCP parity (#3342) calls the same dashboard project, onboarding,
 integration, import, policy and budget application commands. Native command
 receipts are checked before revisions/provider reads and before repeat approval,
@@ -829,6 +838,17 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Permission completion consolidation (#3758) removes the competing global
+final-message permission invocation. Only the existing native completion owner
+reuses the final-outcome handler for native final-only human attention, including
+non-completed producer outcomes with no Change Request. Existing human-owned
+settlement and tracker-write deferral preserve attempt identity, usage and claim
+settlement; no parser, reason code, recovery mechanism or configuration is added.
+Historical Workpads, permission parks, allowance records and lanes are untouched.
+`TestHandleRunResultPermissionWait`, `TestNativeChangeRunCompletion` and
+`TestNativeLandingRunCompletion` cover canonical authority, nil-change human
+attention and typed landing success/refusal.
 
 Admission tool acceptance (#3756) belongs to the existing candidate validator,
 which the collector runs before acknowledging a submission. Strict JSON and
@@ -2998,6 +3018,18 @@ checks one-line status layout in compact, cozy, and comfy densities, and verifie
 that effort is visible at Cozy/Comfy and may be hidden before model at Compact.
 
 ## INV-14 — Workers never wait on a human question
+
+Tracker human attention is authoritative only through the current canonical
+Workpad; final prose and final-only status cannot replace it (#3758). Native
+workers are explicitly forbidden to write Workpad comments and report blockers
+in their final outcome. The existing native completion owner uses that contract
+to settle human attention in Blocked, even without a produced change, rather
+than finishing Done, entering Merging or automatically repeating the decision.
+It retains existing human-owned recovery; final prose cannot fabricate a landed
+version or replace a typed refusal. Canonical human actions, authorized
+clearance, explicit operator pins, repository protections, configured human
+review and actual backend approval declines keep their existing owners. Forge
+authorization and infrastructure failures remain instance-owned.
 
 Workers receive no `ask_human_question` tool in any project. Dispatch and
 completion do not consult `human_questions` rows, including unanswered rows

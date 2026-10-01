@@ -123,6 +123,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	// completion path, retaining progress when a runner has no final usage.
 	if event.Result.Tokens != (TokenTotals{}) {
 		running.Tokens = event.Result.Tokens
+	} else {
+		event.Result.Tokens = running.Tokens
 	}
 	running.Compute = event.Result.Compute
 	running.TokenUSD = event.Result.TokenUSD
@@ -373,11 +375,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.finishAttemptTriage(ctx, state, event, running)
 		return
 	}
-	if o.handlePermissionWaitCompletion(ctx, state, event, running) {
+	if o.completeRecordedInstanceBlockers(ctx, state, event, running) {
 		return
 	}
 
-	if o.completeRecordedInstanceBlockers(ctx, state, event, running) {
+	if o.completeNativeChangeRun(ctx, state, event, running, event.Result.FinalState) {
 		return
 	}
 
@@ -618,9 +620,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
-	}
-	if terminalState == store.WorkAttemptTerminalSuccess && !repairRun && o.completeNativeChangeRun(ctx, state, event, running, finalState) {
-		return
 	}
 	dispatchedIssue := cloneIssue(running.Issue)
 	if terminalState == store.WorkAttemptTerminalSuccess {

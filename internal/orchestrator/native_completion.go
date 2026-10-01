@@ -11,26 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-// completeNativeChangeRun finishes a successful hub-native work run through
-// the lane ledger (INV-1). A native item never has a pull request, so the
-// review transition's readiness rule never holds for it and the success path
-// used to continue the item in its active lane, dispatching it again after
-// every success. The runner has already opened the Change Request under the
-// run's lease and reported what the run left; this moves the item out of the
-// dispatchable set along the workflow the hub enforces: to the landing lane
-// when the project's review policy already accepts the published version,
-// so the runner lands it with no one waiting on it; to the project's
-// configured review lane for any other committed change; and to the lane
-// the workflow marks terminal when it committed nothing.
-//
-// When the item cannot be moved -- the workflow cannot be read or allows no
-// such move, the Change Request was not opened, or the lane write fails --
-// the completed result is held in the existing tracker completion deferral
-// (INV-2: attributed to the instance), which keeps the item from being
-// dispatched again and replays the completion later. It never falls back to
-// the ordinary success path, whose continuation would run the item again.
-//
-// It reports false only for a run with no native change to settle.
 func (o *Orchestrator) completeNativeChangeRun(
 	ctx context.Context,
 	state *State,
@@ -39,12 +19,27 @@ func (o *Orchestrator) completeNativeChangeRun(
 	finalState string,
 ) bool {
 	change := event.Result.NativeChange
-	if change == nil || state.Draining {
+	if state.Draining || event.Result.NativeLanding != nil {
 		return false
 	}
 	reader, ok := o.connector.(connector.WorkflowStateReader)
 	if !ok {
 		return false
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
+	if o.handlePermissionWaitCompletion(ctx, state, event, running) {
+		return true
+	}
+	if change == nil || event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
+		return false
+	}
+	if mergeWorkerIssue(running.Issue) || running.Mode == runpkg.RunModeMerge || event.Request.Mode == runpkg.RunModeMerge || event.Request.Mode == runpkg.RunModePlan {
+		return false
+	}
+	if finalState == "" {
+		finalState = FinalStateCompleted
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
