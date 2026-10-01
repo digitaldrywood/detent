@@ -1257,15 +1257,15 @@ func (o *Orchestrator) publishState(state *State) {
 		return
 	}
 	cloned := state.clone()
-	o.latestState.Store(&cloned)
-	if o.initialStateReady != nil {
-		o.initialStatePublished.Do(func() { close(o.initialStateReady) })
-	}
 	o.latestRuntimeState.Store(&runtimeState{
 		WorkAttempts: cloned.WorkAttempts,
 		Running:      cloned.Running,
 		Claimed:      cloned.Claimed,
 	})
+	o.latestState.Store(&cloned)
+	if o.initialStateReady != nil {
+		o.initialStatePublished.Do(func() { close(o.initialStateReady) })
+	}
 }
 
 func (o *Orchestrator) publishRuntimeState(state *State) {
