@@ -86,6 +86,12 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Discovery must not advertise installed application services that are absent;
+	// direct calls below still test the safe unavailable boundary.
+	discovery := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/operator-tools", "", map[string]string{"Authorization": "Bearer " + key.Token})
+	if discovery.Code != http.StatusOK || !strings.Contains(discovery.Body.String(), `"name":"work_list"`) || strings.Contains(discovery.Body.String(), `"name":"work_version"`) || strings.Contains(discovery.Body.String(), `"name":"work_export"`) {
+		t.Fatalf("availability catalog=%d %s", discovery.Code, discovery.Body)
+	}
 	for _, test := range []struct {
 		tool, args string
 		status     int

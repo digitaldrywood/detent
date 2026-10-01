@@ -130,8 +130,10 @@ func (e *AuthorizedExecutor) ListTools(ctx context.Context) ([]Definition, error
 			reader = authority.WorkReads
 		}
 		allowed := WorkReadCatalog()
-		if available, ok := reader.(interface{ WorkReadNames() []string }); ok {
-			names := available.WorkReadNames()
+		if available, ok := reader.(interface {
+			WorkReadNames(context.Context) []string
+		}); ok {
+			names := available.WorkReadNames(authorized)
 			allowed = slices.DeleteFunc(allowed, func(d Definition) bool { return !slices.Contains(names, d.Name) })
 		}
 		definitions = append(definitions, allowed...)

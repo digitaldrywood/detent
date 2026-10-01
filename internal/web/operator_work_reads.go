@@ -25,6 +25,57 @@ import (
 
 type dashboardWorkReads struct{ server *Server }
 
+func (r dashboardWorkReads) WorkReadNames(ctx context.Context) []string {
+	s := r.server
+	if s.registry == nil || len(s.registry.List()) == 0 {
+		return nil
+	}
+	var names []string
+	var native, comments, events bool
+	for _, tracked := range s.registry.List() {
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(tracked.ID())}); err != nil {
+			continue
+		}
+		if names == nil {
+			names = []string{operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkRelationships, operatortool.WorkReferences, operatortool.BoardActivity, operatortool.BoardSession}
+		}
+		if provider, ok := tracked.Connector().(nativeClientSource); ok && provider.NativeClient() != nil {
+			native = true
+		}
+		if _, ok := tracked.Connector().(connector.IssueCommentReader); ok {
+			comments = true
+		}
+		if _, ok := tracked.Connector().(connector.IssueEventReader); ok {
+			events = true
+		}
+	}
+	if names == nil {
+		return nil
+	}
+	if native {
+		names = append(names, operatortool.WorkVersion, operatortool.WorkExport)
+	}
+	if native || comments {
+		names = append(names, operatortool.WorkComments)
+	}
+	if native || events || s.store != nil {
+		names = append(names, operatortool.WorkHistory)
+	}
+	if native || s.store != nil {
+		names = append(names, operatortool.WorkRuns)
+	}
+	if s.store != nil {
+		names = append(names, operatortool.BoardReceipt)
+	}
+	if s.store != nil && s.history != nil {
+		names = append(names, operatortool.BoardSessionHistory)
+	}
+	if s.recovery != nil {
+		names = append(names, operatortool.WorkAttemptReceipt)
+	}
+	return names
+}
+
 func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request operatortool.WorkReadRequest) (operatortool.Result, error) {
 	s := r.server
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: request.ProjectID})

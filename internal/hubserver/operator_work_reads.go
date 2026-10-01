@@ -168,6 +168,6 @@ func (s *Service) resolveOperatorNativeItem(ctx context.Context, scope nativeSco
 	return item, err
 }
 
-func (operatorWorkReads) WorkReadNames() []string {
+func (operatorWorkReads) WorkReadNames(context.Context) []string {
 	return []string{operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity}
 }
