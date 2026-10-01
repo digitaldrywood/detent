@@ -2031,6 +2031,15 @@ keeps the pending proposal capacity limit. Failed criteria and low confidence do
 not create extra human proposals when that queue is full. Durable proposal and
 orchestrator lane ownership remain unchanged (#3519).
 
+Validated admission outcomes are retained in the existing bounded run issue
+receipts after fresh eligibility and dependency checks (#3718). Confidence,
+historical threshold, effective automatic qualification, and bounded criterion
+indices/fingerprints/pass-fail results are audit evidence only. Truncated results
+retain their total; qualification still evaluates every configured dimension.
+Missing, malformed, stale and legacy evaluations remain unknown. No private
+criterion text or rationale is retained in these outcomes, and no reader, write,
+policy or admission authority is added.
+
 Admission prerequisite ranking uses the same unblocker annotation as dispatch,
 with the orchestrator's published active/Blocked dependency cohort. It performs
 no extra forge scan and authorizes no lane change; fresh admission checks remain

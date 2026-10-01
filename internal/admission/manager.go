@@ -59,6 +59,7 @@ const (
 	admissionRESTFanoutScope               = "backlog_admission"
 	maxRationaleSize                       = 16 * 1024
 	maxEffortRationaleSize                 = 2 * 1024
+	maxReceiptCriteria                     = 32
 	malformedAdmissionAttemptLimit         = 4
 	malformedAdmissionExcerptSize          = 512
 	admissionCandidateFingerprintVersion   = "admission-candidate-v1"
@@ -1482,6 +1483,10 @@ func (m *Manager) executeEvaluations(
 	if err != nil {
 		return result, err
 	}
+	receiptByID := make(map[string]int, len(result.Issues))
+	for i, receipt := range result.Issues {
+		receiptByID[receipt.ID] = i
+	}
 	for _, original := range candidates {
 		issueID := strings.TrimSpace(original.ID)
 		evaluation := evaluationByID[issueID]
@@ -1514,6 +1519,13 @@ func (m *Manager) executeEvaluations(
 				failedCriterion: failed.CriterionQuote,
 			}
 			classification = &declineClassification
+		}
+		qualified := classification == nil && autoAdmitProposal(settings.Config, settings.Criteria, admissionmodel.Proposal{
+			Confidence: *evaluation.Confidence,
+			Findings:   evaluation.Findings,
+		}, current.Labels)
+		if index, ok := receiptByID[issueID]; ok {
+			result.Issues[index].Evaluation = admissionEvaluationOutcome(evaluation, settings.Config.AutoAdmitMinConfidence, qualified)
 		}
 		if classification != nil {
 			decline, created, err := m.createAdmissionDecline(ctx, settings, current, *classification, at)
@@ -1559,7 +1571,7 @@ func (m *Manager) executeEvaluations(
 			CreatedAt:         at,
 			ExpiresAt:         at.AddDate(0, 0, settings.Config.ProposalExpiryDays),
 		}
-		automatic := autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, settings.Criteria, proposal, current.Labels)
+		automatic := autoAdmitsRemaining > 0 && qualified
 		if open >= settings.Config.MaxOpenProposals && !automatic {
 			result.Skipped["open_proposal_cap"]++
 			continue
@@ -1611,6 +1623,27 @@ func (m *Manager) executeEvaluations(
 		}
 	}
 	return result, nil
+}
+
+func admissionEvaluationOutcome(evaluation AgentEvaluation, threshold float64, qualified bool) *admissionmodel.EvaluationOutcome {
+	count := min(len(evaluation.Findings), maxReceiptCriteria)
+	outcome := &admissionmodel.EvaluationOutcome{
+		Disposition:            evaluation.Disposition,
+		Confidence:             *evaluation.Confidence,
+		AutoAdmitMinConfidence: threshold,
+		AutoQualified:          qualified,
+		Criteria:               make([]admissionmodel.CriterionOutcome, 0, count),
+		CriteriaTotal:          len(evaluation.Findings),
+		CriteriaTruncated:      count < len(evaluation.Findings),
+	}
+	for index, finding := range evaluation.Findings[:count] {
+		outcome.Criteria = append(outcome.Criteria, admissionmodel.CriterionOutcome{
+			Index:       index,
+			Fingerprint: stableAdmissionFingerprint(strings.ToLower(finding.Dimension), finding.CriterionQuote),
+			Matched:     finding.Matched,
+		})
+	}
+	return outcome
 }
 
 func validateCandidateEvaluation(
