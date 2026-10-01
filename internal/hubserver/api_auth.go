@@ -33,17 +33,18 @@ type apiCredential struct {
 	HostedRole string
 	// HostedMembership is the provider membership the credential was
 	// resolved from; mutation rechecks compare it against the member row.
-	HostedMembership string
-	HostedPrincipal  string
-	HostedKeyScope   apikey.Scope
-	ManageRunners    bool
-	SessionHash      string
-	Hash             string
-	ID               string
-	Name             string
-	Scope            apiScope
-	NativeOnly       bool
-	Runner           runnerauth.Identity
+	HostedMembership    string
+	HostedPrincipal     string
+	HostedKeyScope      apikey.Scope
+	HostedProjectAccess hostedProjectAccess
+	ManageRunners       bool
+	SessionHash         string
+	Hash                string
+	ID                  string
+	Name                string
+	Scope               apiScope
+	NativeOnly          bool
+	Runner              runnerauth.Identity
 	// runnerRenewal is set only for POST renewal of this bound identity.
 	// Expiry limits ordinary API use, but must not strand a stopped host.
 	runnerRenewal bool
@@ -55,12 +56,13 @@ type apiErrorResponse struct {
 }
 
 type tokenRequest struct {
-	Name       string         `json:"name"`
-	Scope      apiScope       `json:"scope"`
-	Issuer     *apiCredential `json:"-"`
-	KeyScope   apikey.Scope   `json:"-"`
-	ExpiresAt  *time.Time     `json:"-"`
-	ProjectIDs []string       `json:"-"`
+	Name          string              `json:"name"`
+	Scope         apiScope            `json:"scope"`
+	Issuer        *apiCredential      `json:"-"`
+	KeyScope      apikey.Scope        `json:"-"`
+	ExpiresAt     *time.Time          `json:"-"`
+	ProjectIDs    []string            `json:"-"`
+	ProjectAccess hostedProjectAccess `json:"-"`
 }
 
 type tokenGrantResponse struct {
@@ -68,18 +70,20 @@ type tokenGrantResponse struct {
 	ProjectID      string `json:"project_id"`
 }
 type tokenResponse struct {
-	ExpiresAt   *time.Time           `json:"expires_at,omitempty"`
-	KeyScope    apikey.Scope         `json:"key_scope,omitempty"`
-	NativeOnly  bool                 `json:"native_only"`
-	RevokedAt   *time.Time           `json:"revoked_at,omitempty"`
-	Grants      []tokenGrantResponse `json:"grants"`
-	ID          string               `json:"id"`
-	Name        string               `json:"name"`
-	Scope       apiScope             `json:"scope"`
-	Token       string               `json:"token,omitempty"`
-	Fingerprint string               `json:"fingerprint"`
-	CreatedAt   time.Time            `json:"created_at"`
-	RotatedAt   time.Time            `json:"rotated_at,omitempty"`
+	ProjectAccess hostedProjectAccess  `json:"project_access,omitempty"`
+	Projects      []string             `json:"project_ids"`
+	ExpiresAt     *time.Time           `json:"expires_at,omitempty"`
+	KeyScope      apikey.Scope         `json:"key_scope,omitempty"`
+	NativeOnly    bool                 `json:"native_only"`
+	RevokedAt     *time.Time           `json:"revoked_at,omitempty"`
+	Grants        []tokenGrantResponse `json:"grants"`
+	ID            string               `json:"id"`
+	Name          string               `json:"name"`
+	Scope         apiScope             `json:"scope"`
+	Token         string               `json:"token,omitempty"`
+	Fingerprint   string               `json:"fingerprint"`
+	CreatedAt     time.Time            `json:"created_at"`
+	RotatedAt     time.Time            `json:"rotated_at,omitempty"`
 }
 
 func (d *database) ensureInitialAdminToken(ctx context.Context, token []byte) error {
