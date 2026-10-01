@@ -830,6 +830,23 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Admission tool acceptance (#3756) belongs to the existing candidate validator,
+which the collector runs before acknowledging a submission. Strict JSON and
+semantic rejections receive bounded diagnostics without echoing candidate IDs,
+criteria, quotes, rationale or raw input. A valid correction in the same runner
+conversation retires the pending rejection; rejected calls do not count as
+accepted evaluations. Two valid submissions still violate the exact-one contract,
+and an uncorrected later rejection remains malformed. All-invalid tool
+conversations cannot fall through to final text. The tool-unavailable typed
+final-text envelope uses the same validator, preserving candidate count and
+fail-closed behavior. Delayed tool validation is removed; final source, dependency,
+authorization, confidence, required-dimension and effort qualification retain
+their existing owners. Mixed findings do not establish automatic eligibility.
+Existing collector, per-candidate, mixed-result and final-text fixtures cover
+these boundaries. No reason code, provider retry, turn request, reservation,
+configuration, archive or recovery mechanism is added; existing malformed
+evidence persistence and redaction remain unchanged.
+
 Project state reads (#3748) use the existing published snapshot owner once the
 first publication is ready, including while the actor is blocked on synchronous
 refill. The competing actor state request and snapshot notification channels are
