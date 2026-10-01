@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -123,11 +122,13 @@ func TestParkSummaryAggregatesCausesAndTokenBreakdown(t *testing.T) {
 	insertParkAttempt(t, db, first, "terminal", "failure", "", `{"brake_cause":"per_issue_max_usd"}`)
 	insertParkAttempt(t, db, last, "terminal", "failure", "", `{"brake_cause":"per_issue_max_usd"}`)
 	insertParkAttempt(t, db, last.Add(time.Second), "terminal", "no_progress", "no_progress_limit", `{}`)
-	if _, err := db.db.ExecContext(t.Context(), `INSERT INTO usage_events (
+	for range 3 {
+		if _, err := db.db.ExecContext(t.Context(), `INSERT INTO usage_events (
 project_id, issue_id, identifier, model, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens,
 total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome
 ) VALUES ('detent', 'issue-6', 'digitaldrywood/detent.build#6', 'gpt', 100, 80, 20, 10, 130, 1, ?, ?, '2026-08-12', 'success')`, first.Format(time.RFC3339Nano), last.Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("insert usage event: %v", err)
+			t.Fatalf("insert usage event: %v", err)
+		}
 	}
 	summary, err := db.IssueParkSummary(t.Context(), parkTestIdentity())
 	if err != nil {
@@ -139,7 +140,7 @@ total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome
 	if summary.Causes[0].Cause != "per_issue_max_usd" || summary.Causes[0].Count != 2 || !summary.Causes[0].FirstAt.Equal(first) || !summary.Causes[0].LastAt.Equal(last) {
 		t.Fatalf("aggregated brake = %#v", summary.Causes[0])
 	}
-	if summary.Tokens != (ParkTokenTotals{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 20, ReasoningOutputTokens: 10}) {
+	if summary.Tokens != (ParkTokenTotals{InputTokens: 300, CachedInputTokens: 240, OutputTokens: 60, ReasoningOutputTokens: 30}) {
 		t.Fatalf("Tokens = %#v", summary.Tokens)
 	}
 }
@@ -239,50 +240,81 @@ func TestParkSummaryCoalescesBridgingAliases(t *testing.T) {
 			t.Fatalf("summary for %#v = %#v, want merged counts", identity, summary)
 		}
 	}
+	for index, identity := range requested {
+		summary, err := db.IssueParkSummary(t.Context(), identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []int64{2, 2, 1}[index]
+		if summary.AttemptCount != want || summary.ParkCount != want {
+			t.Fatalf("single alias %#v expanded its row set: %#v", identity, summary)
+		}
+	}
 }
 
 func TestParkSummaryFilterScopesRequestedIdentities(t *testing.T) {
 	t.Parallel()
-
-	identity := IssueIdentity{
-		ProjectID:  "detent",
-		IssueID:    "issue-1773",
-		Identifier: "digitaldrywood/detent#1773",
-		IssueURL:   "https://github.com/digitaldrywood/detent/issues/1773",
+	db := openParkTestStore(t, filepath.Join(t.TempDir(), "detent.db"))
+	insertParkAttempt(t, db, time.Date(2026, 8, 9, 16, 6, 0, 0, time.UTC), "terminal", "failure", "", `{}`)
+	if _, err := db.db.ExecContext(t.Context(), `INSERT INTO work_attempts (
+project_id, issue_id, identifier, issue_url, worker_type, status, started_at
+) SELECT 'other', issue_id, identifier, issue_url, worker_type, status, started_at FROM work_attempts`); err != nil {
+		t.Fatal(err)
 	}
+	identity := parkTestIdentity()
+	batch := make([]IssueIdentity, 200)
+	for index := range batch {
+		batch[index] = IssueIdentity{ProjectID: "detent", IssueID: "missing-" + strconv.Itoa(index), Identifier: "owner/repo#" + strconv.Itoa(index), IssueURL: "https://example.com/" + strconv.Itoa(index)}
+	}
+	batch = append(batch, identity, identity)
 	tests := []struct {
 		name            string
+		projectID       string
 		identities      []IssueIdentity
 		includeIssueURL bool
-		wantFilter      string
-		wantArgs        []any
+		wantRows        int
+		wantEmpty       bool
 	}{
-		{
-			name:            "event identities include URL",
-			identities:      []IssueIdentity{identity},
-			includeIssueURL: true,
-			wantFilter:      " WHERE ((project_id = ? AND (issue_id = ? OR identifier = ? OR issue_url = ?)))",
-			wantArgs:        []any{"detent", "issue-1773", "digitaldrywood/detent#1773", "https://github.com/digitaldrywood/detent/issues/1773"},
-		},
-		{
-			name:            "usage identities omit unavailable URL",
-			identities:      []IssueIdentity{identity},
-			includeIssueURL: false,
-			wantFilter:      " WHERE ((project_id = ? AND (issue_id = ? OR identifier = ?)))",
-			wantArgs:        []any{"detent", "issue-1773", "digitaldrywood/detent#1773"},
-		},
-		{
-			name:       "invalid identity returns empty predicate",
-			identities: []IssueIdentity{{Identifier: "digitaldrywood/detent#1773"}},
-			wantFilter: " WHERE 1 = 0",
-		},
+		{name: "all aliases count one row", identities: []IssueIdentity{identity}, includeIssueURL: true, wantRows: 1},
+		{name: "usage aliases omit URL", identities: []IssueIdentity{identity}, wantRows: 1},
+		{name: "URL alone", identities: []IssueIdentity{{ProjectID: "detent", IssueURL: identity.IssueURL}}, includeIssueURL: true, wantRows: 1},
+		{name: "usage cannot match URL alone", identities: []IssueIdentity{{ProjectID: "detent", IssueURL: identity.IssueURL}}},
+		{name: "partial mismatch keeps matching alias", identities: []IssueIdentity{{ProjectID: "detent", IssueID: "missing", Identifier: identity.Identifier}}, wantRows: 1},
+		{name: "missing project matches no row", identities: []IssueIdentity{{Identifier: identity.Identifier}}, wantEmpty: true},
+		{name: "empty alias matches no row", identities: []IssueIdentity{{ProjectID: "detent"}}, wantEmpty: true},
+		{name: "missing project scope", identities: []IssueIdentity{{ProjectID: "missing", Identifier: identity.Identifier}}, wantEmpty: true},
+		{name: "normalized identity", identities: []IssueIdentity{{ProjectID: " detent ", IssueID: " issue-6 "}}, wantRows: 1},
+		{name: "board batch deduplicates without compound limit", identities: batch, includeIssueURL: true, wantRows: 1},
+		{name: "project list", projectID: "detent", wantRows: 1},
+		{name: "global list", wantRows: 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			filter, args := parkSummaryFilter("WHERE", "", tt.identities, tt.includeIssueURL)
-			if filter != tt.wantFilter || !reflect.DeepEqual(args, tt.wantArgs) {
-				t.Fatalf("parkSummaryFilter() = %q %#v, want %q %#v", filter, args, tt.wantFilter, tt.wantArgs)
+			filter, args, err := parkSummaryFilter("WHERE", "work_attempts", tt.projectID, tt.identities, tt.includeIssueURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := db.db.QueryRowContext(t.Context(), "SELECT count(*) FROM work_attempts"+filter, args...).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != tt.wantRows {
+				t.Fatalf("matched rows = %d, want %d", count, tt.wantRows)
+			}
+			if tt.identities != nil {
+				summaries, err := db.IssueParkSummaries(t.Context(), tt.identities)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tt.wantEmpty && len(summaries) != 0 {
+					t.Fatalf("invalid identities returned summaries: %#v", summaries)
+				}
+				for requested, summary := range summaries {
+					if summary.ProjectID != requested.ProjectID || summary.AttemptCount != 1 {
+						t.Fatalf("scoped identity %#v returned duplicated or cross-project summary: %#v", requested, summary)
+					}
+				}
 			}
 		})
 	}
