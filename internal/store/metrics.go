@@ -172,11 +172,20 @@ func (s *sqliteStore) WorkflowMetricsReport(ctx context.Context, query WorkflowM
 	if err != nil {
 		return WorkflowMetricsReport{}, err
 	}
-	activeRows, err := s.queries.WorkflowPhaseFlowRows(ctx, sqlc.WorkflowPhaseFlowRowsParams{
-		ProjectID: nullString(query.ProjectID),
-		FromTime:  flowFromTime,
-		ToTime:    flowToTime,
-	})
+	var activeRows []sqlc.WorkflowPhaseEvent
+	if flowFromTime.Valid {
+		activeRows, err = s.queries.WorkflowPhaseFlowRowsFrom(ctx, sqlc.WorkflowPhaseFlowRowsFromParams{
+			ProjectID: nullString(query.ProjectID),
+			FromTime:  flowFromTime,
+			ToTime:    flowToTime,
+		})
+	} else {
+		activeRows, err = s.queries.WorkflowPhaseFlowRows(ctx, sqlc.WorkflowPhaseFlowRowsParams{
+			ProjectID: nullString(query.ProjectID),
+			FromTime:  flowFromTime,
+			ToTime:    flowToTime,
+		})
+	}
 	if err != nil {
 		return WorkflowMetricsReport{}, fmt.Errorf("reading workflow flow metrics: %w", err)
 	}
