@@ -17,6 +17,7 @@ const NativeProtocolMajor = 2
 
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
 const NativeCheckoutRepositoryCapability = "runner_checkout_repository"
+const NativeLocalChecksCapability = "runner_local_checks"
 
 // NativeWorkspaceCapability is declared by a runner's workspace lane on its
 // claim. It is what separates the lane that holds a workspace session open

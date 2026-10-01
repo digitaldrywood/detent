@@ -613,6 +613,17 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
+existing optional feature negotiation. The `runner_local_checks` capability
+permits `local_checks`; older Hubs receive the original heartbeat without that
+field. Startup observations remain scoped to their project; missing or unsupported
+diagnostic authority remains absent, and current-Hub validation and admission
+requirements remain unchanged. Registration uses the same negotiated heartbeat
+encoder. `TestNativeOptionalReportsNegotiateHubSupport`,
+`TestRunnerSetupHeartbeatOwnership`, and `TestOnboardingRunnerLocalChecks` cover
+strict older/current schemas, failed/missing evidence, routing identity, and the
+single startup heartbeat owner. No compatibility retry loop or gate is added.
+
 Rework-breaker recovery reads its historical park only for a current Blocked
 issue with automatic promotion enabled. Current-cause recovery remains the
 first owner for every Blocked issue, including when promotion is disabled.

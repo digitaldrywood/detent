@@ -216,6 +216,17 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 }
 
 func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) error {
+	// Optional observations must never exceed the Hub's advertised schema.
+	// Omission leaves diagnostic authority absent; it does not attest success.
+	if machine.LocalChecks != nil {
+		supported, err := c.HubFeature(ctx, tracker.NativeLocalChecksCapability)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			machine.LocalChecks = nil
+		}
+	}
 	capacity := machine.Capacity
 	if c.client.runner != nil {
 		availability, err := c.client.runner.availability()

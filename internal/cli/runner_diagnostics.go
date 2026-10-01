@@ -94,9 +94,8 @@ func probeRunnerProviderAuth(ctx context.Context, backend workflowconfig.AgentBa
 	}
 }
 
-// reportRunnerSetup runs on registration and runner startup, including before
-// policy approval. Restarting after a local fix reports new observations using
-// the existing heartbeat; no diagnostics polling loop is introduced.
+// reportRunnerSetup sends registration observations through the same negotiated
+// heartbeat encoder used by the scheduler. Startup uses the scheduler's owner.
 func reportRunnerSetup(ctx context.Context, cfg globalconfig.Config, version string) error {
 	if cfg.Client.IdentityFile == "" || cfg.Path == "" {
 		return nil
@@ -105,10 +104,37 @@ func reportRunnerSetup(ctx context.Context, cfg globalconfig.Config, version str
 	if err != nil {
 		return err
 	}
+	reports, err := collectRunnerSetupReports(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
 	file, err := runnerauth.Load(cfg.Client.IdentityFile)
 	if err != nil {
 		return err
 	}
+	for name, checks := range reports {
+		native, err := client.Native(file.Identity.OrganizationID, tracker.ProjectID(cfg.Client.NativeProjects[name]))
+		if err != nil {
+			return err
+		}
+		if err := native.HeartbeatMachine(ctx, hubclient.Machine{ID: file.Identity.MachineID, DisplayName: cfg.Client.DisplayName, Capacity: cfg.Client.Capacity, Version: firstNonBlankString(version, "dev"), LocalChecks: &checks}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collectRunnerSetupReports preserves real startup observations without sending
+// a second startup heartbeat or repeating local probes at each heartbeat tick.
+func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, client *hubclient.Client) (map[string]runnerauth.LocalChecks, error) {
+	if cfg.Client.IdentityFile == "" || cfg.Path == "" {
+		return nil, nil
+	}
+	file, err := runnerauth.Load(cfg.Client.IdentityFile)
+	if err != nil {
+		return nil, err
+	}
+	reports := make(map[string]runnerauth.LocalChecks)
 	for _, selected := range cfg.Projects {
 		id := cfg.Client.NativeProjects[selected.ID]
 		if id == "" {
@@ -116,7 +142,7 @@ func reportRunnerSetup(ctx context.Context, cfg globalconfig.Config, version str
 		}
 		native, err := client.Native(file.Identity.OrganizationID, tracker.ProjectID(id))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		checks := collectRunnerLocalChecks(ctx, cfg, selected.ID, selected.Workdir, func(ctx context.Context, cfg doctorConfig) doctorReport {
 			return runDoctor(ctx, cfg, options{}, doctorDeps{})
@@ -124,17 +150,15 @@ func reportRunnerSetup(ctx context.Context, cfg globalconfig.Config, version str
 		if checks.Checkout == "passed" {
 			_, _, descriptor, err := resolveRunnerSetupPolicy(ctx, cfg.Path, selected.ID)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if err := native.ReportObservedPolicy(ctx, descriptor); err != nil {
-				return err
+				return nil, err
 			}
 		}
-		if err := native.HeartbeatMachine(ctx, hubclient.Machine{ID: file.Identity.MachineID, DisplayName: cfg.Client.DisplayName, Capacity: cfg.Client.Capacity, Version: firstNonBlankString(version, "dev"), LocalChecks: &checks}); err != nil {
-			return err
-		}
+		reports[selected.ID] = checks
 	}
-	return nil
+	return reports, nil
 }
 
 // Registration must report missing checkout paths before the normal config

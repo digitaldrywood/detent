@@ -3,13 +3,20 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestCollectRunnerLocalChecks(t *testing.T) {
@@ -148,6 +155,101 @@ func TestReadRunnerSetupConfigMissingCheckout(t *testing.T) {
 			}
 			if cfg.Path != paths.config || len(cfg.Projects) != 1 || cfg.Client.NativeProjects["orders"] != "prj_orders" || cfg.Projects[0].Workdir != workdir || cfg.Projects[0].Workflow != workflow || cfg.Global.Cache.MaxAge == 0 {
 				t.Fatalf("config=%+v", cfg)
+			}
+		})
+	}
+}
+
+// Catch a separate startup heartbeat bypassing negotiation or dropping the
+// startup observations before the scheduler's first enrolled heartbeat.
+func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
+	t.Parallel()
+	for _, supported := range []bool{false, true} {
+		name := "older Hub"
+		if supported {
+			name = "current Hub"
+		}
+		t.Run(name, func(t *testing.T) {
+			var heartbeats atomic.Int32
+			var snapshot runnerauth.RoutingSnapshot
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/api/v2/capabilities":
+					features := []string{"native_issues", "scoped_collaboration", "repository_policy"}
+					if supported {
+						features = append(features, tracker.NativeLocalChecksCapability)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": features})
+				case r.URL.Path == "/api/v2/organizations/org_test/projects/prj_test":
+					_ = json.NewEncoder(w).Encode(tracker.NativeProject{Profile: "native"})
+				case strings.HasSuffix(r.URL.Path, "/heartbeat"):
+					var body struct {
+						LocalChecks *runnerauth.LocalChecks `json:"local_checks"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					if !supported && body.LocalChecks != nil {
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						return
+					}
+					if supported && (body.LocalChecks == nil || body.LocalChecks.Checkout != "failed" || body.LocalChecks.Doctor != "pending" || body.LocalChecks.Provider != "pending") {
+						t.Errorf("startup observations missing or forged: %+v", body.LocalChecks)
+					}
+					heartbeats.Add(1)
+					_ = json.NewEncoder(w).Encode(snapshot)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			root := t.TempDir()
+			paths := runnerPaths{config: filepath.Join(root, "global.yaml"), identity: filepath.Join(root, "private", "identity.json"), workspaces: filepath.Join(root, "workspaces")}
+			file, err := runnerauth.Initialize(paths.identity, server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_test"
+			file.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+			file.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+			if err := runnerauth.Save(paths.identity, file); err != nil {
+				t.Fatal(err)
+			}
+			snapshot = runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}.Normalized()}
+			if err := runnerauth.SaveRoutingCache(paths.identity, snapshot); err != nil {
+				t.Fatal(err)
+			}
+			config := runnerConfig(server.URL, "org_test", "Runner", 1, paths, []runnerRegisteredCheck{{Name: "native", ID: "prj_test", Workdir: filepath.Join(paths.workspaces, "missing")}})
+			if _, err := writeRunnerConfig(paths.config, config); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := readRunnerSetupConfig(paths.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := newHubScheduling(t.Context(), cfg, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if heartbeats.Load() != 0 {
+				t.Fatal("startup sent a separate heartbeat")
+			}
+			scheduler := source.(*hubclient.Scheduler)
+			if err := scheduler.Heartbeat(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := scheduler.Heartbeat(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if heartbeats.Load() != 1 {
+				t.Fatalf("startup heartbeats = %d, want 1", heartbeats.Load())
+			}
+			if err := reportRunnerSetup(t.Context(), cfg, "test"); err != nil {
+				t.Fatal(err)
+			}
+			if heartbeats.Load() != 2 {
+				t.Fatalf("registration heartbeats = %d, want 2", heartbeats.Load())
 			}
 		})
 	}
