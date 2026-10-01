@@ -7,8 +7,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,7 +19,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 type fakeBilling struct {
@@ -114,6 +119,68 @@ func TestSharedBillingJourney(t *testing.T) {
 	}
 	if portal := dana.do(http.MethodPost, "/organizations/"+id+"/organization/billing/portal", url.Values{"csrf": {csrfFrom(t, page)}}, nil); portal.StatusCode != http.StatusConflict {
 		t.Fatalf("portal before a customer = %d", portal.StatusCode)
+	}
+	// Catches losing the original billing authority/CSRF binding through the
+	// real organization proxy, or creating a provider effect before approval.
+	var session string
+	mcpCall := func(body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, testPublicURL+"/organizations/"+id+"/mcp", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", testPublicURL)
+		request.Header.Set("X-CSRF-Token", csrfFrom(t, page))
+		if session != "" {
+			request.Header.Set("Mcp-Session-Id", session)
+			request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+		}
+		base, _ := url.Parse(testPublicURL)
+		for _, cookie := range dana.jar.Cookies(base) {
+			request.AddCookie(cookie)
+		}
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request)
+		return response
+	}
+	initialized := mcpCall(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"shared-billing","version":"1"}}}`)
+	session = initialized.Header().Get("Mcp-Session-Id")
+	if initialized.Code != http.StatusOK || session == "" {
+		t.Fatalf("MCP initialize=%d %s", initialized.Code, initialized.Body.String())
+	}
+	mcpCall(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	args := `{"price":"price_team","request_id":"shared-purchase"}`
+	checkoutCall := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"` + operatortool.BillingCheckout + `","arguments":` + args + `}}`
+	preview := mcpCall(checkoutCall)
+	var reply struct {
+		Result struct {
+			Structured struct {
+				Preview chat.Action `json:"preview"`
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(preview.Body.Bytes(), &reply) != nil || reply.Result.Structured.Preview.Status != chat.ActionPending || stripe.creates != 0 || stripe.checkouts != 0 {
+		t.Fatalf("shared preview=%s", preview.Body.String())
+	}
+	action := reply.Result.Structured.Preview
+	approvalPath := "/organizations/" + id + "/chat/approval"
+	approval, html := dana.get(approvalPath + "?connection_id=" + action.ConnectionID)
+	if approval.StatusCode != http.StatusOK {
+		t.Fatalf("shared approval=%d %s", approval.StatusCode, html)
+	}
+	var formToken string
+	for _, form := range regexp.MustCompile(`<form[^>]*>[\s\S]*?</form>`).FindAllString(html, -1) {
+		if strings.Contains(form, `name="action_id" value="`+action.ID+`"`) {
+			match := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindStringSubmatch(form)
+			if len(match) == 2 {
+				formToken = match[1]
+			}
+		}
+	}
+	confirmed := dana.do(http.MethodPost, approvalPath, url.Values{"csrf": {csrfFrom(t, html)}, "connection_id": {action.ConnectionID}, "action_id": {action.ID}, "form_token": {formToken}, "decision": {"confirm"}}, nil)
+	if confirmed.StatusCode != http.StatusSeeOther || stripe.creates != 1 || stripe.checkouts != 1 {
+		t.Fatalf("shared confirmation=%d %s effects=%d/%d", confirmed.StatusCode, confirmed.Body, stripe.creates, stripe.checkouts)
+	}
+	replayed := mcpCall(checkoutCall)
+	if !strings.Contains(replayed.Body.String(), `"status":"succeeded"`) || stripe.checkouts != 1 {
+		t.Fatalf("shared replay=%s", replayed.Body.String())
 	}
 	for range 2 {
 		checkout := dana.do(http.MethodPost, "/organizations/"+id+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)

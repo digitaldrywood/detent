@@ -196,12 +196,12 @@ func TestProtocolApplicationParity(t *testing.T) {
 					if cursor == "" {
 						break
 					}
-					if pages > 3 {
+					if pages > (len(operatortool.Catalog())+len(operatortool.CommandCatalog())+catalogPageSize-1)/catalogPageSize {
 						t.Fatal("pagination did not finish")
 					}
 				}
 				want := append(operatortool.Catalog(), operatortool.CommandCatalog()...)
-				if !reflect.DeepEqual(tools, want) || pages != 3 {
+				if !reflect.DeepEqual(tools, want) || pages != (len(want)+catalogPageSize-1)/catalogPageSize {
 					t.Fatalf("typed catalog/schema/annotation parity mismatch: pages=%d tools=%+v", pages, tools)
 				}
 				for _, tool := range tools {

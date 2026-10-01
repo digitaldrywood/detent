@@ -36,6 +36,14 @@ func ActionSummary(action Action) string {
 		return summary
 	case ActionFileIssue:
 		return fmt.Sprintf("File %q on %s", action.Title, action.ProjectID)
+	case ActionKind(operatortool.BillingCheckout):
+		return "Create subscription checkout for " + action.Identifier
+	case ActionKind(operatortool.BillingPortal):
+		return "Open billing portal for " + action.Identifier
+	case ActionKind(operatortool.BudgetOverrideSet):
+		return "Set budget override for " + action.ProjectID
+	case ActionKind(operatortool.BudgetOverrideClear):
+		return "Clear budget override for " + action.ProjectID
 	default:
 		return "Unknown operator action"
 	}

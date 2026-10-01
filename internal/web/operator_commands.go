@@ -52,6 +52,9 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 		return nil, err
 	}
 	for _, definition := range operatortool.CommandCatalog() {
+		if definition.Meta.Toolset == "billing_usage" && definition.Name != operatortool.BudgetOverrideSet && definition.Name != operatortool.BudgetOverrideClear && definition.Name != operatortool.UsageReport && definition.Name != operatortool.IssueExplanation {
+			continue
+		}
 		if definition.Annotations.ReadOnly {
 			definitions = append(definitions, definition)
 		} else if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err == nil {
@@ -64,6 +67,17 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.server
 	switch call.Name {
+	case operatortool.UsageReport:
+		return s.operatorUsageReport(ctx, call.Arguments)
+	case operatortool.IssueExplanation:
+		var request struct {
+			ProjectID string `json:"project_id"`
+			Reference string `json:"reference"`
+		}
+		if operatortool.DecodeArguments(call.Arguments, &request) != nil || strings.TrimSpace(request.ProjectID) == "" || len(request.ProjectID) > 256 || strings.TrimSpace(request.Reference) == "" || len(request.Reference) > 256 {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		return operatortool.NewAuthorizedExecutor(s.operatorTools).Execute(ctx, operatortool.Call{Name: operatortool.ExplainItem, Arguments: call.Arguments})
 	case operatortool.ConnectionInfo:
 		if err := operatortool.DecodeArguments(call.Arguments, &struct{}{}); err != nil {
 			return operatortool.Result{}, err
@@ -105,7 +119,7 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 			return operatortool.Result{}, err
 		}
 		return s.operatorActionResult(action)
-	case operatortool.MoveItem, operatortool.SetPriority, operatortool.StopRun, operatortool.FileIssue:
+	case operatortool.MoveItem, operatortool.SetPriority, operatortool.StopRun, operatortool.FileIssue, operatortool.BudgetOverrideSet, operatortool.BudgetOverrideClear:
 		return s.executeOperatorMutation(ctx, call)
 	default:
 		return operatortool.NewAuthorizedExecutor(s.operatorTools).Execute(ctx, call)
@@ -136,6 +150,9 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 		return operatortool.Result{}, err
 	}
 	if previous, found, err := s.chat.RetryResult(ctx, chatpkg.ActionKind(call.Name), requestID, arguments); err != nil {
+		if (call.Name == operatortool.BudgetOverrideSet || call.Name == operatortool.BudgetOverrideClear) && errors.Is(err, operatortool.ErrInvalidArguments) {
+			return operatortool.Result{}, mutation.ErrConflict
+		}
 		return operatortool.Result{}, err
 	} else if found {
 		outcome = "replayed"
@@ -232,6 +249,8 @@ func (s *Server) operatorActionProposal(ctx context.Context, name string, argume
 	var result chatpkg.ToolResult
 	var err error
 	switch name {
+	case operatortool.BudgetOverrideSet, operatortool.BudgetOverrideClear:
+		return s.budgetActionProposal(ctx, name, arguments)
 	case operatortool.MoveItem:
 		result, err = s.chatMoveProposal(ctx, arguments)
 	case operatortool.SetPriority:

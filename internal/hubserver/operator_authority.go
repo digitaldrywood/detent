@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -16,10 +17,11 @@ import (
 )
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
-	// Hosted hubs do not own the daemon's telemetry/explainer. An absent
-	// application service produces an empty catalog and opaque unavailable
-	// calls, rather than using the compatibility API or opening a runtime DB.
-	executor := operatortool.NewAuthorizedExecutor(nil)
+	// Hosted hubs expose their own billing/usage application operations.
+	// Daemon telemetry/explanation services remain absent, with unavailable
+	// calls rather than a compatibility proxy or a separate runtime DB.
+	s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now))
+	executor := hostedOperatorExecutor{s}
 	s.mcpHTTP = mcp.NewHTTPHandler(executor, s.config.Version, mcp.HTTPConfig{
 		Principal: func(request *http.Request) operatortool.Identity {
 			return operatortool.ConnectionIdentity(request.Context())
@@ -28,6 +30,10 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	e.Any("/api/v2/organizations/:organization/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	if s.config.Hosted != nil {
 		e.Any("/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
+	}
+	if s.config.Hosted != nil {
+		e.GET("/chat/approval", s.hostedOperatorApproval)
+		e.POST("/chat/approval", s.hostedOperatorDecision)
 	}
 }
 
@@ -53,22 +59,22 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		claims, shared := hostedSharedClaims(c)
-		connection := operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+		resolve := func(ctx context.Context) (apiCredential, error) {
 			current := credential
 			if token != "" {
 				var err error
 				current, _, err = s.authenticateAPIToken(ctx, token, "", "")
 				if err != nil {
-					return operatortool.Authority{}, operatortool.ErrAccessDenied
+					return apiCredential{}, operatortool.ErrAccessDenied
 				}
 			} else {
 				session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
 				if err != nil || session.Identity == nil {
-					return operatortool.Authority{}, operatortool.ErrAccessDenied
+					return apiCredential{}, operatortool.ErrAccessDenied
 				}
 				if shared {
 					if claims.Kind != cloudassert.KindBrowser || !claims.AccessExpiresAt.After(s.config.now()) {
-						return operatortool.Authority{}, operatortool.ErrAccessDenied
+						return apiCredential{}, operatortool.ErrAccessDenied
 					}
 					current, _, err = s.hostedSharedCredential(ctx, session, credential.SessionHash, claims.Role)
 				} else {
@@ -77,12 +83,19 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 					}
 				}
 				if err != nil {
-					return operatortool.Authority{}, operatortool.ErrAccessDenied
+					return apiCredential{}, operatortool.ErrAccessDenied
 				}
+			}
+			return current, nil
+		}
+		connection := operatortool.Connection{Identity: identity, DashboardURL: s.operatorDashboardURL(), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+			current, err := resolve(ctx)
+			if err != nil {
+				return operatortool.Authority{}, err
 			}
 			return s.operatorCurrentAuthority(ctx, current, organization)
 		}}
-		ctx := operatortool.WithConnection(c.Request().Context(), connection)
+		ctx := operatortool.WithConnection(context.WithValue(c.Request().Context(), operatorCredentialKey{}, billingAuthorization(resolve)), connection)
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
@@ -115,7 +128,17 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
 	return operatortool.Authority{Identity: operatorIdentity(credential, organization), Check: func(ctx context.Context, requirement operatortool.Requirement) error {
-		if requirement.ResourceID != "" || requirement.ResourceKind != "" {
+		if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
+			if credential.Hosted == nil || requirement.ResourceID != "" || s.config.Hosted == nil || organization != s.config.Hosted.OrganizationID {
+				return operatortool.ErrAccessDenied
+			}
+			if requirement.ResourceKind == "billing" && (credential.HostedRole != "owner" || credential.Hosted.SupportActor != "") {
+				return operatortool.ErrAccessDenied
+			}
+			if requirement.ResourceKind == "plan" && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+				return operatortool.ErrAccessDenied
+			}
+		} else if requirement.ResourceID != "" || requirement.ResourceKind != "" {
 			// Resource-specific commands must use their application's ownership
 			// check; this initial read adapter never grants an unknown resource.
 			return operatortool.ErrAccessDenied
