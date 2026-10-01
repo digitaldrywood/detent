@@ -2007,11 +2007,17 @@ Project dispatch evaluates candidates in the existing priority order, with at
 most the initial free project slots plus eight candidates of lookahead per pass
 (#3190). Failed hydration, dependency waits, due retries, and rejected dispatches
 consume that same evaluation allowance; they cannot trigger a full-queue tracker
-scan. Existing native dependency waits are ordered behind candidates without
-known waits before bounded hydration, preserving priority within each group.
-Due retries retain their polling order, and every admitted candidate still uses
-fresh dispatch hydration. Local label rejections and project-capacity skips need
-no evaluation.
+scan. After merge ordering, the existing stable partition places known in-memory
+running, claimed, parked, deferred-completion and pending-retry ownership, native
+dependency waits, and pure existing Rework CI, artifact and active-promotion gate
+evidence behind candidates without known waits (#3570). Ordering preserves
+priority within each group, including ready merge order. It consults no tracker,
+operator-rejection or recorded-blocker hooks and adds no eligibility classifier:
+fresh dispatch hydration and the existing gate owners still decide eligibility,
+including configured CI and human policy. Unknown evidence and due retries remain
+in the evaluation frontier and retain their evaluation and polling order. The
+partition does not change the evaluation bound or acquire capacity. Local label
+rejections and project-capacity skips need no evaluation.
 The existing merge-control path remains available when project slots are full.
 This bounds readiness discovery; it does not reserve or hold global capacity,
 and discovered ready work still uses the existing global acquisition lifecycle.

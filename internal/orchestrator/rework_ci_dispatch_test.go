@@ -56,8 +56,20 @@ func TestReworkCurrentHeadCIDispatch(t *testing.T) {
 				if !slices.Equal(plan.DispatchOrder(), []string{want}) {
 					t.Fatalf("retry=%v dispatch order=%v, want %s", retry, plan.DispatchOrder(), want)
 				}
-				if tt.wait && reason != dispatchSkipCurrentHeadCIWait {
-					t.Fatalf("retry=%v reason=%q", retry, reason)
+				if tt.wait {
+					wantReason := dispatchSkipCurrentHeadCIWait
+					if !retry {
+						// The known CI wait follows the ready Todo, which fills
+						// capacity before another candidate needs hydration.
+						wantReason = dispatchSkipProjectCapacityFull
+					}
+					if reason != wantReason {
+						t.Fatalf("retry=%v reason=%q, want %q", retry, reason, wantReason)
+					}
+					decision := planner.dispatchableIssueDecision(issue, &state, false, now, "")
+					if decision.reason != dispatchSkipCurrentHeadCIWait {
+						t.Fatalf("CI owner decision=%+v", decision)
+					}
 				}
 				if tt.wait {
 					if retry && state.Retry[issue.ID].Attempt != 2 {

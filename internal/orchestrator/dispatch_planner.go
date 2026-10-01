@@ -102,20 +102,36 @@ func (p dispatchPlanner) plan(
 	dueRetries := dueRetriesByIssue(state, now)
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
 	dueRetries = dueRetriesByIssue(state, now)
+	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
+	// Keep known waits outside the bounded hydration frontier. This is only an
+	// ordering hint: gate owners and fresh dispatch hydration still decide
+	// eligibility, and due retries retain their evaluation and polling order.
+	waiting := make(map[string]bool, len(plannedCandidates))
+	for _, issue := range plannedCandidates {
+		if _, due := dueRetries[issue.ID]; due {
+			continue
+		}
+		_, running := state.Running[issue.ID]
+		_, claimed := state.Claimed[issue.ID]
+		_, parked := state.Blocked[issue.ID]
+		_, deferred := state.deferredCompletions[issue.ID]
+		_, retry := state.Retry[issue.ID]
+		waiting[issue.ID] = running || claimed || parked || deferred || retry ||
+			(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, p.cfg.TerminalStates)) ||
+			(normalizeState(issue.State) == normalizeState(p.cfg.AutoPromote.ReworkState) && issue.PullRequest != nil &&
+				(currentHeadCIStatusPending(issue.PullRequest.CIStatus) || len(mergeWorkerCurrentHeadCIPendingChecks(issue)) > 0)) ||
+			artifactGateWaitStatusBlocksDispatch(issue, p.cfg.AutoPromote.Gate) ||
+			autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote)
+	}
 	slices.SortStableFunc(plannedCandidates, func(a, b connector.Issue) int {
-		_, retryA := dueRetries[a.ID]
-		_, retryB := dueRetries[b.ID]
-		waitingA := !retryA && a.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(a, p.cfg.TerminalStates)
-		waitingB := !retryB && b.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(b, p.cfg.TerminalStates)
-		if waitingA == waitingB {
+		if waiting[a.ID] == waiting[b.ID] {
 			return 0
 		}
-		if waitingA {
+		if waiting[a.ID] {
 			return 1
 		}
 		return -1
 	})
-	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
 	logDecision := func(decision dispatchPlanDecision) {
 		decision.SelectionReason = mergePriority.reasons[strings.TrimSpace(decision.Issue.ID)]
 		p.logDecision(hooks, decision)

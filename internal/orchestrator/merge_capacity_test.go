@@ -307,8 +307,11 @@ func TestReadyMergeAllowsNonStrictBaseAdvancement(t *testing.T) {
 
 func TestReadyMergeCapacityOrdering(t *testing.T) {
 	t.Parallel()
-	for _, reserved := range []bool{false, true} {
-		t.Run(fmt.Sprintf("reservation_%t", reserved), func(t *testing.T) {
+	for _, tt := range []struct {
+		reserved bool
+		held     int
+	}{{}, {reserved: true}, {held: 24}, {reserved: true, held: 24}} {
+		t.Run(fmt.Sprintf("reservation_%t_held_%d", tt.reserved, tt.held), func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 9, 2, 19, 35, 0, time.UTC)
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, MergeFastPathEnabled: true, MergeFairnessAge: time.Hour, ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"}})
@@ -318,12 +321,19 @@ func TestReadyMergeCapacityOrdering(t *testing.T) {
 			newer := readyMergeCapacityIssue("newer", 2372)
 			newer.StageUpdatedAt = timePointer(now.Add(-time.Minute))
 			first, second := oldest, newer
-			if reserved {
+			if tt.reserved {
 				reserveMergeCandidate(&state, newer, now)
 			}
-			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{newer, oldest}}}
+			candidates := []connector.Issue{newer, oldest, first}
+			for i := range tt.held {
+				held := readyMergeCapacityIssue(fmt.Sprintf("held-%02d", i), 2400+i)
+				held.StageUpdatedAt = timePointer(now.Add(-3 * time.Hour))
+				state.Blocked[held.ID] = Blocked{Issue: held, Reason: lifetimeLimitReason}
+				candidates = append(candidates, held)
+			}
+			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: candidates}}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-			orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{newer, oldest, first}, now)
+			orch.dispatchReadyIssues(t.Context(), &state, candidates, now)
 			if len(tracker.merges) != 1 || tracker.merges[0].number != first.PullRequest.Number {
 				t.Fatalf("first pass merges=%v, want only PR %d", tracker.merges, first.PullRequest.Number)
 			}

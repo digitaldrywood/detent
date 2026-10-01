@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 func TestDispatchPlannerBoundsCandidateEvaluation(t *testing.T) {
@@ -164,38 +165,94 @@ func TestDispatchPlannerBoundsGitHubIssueReads(t *testing.T) {
 	}
 }
 
-func TestDispatchPlannerFindsReadyTailBeyondNativeDependencyWaits(t *testing.T) {
+func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"native waits", "unknown waits", "due retries"} {
+	for _, mode := range []string{"native waits", "running", "claimed", "parked", "deferred completion", "pending retry", "Rework CI", "artifact gate", "promotion gate", "refreshed gate", "stale artifact", "unknown waits", "due retries", "due CI polls"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
-			cfg := normalizeConfig(Config{MaxConcurrentAgents: 6, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 6, ActiveStates: []string{"Todo", "Rework", "In Progress"}, TerminalStates: []string{"Done"},
+				AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand}},
+			})
+			if mode == "artifact gate" || mode == "stale artifact" {
+				cfg.AutoPromote.Gate = gate.Config{Kind: gate.KindArtifact, Artifact: gate.ArtifactConfig{StatusField: "render_status", WaitStatuses: []string{"queued"}}}
+			}
+			if mode == "running" {
+				cfg.MaxConcurrentAgents += 24 // The existing cohort occupies its own slots; six remain free.
+			}
 			state := newState(cfg)
 			now := time.Date(2026, 9, 30, 21, 51, 0, 0, time.UTC)
 			var candidates []connector.Issue
 			for i := range 30 {
 				issue := dispatchTestIssue(fmt.Sprintf("%02d", i), "Todo")
 				issue.CreatedAt = new(now.Add(time.Duration(i) * time.Second))
-				if i < 24 {
-					issue.BlockedBy = []connector.BlockedRef{{Identifier: "fixture/dispatch#999", State: "Todo"}}
-					if mode != "unknown waits" {
-						issue.DependencySource = connector.BlockedRefSourceNative
-					}
-					if mode == "due retries" {
-						state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 1, DueAt: now}
+				if i < 24 || mode == "refreshed gate" {
+					switch mode {
+					case "native waits", "unknown waits", "due retries":
+						issue.BlockedBy = []connector.BlockedRef{{Identifier: "fixture/dispatch#999", State: "Todo"}}
+						if mode != "unknown waits" {
+							issue.DependencySource = connector.BlockedRefSourceNative
+						}
+						if mode == "due retries" {
+							state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 1, DueAt: now}
+						}
+					case "running":
+						state.Running[issue.ID] = Running{Issue: issue}
+					case "claimed":
+						state.Claimed[issue.ID] = Claimed{Issue: issue}
+					case "parked":
+						state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: lifetimeLimitReason}
+					case "deferred completion":
+						state.deferredCompletions[issue.ID] = deferredCompletion{}
+					case "pending retry":
+						state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 1, DueAt: now.Add(time.Minute)}
+					case "Rework CI", "due CI polls", "refreshed gate":
+						issue.State = "Rework"
+						issue.PullRequest = &connector.PullRequest{State: "OPEN", CIStatus: "pending"}
+						if mode == "due CI polls" {
+							state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2, DueAt: now, Wait: RetryWait{Kind: retryWaitCurrentHeadCI}}
+						}
+					case "artifact gate", "stale artifact":
+						issue.Fields = map[string]string{"render_status": "queued"}
+						if mode == "stale artifact" {
+							issue.StageUpdatedAt = new(now)
+							issue.UpdatedAt = new(now)
+							issue.FieldUpdatedAt = map[string]time.Time{"render_status": now}
+						}
+					case "promotion gate":
+						issue = dispatchTestIssueWithPullRequest(issue.ID, "In Progress", "OPEN")
+						issue.CreatedAt = new(now.Add(time.Duration(i) * time.Second))
+						issue.PullRequest.CIStatus = "pending"
+						state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted}
 					}
 				}
 				candidates = append(candidates, issue)
 			}
 			var hydrated []string
+			var polled []string
 			plan := newDispatchPlanner(cfg).plan(&state, candidates, now, dispatchPlanHooks{
+				pollRetryWait: func(issue connector.Issue, retry Retry) (Retry, bool, string) {
+					polled = append(polled, issue.ID)
+					return retry, true, dispatchSkipCurrentHeadCIWait
+				},
 				hydrate: func(issue connector.Issue) (connector.Issue, bool) {
 					hydrated = append(hydrated, issue.ID)
+					if mode == "refreshed gate" {
+						issue.PullRequest.CIStatus = "success"
+					}
 					return issue, true
 				},
 			})
-			if mode == "native waits" {
-				if len(plan.Dispatches) != 6 || plan.Dispatches[0].IssueID != "24" || plan.Dispatches[5].IssueID != "29" || !slices.Equal(hydrated, []string{"24", "25", "26", "27", "28", "29"}) {
+			if mode == "due CI polls" {
+				want := []string{"00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13"}
+				if len(plan.Dispatches) != 0 || len(hydrated) != 0 || !slices.Equal(polled, want) {
+					t.Fatalf("due CI polls dispatches=%+v hydrated=%v polled=%v", plan.Dispatches, hydrated, polled)
+				}
+			} else if mode != "unknown waits" && mode != "due retries" {
+				want := []string{"24", "25", "26", "27", "28", "29"}
+				if mode == "refreshed gate" || mode == "stale artifact" {
+					want = []string{"00", "01", "02", "03", "04", "05"}
+				}
+				if !slices.Equal(plan.DispatchOrder(), want) || !slices.Equal(hydrated, want) {
 					t.Fatalf("ready tail dispatches=%+v hydrated=%v", plan.Dispatches, hydrated)
 				}
 			} else if len(plan.Dispatches) != 0 || len(hydrated) != 14 || hydrated[0] != "00" || hydrated[13] != "13" {
