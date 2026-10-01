@@ -75,19 +75,19 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		}
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
 	}
-	invitation, err := s.config.Hosted.Provider.Invite(c.Request().Context(), credential.Hosted.OrganizationID, email, role, credential.Hosted.Subject)
-	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		return s.hostedInvitationFailure(c, email, reserved, err)
+	if _, err := s.sendReservedHostedInvitationFor(c.Request().Context(), credential, email, role, reserved); err != nil {
+		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, role, formatHubTime(s.config.now()))
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be recorded")
-	}
+
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
 func (s *Service) hostedManagedMember(c echo.Context, credential apiCredential, removingOwner bool) (auth.Membership, error) {
-	members, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), "", credential.Hosted.OrganizationID)
+	return s.hostedManagedMemberFor(c.Request().Context(), credential, c.Param("member"), removingOwner)
+}
+
+func (s *Service) hostedManagedMemberFor(ctx context.Context, credential apiCredential, id string, removingOwner bool) (auth.Membership, error) {
+	members, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
 		return auth.Membership{}, auth.ErrHostedIdentity
 	}
@@ -100,7 +100,7 @@ func (s *Service) hostedManagedMember(c echo.Context, credential apiCredential, 
 		if member.Role.Slug == "owner" {
 			owners++
 		}
-		if member.ID == c.Param("member") {
+		if member.ID == id {
 			selected = member
 		}
 	}
@@ -115,16 +115,10 @@ func (s *Service) revokeHostedMember(c echo.Context) error {
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot remove organization members")
 	}
-	member, err := s.hostedManagedMember(c, credential, true)
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This member cannot be removed; the organization must retain an owner")
+	if err := s.removeHostedMemberFor(c.Request().Context(), credential, c.Param("member")); err != nil {
+		return s.hostedError(c, http.StatusForbidden, "This member could not be removed; the organization must retain an owner")
 	}
-	if err := s.revokeHostedMemberLocally(c.Request().Context(), member.UserID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Membership removal is temporarily unavailable")
-	}
-	if err := s.config.Hosted.Provider.RevokeMembership(c.Request().Context(), member.ID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Local access is revoked. Provider revocation could not be confirmed; retry removal.")
-	}
+
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
@@ -161,16 +155,10 @@ func (s *Service) changeHostedRole(c echo.Context) error {
 	if err != nil || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
 		return s.hostedError(c, http.StatusForbidden, "You cannot assign this organization role")
 	}
-	member, err := s.hostedManagedMember(c, credential, role != "owner")
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This role cannot be changed; the organization must retain an owner")
+	if _, err := s.changeHostedRoleFor(c.Request().Context(), credential, c.Param("member"), role); err != nil {
+		return s.hostedError(c, http.StatusForbidden, "This role could not be changed; the organization must retain an owner")
 	}
-	if err := s.config.Hosted.Provider.SetMembershipRole(c.Request().Context(), member.ID, role); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be changed")
-	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_members SET role = ?,updated_at = ? WHERE user_id = ?", role, formatHubTime(s.config.now()), member.UserID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be recorded")
-	}
+
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 

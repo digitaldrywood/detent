@@ -12,7 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 )
 
-func seedHostedArtifact(t *testing.T, f hostedSecurityFixture) (artifact.Reference, string, string) {
+func seedHostedArtifact(t *testing.T, f hostedSecurityFixture, deadlines ...time.Time) (artifact.Reference, string, string) {
 	t.Helper()
 	item := f.seedIssue(t, 1)
 	now := time.Now().UTC()
@@ -32,6 +32,9 @@ func seedHostedArtifact(t *testing.T, f hostedSecurityFixture) (artifact.Referen
 		t.Fatal(err)
 	}
 	ref := artifact.Reference{SchemaVersion: 1, Scope: artifact.Scope{OrganizationID: "org_security", ProjectID: string(f.project), WorkItemID: string(item)}, ServiceID: binding.ServiceID, ArtifactID: artifact.NewID("artifact"), ManifestID: artifact.NewID("manifest"), Revision: 1, SHA256: artifact.Digest([]byte("manifest")), Kind: "log", State: "partial", Availability: "available", Bytes: 100, Objects: 1, ExpiresAt: now.Add(time.Hour), ObservedAt: now}
+	if len(deadlines) > 0 {
+		ref.ExpiresAt = deadlines[0]
+	}
 	raw, err = json.Marshal(ref)
 	if err != nil {
 		t.Fatal(err)

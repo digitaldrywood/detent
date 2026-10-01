@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 	"github.com/labstack/echo/v4"
@@ -148,6 +149,20 @@ func (s *Service) authorizeOperatorPreview(ctx context.Context, action chatpkg.A
 			return err
 		}
 		return (hubProjectExecutor{s}).authorizeCreatedProjectResult(ctx, string(action.Kind), json.RawMessage(action.Result), action.Status)
+	}
+	if operatortool.IsAdministration(string(action.Kind)) {
+		if err := s.operatorChat.CheckBrowserSession(ctx, action.ConnectionID); err != nil {
+			return err
+		}
+		in, err := operatoradmin.Decode(string(action.Kind), action.Arguments)
+		if err != nil {
+			return operatortool.ErrAccessDenied
+		}
+		return s.administration.App.Authorize(ctx, string(action.Kind), in, "")
+	}
+	if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+		_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: action.ProjectID})
+		return err
 	}
 	if hubFleetTool(string(action.Kind)) {
 		_, err := operatortool.AuthorizeCurrent(ctx, hubFleetRequirement(string(action.Kind)))

@@ -77,5 +77,5 @@ func definition(name string, description string, schema string) Definition {
 }
 
 func AllDefinitions() []Definition {
-	return append(append(append(Catalog(), WorkReadCatalog()...), CommandCatalog()...), ProjectCatalog()...)
+	return append(append(append(append(append(Catalog(), WorkReadCatalog()...), CommandCatalog()...), ProjectCatalog()...), ChangeCatalog()...), AdministrationCatalog()...)
 }

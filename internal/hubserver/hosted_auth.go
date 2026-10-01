@@ -192,6 +192,8 @@ func hostedReadRequest(c echo.Context) bool {
 	return c.Request().Method == http.MethodGet || c.Request().Method == http.MethodHead
 }
 
+type hostedMutationContext struct{}
+
 func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		defer s.recordHostedRequest(c, time.Now())
@@ -217,6 +219,7 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 		if !hostedReadRequest(c) && !bearerAPI {
 			s.hostedMutationMu.Lock()
 			defer s.hostedMutationMu.Unlock()
+			c.SetRequest(c.Request().WithContext(context.WithValue(c.Request().Context(), hostedMutationContext{}, true)))
 		}
 		return next(c)
 	}

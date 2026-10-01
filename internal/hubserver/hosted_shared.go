@@ -358,7 +358,8 @@ func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now st
 }
 
 type hostedSharedInvitation struct {
-	Token string `json:"token"`
+	InvitationID string `json:"invitation_id"`
+	Token        string `json:"token"`
 }
 
 func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
@@ -372,7 +373,14 @@ func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	}
 	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject, SessionID: claims.ProviderSession}}
 	s.hostedMutationMu.Lock()
-	err := s.acceptHostedInvitationFor(c.Request().Context(), identity, request.Token)
+	var err error
+	if request.InvitationID != "" && request.Token == "" {
+		err = s.acceptHostedInvitationIDFor(c.Request().Context(), identity, request.InvitationID)
+	} else if request.InvitationID == "" {
+		err = s.acceptHostedInvitationFor(c.Request().Context(), identity, request.Token)
+	} else {
+		err = auth.ErrHostedIdentity
+	}
 	s.hostedMutationMu.Unlock()
 	if err != nil {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is expired, already used, or intended for another account or organization"})

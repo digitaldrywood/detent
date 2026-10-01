@@ -313,27 +313,29 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 		}
 		source = raw
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	record, err := readAttemptDiffGeneration(ctx, s.database.db, scope, attemptID, source, seq)
-	if errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
+	result, err := s.readAttemptDiff(c.Request().Context(), nativeRequestScope(c), "", attemptID, source, seq)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+	record, err := readAttemptDiffGeneration(ctx, s.database.db, scope, attemptID, source, seq)
+	if err != nil {
+		return tracker.AttemptDiff{}, err
+	}
+	if item != "" && record.WorkItemID != item {
+		return tracker.AttemptDiff{}, nativeNotFound()
+	}
 	if _, _, err := readNativeIssue(ctx, s.database.db, scope, record.WorkItemID); err != nil {
-		return s.nativeAPIError(c, err)
+		return tracker.AttemptDiff{}, err
 	}
 	files, err := readAttemptDiffFiles(ctx, s.database.db, record.ID)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return tracker.AttemptDiff{}, err
 	}
-	return c.JSON(http.StatusOK, tracker.AttemptDiff{
-		ID: record.ID, AttemptID: record.AttemptID, Producer: record.Producer, Generation: record.Generation,
-		BaseSHA: record.BaseSHA, HeadSHA: record.HeadSHA, Files: files,
-		FileCount: record.FileCount, PatchBytes: record.PatchBytes, Truncated: record.Truncated, CreatedAt: record.CreatedAt,
-	})
+	return tracker.AttemptDiff{ID: record.ID, AttemptID: record.AttemptID, Producer: record.Producer, Generation: record.Generation, BaseSHA: record.BaseSHA, HeadSHA: record.HeadSHA, Files: files, FileCount: record.FileCount, PatchBytes: record.PatchBytes, Truncated: record.Truncated, CreatedAt: record.CreatedAt}, nil
 }
 
 // getWorkItemDiff reads the latest stored diff on one issue, or reports that
@@ -353,28 +355,27 @@ func (s *Service) getWorkItemDiff(c echo.Context) error {
 		}
 		source = raw
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	issue, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item"))
+	result, err := s.readWorkItemDiff(c.Request().Context(), nativeRequestScope(c), c.Param("item"), source)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) readWorkItemDiff(ctx context.Context, scope nativeScope, item, source string) (tracker.WorkItemDiff, error) {
+	issue, _, err := readNativeIssue(ctx, s.database.db, scope, item)
+	if err != nil {
+		return tracker.WorkItemDiff{}, err
 	}
 	record, err := readWorkItemDiffGeneration(ctx, s.database.db, scope, string(issue.WorkItemID), source)
 	if errors.Is(err, sql.ErrNoRows) {
-		return c.JSON(http.StatusOK, tracker.WorkItemDiff{})
+		return tracker.WorkItemDiff{}, nil
 	}
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return tracker.WorkItemDiff{}, err
 	}
-	files, err := readAttemptDiffFiles(ctx, s.database.db, record.ID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, tracker.WorkItemDiff{Diff: &tracker.AttemptDiff{
-		ID: record.ID, AttemptID: record.AttemptID, Producer: record.Producer, Generation: record.Generation,
-		BaseSHA: record.BaseSHA, HeadSHA: record.HeadSHA, Files: files,
-		FileCount: record.FileCount, PatchBytes: record.PatchBytes, Truncated: record.Truncated, CreatedAt: record.CreatedAt,
-	}})
+	diff, err := s.readAttemptDiff(ctx, scope, item, record.AttemptID, source, record.Generation.Seq)
+	return tracker.WorkItemDiff{Diff: &diff}, err
 }
 
 // hubTransact runs fn in one transaction on the hub pool and commits when it

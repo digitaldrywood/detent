@@ -58,6 +58,12 @@ func ActionSummary(action Action) string {
 		if operatortool.IsWorkTool(string(action.Kind)) {
 			return fmt.Sprintf("%s on %s", strings.ReplaceAll(string(action.Kind), "_", " "), actionLabel(action))
 		}
+		if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+			return fmt.Sprintf("%s on %s: %s", action.Kind, action.ProjectID, action.Title)
+		}
+		if operatortool.IsAdministration(string(action.Kind)) {
+			return action.Title
+		}
 		return "Unknown operator action"
 	}
 }

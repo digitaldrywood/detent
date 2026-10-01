@@ -76,10 +76,6 @@ type CutoverInput struct {
 	States         []tracker.NativeState `json:"states"`
 	InitialState   string                `json:"initial_state"`
 }
-type ChangeReviewPolicyInput struct {
-	ExpectedID string                     `json:"expected_review_policy_id"`
-	Policy     tracker.ChangeReviewPolicy `json:"policy"`
-}
 
 type PolicyApprovalInput struct {
 	ExpectedID       string            `json:"expected_policy_id"`
@@ -99,7 +95,7 @@ type SummaryInput struct {
 // ProjectCatalog includes only named, typed operations. Browser setup tools
 // return navigation and requirements without accepting credentials or file paths.
 func ProjectCatalog() []Definition {
-	reads := []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "get_cutover_receipt", "get_git_hub_import", "list_git_hub_import_records", "get_git_hub_batch", "get_project_policy", "get_change_review_policy", "project_secret_metadata", "repository_freshness", "project_settings", "project_setup", "demo_setup_scenarios"}
+	reads := []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "get_cutover_receipt", "get_git_hub_import", "list_git_hub_import_records", "get_git_hub_batch", "get_project_policy", "project_secret_metadata", "repository_freshness", "project_settings", "project_setup", "demo_setup_scenarios"}
 	out := make([]Definition, 0, len(reads)+14)
 	for _, name := range reads {
 		schema := projectSchema(reflect.TypeFor[ProjectReadRequest]())
@@ -126,7 +122,6 @@ func ProjectCatalog() []Definition {
 		projectWrite[CutoverInput]("cutover_project", true, true),
 		projectWrite[PolicyApprovalInput]("approve_project_policy", true, false),
 		projectWrite[PolicyRevokeInput]("revoke_project_policy", true, false),
-		projectWrite[ChangeReviewPolicyInput]("approve_change_review_policy", true, false),
 		projectWrite[SummaryInput]("project_native_summary", true, true),
 		projectWrite[struct{}]("remove_project_secret", true, false),
 	)
@@ -225,7 +220,7 @@ func ProjectConfirmation(name string, raw json.RawMessage) (bool, bool) {
 			// Retry can resume an already approved dispatchable intake.
 			return true, true
 		}
-	case "create_hosted_project", "bind_native_repository", "approve_change_review_policy", "approve_project_policy", "revoke_project_policy", "project_native_summary", "remove_project_secret":
+	case "create_hosted_project", "bind_native_repository", "approve_project_policy", "revoke_project_policy", "project_native_summary", "remove_project_secret":
 		return true, true
 	default:
 		return false, false

@@ -388,6 +388,9 @@ func (s *Server) chatFileIssueProposal(ctx context.Context, raw json.RawMessage)
 }
 
 func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (execution chatpkg.ActionExecution, executionErr error) {
+	if action.ConnectionID != "" && operatortool.IsAdministration(string(action.Kind)) {
+		return s.executeCredentialAction(ctx, action)
+	}
 	if action.ConnectionID != "" {
 		if err := s.validateOperatorAction(ctx, action); err != nil {
 			return chatpkg.ActionExecution{}, err
@@ -456,6 +459,10 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 	default:
 		if operatortool.IsWorkTool(string(action.Kind)) {
 			execution, executionErr = s.executeWorkAction(ctx, action)
+			return execution, executionErr
+		}
+		if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
+			execution, executionErr = s.executeChangeAction(ctx, action)
 			return execution, executionErr
 		}
 		if dashboardFleetTool(string(action.Kind)) {

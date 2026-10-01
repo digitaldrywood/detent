@@ -99,6 +99,25 @@ the existing move reasons are unchanged and no mechanism or reason code is added
 `TestOperatorRemovalCommand` and `TestWorkArgumentsDirectCallBounds` cover
 replay, native revisions, workflow refusal, ownership, bounded direct calls,
 real approval/rejection, authorized YOLO and orchestrator-owned removal.
+Change/review/artifact MCP parity (#3347) binds shared application reads/commands
+to freshly resolved connection authority. Nested work-item/change/version and
+exact artifact receipt ownership are checked before effects and replay. Native
+HTTP and MCP reuse the same transaction, policy, revision/bundle, attribution
+and retry commands; the existing chat browser approval owns material review and
+policy/service-binding decisions. Global discovery honors the freshly resolved
+lesser hosted role as direct calls do. Stored diffs and run detail match the
+named attempt to its work item; PR reads reuse the existing connector projection
+and its observation times without direct GitHub access. Diff pages bound encoded
+JSON bytes and mark patch truncation. The daemon artifact library reuses its
+project-scoped dashboard reads. Historical artifact downloads preserve read grants, retention,
+TTL and original session authority; tokens appear only in the usable client result,
+never in URLs, audit summaries or durable retry receipts. Publishing, expected CI
+attestation, publisher callbacks and landing reports remain producer/service
+operations, not operator MCP tools. No merger or tracker lane writer is introduced.
+`TestOperatorChangeCommands`, `TestOperatorArtifactResults`,
+`TestHostedOperatorPolicyApproval`, and the existing hosted artifact pilot cover
+these boundaries. This extracts application commands rather than adding a
+protection mechanism (INV-3).
 
 MCP transport parity (#3339) uses one permission-filtered, paginated typed
 registry with toolset metadata. The `2026-07-28` stateless protocol validates
@@ -112,6 +131,25 @@ writer is introduced. `TestProtocolApplicationParity`,
 `TestModernHTTPMetadataValidation`, `TestCatalogCursorCurrentAuthority`, and
 modern cases in `TestMCPActionApprovalBoundary` cover transport parity, forged
 metadata, direct-call ownership, revoked authority and approval after a POST ends.
+
+Organization, membership/grant and credential administration (#3344) uses the
+same application commands as dashboard handlers. Dedicated bootstrap accounts
+and shared-entry account sessions carry no project grants; context selection
+returns a fresh authentication destination and leaves connection authority bound
+to its original context. Support entry returns the existing interactive provider
+flow only to configured support actors and grants no platform/customer powers.
+Access changes retain exact target/input previews in the existing chat approval
+service. Current role, scope, project grants and resource ownership are checked
+again on execution and cached result delivery. Account receipts reuse existing
+application audit ledgers; invitations and credentials retain the existing
+application retry contract. Credential values are omitted from conversation,
+browser, audit and durable retry records, and deliberate result delivery stays
+bound to the originating identity/session. Revoked or replaced credentials
+cannot deliver a stale secret. No lane writer or revocation/recovery mechanism
+is added. `TestAdministrationExecution`, `TestHostedAdministrationAuthority`,
+`TestNativeCredentialAdministration`, `TestDedicatedAdministrationSetup`,
+`TestEntryAdministrationContext` and `TestMCPCredentialAdministration` cover these
+boundaries with existing application identity fixtures.
 
 MCP mutations carry content-free, trusted audit/correlation context (#3338).
 Dashboard commands reuse durable operator events for retry receipts; native and

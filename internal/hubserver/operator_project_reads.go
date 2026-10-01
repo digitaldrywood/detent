@@ -67,8 +67,6 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		if err == nil {
 			value, err = readProjectPolicy(ctx, s.database.db, policyScope)
 		}
-	case "get_change_review_policy":
-		value, err = readChangePolicy(ctx, s.database.db, scope)
 	case "project_secret_metadata":
 		var status projectSecretStatus
 		status, err = readSecretStatus(ctx, s.database.db, scope)

@@ -149,7 +149,7 @@ func TestHostedProjectTools(t *testing.T) {
 			if json.Unmarshal([]byte(approved.Result), &attribution) != nil || attribution.ApprovedBy != operatortool.ConnectionIdentity(ctx).PrincipalID {
 				t.Fatalf("project command lost originating principal: approval=%+v requester=%s", attribution, operatortool.ConnectionIdentity(ctx).PrincipalID)
 			}
-			if _, err := e.Execute(ctx, read("get_change_review_policy")); err != nil {
+			if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read("get_change_review_policy")); err != nil {
 				t.Fatal(err)
 			}
 			// YOLO suppresses only confirmation; shared policy provenance validation remains.
@@ -161,14 +161,18 @@ func TestHostedProjectTools(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reviewInput := operatortool.ChangeReviewPolicyInput{ExpectedID: rules.ID, Policy: rules}
+			changeExecutor := hostedOperatorExecutor{f.service}
+			reviewInput := operatortool.ChangeArguments{ProjectID: id, RequestID: "foreign-check", ExpectedPolicyID: rules.ID, Policy: &rules}
 			reviewInput.Policy.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "ci", PrincipalID: "foreign-principal", Source: "independent"}}
-			if _, err := e.Execute(ctx, projectCall(t, "approve_change_review_policy", id, "foreign-check", reviewInput)); err == nil {
+			raw, _ := json.Marshal(reviewInput)
+			if _, err := changeExecutor.Execute(ctx, operatortool.Call{Name: operatortool.ApproveChangeReviewPolicy, Arguments: raw}); err == nil {
 				t.Fatal("unowned CI principal accepted")
 			}
+			reviewInput.RequestID = "review-policy"
 			reviewInput.Policy.RequiredChecks = []tracker.ChangeCheckSpec{}
-			if action := projectAction(t, e, ctx, projectCall(t, "approve_change_review_policy", id, "review-policy", reviewInput)); action.Status != chatpkg.ActionSucceeded {
-				t.Fatalf("review policy=%+v", action)
+			raw, _ = json.Marshal(reviewInput)
+			if _, err := changeExecutor.Execute(ctx, operatortool.Call{Name: operatortool.ApproveChangeReviewPolicy, Arguments: raw}); err != nil {
+				t.Fatalf("review policy=%v", err)
 			}
 			create := projectCall(t, "create_hosted_project", "", "create-hosted", operatortool.HostedProjectCreateInput{Name: "new MCP project", GrantAccess: true})
 			created := projectAction(t, e, ctx, create)

@@ -32,7 +32,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "approve_change_review_policy", "revoke_project_policy", "remove_project_secret":
+	case "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret":
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -377,15 +377,6 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			}
 			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, Policy: r.Input.Policy})
 		}
-	case "approve_change_review_policy":
-		r, err := projectCommandInput[operatortool.ChangeReviewPolicyInput](call.Arguments)
-		if err != nil {
-			return nil, err
-		}
-		projectID, requestID = r.ProjectID, r.RequestID
-		request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedID: r.Input.ExpectedID, Policy: r.Input.Policy}
-		input = request
-		operation = s.approveChangeReviewPolicyOperation(request)
 	case "revoke_project_policy":
 		r, err := projectCommandInput[operatortool.PolicyRevokeInput](call.Arguments)
 		if err != nil {
@@ -478,10 +469,10 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 	}
 	scope.project = tracker.ProjectID(projectID)
 	scope.requireHostedAdmin = projectToolScope(call.Name, false) == apikey.ScopeAdmin
-	suffix := map[string]string{"command_git_hub_batch": "/onboarding/issue-intake", "create_native_project": "", "create_hosted_project": "", "save_onboarding": "/onboarding", "update_project_integration": "/integration", "start_git_hub_import": "/imports", "cutover_project": "/integration/cutover", "approve_project_policy": "/policy", "approve_change_review_policy": "/change-review-policy", "revoke_project_policy": "/policy", "remove_project_secret": "/secrets/" + flySpritesToken, "project_native_summary": "/work-items/" + resourceID + "/projection"}[call.Name]
+	suffix := map[string]string{"command_git_hub_batch": "/onboarding/issue-intake", "create_native_project": "", "create_hosted_project": "", "save_onboarding": "/onboarding", "update_project_integration": "/integration", "start_git_hub_import": "/imports", "cutover_project": "/integration/cutover", "approve_project_policy": "/policy", "revoke_project_policy": "/policy", "remove_project_secret": "/secrets/" + flySpritesToken, "project_native_summary": "/work-items/" + resourceID + "/projection"}[call.Name]
 	method := "POST"
 	switch call.Name {
-	case "save_onboarding", "update_project_integration", "approve_project_policy", "approve_change_review_policy":
+	case "save_onboarding", "update_project_integration", "approve_project_policy":
 		method = "PUT"
 	case "revoke_project_policy", "remove_project_secret":
 		method = "DELETE"
