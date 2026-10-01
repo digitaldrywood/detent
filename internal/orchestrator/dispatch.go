@@ -195,7 +195,6 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return waitForDispatchBackoff(ctx, continuationDelay(continuationIndex))
 		},
 		dispatch: func(action dispatchAction) bool {
-			// Dispatch can write a lane even when the worker ultimately fails to start.
 			defer clear(blockerCache)
 			outcome := o.dispatchIssueWithAction(ctx, state, action, now)
 			if identity := workflowIssueIdentityKey(action.issue); identity != "" {
@@ -236,7 +235,6 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			state.Retry[issue.ID] = rescheduled
 		},
 		pollRetryWait: func(issue connector.Issue, retry Retry) (Retry, bool, string) {
-			// Retry polling can block an exhausted merge worker.
 			defer clear(blockerCache)
 			if retry.Wait.Kind == retryWaitWorkspaceBranchHeld {
 				return o.pollWorkspaceBranchHold(ctx, state, issue, retry, now)
