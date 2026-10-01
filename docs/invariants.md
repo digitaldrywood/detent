@@ -852,6 +852,18 @@ are unchanged. Existing report fixtures check large activity exclusion, report
 equivalence, optional bounds, strict overlap boundaries and the actual lower
 index-seek operand. No index, cache, configuration or schema is added.
 
+The existing workflow-history UPDATE trigger invalidates cached projections on
+every non-activity update and on activity changes to event/project/issue
+identity, identifier, URL, PR number or completion time. Activity checkpoints
+that change only fields absent from those projections do not invalidate them.
+INSERT/DELETE invalidation and the revision counter remain unchanged. Runtime
+evidence retains table counts and completion bounds; detailed activity timelines
+read fresh checkpoints directly. The forward migration replaces only this
+trigger, and its rollback restores unconditional UPDATE invalidation.
+`TestWorkflowHistoryRevision` checks current timeline payloads, unchanged
+checkpoint evidence, NULL transitions, projected identity changes, other phase
+updates and both migration directions.
+
 GitHub usage timing (#3767) extends the existing `RESTScope` owner, mutex,
 fixed stage/step/family/outcome aggregation and single aggregate log event.
 GraphQL timing adds only allowlisted existing query purposes, with unknown
