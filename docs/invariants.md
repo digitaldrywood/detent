@@ -605,6 +605,12 @@ provider resumption eligibility remains independent of issue-failure accounting;
 the shared infrastructure attribution applies at the existing counting and
 issue-demotion callers, preserving resumability without charging or parking an
 issue for an instance interruption.
+Service-restart reconciliation uses the same existing source-lane restoration
+owner as pre-turn failures, carrying pushed-product evidence so completed work
+stays active. A recorded Rework source returns to Rework, legacy empty source
+returns to Todo, and neither path enters the issue failure limit, including a
+configured zero limit. `TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt`
+checks these existing restoration contracts.
 
 Merged-completion ownership (#3529) resolves stale closed associations through
 existing native reference lookup and the existing merged-PR owner. Completion
