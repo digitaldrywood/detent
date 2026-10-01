@@ -610,8 +610,8 @@ func TestHostedInvitationKeyClaim(t *testing.T) {
 			},
 		},
 		{
-			name:   "a provider failure gives the key back so the same key succeeds",
-			status: http.StatusCreated, invitations: 1,
+			name:   "a provider failure retains the key because the outcome is uncertain",
+			status: http.StatusConflict, code: "idempotency_in_progress", invitations: 0,
 			prepare: func(t *testing.T, f *browserHostedFixture) {
 				provider := f.service.config.Hosted.Provider
 				f.service.config.Hosted.Provider = failingInviteProvider{f.provider}
