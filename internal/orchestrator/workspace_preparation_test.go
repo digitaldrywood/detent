@@ -19,8 +19,9 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 
 	const retryLimit = 3
 	tests := []struct {
-		name string
-		err  error
+		name     string
+		err      error
+		postTurn bool
 	}{
 		{
 			name: "dangling gitdir",
@@ -34,16 +35,29 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 			name: "after_create database timeout",
 			err:  fmt.Errorf("%w: create workspace: after_create: workspace db: postgresql://127.0.0.1:5432: timeout: context deadline exceeded", runpkg.ErrWorkspacePreparation),
 		},
+		{
+			name:     "native rebase metadata after resolution",
+			err:      fmt.Errorf("%w: finalize native rework: packed-refs.lock: operation not permitted", runpkg.ErrWorkspacePreparation),
+			postTurn: true,
+		},
+		{
+			name:     "native rebase signer infrastructure",
+			err:      fmt.Errorf("%w: finalize native rework: gpg failed to sign the data", runpkg.ErrWorkspacePreparation),
+			postTurn: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			issue := connector.Issue{ID: "issue-workspace", Identifier: "digitaldrywood/detent#1907", State: "In Progress"}
+			if tt.postTurn {
+				issue.State = "Rework"
+			}
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
 			attempts := &terminalRetryWorkAttemptStore{}
 			cfg := normalizeConfig(Config{
-				ActiveStates:   []string{"Todo", "In Progress"},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework"},
 				ObservedStates: []string{"Blocked"},
 				TerminalStates: []string{"Done"},
 				FailureBreaker: FailureBreakerConfig{
@@ -67,6 +81,12 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 					WorkAttemptID: int64(attempt),
 					StartedAt:     completedAt.Add(-time.Minute),
 				}
+				if tt.postTurn {
+					running.Mode = runpkg.RunModeImplement
+					running.DispatchSourceState = "Rework"
+					running.TurnCount = 1
+					running.Tokens.TotalTokens = 10
+				}
 				state.Running[issue.ID] = running
 				orch.upsertWorkAttemptSnapshot(&state, telemetry.WorkAttempt{
 					AttemptID: int64(attempt), IssueID: issue.ID, Identifier: issue.Identifier,
@@ -79,6 +99,7 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 					CompletedAt:  completedAt,
 					RetryAttempt: attempt + 1,
 					RetryDelay:   time.Second,
+					Result:       runpkg.RunResult{TurnStarted: tt.postTurn},
 				})
 
 				if state.InstantFailures[issue.ID].Count != 2 || state.RepeatedFailures[issue.ID].Count != 2 {
@@ -90,13 +111,30 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 				if len(state.ForgeUnavailable) != 0 {
 					t.Fatalf("workspace failure started forge condition or canary: %#v", state.ForgeUnavailable)
 				}
+				if tt.postTurn && tracker.issues[issue.ID].State != "Rework" {
+					t.Fatal("instance finalization failure changed the issue lane")
+				}
+				if attempt == 1 && !projectFailureBreakerAllowsDispatch(&state, completedAt) {
+					t.Fatal("one Git infrastructure failure excluded other runnable work")
+				}
+				if !allowanceInfrastructureAttempt(store.WorkAttempt{ErrorClass: runnerWorkAttemptErrorClass(tt.err), MetricsJSON: `{"turns":1,"total_tokens":10}`}) {
+					t.Fatal("Git infrastructure consumed the issue allowance")
+				}
 			}
-			if !state.FailureBreaker.Active() || projectFailureBreakerAllowsDispatch(&state, base.Add(3*time.Minute)) {
+			if tt.postTurn {
+				if state.FailureBreaker.Active() || !projectFailureBreakerAllowsDispatch(&state, base.Add(3*time.Minute)) {
+					t.Fatal("successful source turns were ignored by the existing instance progress owner")
+				}
+			} else if !state.FailureBreaker.Active() || projectFailureBreakerAllowsDispatch(&state, base.Add(3*time.Minute)) {
 				t.Fatal("instance did not drain after three failures")
 			}
 
-			if failures := state.FailureBreaker.Failures[workAttemptErrorWorkspace]; len(failures) != retryLimit {
-				t.Fatalf("FailureBreaker.Failures[%q] = %#v, want %d preserved failures", workAttemptErrorWorkspace, failures, retryLimit)
+			wantFailures := retryLimit
+			if tt.postTurn {
+				wantFailures = 1
+			}
+			if failures := state.FailureBreaker.Failures[workAttemptErrorWorkspace]; len(failures) != wantFailures {
+				t.Fatalf("FailureBreaker.Failures[%q] = %#v, want %d preserved failures", workAttemptErrorWorkspace, failures, wantFailures)
 			}
 
 		})

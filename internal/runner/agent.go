@@ -1499,6 +1499,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		runWorkspace = &admissionWorkspace{logger: r.logger, leaks: &r.admissionLeaks}
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && runRole(mode, req.Issue) == RoleRework
 	var landingTarget NativeLandingTarget
 	landing, nativeLanding := req.Execution.(LandingExecution)
 	nativeLanding = nativeLanding && mode == RunModeMerge
@@ -1582,6 +1583,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 	}()
+
+	reworkPrecheck := workspace.MergePrepareResult{}
+	if workspaceIssue.NativeRework {
+		if preparer, ok := runWorkspace.(workspace.ReworkPreparer); ok {
+			reworkPrecheck, err = preparer.PrepareRework(ctx, info, workspaceIssue, workspace.MergePrepareOptions{TargetBranch: workspaceIssue.ProgressBaseRef})
+			if err != nil {
+				return RunResult{}, nativeGitError("prepare native rework", err)
+			}
+		}
+	}
 
 	mergePrecheck := MergePrecheck{}
 	mergeFallback := false
@@ -1684,6 +1695,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		return RunResult{}, err
 	}
 	prompt += recoveryPrompt
+	if reworkPrecheck.Status != "" {
+		prompt += "\n\nThe runner owns native rebase preparation and finalization. Resolve source conflicts in this worktree and stage the resolved files with git add. Do not run rebase, rebase --continue, branch/ref updates, or signing workarounds. During a paused rebase, leave the resolved index for the runner to finalize; commit additional changes only when no rebase is paused.\n" + reworkPrecheck.Message
+	}
 	routeRole := agentRuntime.effectiveRunRole(role)
 	selection, backend, backendConfig, err := agentRuntime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
@@ -2141,6 +2155,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	afterRunPending = false
 	req.retainCheckpoint = result.Checkpoint != nil && turnErr != nil
+	req.finalizeNativeRework = workspaceIssue.NativeRework && turnErr == nil
 	if errors.Is(turnErr, ErrWorkerProcessReap) {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 		_, preserveErr := r.PreserveWorkspace(preserveCtx, req.Issue)

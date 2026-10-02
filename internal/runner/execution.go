@@ -208,6 +208,16 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	}
 	localCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	defer cancel()
+	if req.finalizeNativeRework && ctx.Err() == nil && !req.retainCheckpoint {
+		if preparer, ok := backend.(workspace.ReworkPreparer); ok {
+			if err := req.Execution.Validate(ctx); err != nil {
+				return err
+			}
+			if err := preparer.FinalizeRework(ctx, info, issue); err != nil {
+				return nativeGitError("finalize native rework", err)
+			}
+		}
+	}
 	var publicationErr error
 	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
 	if deadlineExpired {
@@ -333,4 +343,11 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 		"Verify local state before resuming. Missing or inaccessible dirty/unpushed checkpoints require recovery; preserve existing work. " +
 		"A pending or ambiguous external effect requires reconciliation: inspect the remote ref/head or existing PR before retrying. " +
 		"Do not fetch GitHub issue history. Artifact and Change references require scoped verification; they are not download capabilities.\n" + string(data), nil
+}
+
+func nativeGitError(operation string, err error) error {
+	if errors.Is(err, workspace.ErrMergeResolutionInvalid) {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return fmt.Errorf("%w: %s: %w", ErrWorkspacePreparation, operation, err)
 }

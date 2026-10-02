@@ -595,6 +595,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			var expected *tracker.ChangeDetail
 			var candidate connector.Issue
 			if test.rework {
+				remote := filepath.Join(t.TempDir(), "origin.git")
+				nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+				nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+				nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+				nativeChangeGit(t, source, "push", "-u", "origin", "main")
 				item := tracker.NativeWorkItemID(issue.ID)
 				change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
 				if err != nil {
@@ -753,6 +758,19 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 				if stored.HeadSHA != change.HeadSHA || stored.BaseSHA != change.BaseSHA || !nativeDiffHas(stored.Files, "CHANGE.md") {
 					t.Fatalf("stored diff = %#v, reported %#v", stored, change)
+				}
+				if test.rework {
+					detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(detail.Versions) != len(expected.Versions)+1 {
+						t.Fatalf("rework did not publish one new version: %+v", detail)
+					}
+					current := detail.Versions[len(detail.Versions)-1]
+					if change.VersionID == "" || change.VersionID == expected.Change.CurrentVersion || detail.Change.CurrentVersion != change.VersionID || current.ID != change.VersionID || current.HeadSHA != stored.HeadSHA || current.PolicyID != h.descriptor.ID || current.Repository != nativeChangeRepository || current.Code.URI != nativeChangeRepository+"/commit/"+stored.HeadSHA {
+						t.Fatalf("rework version lost final head or artifact authority: change=%+v, detail=%+v", change, detail)
+					}
 				}
 			}
 			if candidates := h.candidates(t); len(candidates) != 0 {

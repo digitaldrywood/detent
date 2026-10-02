@@ -166,6 +166,11 @@ type DeliverableState struct {
 	RemoteBranchExists bool
 }
 
+type ReworkPreparer interface {
+	PrepareRework(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
+	FinalizeRework(context.Context, Info, Issue) error
+}
+
 type MergePreparer interface {
 	PrepareMerge(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
 }
@@ -232,6 +237,7 @@ type ResidualReconciler interface {
 
 type Issue struct {
 	Landing                 *LandOptions
+	NativeRework            bool
 	ProjectID               string
 	ID                      string
 	Identifier              string
@@ -554,6 +560,32 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return Info{}, err
+	}
+	if issue.NativeRework {
+		exists, isDir, err := pathExists(info.Path)
+		if err != nil {
+			return Info{}, err
+		}
+		if exists && isDir {
+			paused, err := rebaseInProgress(ctx, info.Path)
+			if err != nil {
+				return Info{}, err
+			}
+			if paused {
+				release, err := l.acquireSourceOperation(ctx)
+				if err != nil {
+					return Info{}, err
+				}
+				paused, err = l.verifyReworkBranch(ctx, info, issue)
+				release()
+				if err != nil {
+					return Info{}, err
+				}
+				if paused {
+					return info, nil
+				}
+			}
+		}
 	}
 
 	var created bool
@@ -2197,17 +2229,16 @@ func GitMetadataWritableRoots(ctx context.Context, workspacePath string) ([]stri
 		return roots, nil
 	}
 
-	refDir, err := canonicalExistingDir(filepath.Dir(filepath.Join(metadata.commonDir, filepath.FromSlash(metadata.headRef))))
-	if err != nil {
-		return nil, fmt.Errorf("git branch ref dir: %w", err)
+	for _, prefix := range []string{"", "logs"} {
+		path := filepath.Join(metadata.commonDir, prefix, filepath.FromSlash(metadata.headRef))
+		parent, err := canonicalGitMetadataPath(filepath.Dir(path))
+		if err != nil {
+			return nil, fmt.Errorf("git branch metadata parent: %w", err)
+		}
+		path = filepath.Join(parent, filepath.Base(path))
+		addRoot(path)
+		addRoot(path + ".lock")
 	}
-	addRoot(refDir)
-
-	logDir, err := canonicalExistingDir(filepath.Dir(filepath.Join(metadata.commonDir, "logs", filepath.FromSlash(metadata.headRef))))
-	if err != nil {
-		return nil, fmt.Errorf("git branch log dir: %w", err)
-	}
-	addRoot(logDir)
 
 	return roots, nil
 }
@@ -2260,10 +2291,14 @@ func inspectGitMetadata(ctx context.Context, dir string) (gitMetadata, error) {
 	}, nil
 }
 
-func canonicalExistingDir(path string) (string, error) {
+func canonicalGitMetadataPath(path string) (string, error) {
+	var missing []string
 	for {
 		canonical, err := canonicalExistingPath(path)
 		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				canonical = filepath.Join(canonical, missing[i])
+			}
 			return canonical, nil
 		}
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -2273,6 +2308,7 @@ func canonicalExistingDir(path string) (string, error) {
 		if parent == path {
 			return "", err
 		}
+		missing = append(missing, filepath.Base(path))
 		path = parent
 	}
 }
