@@ -2902,9 +2902,11 @@ accept sparse authored operational claims or closed drafts; verified completion
 and actual merge evidence keep their existing owners. Recovery does not
 synthesize a new allowance receipt for unavailable dependencies, database or PR
 reads, and does not reset historical records.
-A historical triage park with a recorded PR head still uses the same promotion gate:
-a clean, green unchanged or
-newer head returns to Merging for
+Historical triage parks from In Progress or Rework return to that prior lane even
+with an associated PR. CI and audit readiness remain with that lane's existing
+owners; they do not hold recovery of the retired park.
+A historical triage park from another lane with a recorded PR head still uses
+the same promotion gate: a clean, green unchanged or newer head returns to Merging for
 the exact-head audit. Recovery evaluates audit eligibility once through the
 shared Rework readiness predicate, then applies the remaining promotion gates.
 This local evaluation leaves the instance audit requirement enabled for Merging.
