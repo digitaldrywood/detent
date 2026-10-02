@@ -1437,6 +1437,7 @@ INSERT INTO validator_verdicts (
   project_id,
   issue_id,
   head_sha,
+  context_digest,
   repository,
   base_sha,
   diff_digest,
@@ -1454,8 +1455,8 @@ INSERT INTO validator_verdicts (
   next_retry_at,
   recorded_at,
   updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(project_id, issue_id, head_sha, repository, pr_number, base_sha, context_digest) DO UPDATE SET
   repository = excluded.repository,
   base_sha = excluded.base_sha,
   diff_digest = excluded.diff_digest,
@@ -1480,7 +1481,12 @@ SELECT *
 FROM validator_verdicts
 WHERE project_id = ?
   AND issue_id = ?
-  AND head_sha = ?;
+  AND head_sha = ?
+  AND (sqlc.arg(context_digest) = '' OR context_digest = sqlc.arg(context_digest))
+  AND (sqlc.arg(repository) = '' OR repository = sqlc.arg(repository))
+  AND (sqlc.arg(base_sha) = '' OR base_sha = sqlc.arg(base_sha))
+  AND (sqlc.arg(pr_number) = 0 OR pr_number = sqlc.arg(pr_number))
+ORDER BY recorded_at DESC, id DESC LIMIT 1;
 
 -- name: ListValidatorVerdicts :many
 SELECT *
@@ -1496,7 +1502,11 @@ SET commented = 1,
     updated_at = ?
 WHERE project_id = ?
   AND issue_id = ?
-  AND head_sha = ?;
+  AND head_sha = ?
+  AND (sqlc.arg(context_digest) = '' OR context_digest = sqlc.arg(context_digest))
+  AND (sqlc.arg(repository) = '' OR repository = sqlc.arg(repository))
+  AND (sqlc.arg(base_sha) = '' OR base_sha = sqlc.arg(base_sha))
+  AND (sqlc.arg(pr_number) = 0 OR pr_number = sqlc.arg(pr_number));
 
 -- name: DailyDigestRuntime :one
 SELECT

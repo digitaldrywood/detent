@@ -529,12 +529,13 @@ type ValidatorVerdict struct {
 	Commented       int64          `json:"commented"`
 	RecordedAt      string         `json:"recorded_at"`
 	UpdatedAt       string         `json:"updated_at"`
-	FailureAttempts int64          `json:"failure_attempts"`
-	NextRetryAt     sql.NullString `json:"next_retry_at"`
 	Repository      string         `json:"repository"`
 	BaseSha         string         `json:"base_sha"`
 	DiffDigest      string         `json:"diff_digest"`
 	DiffFilesJson   string         `json:"diff_files_json"`
+	FailureAttempts int64          `json:"failure_attempts"`
+	NextRetryAt     sql.NullString `json:"next_retry_at"`
+	ContextDigest   string         `json:"context_digest"`
 }
 
 type WorkAttempt struct {

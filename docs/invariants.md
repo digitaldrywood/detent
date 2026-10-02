@@ -592,6 +592,18 @@ failures even when the validator turn also fails, and cannot yield a verdict.
 and `TestLocalGitVerifyReviewTreeAfterSeeding`
 cover these boundaries (#3031).
 
+Validator verdict identity also binds the current task title/body, referenced
+authoritative qualification evidence, and effective review instructions to the
+repository/PR/base/head provenance (#3087). Fresh tracker input is read before
+reuse and again before publication. Legacy rows without a context digest cannot
+approve or reject current code. Unrelated comments, timestamps and Workpad
+progress prose do not change identity; referenced qualification evidence does.
+`TestValidatorAcceptanceContextIdentity`, `TestValidatorContextMemoReuse`,
+`TestValidatorContextSchedulesOnceAndRejectsHeldResult`,
+`TestValidatorLegacyContextNotReusable`, and `TestValidatorContextStorageRestart`
+cover these boundaries. This extends the existing validator lifecycle without
+adding a recovery mechanism or granting a gate waiver.
+
 Verified PR delivery uses immutable forge `MergedAt` when hydrated, otherwise a
 successful programmatic merge's post-API observation time (#3482). The existing
 lane ledger and phase metadata record delivery time and its source; worker attempt
