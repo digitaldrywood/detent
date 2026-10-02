@@ -24,6 +24,9 @@ func sleepInhibitorCommand(platform string) (string, []string) {
 }
 
 func inhibitSleep(ctx context.Context, failed func()) (func(), error) {
+	if runtime.GOOS == "linux" && spriteSocketPresent() {
+		return holdSpriteTask(ctx, failed)
+	}
 	return startSleepInhibitor(ctx, runtime.GOOS, exec.CommandContext, failed)
 }
 
