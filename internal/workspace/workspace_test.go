@@ -964,8 +964,10 @@ func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 	wantRoots := []string{
 		linkedWorktreeGitDir(t, info.Path),
 		mustCanonicalExistingPath(t, filepath.Join(commonDir, "objects")),
-		mustCanonicalExistingPath(t, filepath.Join(commonDir, "refs", "heads", "detent")),
-		mustCanonicalExistingPath(t, filepath.Join(commonDir, "logs", "refs", "heads", "detent")),
+		filepath.Join(commonDir, "refs", "heads", filepath.FromSlash(info.Branch)),
+		filepath.Join(commonDir, "refs", "heads", filepath.FromSlash(info.Branch)) + ".lock",
+		filepath.Join(commonDir, "logs", "refs", "heads", filepath.FromSlash(info.Branch)),
+		filepath.Join(commonDir, "logs", "refs", "heads", filepath.FromSlash(info.Branch)) + ".lock",
 	}
 	for _, want := range wantRoots {
 		if !containsString(roots, want) {
@@ -975,6 +977,11 @@ func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 	if containsString(roots, commonDir) {
 		t.Fatalf("GitMetadataWritableRoots() = %#v, should not allow entire common git dir %q", roots, commonDir)
 	}
+	for _, parent := range []string{filepath.Join(commonDir, "refs", "heads", "detent"), filepath.Join(commonDir, "logs", "refs", "heads", "detent")} {
+		if containsString(roots, parent) {
+			t.Fatalf("GitMetadataWritableRoots() grants sibling branch writes through %s", parent)
+		}
+	}
 
 	if err := os.WriteFile(filepath.Join(info.Path, "agent.txt"), []byte("agent edit\n"), 0o600); err != nil {
 		t.Fatalf("write agent edit: %v", err)
@@ -983,6 +990,16 @@ func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 	runGit(t, info.Path, "commit", "-m", "agent commit")
 	if got := strings.TrimSpace(runGit(t, info.Path, "log", "-1", "--pretty=%s")); got != "agent commit" {
 		t.Fatalf("latest commit subject = %q, want agent commit", got)
+	}
+	runGit(t, source, "pack-refs", "--all")
+	roots, err = GitMetadataWritableRoots(t.Context(), info.Path)
+	if err != nil || len(roots) != len(wantRoots) {
+		t.Fatalf("packed branch roots = %#v, %v", roots, err)
+	}
+	for _, root := range roots {
+		if !containsString(wantRoots, root) {
+			t.Fatalf("packed branch widened metadata authority: %s", root)
+		}
 	}
 }
 

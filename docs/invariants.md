@@ -660,6 +660,15 @@ INV-1/INV-2/INV-3 without a mechanism or lane writer.
 `TestNativeRunnerPublishesOnlyAfterRecovery` and `TestSSHErrorRoundTrip` exercise
 these boundaries.
 
+Native rework Git preparation and finalization failures (#141) use the existing
+`workspace_preparation` outcome, including failures after a source-resolution
+turn. The existing instance failure owner retains the issue's runnable lane and
+excludes the attempt from its failure allowance; successful source turns retain
+their existing progress semantics. Genuine unresolved source conflicts remain
+resolution failures. `TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`
+covers metadata/signing failures after resolution, issue allowance, and continued
+eligibility of other runnable work without a new failure family or scheduler.
+
 Native landing merge conflicts are repository refusals, not infrastructure
 failures or shipped work. Explicit GitHub HTTP 405 merge-conflict evidence uses
 the existing `LandRefusalConflict`; unspecified 405 responses, actual branch
@@ -1011,8 +1020,36 @@ review or Blocked destination. This consolidates landing refusal routing under
 the existing completion and rework owners; no configuration, reason code,
 recovery loop or worker lane writer is added.
 
-The existing rework worker rebases source onto the current base and regenerates
-derived artifacts through their build owner when needed. It publishes a new
+Native rework (#141) consolidates rebase preparation and continuation under
+`LocalGit` and its existing source-operation lock. Workspace creation retains a
+verified paused transaction on the assigned branch. Workers resolve and stage
+source/index conflicts; the execution epilogue finalizes the rebase before
+capturing artifacts, diffs or the final checkpoint. Source diagnostics and the
+model turn run outside the source lock. Native machine replay explicitly avoids
+personal signing, including a signer option saved by an earlier paused rebase;
+host configuration and signer material remain untouched. Legacy Git signing and
+actual forge signing/protection requirements retain their existing owners.
+Paused transaction ownership, original branch head, additional ref updates and
+source-only replay instructions are checked before privileged continuation.
+Sandbox metadata roots grant only the assigned branch's ref, reflog and lock
+files, plus the existing worktree metadata and objects; they never grant branch
+parent directories, sibling ref writes or the common Git directory.
+`TestLocalGitNativeReworkOwnsPausedRebase`,
+`TestNativeReworkFinalizesBeforeImmutableEvidence` and
+`TestGitMetadataWritableRootsForLinkedWorktree` cover these boundaries. The source
+fixture attempts a nested macOS sandbox when the host permits it; a sandboxed
+worker that forbids nesting still exercises source/index resolution, explicit
+root authority, signer inheritance and transaction finalization. Nested sandbox
+denial is not OS sandbox enforcement evidence.
+
+`TestNativeRunnerOpensChangeAndLeavesDispatch` exercises rework preparation
+against a local Git transport while preserving the HTTPS repository identity.
+Its rework cases verify that the new immutable version names the final stored
+diff head, unchanged policy and matching code artifact, without external Git
+access or a duplicate publication fixture.
+
+The existing rework worker regenerates derived artifacts through their build
+owner when needed. It publishes a new
 immutable Change Request version with its actual head and artifact identity;
 the prior version's review cannot authorize that new version. Current-version
 review, project checks and exact-head landing authority remain required. Only

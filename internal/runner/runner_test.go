@@ -7498,6 +7498,7 @@ func initRunnerSourceRepo(t *testing.T) string {
 	runRunnerGit(t, dir, "config", "core.autocrlf", "false")
 	runRunnerGit(t, dir, "config", "user.name", "Test User")
 	runRunnerGit(t, dir, "config", "user.email", "test@example.com")
+	runRunnerGit(t, dir, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
 		t.Fatalf("write README.md: %v", err)
 	}

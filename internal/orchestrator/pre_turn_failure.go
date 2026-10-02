@@ -52,6 +52,9 @@ func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state 
 }
 
 func preTurnFailureClass(event runpkg.Completion, running Running) string {
+	if errors.Is(event.Err, runpkg.ErrWorkspacePreparation) && !errors.Is(event.Err, context.Canceled) && running.Cancellation == nil && !issueConfigurationFailure(event.Err, "", "") {
+		return workAttemptErrorWorkspace
+	}
 	if issueConfigurationFailure(event.Err, "", "") || event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
 		return ""
 	}
@@ -70,9 +73,6 @@ func preTurnFailureClass(event runpkg.Completion, running Running) string {
 	}
 	if errors.Is(event.Err, context.Canceled) || running.Cancellation != nil {
 		return ""
-	}
-	if errors.Is(event.Err, runpkg.ErrWorkspacePreparation) {
-		return workAttemptErrorWorkspace
 	}
 	var deliverableErr *runpkg.DeliverableCommandError
 	var recoveryErr *runpkg.DeliverableRecoveryError
@@ -113,7 +113,7 @@ func (o *Orchestrator) handlePreTurnFailure(ctx context.Context, state *State, e
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {
 		metadata = mergeWorkAttemptMetadata(metadata, startupFailureMetadata(capacityErr.Details))
 	}
-	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, event.Err.Error(), "failed", "instance failed before first turn", metadata)
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, event.Err.Error(), "failed", "instance workspace or startup failure", metadata)
 	releaseBackendCapacityProbe(state, running)
 	o.restorePreTurnIssue(ctx, state, running, event.CompletedAt)
 	return true

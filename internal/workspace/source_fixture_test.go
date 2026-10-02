@@ -49,6 +49,7 @@ func buildSourceRepoSeed(ctx context.Context, dir string) error {
 		{"config", "core.autocrlf", "false"},
 		{"config", "user.name", "Test User"},
 		{"config", "user.email", "test@example.com"},
+		{"config", "commit.gpgsign", "false"},
 		{"add", "README.md"},
 		{"commit", "-m", "initial"},
 	} {
