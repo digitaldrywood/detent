@@ -1,5 +1,14 @@
 {
   "tests": {
+    "./tools/cifailure": [
+      "TestParseProblems",
+      "TestReport",
+      "TestReportFailures",
+      "TestCloudReport",
+      "TestCloudTransport",
+      "TestCloudDestinationAuthority",
+      "TestScheduledFinalizer"
+    ],
     "./tools/invariantcheck": [
       "TestBehaviorEvidence"
     ],
