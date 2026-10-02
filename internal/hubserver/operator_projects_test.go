@@ -77,10 +77,13 @@ func TestHostedProjectTools(t *testing.T) {
 			read := func(name string) operatortool.Call {
 				return operatortool.Call{Name: name, Arguments: json.RawMessage(`{"project_id":"` + id + `"}`)}
 			}
-			for _, name := range []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup"} {
+			for _, name := range []string{operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup"} {
 				result, err := e.Execute(ctx, read(name))
 				if err != nil || !strings.Contains(string(result.Content), `"observed_at"`) {
 					t.Fatalf("%s=%s %v", name, result.Content, err)
+				}
+				if name == operatortool.LocalProjectConfiguration && (!strings.Contains(string(result.Content), "not installed or is stopped") || strings.Contains(string(result.Content), `"applied":true`)) {
+					t.Fatalf("Cloud fabricated local application: %s", result.Content)
 				}
 			}
 			ordinary := projectCall(t, "save_onboarding", id, "progress", operatortool.OnboardingInput{Progress: onboarding.Progress{Repository: "existing"}})

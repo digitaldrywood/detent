@@ -428,6 +428,9 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			if receipt.Outcome != "succeeded" {
 				return execution, mutation.ErrUncertain
 			}
+			if operatortool.IsLocalProjectTool(string(action.Kind)) {
+				return chatpkg.ActionExecution{Message: string(receipt.ConfigurationJSON), Data: receipt.ConfigurationJSON, ResourceID: receipt.ResourceID}, nil
+			}
 			return chatpkg.ActionExecution{Message: "Action completed.", ResourceID: receipt.ResourceID, Identifier: receipt.Identifier, URL: receipt.URL, Revision: receipt.Revision, CommentID: receipt.CommentID}, nil
 		}
 		defer func() {
@@ -438,7 +441,11 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			m.ResourceID = execution.ResourceID
 			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 			defer cancel()
-			if err := records.CompleteOperatorMutation(persistCtx, store.OperatorReceipt{Metadata: m, Outcome: "succeeded", Identifier: execution.Identifier, URL: execution.URL, Revision: execution.Revision, CommentID: execution.CommentID}); err != nil {
+			receipt := store.OperatorReceipt{Metadata: m, Outcome: "succeeded", Identifier: execution.Identifier, URL: execution.URL, Revision: execution.Revision, CommentID: execution.CommentID}
+			if operatortool.IsLocalProjectTool(string(action.Kind)) {
+				receipt.ConfigurationJSON = execution.Data
+			}
+			if err := records.CompleteOperatorMutation(persistCtx, receipt); err != nil {
 				execution = chatpkg.ActionExecution{}
 				executionErr = errOperatorCommandUnavailable
 			}
@@ -446,6 +453,9 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 	}
 	if action.ScenarioID != "" {
 		return chatpkg.ActionExecution{Message: demoChatAction(action)}, nil
+	}
+	if operatortool.IsLocalProjectTool(string(action.Kind)) {
+		return s.executeLocalProjectAction(ctx, action)
 	}
 	var result string
 	var err error

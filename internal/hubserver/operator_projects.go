@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -32,7 +33,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret":
+	case "apply_local_project_policy", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret":
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -42,7 +43,7 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 		return nil, err
 	}
 	defs := []operatortool.Definition{}
-	for _, d := range operatortool.ProjectCatalog() {
+	for _, d := range append(operatortool.ProjectCatalog(), operatortool.LocalProjectCatalog()...) {
 		if d.Name == "project_settings" || d.Name == "demo_setup_scenarios" {
 			continue
 		}
@@ -67,6 +68,20 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 	}
 	if call.Name == operatortool.ConnectionInfo || call.Name == operatortool.ActionResult {
 		return e.connectionRead(ctx, call)
+	}
+	if operatortool.IsLocalProjectTool(call.Name) {
+		r, err := operatortool.DecodeLocalProjectArguments(call.Name, call.Arguments, true)
+		if err != nil {
+			return result, err
+		}
+		scope := apikey.ScopeAdmin
+		if d.Annotations.ReadOnly {
+			scope = apikey.ScopeRead
+		}
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ProjectID: r.ProjectID}); err != nil {
+			return result, err
+		}
+		return hubProjectResult(project.MissingConfigurationOwner(r.ProjectID))
 	}
 	if d.Meta.Toolset != "projects" {
 		return operatortool.NewAuthorizedExecutor(nil).Execute(ctx, call)

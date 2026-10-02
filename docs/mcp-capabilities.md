@@ -71,6 +71,40 @@ return opaque unavailable errors. #3347 owns PR/review/change/diff/artifact
 content details and reuses the extracted application reads; this child supplies
 references, not another detail implementation. Parent #3259 remains pending.
 
+## Managed local project configuration (native #94)
+
+The `local_projects` toolset uses the selected installed local configuration
+owner. `local_project_configuration` reads its actual global configuration
+revision, effective policy and selected committed workflow policy. Provenance
+contains identities and revisions, without file paths, workflow instructions,
+credentials or private configuration values. A Cloud project, runner source
+association and local board registration remain separate authorities.
+
+`apply_local_project_policy`, `drain_local_project` and `detach_local_project`
+require current admin scope for the exact project, existing operator approval,
+`request_id`, `expected_config_revision` and `expected_policy_id`. They reuse
+durable operator command receipts; retries reauthorize and return the original
+receipt without repeating the effect. Policy application additionally requires
+the exact approved `policy_id` and `source_revision` from the configured committed
+workflow, a paused project and settled work. Local workflow overlays are refused.
+
+Drain uses the existing project orchestrator to finish current work and reject
+new dispatch. Local intake, routines, backlog admission and retro schedules must
+already be migrated or disabled through the workflow owner. Detach requires a
+paused or draining project, no active or deferred completions, and the exact
+`checkpoint` from an authenticated cutover receipt for its mapped native Cloud
+project and repository. It removes only that project's global registration
+through the existing validating writer; unrelated values, pauses, instance
+roles and native lease/publication authority retain their owners.
+
+Receipts distinguish `saved` configuration from `applied` runtime policy/drain.
+A saved removal returns `registered: false` while `runtime_registered: true`
+until the existing reload removes the runtime project. Read again to verify
+both registrations are absent. A missing/stopped owner explicitly requires a
+supported installed configuration service; hosted Cloud calls cannot edit that
+file or start the stopped board. Stale revisions, unsupported sources and
+incomplete handoff return redacted constraints, never fabricated completion.
+
 ## Current connection authority
 
 `operatortool.Identity` binds principal, organization, credential and session;

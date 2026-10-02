@@ -199,6 +199,10 @@ func workflowRefPath(sourceRoot string, workflowPath string) (string, error) {
 }
 
 func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow, string, error) {
+	return s.loadSource(ctx, true)
+}
+
+func (s workflowGitRefSource) loadSource(ctx context.Context, includeLocal bool) (workflowconfig.Workflow, string, error) {
 	revision, err := s.revision(ctx)
 	if err != nil {
 		return workflowconfig.Workflow{}, "", err
@@ -219,14 +223,18 @@ func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow
 		return workflowconfig.Workflow{}, revision, err
 	}
 	localWorkflowPath := s.localPath()
-	localRaw, hasLocalWorkflow, err := readOptionalWorkflowSourceFile(ctx, localWorkflowPath, s.readFile)
-	if err != nil {
-		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local workflow overlay: %w", err)
-	}
 	localConfigPath := s.localConfigPath()
-	localConfigRaw, hasLocalConfig, err := readOptionalWorkflowSourceFile(ctx, localConfigPath, s.readFile)
-	if err != nil {
-		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local project config: %w", err)
+	var localRaw, localConfigRaw []byte
+	var hasLocalWorkflow, hasLocalConfig bool
+	if includeLocal {
+		localRaw, hasLocalWorkflow, err = readOptionalWorkflowSourceFile(ctx, localWorkflowPath, s.readFile)
+		if err != nil {
+			return workflowconfig.Workflow{}, revision, fmt.Errorf("read local workflow overlay: %w", err)
+		}
+		localConfigRaw, hasLocalConfig, err = readOptionalWorkflowSourceFile(ctx, localConfigPath, s.readFile)
+		if err != nil {
+			return workflowconfig.Workflow{}, revision, fmt.Errorf("read local project config: %w", err)
+		}
 	}
 	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 		WorkflowPath:      revision + ":" + s.path,
