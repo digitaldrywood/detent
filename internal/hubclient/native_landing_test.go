@@ -54,7 +54,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	}, batch, intakeRepositoryBackend{})
+	}, true, intakeRepositoryBackend{})
 	if batch {
 		h.scheduler.machine.Capacity = 6
 	}
@@ -182,10 +182,17 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatal(err)
 	}
 	defer stop()
+	if ssh {
+		landing, _ = nativeSSHExecution(t, guarded, landing, t.TempDir())
+	}
+	execution, ok := landing.(runner.LandingExecution)
+	if !ok {
+		t.Fatalf("execution %T cannot land", landing)
+	}
+	if err := landing.(runner.LandingRuntimeExecution).StartLanding(guarded, 168, 27); err != nil {
+		t.Fatal(err)
+	}
 	if batch {
-		if err := landing.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleMerge, Backend: "codex", Model: "test"}); err != nil {
-			t.Fatal(err)
-		}
 		recovery, err := h.admin.Recovery(t.Context(), item)
 		if err != nil || len(recovery.Attempts) != 2 {
 			t.Fatalf("parallel merge event missing: %+v, %v", recovery.Attempts, err)
@@ -198,12 +205,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			t.Fatal("batch did not start the merge phase")
 		}
 	}
-	if ssh {
-		landing, _ = nativeSSHExecution(t, guarded, landing, t.TempDir())
-	}
-	execution, ok := landing.(runner.LandingExecution)
-	if !ok {
-		t.Fatalf("execution %T cannot land", landing)
+	evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+	if err != nil || evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.LocalAttemptID != 168 || evidence.Attempt.Runtime.Generation != 27 || evidence.Attempt.Runtime.Phase != "merging" || evidence.Attempt.Runtime.Identity.BackendKind != "git" || !evidence.Attempt.Current {
+		t.Fatalf("landing attempt=%#v err=%v", evidence.Attempt, err)
 	}
 	target, err := execution.LandingTarget(guarded)
 	if err != nil {
@@ -215,12 +219,30 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := execution.RecordLanding(guarded, runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, RefusalKind: "conflict"}); err == nil {
 		t.Fatal("a refusal was recorded as a landing")
 	}
+	refused := runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, RefusalKind: "conflict", Refusal: "private command and credentials"}
+	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, refused); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
+	if err != nil || evidence.Attempt.Runtime.Landing == nil || evidence.Attempt.Runtime.Landing.Landed || evidence.Attempt.Runtime.Landing.RefusalKind != "conflict" || evidence.Change.Change.Landed != nil {
+		t.Fatalf("refused receipt=%#v err=%v", evidence, err)
+	}
 	landed := runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: target.Method}
 	if err := execution.RecordLanding(guarded, landed); err != nil {
 		t.Fatal(err)
 	}
 	if err := execution.RecordLanding(guarded, landed); err != nil {
 		t.Fatalf("recording the landing again: %v", err)
+	}
+	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, landed); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.scheduler.RunExecution(issue.ID).Finish(guarded, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
+	if err != nil || evidence.Attempt.Status != "succeeded" || evidence.Attempt.Runtime.Landing.MergeSHA != landed.MergeSHA || evidence.Change.Change.CurrentVersion != change.VersionID || evidence.Change.Change.Landed == nil || evidence.LatestTransition.Actor.Kind != "runner" || evidence.LatestTransition.Data.Reason != "worker_progress" || evidence.LatestDecision == nil || evidence.LatestDecision.Data.Decision.Source != "native_claim" || evidence.LatestDecision.Data.Decision.Outcome != "claimed" {
+		t.Fatalf("landed receipt=%#v err=%v", evidence, err)
 	}
 	if state := h.state(t, issue.ID); state != "Done" {
 		t.Fatalf("after landing the item is in %s, want Done", state)

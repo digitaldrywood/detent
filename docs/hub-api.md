@@ -585,7 +585,7 @@ typed data. `issue.created`, `issue.edited`, `comment.created`, `comment.edited`
 `dependency.changed` and `workflow.transitioned` are server-generated. They refer
 to content revisions instead of duplicating full text in event data.
 
-Worker schema 1 accepts `run.started`, `run.finished` and `run.checkpointed`.
+Worker schema 1 accepts `run.started`, `run.finished`, `run.checkpointed` and, with the optional `native_runtime_evidence` capability, ordered `run.observed`.
 Their `data` requires `lease_id`, positive string `fencing_token`, and typed
 `run_`, `attempt_` and `policy_` IDs. Finished outcomes are `succeeded`, `failed`,
 `cancelled` and `interrupted`. Only checkpoints accept `artifact_ids`, at most 20
@@ -596,6 +596,62 @@ Idempotent retries return the committed result; new events with an expired fence
 fail. A run outcome records a worker report, not a verified check or merge grant.
 The policy ID is `policy_` followed by its 64-character lowercase SHA-256 digest
 and must equal the approved descriptor pinned to the lease.
+
+### Native runtime evidence
+
+With `native_runtime_evidence`, `GET /work-items/{item}/runtime` selects the
+latest fenced attempt or an exact `native_attempt_id` (typed native ID) or
+positive `attempt_id` (recorded local attempt ID). Selectors are mutually
+exclusive and ownership is scoped to the item and current project grant;
+ambiguous local IDs require the native selector. An absent selected attempt
+returns not found. An item with no recorded attempt returns explicit unavailable
+evidence. Older deployments return unsupported availability separately from
+grant denial.
+
+The typed snapshot includes the current native item, authentic last workflow
+transition and recorded scheduler decision, current Change readiness and
+enrolled runner routing/host/provider capacity. A current fenced lease is shown
+independently of the selected attempt, including a lease without a started run;
+lease reads omit private isolation configuration. Current candidate readiness is
+not full runner eligibility, and board counts or nil PRs cannot establish it.
+Historical decisions are recorded only when the existing scheduler evaluates
+them, with actor, item revision, source and server time; reads add no history.
+
+Ordered events may include `runtime`: local attempt/generation attribution,
+observed backend/model/effort provenance, phase intervals, heartbeat, bounded
+instruction profile, landing receipt and existing REST accounting. Attribution
+cannot change and heartbeat cannot move backwards in an attempt. Runtime
+freshness is unavailable without an observation, expired for future/old
+heartbeats or lost running leases, and available for recorded terminal
+observations. Lease renewal is not proof of agent activity.
+
+Activity spans contain hashes and allowlisted evidence labels, never command
+text, instruction contents or filesystem paths. The projection retains at most
+128 KiB, 64 instruction sources and 32 actions/span, with partial coverage,
+dropped/unpaired counts and no claim that reading an instruction caused an
+action. `board_session_history` provides offset/limit pages (1–200).
+Receipts, attempt lists, work history and explanations include profile metadata
+and explicitly identify omitted activity spans; full spans have their existing
+board_session_history owner. Exact runtime and attempt detail retain the bounded
+recorded profile.
+
+A landing observation names Change/version/head and either actual landed
+merge SHA/base/method or a bounded refusal kind. The Hub verifies actual landing
+against recorded Change authority; terminal attempt success alone cannot prove
+a ship. REST data projects existing operation-header observations and attribution
+windows, with credential digests, resource, timestamp, HTTP status and the
+presence of a Used header. Selected-client counts exclude worker subprocesses,
+other clients and hosts; an unaccounted delta does not identify its consumer.
+At most 64 operation and attribution windows are returned, with dropped counts.
+This adds no quota capacity policy or aggregate reporting owner.
+
+The existing `explain_item`, `board_receipt`, `board_session`,
+`board_session_history`, `work_attempt_receipt`, `work_history` and
+`board_activity` operations delegate to this native application evidence
+through supported local and Cloud adapters. MCP results retain the 256 KiB
+bound and return unavailable on overflow. Native efficiency aggregates and
+unrecorded runtime data remain explicitly unavailable. Hub schema 59 preserves
+prior event history and refuses rollback when new event types would be lost.
 
 ### Ordered attempts and recovery
 

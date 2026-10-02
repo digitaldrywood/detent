@@ -44,10 +44,16 @@ type nativeWebFixture struct {
 func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 	t.Helper()
 	fixture := &nativeWebFixture{issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_example", Revision: 7, Profile: "native", Number: 1}, Title: "Native collaboration", Body: "Full native body <script>unsafe()</script>", State: "Todo"}}
-	hubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hubHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fixture.mu.Lock()
 		defer fixture.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v2/capabilities" {
+			if err := json.NewEncoder(w).Encode(map[string]any{"features": []string{tracker.NativeRuntimeEvidenceCapability}}); err != nil {
+				t.Error(err)
+			}
+			return
+		}
 		base := "/api/v2/organizations/org_example/projects/prj_example"
 		if !strings.HasPrefix(r.URL.Path, base) {
 			t.Errorf("unexpected external request %s", r.URL)
@@ -104,6 +110,8 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 				response = page
 			case "/work-items/wi_example/comments":
 				response = tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{{ID: "cmt_example", Revision: 7, Body: "Discussion <img src=x onerror=unsafe()>", Provenance: &tracker.Provenance{Provider: "github", AuthorID: "contributor"}}}, NextCursor: "next-page"}
+			case "/work-items/wi_example/runtime":
+				response = tracker.NativeRuntimeEvidence{Issue: fixture.issue, ObservedAt: time.Now().UTC(), Selection: "unavailable", Unavailable: []string{"runtime_phase_heartbeat", "historical_scheduler_decision"}}
 			case "/work-items/wi_example/attempts":
 				response = tracker.Page[tracker.NativeAttempt]{}
 			case "/work-items/wi_example/changes":
@@ -122,9 +130,8 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			t.Error(err)
 		}
-	}))
-	t.Cleanup(hubServer.Close)
-	client, err := hubclient.New(hubclient.Config{URL: hubServer.URL, TokenSource: func() string { return "hub-operator" }})
+	})
+	client, err := hubclient.New(hubclient.Config{URL: "http://hub.test", HTTPClient: &http.Client{Transport: nativeWebTransport{handler: hubHandler}}, TokenSource: func() string { return "hub-operator" }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,4 +376,12 @@ func TestNativeWorkUpstreamErrorsPreserveDraft(t *testing.T) {
 			}
 		})
 	}
+}
+
+type nativeWebTransport struct{ handler http.Handler }
+
+func (r nativeWebTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	r.handler.ServeHTTP(response, request)
+	return response.Result(), nil
 }

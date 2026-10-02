@@ -206,10 +206,14 @@ func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result
 	if request.ProjectID == "" || request.Reference == "" {
 		return Result{}, fmt.Errorf("%w: project_id and reference are required", ErrInvalidArguments)
 	}
-	if e.explainer == nil {
-		return Result{}, errors.New("issue explanation is unavailable")
+	explainer := e.explainer
+	if authority, ok := ctx.Value(authorityKey{}).(Authority); ok && authority.Explainer != nil {
+		explainer = authority.Explainer
 	}
-	result, err := e.explainer.Explain(ctx, explain.Query{ProjectID: request.ProjectID, Reference: request.Reference})
+	if explainer == nil {
+		return Result{}, ErrReadUnavailable
+	}
+	result, err := explainer.Explain(ctx, explain.Query{ProjectID: request.ProjectID, Reference: request.Reference})
 	if err != nil {
 		return Result{}, err
 	}

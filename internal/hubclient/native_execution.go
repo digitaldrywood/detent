@@ -42,11 +42,13 @@ type nativeExecution struct {
 	// role and conversation decide whether a finished run is work the runner
 	// opens a Change Request for: a code or rework run that no conversation
 	// owns the continuation of.
-	role            string
-	conversation    bool
-	settled         bool
-	change          *runner.NativeChange
-	preparedOutcome string
+	role             string
+	conversation     bool
+	settled          bool
+	change           *runner.NativeChange
+	preparedOutcome  string
+	runtimeDirty     bool
+	runtimeSupported *bool
 	// repository is the https URL of the checkout's origin, which a published
 	// version names; empty when the remote cannot be named that way.
 	repository string
@@ -406,6 +408,7 @@ func (e *nativeExecution) flush(ctx context.Context) error {
 	}
 	e.data = e.pending.Data
 	e.pending = nil
+	e.runtimeDirty = false
 	return nil
 }
 

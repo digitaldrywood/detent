@@ -64,13 +64,13 @@ func (r dashboardWorkReads) WorkReadNames(ctx context.Context) []string {
 	if native || s.store != nil {
 		names = append(names, operatortool.WorkRuns)
 	}
-	if s.store != nil {
+	if native || s.store != nil {
 		names = append(names, operatortool.BoardReceipt)
 	}
-	if s.store != nil && s.history != nil {
+	if native || s.store != nil && s.history != nil {
 		names = append(names, operatortool.BoardSessionHistory)
 	}
-	if s.recovery != nil {
+	if native || s.recovery != nil {
 		names = append(names, operatortool.WorkAttemptReceipt)
 	}
 	return names
@@ -99,7 +99,7 @@ func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request o
 	}
 	if client != nil {
 		switch name {
-		case operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport:
+		case operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt:
 			return s.readNativeWork(ctx, client, tracked, request, name)
 		}
 	}
@@ -308,7 +308,7 @@ func connectorIssueForWork(issue telemetry.Issue) connector.Issue {
 }
 
 func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeClient, tracked *project.Project, request operatortool.WorkReadRequest, name string) (operatortool.Result, error) {
-	if request.Offset != 0 && name != operatortool.WorkReferences {
+	if request.Offset != 0 && name != operatortool.WorkReferences && name != operatortool.BoardSessionHistory {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 
@@ -369,6 +369,26 @@ func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeCli
 	}
 	request.Reference = string(id)
 	switch name {
+	case operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt:
+		if request.Cursor != "" {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		selector := request.NativeAttemptID
+		if request.AttemptID > 0 {
+			selector = strconv.FormatInt(request.AttemptID, 10)
+		}
+		evidence, err := client.RuntimeEvidence(ctx, id, selector)
+		if err != nil {
+			return operatortool.Result{}, nativeWorkReadError(err)
+		}
+		if evidence.Issue.ProjectID != client.ProjectID() || evidence.Issue.WorkItemID != id {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		evidence.Issue, err = s.projectNativeWork(ctx, client, evidence.Issue)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		return operatortool.NativeRuntimeResult(name, request, evidence)
 	case operatortool.WorkItem:
 		return nativeWorkResult(request, operatortool.NativeItemView(request.ProjectID, issue), nil)
 	case operatortool.WorkExport:
@@ -382,7 +402,7 @@ func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeCli
 	case operatortool.WorkComments:
 		page, err := client.CommentsPage(ctx, id, request.Cursor, request.Limit)
 		return nativeWorkResult(request, page, err)
-	case operatortool.WorkHistory:
+	case operatortool.WorkHistory, operatortool.BoardActivity:
 		page, err := client.HistoryPage(ctx, id, request.Cursor, request.Limit)
 		if err == nil {
 			for i := range page.Items {
@@ -517,6 +537,9 @@ func (s *Server) projectNativeWork(ctx context.Context, source *hubclient.Native
 }
 
 func nativeWorkReadError(err error) error {
+	if errors.Is(err, hubclient.ErrUnavailable) {
+		return operatortool.ErrReadUnavailable
+	}
 	var api *hubclient.APIError
 	if errors.As(err, &api) {
 		switch api.Status {
@@ -528,7 +551,7 @@ func nativeWorkReadError(err error) error {
 			return operatortool.ErrAccessDenied
 		}
 	}
-	return err
+	return operatortool.ErrReadUnavailable
 }
 func nativeWorkResult[T any](request operatortool.WorkReadRequest, data T, err error) (operatortool.Result, error) {
 	if err != nil {

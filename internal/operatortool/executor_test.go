@@ -285,7 +285,7 @@ func TestExecutorReportsInvalidInputsAndUnavailableDependencies(t *testing.T) {
 		{name: "missing snapshot", executor: NewExecutor(Dependencies{}), call: Call{Name: BoardState}, want: "snapshot is unavailable"},
 		{name: "zero snapshot", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: RecentActivity}, want: "snapshot is unavailable"},
 		{name: "snapshot failure", executor: NewExecutor(Dependencies{Snapshots: failingSnapshot{err: dependencyErr}}), call: Call{Name: FleetHealth}, want: dependencyErr.Error()},
-		{name: "missing explainer", executor: NewExecutor(Dependencies{}), call: Call{Name: ExplainItem, Arguments: json.RawMessage(`{"project_id":"detent","reference":"issue-1"}`)}, want: "explanation is unavailable"},
+		{name: "missing explainer", executor: NewExecutor(Dependencies{}), call: Call{Name: ExplainItem, Arguments: json.RawMessage(`{"project_id":"detent","reference":"issue-1"}`)}, want: ErrReadUnavailable.Error()},
 		{name: "explainer failure", executor: NewExecutor(Dependencies{Explainer: failingExplainer{err: dependencyErr}}), call: Call{Name: ExplainItem, Arguments: json.RawMessage(`{"project_id":"detent","reference":"issue-1"}`)}, want: dependencyErr.Error()},
 	}
 	for _, test := range tests {

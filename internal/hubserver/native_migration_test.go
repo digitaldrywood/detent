@@ -3,6 +3,8 @@ package hubserver
 import (
 	"database/sql"
 	"fmt"
+	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,8 +12,63 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/pressly/goose/v3"
 )
+
+func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "runtime-migration")
+	issue := f.create(t, "retained history")
+	path := f.base + "/work-items/" + string(issue.WorkItemID)
+	var before tracker.Page[tracker.CollaborationEvent]
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &before)
+	migrations, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()), goose.WithGoMigrations(hubGoMigrations()...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(t.Context(), 58); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var after tracker.Page[tracker.CollaborationEvent]
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
+	if len(after.Items) != 1 || len(before.Items) != 1 || after.Items[0].ID != before.Items[0].ID || after.Items[0].Actor != before.Items[0].Actor || after.Items[0].RecordedAt != before.Items[0].RecordedAt {
+		t.Fatalf("migration changed retained history: %#v -> %#v", before, after)
+	}
+	for _, statement := range []string{"UPDATE collaboration_events SET type='issue.edited' WHERE id=?", "DELETE FROM collaboration_events WHERE id=?"} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement, before.Items[0].ID); err == nil {
+			t.Fatal("migration lost append-only history enforcement")
+		}
+	}
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	worker := f.worker(t, "runtime-worker")
+	lease := claimNativeAttempt(t, f, worker, "migration-machine", "migration-session", issue.WorkItemID)
+	started := nativeStartedEvent(lease)
+	started.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: f.service.config.now()}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, started), http.StatusOK)
+	observed := started
+	observed.Type, observed.IdempotencyKey, observed.Data.Sequence = "run.observed", "migration-observed", 2
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, observed), http.StatusOK)
+	if _, err := provider.DownTo(t.Context(), 58); err == nil {
+		t.Fatal("rollback discarded native runtime evidence")
+	}
+	var version int64
+	version, _, err = provider.GetVersions(t.Context())
+	if err != nil || version != 59 {
+		t.Fatalf("failed rollback changed schema: %d %v", version, err)
+	}
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
+	if len(after.Items) != 3 || after.Items[0].ID != before.Items[0].ID || after.Items[2].Type != "run.observed" {
+		t.Fatalf("failed rollback changed evidence: %#v", after)
+	}
+}
 
 func TestHubMigrationPreservesExistingData(t *testing.T) {
 	t.Parallel()

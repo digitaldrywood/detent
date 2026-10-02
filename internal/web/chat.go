@@ -217,7 +217,7 @@ func (s *Server) newReadOnlyToolExecutor() *operatortool.Executor {
 		Snapshots: operatortool.SnapshotFunc(func(ctx context.Context) (telemetry.Snapshot, error) {
 			return s.chatSnapshot(ctx), nil
 		}),
-		Explainer: explainer,
+		Explainer: nativeIssueExplainer{server: s, fallback: explainer},
 		WorkReads: dashboardWorkReads{server: s},
 	})
 }

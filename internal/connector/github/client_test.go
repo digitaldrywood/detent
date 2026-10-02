@@ -3153,6 +3153,10 @@ func TestClientRESTBudgetRecordsResourceHeaderPresence(t *testing.T) {
 				"/repos/o/r/commits/abc/check-runs", http.StatusOK, headers, nil, now, false,
 			)
 
+			observations := client.RESTRateLimitStatus().Requests
+			if len(observations) != 1 || !observations[0].LastObservedAt.Equal(now) || observations[0].UsedObserved {
+				t.Fatalf("operation observation = %#v", observations)
+			}
 			budgets := client.RESTRateLimitStatus().Budgets
 			if len(budgets) != 1 {
 				t.Fatalf("budgets = %#v, want one endpoint-family budget", budgets)

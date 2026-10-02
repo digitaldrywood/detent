@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func claimNativeAttempt(t *testing.T, f nativeFixture, worker, machine, session string, item tracker.NativeWorkItemID) tracker.NativeLease {
@@ -121,7 +122,17 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	event.Data.Handoff.ExternalEffect, event.Data.Handoff.EffectState, event.Data.Handoff.EffectID = "git_push", "ambiguous", newNativeID("effect")
 	event.Data.Handoff.HeadSHA = strings.Repeat("a", 40)
 	event.Data.Handoff.ExpectedHeadSHA = strings.Repeat("b", 40)
+	event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Generation: 27, Phase: "implementation", HeartbeatAt: now, Phases: []tracker.NativePhase{{Name: "implementation", StartedAt: now}}, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 168, Generation: 27, Dropped: 3, Unpaired: 2, Coverage: "partial", AsOf: now}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
+	for _, elapsed := range []time.Duration{30 * time.Second, 70 * time.Second} {
+		now = now.Add(elapsed)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+	}
+	var evidence tracker.NativeRuntimeEvidence
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime", worker, nil), &evidence)
+	if !evidence.Attempt.Current || evidence.Attempt.RuntimeFreshness != "expired" {
+		t.Fatalf("renewal manufactured activity freshness=%#v", evidence.Attempt)
+	}
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -130,6 +141,10 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	replacement := claimNativeAttempt(t, f, other, "other-machine", "other-session", issue.WorkItemID)
 	if replacement.FencingToken <= lease.FencingToken {
 		t.Fatal("lease reassignment did not advance fencing")
+	}
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime?native_attempt_id="+event.Data.AttemptID, other, nil), &evidence)
+	if evidence.Attempt.Current || evidence.Attempt.Status != "interrupted" || evidence.Attempt.RuntimeFreshness != "expired" || evidence.Attempt.Runtime.Activity.Dropped != 3 || evidence.Attempt.Runtime.Activity.Unpaired != 2 || evidence.CurrentLease == nil || evidence.CurrentLease.ID != replacement.ID || evidence.Scheduling.Outcome != "claimed" {
+		t.Fatalf("restart lost runtime observation=%#v", evidence.Attempt)
 	}
 	for _, test := range []struct {
 		name     string
@@ -165,7 +180,9 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	}
 	next := nativeStartedEvent(replacement)
 	next.Data.RunID = event.Data.RunID
+	next.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Generation: 28, Phase: "rework", HeartbeatAt: now}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", other, next), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime?attempt_id=168", other, nil), http.StatusUnprocessableEntity)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?limit=1", other, nil)
 	decodeHubResponse(t, response, &page)
 	if page.NextCursor == "" {

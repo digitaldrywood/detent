@@ -17,6 +17,23 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Native runtime evidence (#92) reuses the scoped work, explanation and Change
+application owners for API and MCP. Direct reads recheck current connection
+scope, project grants and work-item/attempt ownership, including local attempt
+selectors. Receipt snapshots preserve authentic native event actors, server
+timestamps, ordered attempt identity, dispatch generation and reviewed immutable
+version/head. Current lease freshness, routing/capacity authority and current
+Change readiness are distinct from recorded scheduler decisions. Missing
+historical decisions, activity or accounting are explicitly unavailable;
+terminal success and imported Done are not landing evidence. Only the existing
+exact-version Change landing authority can validate a landed receipt and merge
+SHA. Instruction activity is bounded, content-free and partially observed, with
+dropped/unpaired counts and explicit causality limits. REST operation headers
+and existing attribution windows identify selected-client coverage, not the
+account consumer. The runtime projection omits private bodies, raw commands,
+instruction contents, paths and credentials. Focused owner, grant, stale,
+pagination, redaction and refusal regressions cover these boundaries.
+
 Scheduled diagnostics for the migrated Detent repository call the existing
 Cloud `file_issue`, revisioned `edit_item` priority and `add_comment` application
 owners using the selected project and current scoped API/MCP connection. New diagnostics enter only a
@@ -1076,6 +1093,18 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Native runtime evidence (#92) records observations in the existing fenced
+attempt event stream and records evaluated Merging eligibility, routing,
+host/provider refusal and claim decisions in the existing scheduler
+transactions. Ordinary usage and activity checkpoints and lease renewals publish
+the bounded observation; no observer or polling loop is added. Reads take one
+snapshot through existing application services and never dispatch, write lanes
+or call the forge to manufacture history. Historical gaps stay unavailable.
+Scoped local explanation and operator discovery APIs use the current-grant
+application authority instead of the blanket aggregate-dashboard read refusal.
+The schema migration extends the existing append-only event vocabulary and
+preserves all prior evidence; rollback refuses to discard new event types.
 
 Native Rework context (#143) uses the same scoped current Change reader as
 landing. Recovery carries Change detail, including discussion and formal review

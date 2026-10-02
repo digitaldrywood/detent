@@ -27,6 +27,15 @@ type Execution interface {
 	Recovery() tracker.NativeRecovery
 }
 
+type RuntimeExecution interface {
+	ObserveRuntime(context.Context, tracker.NativeRuntimeObservation) error
+}
+
+type LandingRuntimeExecution interface {
+	StartLanding(context.Context, int64, uint64) error
+	ObserveLanding(context.Context, NativeLanding) error
+}
+
 // CompletionExecution prepares the worker's result while retaining authority
 // for the orchestrator's publication and lane decision. Claim release records
 // the terminal event only after those effects have completed.
@@ -166,6 +175,20 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	if runtime, ok := req.Execution.(RuntimeExecution); ok {
+		observation := tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: "completed", HeartbeatAt: r.now(), Identity: result.RuntimeIdentity}
+		if result.GitHubRESTUsage != nil {
+			observation.REST = nativeRESTEvidence(*result.GitHubRESTUsage, r.now())
+		}
+		if err := runtime.ObserveRuntime(finishCtx, observation); err != nil {
+			r.logger.Warn("native runtime observation unavailable", "issue_id", req.Issue.ID, "error", err)
+		}
+	}
+	if landing, ok := req.Execution.(LandingRuntimeExecution); ok && result.NativeLanding != nil && (result.NativeLanding.Landed || result.NativeLanding.RefusalKind != "") {
+		if err := landing.ObserveLanding(finishCtx, *result.NativeLanding); err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+	}
 	finish := req.Execution.Finish
 	if prepared, ok := req.Execution.(CompletionExecution); ok && req.DeferExecutionFinish {
 		finish = prepared.PrepareFinish

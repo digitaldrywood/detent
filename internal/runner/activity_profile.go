@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
@@ -190,6 +191,11 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 			// Retain run attribution while allowing the final checkpoint after cancellation.
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 			defer cancel()
+			if runtime, ok := request.Execution.(RuntimeExecution); ok {
+				if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: request.WorkAttemptID, Generation: request.Generation, Phase: stage, HeartbeatAt: profile.AsOf, Activity: &profile}); err != nil {
+					r.logger.Warn("native activity observation unavailable", "session_id", sessionID, "error", err)
+				}
+			}
 			next, err := backend.SaveWorkflowActivityProfile(ctx, id, event, profile)
 			if err != nil {
 				r.logger.Warn("activity telemetry checkpoint unavailable", "session_id", sessionID, "error", err)

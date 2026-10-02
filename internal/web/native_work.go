@@ -27,6 +27,10 @@ func (s *Server) nativeWorkReadBoundary(next echo.HandlerFunc) echo.HandlerFunc 
 		if c.Request().Method != http.MethodGet || !requestAPICredentialsSupplied(c.Request()) {
 			return next(c)
 		}
+		switch c.Path() {
+		case "/api/v1/projects/:project_id/issues/explanation", "/api/v1/operator-tools":
+			return next(c)
+		}
 		native := false
 		for _, tracked := range s.registry.List() {
 			if _, ok := tracked.Connector().(nativeClientSource); ok {
