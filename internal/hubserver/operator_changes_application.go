@@ -183,7 +183,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 			return s.publishChangeVersionCommand(ctx, tx, scope, args.ItemID, args.ChangeID, request, now)
 		}
 	case operatortool.CreateChange:
-		request := tracker.CreateChange{Mutation: command, Title: args.Title, Body: args.Body}
+		request := tracker.CreateChange{Mutation: command, Title: args.Title, Body: args.Body, LinkedIssues: args.LinkedIssues}
 		input = request
 		path += "/changes"
 		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {

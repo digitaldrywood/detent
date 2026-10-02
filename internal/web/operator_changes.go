@@ -173,7 +173,7 @@ func (a dashboardChangeApplication) MutateChange(ctx context.Context, name strin
 		}
 		result.WorkItemState = issue.State
 	case operatortool.CreateChange:
-		receipt, err = client.CreateChange(ctx, item, tracker.CreateChange{Mutation: m, Title: args.Title, Body: args.Body})
+		receipt, err = client.CreateChange(ctx, item, tracker.CreateChange{Mutation: m, Title: args.Title, Body: args.Body, LinkedIssues: args.LinkedIssues})
 	case operatortool.DiscussChange:
 		receipt, err = client.DiscussChange(ctx, item, args.ChangeID, tracker.DiscussChange{Mutation: m, VersionID: args.VersionID, Body: args.Body})
 	case operatortool.ViewChangeFile:

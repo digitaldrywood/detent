@@ -127,21 +127,9 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	}
 	var raw json.RawMessage
 	if call.Name == operatortool.FileIssue {
-		var create struct {
-			ProjectID   string   `json:"project_id"`
-			Title       string   `json:"title"`
-			Description string   `json:"description"`
-			State       string   `json:"state"`
-			Labels      []string `json:"labels"`
-			Priority    *int     `json:"priority"`
-		}
-		if operatortool.DecodeArguments(arguments, &create) != nil || strings.TrimSpace(create.Title) == "" || len(create.Title) > 256 || strings.TrimSpace(create.Description) == "" || len(create.Description) > 32768 || len(create.State) > 256 || len(create.Labels) > 64 {
-			return operatortool.Result{}, operatortool.ErrInvalidArguments
-		}
-		for _, label := range create.Labels {
-			if label == "" || len(label) > 200 {
-				return operatortool.Result{}, operatortool.ErrInvalidArguments
-			}
+		create, decodeErr := operatortool.DecodeFileIssue(arguments)
+		if decodeErr != nil {
+			return operatortool.Result{}, decodeErr
 		}
 		var priority *int
 		if create.Priority != nil {
@@ -151,7 +139,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			}
 			priority = &level
 		}
-		raw, err = e.service.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, ""), Title: create.Title, Body: create.Description, State: create.State, Labels: create.Labels, Priority: priority})
+		raw, err = e.service.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, ""), GitHubIssueURL: create.GitHubIssueURL, Title: create.Title, Body: create.Description, State: create.State, Labels: create.Labels, Priority: priority})
 	} else if operatortool.IsWorkTool(call.Name) {
 		request, err = operatortool.DecodeWorkArguments(call.Name, arguments)
 		if err != nil {

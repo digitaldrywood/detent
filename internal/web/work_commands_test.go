@@ -40,8 +40,6 @@ func TestMCPNativeWorkCommands(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	hubHTTP := httptest.NewServer(hub.Handler())
-	t.Cleanup(hubHTTP.Close)
 	headers := map[string]string{"Authorization": "Bearer " + token}
 	var orgs tracker.Page[struct {
 		ID tracker.OrganizationID `json:"organization_id"`
@@ -58,7 +56,7 @@ func TestMCPNativeWorkCommands(t *testing.T) {
 	if err := json.Unmarshal(projectReply.Body.Bytes(), &nativeProject); err != nil || nativeProject.ID == "" {
 		t.Fatalf("project=%s %v", projectReply.Body, err)
 	}
-	client, err := hubclient.New(hubclient.Config{URL: hubHTTP.URL, TokenSource: func() string { return token }, HTTPClient: hubHTTP.Client()})
+	client, err := hubclient.New(hubclient.Config{URL: "http://hub.test", TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: nativeWebTransport{handler: hub.Handler()}}})
 	if err != nil {
 		t.Fatal(err)
 	}

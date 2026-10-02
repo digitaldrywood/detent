@@ -1,6 +1,11 @@
 package operatortool
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
 
 const (
 	MoveItem       = "move_item"
@@ -20,10 +25,57 @@ func CommandCatalog() []Definition {
 		commandDefinition(MoveItem, "Move an item through the dashboard command. Moves between Todo and Backlog execute directly; material actions return a browser approval preview.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","target_state"`, true),
 		commandDefinition(SetPriority, "Set an item's configured priority directly through the dashboard command.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"priority":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","priority"`, false),
 		commandDefinition(StopRun, "Stop the exact active run and route its item. Requires real operator approval unless the operator selected YOLO for this connection.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}`, `"identifier","destination"`, true),
-		commandDefinition(FileIssue, "Create an issue using the shared dashboard application command. Embed upload_attachment reference in description to attach a file.", `"title":{"type":"string","minLength":1,"maxLength":256},"description":{"type":"string","minLength":1,"maxLength":32768},"state":{"type":"string","maxLength":256},"labels":{"type":"array","maxItems":64,"items":{"type":"string","maxLength":256}},"priority":{"type":"integer","minimum":1,"maximum":4}`, `"title","description"`, false),
+		fileIssueDefinition(),
 		definition(ActionResult, "Read the outcome of this connection's exact action. This never approves an action.", `{"type":"object","required":["action_id"],"properties":{"action_id":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false}`),
 		definition(ConnectionInfo, "Read this connection's operator-controlled confirmation mode and dashboard setup URL. Tool input cannot change mode.", `{"type":"object","properties":{},"additionalProperties":false}`),
 	}, WorkCatalog()...), BillingCatalog()...), FleetCatalog()...)
+}
+
+type FileIssueArguments struct {
+	ProjectID      string   `json:"project_id"`
+	GitHubIssueURL string   `json:"github_issue_url,omitempty"`
+	Title          string   `json:"title,omitempty"`
+	Description    string   `json:"description,omitempty"`
+	State          string   `json:"state,omitempty"`
+	Labels         []string `json:"labels,omitempty"`
+	Priority       *int     `json:"priority,omitempty"`
+}
+
+func fileIssueDefinition() Definition {
+	return Definition{Name: FileIssue, Description: "Create an issue through the dashboard command. Native descriptions may be empty. Native projects may link a permitted github_issue_url without title or description. Priority ranks 1–4 map to native priorities 0–3. Embed upload_attachment reference in description to attach a file.", InputSchema: json.RawMessage(`{"type":"object","required":["project_id","request_id"],"anyOf":[{"required":["title"],"properties":{"title":{"minLength":1}}},{"required":["github_issue_url"]}],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","minLength":1,"maxLength":128},"github_issue_url":{"type":"string","minLength":1,"maxLength":2048},"title":{"type":"string","maxLength":500},"description":{"type":"string","maxLength":32768},"state":{"type":"string","maxLength":256},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`), Annotations: Annotations{Idempotent: true, OpenWorld: true}, Meta: toolset(FileIssue)}
+}
+
+func DecodeFileIssue(raw json.RawMessage) (FileIssueArguments, error) {
+	var request FileIssueArguments
+	var fields map[string]json.RawMessage
+	if DecodeArguments(raw, &request) != nil || json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return request, ErrInvalidArguments
+	}
+	for _, value := range fields {
+		if string(value) == "null" {
+			return request, ErrInvalidArguments
+		}
+	}
+	if strings.TrimSpace(request.ProjectID) == "" || len(request.ProjectID) > 256 || len(request.GitHubIssueURL) > 2048 || len(request.Title) > 500 || len(request.Description) > 32768 || len(request.State) > 256 || len(request.Labels) > 64 {
+		return request, ErrInvalidArguments
+	}
+	if strings.TrimSpace(request.GitHubIssueURL) == "" && strings.TrimSpace(request.Title) == "" {
+		return request, ErrInvalidArguments
+	}
+	if fields["github_issue_url"] != nil && strings.TrimSpace(request.GitHubIssueURL) == "" || request.Priority != nil && (*request.Priority < 1 || *request.Priority > 4) {
+		return request, ErrInvalidArguments
+	}
+	if request.GitHubIssueURL != "" {
+		if _, _, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL); err != nil {
+			return request, ErrInvalidArguments
+		}
+	}
+	for _, label := range request.Labels {
+		if strings.TrimSpace(label) == "" || len(label) > 200 {
+			return request, ErrInvalidArguments
+		}
+	}
+	return request, nil
 }
 
 func commandDefinition(name, description, properties, required string, destructive bool) Definition {

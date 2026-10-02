@@ -268,6 +268,28 @@ templates, queries or CSS inputs are changed by this inventory.
 
 ## Operator confirmation and connection YOLO
 
+Native form submission uses existing commands: `file_issue` for creation,
+`edit_item`, `move_item`, `set_dependency`, `add_comment`, `edit_comment`, and
+`create_change`. A native `file_issue` request may supply `github_issue_url`
+without title or description; the native owner validates the attached repository,
+canonicalizes the link and retains duplicate/retry identity. Native descriptions
+may be empty. Creation priority ranks 1–4 map to native values 0–3; `edit_item`
+uses native values 0–3 and the expected issue revision, and `edit_comment` uses
+the expected comment revision. `create_change` accepts up to 32 `linked_issues`
+owned by the same project. Content remains subject to the tools' bounded schemas.
+Moves retain the existing orchestrator command and material/destructive actions
+retain current browser approval or operator-selected connection YOLO.
+
+Board issue discussion is available through `work_comments` (native cursors or
+connector offsets) and `list_comments`. `work_pr_comments` reads the work item's
+linked PR discussion using `project_id`, `reference`, `offset`, and `limit`
+(1–200). The application selects the linked repository and PR; callers cannot
+select an arbitrary forge resource. Only deployments with the existing PR comment
+reader advertise it. Direct calls recheck current authority and ownership, and
+missing services or provider failures return opaque unavailable errors. Both
+transports use the same application adapter. These two completed decisions do
+not complete parent #3259 or its remaining acceptance.
+
 `move_item`, `set_priority`, `stop_run`, and `file_issue` use the same application
 validation and commands as dashboard chat. Arguments are typed and bounded; a
 `request_id` is an explicit business retry key for an exact command across

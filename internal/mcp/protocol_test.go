@@ -459,9 +459,11 @@ func TestProtocolWorkReadParity(t *testing.T) {
 				}
 				fixture.application.denied.Store(true)
 				var result toolCallResult
-				decodeResult(t, fixture.request("tools/call", map[string]any{"name": operatortool.WorkItem, "arguments": map[string]any{"project_id": "project", "reference": "#1"}}), &result)
-				if !result.IsError {
-					t.Fatal("removed authority accepted a direct read")
+				for _, name := range []string{operatortool.WorkItem, operatortool.WorkPRComments} {
+					decodeResult(t, fixture.request("tools/call", map[string]any{"name": name, "arguments": map[string]any{"project_id": "project", "reference": "#1"}}), &result)
+					if !result.IsError {
+						t.Fatal("removed authority accepted a direct read")
+					}
 				}
 				fixture.application.denied.Store(false)
 				fixture.application.reads = operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{}))

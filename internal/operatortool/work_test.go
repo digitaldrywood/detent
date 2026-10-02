@@ -6,6 +6,36 @@ import (
 	"testing"
 )
 
+func TestFileIssueArguments(t *testing.T) {
+	for _, tt := range []struct {
+		name, fields string
+		valid        bool
+	}{
+		{"ordinary", `"title":"Title","description":"Body"`, true},
+		{"linked only", `"github_issue_url":"github.com/owner/repo/issues/1"`, true},
+		{"linked priority", `"github_issue_url":"github.com/owner/repo/issues/1","priority":4`, true},
+		{"native empty body", `"title":"Title"`, true},
+		{"native full title", `"title":"` + strings.Repeat("x", 500) + `"`, true},
+		{"native oversized title", `"title":"` + strings.Repeat("x", 501) + `"`, false},
+		{"missing title", `"description":"Body"`, false},
+		{"blank link", `"github_issue_url":" "`, false},
+		{"null link", `"github_issue_url":null`, false},
+		{"credential URL", `"github_issue_url":"https://user:secret@github.com/owner/repo/issues/1"`, false},
+		{"PR instead of issue", `"github_issue_url":"https://github.com/owner/repo/pull/1"`, false},
+		{"oversized link", `"github_issue_url":"` + strings.Repeat("x", 2049) + `"`, false},
+		{"wrong priority scale", `"title":"Title","description":"Body","priority":0`, false},
+		{"forged approval", `"title":"Title","description":"Body","confirm":true`, false},
+		{"forged authority", `"github_issue_url":"github.com/owner/repo/issues/1","organization_id":"other"`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := DecodeFileIssue(json.RawMessage(`{"project_id":"project",` + tt.fields + `}`))
+			if (err == nil) != tt.valid {
+				t.Fatalf("valid=%t error=%v", tt.valid, err)
+			}
+		})
+	}
+}
+
 // Direct callers must not smuggle authority, another command's fields, or
 // unbounded content past a schema that was only used during discovery.
 func TestWorkArgumentsDirectCallBounds(t *testing.T) {
@@ -27,6 +57,8 @@ func TestWorkArgumentsDirectCallBounds(t *testing.T) {
 		{"zero revision", EditItem, `"title":"title","expected_revision":0`, false},
 		{"invalid priority", EditItem, `"priority":4,"expected_revision":1`, false},
 		{"ordinary edit", EditItem, `"priority":0,"expected_revision":1`, true},
+		{"native full title", EditItem, `"title":"` + strings.Repeat("x", 500) + `","expected_revision":1`, true},
+		{"native oversized title", EditItem, `"title":"` + strings.Repeat("x", 501) + `","expected_revision":1`, false},
 		{"blank label", EditItem, `"labels":[" "],"expected_revision":1`, false},
 		{"unknown dependency operation", SetDependency, `"related":"item","operation":"replace"`, false},
 		{"invalid queue priority", SetQueuePriority, `"queue_scope":"work","state":"Todo","queue_priority":"highest"`, false},

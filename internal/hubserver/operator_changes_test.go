@@ -307,13 +307,31 @@ func TestOperatorChangeCommands(t *testing.T) {
 
 	// Catches creation returning only the caller's empty selector rather than
 	// the new application identity needed for a subsequent detail call.
-	created, err := executor.Execute(ctx, changeToolCall(operatortool.CreateChange, operatortool.ChangeArguments{ProjectID: base.ProjectID, ItemID: base.ItemID, RequestID: "new-change", Title: "Follow-up change"}))
+	linked := f.create(t, "linked operator work")
+	createArgs := operatortool.ChangeArguments{ProjectID: base.ProjectID, ItemID: base.ItemID, RequestID: "new-change", Title: "Follow-up change", LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID}}
+	created, err := executor.Execute(ctx, changeToolCall(operatortool.CreateChange, createArgs))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var createdResult operatortool.ChangeResult
 	if json.Unmarshal(created.Content, &createdResult) != nil || createdResult.ChangeID == "" || !strings.HasSuffix(createdResult.URL, "/changes/"+createdResult.ChangeID) {
 		t.Fatalf("unusable creation result: %s", created.Content)
+	}
+	changes, err := f.service.readChanges(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(linked.WorkItemID))
+	if err != nil || len(changes) != 1 || changes[0].ID != createdResult.ChangeID {
+		t.Fatalf("lost linked Change: %+v %v", changes, err)
+	}
+	replayed, err := executor.Execute(ctx, changeToolCall(operatortool.CreateChange, createArgs))
+	var replayResult operatortool.ChangeResult
+	if err != nil || json.Unmarshal(replayed.Content, &replayResult) != nil || replayResult.ChangeID != createdResult.ChangeID {
+		t.Fatalf("linked Change replay=%s %v", replayed.Content, err)
+	}
+	other := newNativeFixture(t, f.service, "", "foreign-linked-project")
+	foreign := other.create(t, "foreign")
+	createArgs.RequestID = "foreign-link"
+	createArgs.LinkedIssues = []tracker.NativeWorkItemID{foreign.WorkItemID}
+	if _, err := executor.Execute(ctx, changeToolCall(operatortool.CreateChange, createArgs)); err == nil {
+		t.Fatal("cross-project Change linkage succeeded")
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
 		t.Fatal(err)

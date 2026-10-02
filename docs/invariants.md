@@ -335,6 +335,21 @@ the existing move reasons are unchanged and no mechanism or reason code is added
 `TestOperatorRemovalCommand` and `TestWorkArgumentsDirectCallBounds` cover
 replay, native revisions, workflow refusal, ownership, bounded direct calls,
 real approval/rejection, authorized YOLO and orchestrator-owned removal.
+Native submission and board discussion parity (native #34) keeps every form
+action with those existing work, governed move and Change commands. Linked
+creation passes the permitted GitHub issue URL to the native creation owner;
+creation ranks 1–4 map to native priorities 0–3, while edits retain native
+priority values and expected revisions. Change creation preserves its additional
+project-owned issue links. `work_pr_comments` derives the linked repository and
+PR from the authorized work item and pages the existing forge discussion reader;
+it accepts no arbitrary repository, PR number or URL. Board and tool discussion
+reads share safe service errors. Deployments without that reader remain
+unavailable. `TestHubMCPWorkCommands`, `TestOperatorNativeClientReads`,
+`TestOperatorGitHubWorkReads`, `TestOperatorChangeCommands` and
+`TestProtocolWorkReadParity` cover linkage, retries, priority mapping, ownership,
+bounded discussion, redaction and current authority across both transports.
+The existing approval/YOLO and orchestrator lane owners remain authoritative;
+parent #3259 retains final conformance and zero-pending acceptance.
 Change/review/artifact MCP parity (#3347) binds shared application reads/commands
 to freshly resolved connection authority. Nested work-item/change/version and
 exact artifact receipt ownership are checked before effects and replay. Native
