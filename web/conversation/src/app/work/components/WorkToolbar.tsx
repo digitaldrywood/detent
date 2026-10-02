@@ -1,17 +1,3 @@
-// The board toolbar (artifact screen 1's `.toolbar`).
-//
-// Left to right, exactly the artifact's row: a search field with a `/` hint,
-// Filters, Sort showing its current value, the freshness chip, then the
-// Board/List segmented control and the Lanes menu on the right.
-//
-// Two honesty notes the artifact does not have to make and this does:
-//
-//  - search is over the loaded board. The hub has no text search on work
-//    items, so the field filters what came back and says so in its title
-//    rather than pretending to have asked the server.
-//  - a filter with more than one value is applied here, not there. The hub
-//    rejects a repeated query parameter, so one value is pushed to the server
-//    and the rest are applied to the result; the menu says which.
 import { FilterIcon, KanbanIcon, LayoutListIcon, SearchIcon, XIcon } from "lucide-react";
 import React from "react";
 
@@ -63,8 +49,6 @@ export interface WorkToolbarProps {
   readonly lanes: readonly Lane[];
   readonly facets: ToolbarFacets;
   readonly searchRef?: React.Ref<HTMLInputElement>;
-  /** The freshness chip, rendered as given so the shell owns its vocabulary. */
-  readonly freshness: React.ReactNode;
 }
 
 export function WorkToolbar({
@@ -73,7 +57,6 @@ export function WorkToolbar({
   lanes,
   facets,
   searchRef,
-  freshness,
 }: WorkToolbarProps): React.ReactElement {
   const filters = activeFilterCount(view);
   const laneNames = React.useMemo(() => lanes.map((lane) => lane.name), [lanes]);
@@ -82,12 +65,12 @@ export function WorkToolbar({
   const values = (key: FilterKey): readonly string[] => [...new Set([...facets[key], ...view[key]])].toSorted();
 
   return (
-    <div data-testid="work-toolbar" className="flex flex-wrap items-center gap-2 px-5 pt-1.5 pb-3">
+    <div data-testid="work-toolbar" className="flex shrink-0 items-center gap-2 overflow-x-auto px-3 pt-1.5 pb-3 sm:px-5">
       <Button size="xs" variant="outline" aria-pressed={view.archived === true}
         data-testid="work-archived" onClick={() => onChange({ ...view, archived: view.archived !== true })}>
         {view.archived === true ? "Archived issues" : "Archived"}
       </Button>
-      <div className="flex h-7 w-full min-w-0 items-center gap-2 rounded-[var(--control-radius)] border border-input bg-popover px-2 text-muted-foreground text-xs shadow-xs/5 sm:h-6 sm:w-80 dark:bg-input/32">
+      <div className="flex h-7 w-40 shrink-0 items-center gap-2 rounded-[var(--control-radius)] border border-input bg-popover px-2 text-muted-foreground text-xs shadow-xs/5 sm:h-6 sm:w-80 dark:bg-input/32">
         <SearchIcon className="size-3.5 shrink-0" />
         <input
           ref={searchRef}
@@ -186,8 +169,6 @@ export function WorkToolbar({
           </MenuRadioGroup>
         </MenuPopup>
       </Menu>
-
-      {freshness}
 
       <span className="flex-1" />
 

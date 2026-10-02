@@ -4,7 +4,7 @@ import React from "react";
 import { cn } from "../../../lib/utils.ts";
 import { ProjectGlyph } from "../../components/ProjectGlyph.tsx";
 import { ageLabel, elapsedLabel, issueNumber, projectHue } from "../lib/format.ts";
-import { isBlocked, isLive, observationTitle, type WorkItemView } from "../lib/model.ts";
+import { isBlocked, isLive, type WorkItemView } from "../lib/model.ts";
 import { LaneMenu } from "./LaneMenu.tsx";
 
 export const PILL_TONE = {
@@ -106,7 +106,6 @@ export function IssueCard({
 
   return (
     <article
-      title={observationTitle(item)}
       data-testid="issue-card"
       data-work-item={item.id}
       data-live={live ? "true" : undefined}
