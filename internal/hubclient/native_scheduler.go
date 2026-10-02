@@ -215,7 +215,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 			leases = append(leases, lease)
 		}
 	}
-	if errors.Is(err, ErrNoClaimableWork) || len(leases) > 0 && nativeAdmissionCapacityFull(err) {
+	if errors.Is(err, ErrNoClaimableWork) || nativeAdmissionCapacityFull(err) {
 		err = nil
 	}
 	release := func(cause error) error {

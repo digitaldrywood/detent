@@ -33,7 +33,7 @@ import (
 
 func TestProviderSchedulerEndToEnd(t *testing.T) {
 	t.Parallel()
-	for _, unavailable := range []string{"fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots"} {
+	for _, unavailable := range []string{"fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "quota reset"} {
 		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
 	}
 }
@@ -76,7 +76,7 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 
 func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	t.Helper()
-	batch := unavailable == "six slots" || unavailable == "provider slots" || unavailable == "mixed providers" || unavailable == "provider hydration" || unavailable == "stage slots"
+	batch := unavailable == "six slots" || unavailable == "provider slots" || unavailable == "mixed providers" || unavailable == "provider hydration" || unavailable == "stage slots" || unavailable == "quota reset"
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte("provider-test-admin")})
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +196,10 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if unavailable == "mixed providers" {
 		report.MaxConcurrent = 1
 	}
+	if unavailable == "quota reset" {
+		report.Availability = "exhausted"
+		report.ResetAt = report.ObservedAt.Add(time.Hour)
+	}
 	providerReports := func() ([]providercapacity.Report, error) {
 		reports := []providercapacity.Report{report}
 		if unavailable == "mixed providers" {
@@ -262,6 +266,21 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			}
 			return providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: "sol"}, nil
 		}
+		if unavailable == "quota reset" {
+			now := report.ObservedAt
+			scheduler.now = func() time.Time { return now }
+			for range 4 {
+				evaluations = 0
+				if full, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(full) != 0 || len(scheduler.nativeClaims) != 0 || evaluations > request.CandidateLimit {
+					t.Fatalf("quota denial admitted work: %v, %v, retained=%d", full, err, len(scheduler.nativeClaims))
+				}
+			}
+			now = now.Add(31 * time.Second)
+			report.Availability = "available"
+			report.ResetAt = time.Time{}
+			report.ObservedAt = time.Now()
+			evaluations = 0
+		}
 		transport := client.httpClient.Transport
 		if unavailable == "provider hydration" {
 			reads := 0
@@ -294,6 +313,27 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		}
 		if unavailable == "stage slots" && admittedRework != 1 {
 			t.Fatalf("overcommitted Rework slots: %d", admittedRework)
+		}
+		if unavailable == "provider slots" {
+			for range 4 {
+				evaluations = 0
+				if full, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(full) != 0 || evaluations > request.CandidateLimit {
+					t.Fatalf("full provider refresh = %d, %v, evaluations=%d", len(full), err, evaluations)
+				}
+			}
+			high, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "urgent after release", Body: "```detent-agent\nschema: 1\nmodel: sol\n```", State: "Rework", Priority: new(tracker.QueuePriorityUrgent)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "dispatch_deferred"); err != nil {
+				t.Fatal(err)
+			}
+			evaluations = 0
+			next, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(next) != 1 || next[0].ID != string(high.WorkItemID) || len(scheduler.nativeClaims) != 2 {
+				t.Fatalf("freed provider slot did not admit urgent work: %v, %v, retained=%d", next, err, len(scheduler.nativeClaims))
+			}
+			issues[0] = next[0]
 		}
 		used := make(map[string]int)
 		for _, issue := range issues {

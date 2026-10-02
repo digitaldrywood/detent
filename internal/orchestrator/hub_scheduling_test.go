@@ -42,6 +42,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 		mergeOnly   bool
 		slots       int
 		batchSize   int
+		empty       bool
+		repeats     int
 	}{
 		{name: "Hub dispatches without connector reads", githubPause: true, wantRunning: true},
 		{name: "Hub outage degrades without spending work budgets", fetchError: errors.Join(ErrSchedulingUnavailable, errors.New("Hub unavailable")), wantDegrade: true},
@@ -52,6 +54,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 		{name: "non-native REST safety stays active", restPause: true},
 		{name: "one refresh starts six scheduled candidates", slots: 6, batchSize: 6, wantRunning: true},
 		{name: "unselected batch claims are released", slots: 2, batchSize: 6, wantRunning: true},
+		{name: "full capacity refreshes stay healthy", native: true, empty: true, repeats: 4},
+		{name: "partial capacity batch stays healthy", slots: 6, batchSize: 2, wantRunning: true, repeats: 4},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -94,6 +98,9 @@ func TestHubSchedulingCycle(t *testing.T) {
 			if test.mergeOnly {
 				cfg.ActiveStates = []string{"Merging"}
 			}
+			if test.empty {
+				scheduling.issues = []connector.Issue{}
+			}
 			orch, err := New(cfg, Dependencies{Connector: backend, Scheduling: scheduling, Runner: runner, Now: func() time.Time { return now }})
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
@@ -121,6 +128,21 @@ func TestHubSchedulingCycle(t *testing.T) {
 
 			orch.tick(t.Context(), &state, now)
 			request := scheduling.request
+			if candidates, ids := trackerBackend.candidateReads.Load(), trackerBackend.idReads.Load(); candidates != 0 || ids != 0 {
+				t.Fatalf("scheduling-time connector reads = candidates %d ids %d, want zero", candidates, ids)
+			}
+			if test.repeats > 0 {
+				scheduling.issues = []connector.Issue{}
+				tickAt := now
+				for range test.repeats {
+					tickAt = tickAt.Add(cfg.PollInterval)
+					orch.tick(t.Context(), &state, tickAt)
+					source := state.RefreshSources[telemetry.RefreshSourceCandidates]
+					if source.FailureStreak != 0 || source.Condition != "" || source.LastError != "" || state.LastRefreshError != "" || state.Snapshot(tickAt).Refresh.Degraded() || state.PollInterval != cfg.PollInterval {
+						t.Fatalf("healthy capacity refresh degraded: source=%+v interval=%s error=%s", source, state.PollInterval, state.LastRefreshError)
+					}
+				}
+			}
 			if scheduling.fetches != 0 && (!reflect.DeepEqual(request.DispatchPriorityByState, cfg.DispatchPriorityByState) || !reflect.DeepEqual(request.DispatchPriorityByLabel, cfg.DispatchPriorityByLabel) || !request.PrioritizeUnblockers || request.CandidateLimit != cfg.MaxConcurrentAgents+8 || request.AdmissionLimit != cfg.MaxConcurrentAgents || request.CandidateReady == nil || request.CandidateAdmitted == nil) {
 				t.Fatalf("scheduling request lost configured ranking/readiness: %+v", request)
 			}
@@ -131,9 +153,6 @@ func TestHubSchedulingCycle(t *testing.T) {
 				t.Fatal("running work remained ready for a new native claim")
 			}
 
-			if candidates, ids := trackerBackend.candidateReads.Load(), trackerBackend.idReads.Load(); candidates != 0 || ids != 0 {
-				t.Fatalf("scheduling-time connector reads = candidates %d ids %d, want zero", candidates, ids)
-			}
 			_, running := state.Running[selected.ID]
 			if running != test.wantRunning {
 				t.Fatalf("running = %t, want %t", running, test.wantRunning)
@@ -146,7 +165,7 @@ func TestHubSchedulingCycle(t *testing.T) {
 					t.Fatalf("refresh started %d attempts, want %d", len(state.Running), wantAdoptions)
 				}
 			}
-			if test.wantRunning && (scheduling.fetches != 1 || scheduling.adoptions != wantAdoptions || scheduling.releases != wantReleases) {
+			if test.wantRunning && (scheduling.fetches != 1+test.repeats || scheduling.adoptions != wantAdoptions || scheduling.releases != wantReleases) {
 				t.Fatalf("Hub scheduling calls = fetch %d adopt %d release %d", scheduling.fetches, scheduling.adoptions, scheduling.releases)
 			}
 			if test.native && test.restPause && !test.expired && !test.gitLanding {
@@ -390,6 +409,10 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 		githubPR bool
 	}{
 		{name: "ready todo", state: "Todo", want: true},
+		{name: "full project lookahead does not claim coding", state: "Todo", native: true, setup: func(s *State, _ connector.Issue) {
+			s.Running["first"] = Running{Issue: dispatchTestIssue("first", "Todo")}
+			s.Running["second"] = Running{Issue: dispatchTestIssue("second", "Todo")}
+		}},
 		{name: "merging state full", state: "Merging", native: true, setup: func(s *State, _ connector.Issue) {
 			s.Running["other"] = Running{Issue: dispatchTestIssue("other", "Merging")}
 		}},
@@ -455,6 +478,10 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			beforeRunning := len(state.Running)
 			if _, err := o.fetchCandidateIssuesForTick(t.Context(), &state); err != nil {
 				t.Fatal(err)
+			}
+			available := o.dispatchPlanner().hardAvailableSlots(&state)
+			if source.request.CandidateLimit != available+dispatchCandidateLookahead || source.request.AdmissionLimit != max(1, available) {
+				t.Fatalf("readiness lost bounded lookahead: %+v", source.request)
 			}
 			if test.native && test.githubPR && test.state == "Merging" && stateIn("Merging", source.request.WorkflowStates) {
 				t.Fatal("REST-held native PR landing remained in upstream states")
