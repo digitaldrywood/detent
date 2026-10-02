@@ -464,6 +464,7 @@ func TestOpenMigratesConversationOriginHistories(t *testing.T) {
 		{"origin62", 62, 62},
 		{"origin63", 63, 63},
 		{"references64", 64, 0},
+		{"origin65", 65, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hub.db")
@@ -509,9 +510,13 @@ func TestOpenMigratesConversationOriginHistories(t *testing.T) {
 				}
 				legacy["00064_cloud_attachment_references.sql"] = &fstest.MapFile{Data: data}
 			}
+			goMigrations := []*goose.Migration{hubGoMigrations()[0]}
+			if test.version >= 65 {
+				goMigrations = append(goMigrations, hubGoMigrations()[2])
+			}
 			provider, err := goose.NewProvider(goose.DialectSQLite3, db, legacy,
 				goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable),
-				goose.WithSlog(discardLogger()), goose.WithGoMigrations(hubGoMigrations()[0]))
+				goose.WithSlog(discardLogger()), goose.WithGoMigrations(goMigrations...))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -549,11 +554,12 @@ VALUES ('att_history', 'org_history', 'prj_history', 'tok_history', 'preserved.t
 				t.Fatal(err)
 			}
 			service := openTestService(t, Config{DatabasePath: path})
-			if service.database.schemaVersion != 65 {
-				t.Fatalf("schema version = %d, want 65", service.database.schemaVersion)
+			if service.database.schemaVersion != 66 {
+				t.Fatalf("schema version = %d, want 66", service.database.schemaVersion)
 			}
 			for _, object := range []struct{ kind, name string }{
 				{"table", "attachments"}, {"table", "attachment_references"}, {"index", "attachments_retention"},
+				{"index", "collaboration_events_project_idx"},
 				{"trigger", "attachments_issue_deleted"}, {"trigger", "attachments_comment_deleted"},
 			} {
 				var count int
@@ -570,7 +576,7 @@ VALUES ('att_history', 'org_history', 'prj_history', 'tok_history', 'preserved.t
 				t.Fatal(err)
 			}
 			want := conversationOriginWorker
-			if test.originVersion != 0 {
+			if test.originVersion != 0 || test.version >= 65 {
 				want = conversationOriginUser
 			}
 			if origin != want {
