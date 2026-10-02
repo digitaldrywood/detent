@@ -37,6 +37,7 @@ import { type ConversationPanel, useRightPanelWorkspace } from "./RightPanel.tsx
 export interface WorkspacePanel {
   readonly open: boolean;
   readonly maximized: boolean;
+  readonly openAsk: () => void;
   readonly openConversation: () => void;
   readonly conversationAvailable: boolean;
   readonly openPullRequest: () => void;
@@ -84,6 +85,7 @@ export interface ChatWorkspaceProps {
    * then not a dropzone at all rather than one that swallows a drop.
    */
   readonly onDropFiles?: (files: File[]) => void;
+  readonly askPanel?: React.ReactNode;
   /**
    * The linked conversation, as the right panel's `conversation` surface
    * (decisions.md §19.3). The route builds the view; the frame only decides
@@ -119,6 +121,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
     attempts: props.attempts ?? NO_ATTEMPTS,
     history: props.history ?? NO_HISTORY,
     now,
+    ask: props.askPanel,
     conversation: props.conversationPanel ?? null,
     title: props.title,
   });
@@ -127,6 +130,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
     () => ({
       open: workspace.open,
       maximized: workspace.maximized,
+      openAsk: workspace.openAsk,
       openConversation: workspace.openConversation,
       conversationAvailable: workspace.conversationAvailable,
       openPullRequest: workspace.openPullRequest,
@@ -139,10 +143,24 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
       workspace.pullRequestAvailable,
       workspace.maximized,
       workspace.open,
+      workspace.openAsk,
       workspace.openConversation,
       workspace.toggleRightPanel,
     ],
   );
+
+  React.useEffect(() => {
+    if (props.askPanel == null) return;
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (event.key.toLowerCase() !== "a" || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, textarea, select, [role='textbox']"))) return;
+      event.preventDefault();
+      workspace.openAsk();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [props.askPanel, workspace.openAsk]);
 
   const openIssue = React.useCallback(() => {
     if (props.workItemId === null) return;
@@ -419,6 +437,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
                 availableEditors={OPEN_IN_EDITORS}
                 rightPanelOpen={workspace.open}
                 gitCwd={git.worktreePath}
+                onAsk={props.askPanel == null ? undefined : workspace.openAsk}
                 onNewThreadInProject={props.onNewThreadInProject}
                 onRunProjectScript={runScript}
                 onAddProjectScript={actions.add}
@@ -457,4 +476,3 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
     </HeaderActionsProvider>
   );
 }
-

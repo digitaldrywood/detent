@@ -1,6 +1,7 @@
 // Reconnect behaviour: the stream resumes from the cursor the client tracked,
 // and replayed frames never duplicate what is already in the transcript.
 import * as Option from "effect/Option";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Result } from "effect/Result";
@@ -16,7 +17,7 @@ afterEach(async () => {
 });
 
 describe("reconnect", () => {
-  it("resumes from the cursor without duplicating messages", async () => {
+  it.each(["transport drop", "server_error"])("resumes after %s without hiding or duplicating messages", async (reason) => {
     const h = (harness = await makeHarness());
     const created = (await h.run(
       h.client.effects.createConversation({
@@ -45,10 +46,19 @@ describe("reconnect", () => {
       "the first reply",
     );
     const beforeIds = Option.getOrThrow(before.data).messages.map((message) => message.id);
+    let emptied = false;
+    const unsubscribe = h.registry.subscribe(atom, (value) => {
+      const state = Option.getOrUndefined(AsyncResult.value(value));
+      if (state !== undefined && (Option.isNone(state.data) || state.status === "gone")) emptied = true;
+    });
+    h.mounted.push(unsubscribe);
 
     // Kill the open stream. The client reconnects and resubscribes with its
     // own cursor, so the hub replays only what came after it.
-    await h.control("drop-open-streams");
+    await h.control("drop-open-streams", { reason });
+    await h.waitFor(atom, (value) => value.status === "synchronizing", "the interrupted stream");
+    const recovered = await h.waitFor(atom, (value) => value.status === "live", "the reconnected stream");
+    expect(Option.isNone(recovered.closedReason)).toBe(true);
 
     await h.run(
       h.client.effects.sendMessage({
@@ -70,6 +80,7 @@ describe("reconnect", () => {
     );
     const detail = Option.getOrThrow(after.data);
     const ids = detail.messages.map((message) => message.id);
+    expect(emptied).toBe(false);
     expect(new Set(ids).size).toBe(ids.length);
     for (const id of beforeIds) expect(ids).toContain(id);
     expect(detail.messages.filter((message) => message.text === "Still here?")).toHaveLength(1);

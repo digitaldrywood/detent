@@ -34,6 +34,7 @@ import {
 } from "../../contracts/account.ts";
 import { isApiError } from "../../contracts/index.ts";
 import { hubPath } from "../../runtime/basePath.ts";
+import { WorkAttachment } from "../../contracts/workAttachments.ts";
 
 /** A decoded failure from the hosted API, or the network under it. */
 export class AccountError extends Error {
@@ -112,7 +113,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     body?: unknown,
   ): Promise<A> {
     const headers: Record<string, string> = { Accept: "application/json" };
-    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (body !== undefined && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
     if (MUTATION_METHODS.has(method)) headers["X-CSRF-Token"] = options.csrfToken;
     let response: Response;
     try {
@@ -120,7 +121,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         method,
         credentials: "same-origin",
         headers,
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }),
       });
     } catch (cause) {
       throw new AccountError({
@@ -163,6 +164,14 @@ export function makeAccountApi(options: AccountApiOptions) {
     origin: options.origin,
     apiBase: base,
     csrfToken: options.csrfToken,
+    attachmentUrl: (projectId: string, id: string) => `${project(projectId)}/attachments/${encodeURIComponent(id)}`,
+    attachment: (projectId: string, id: string) =>
+      send(WorkAttachment, "GET", `${project(projectId)}/attachments/${encodeURIComponent(id)}/metadata`),
+    uploadWorkAttachment: (projectId: string, file: File) => {
+      const body = new FormData();
+      body.append("file", file);
+      return send(WorkAttachment, "POST", `${project(projectId)}/attachments`, body);
+    },
 
     // --- Organization -------------------------------------------------------
     members: () => send(MembersResponse, "GET", `${base}/members`),

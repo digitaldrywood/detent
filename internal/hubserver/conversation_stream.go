@@ -134,9 +134,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 		_, err := s.reauthorizeConversationStream(c, &scope, record.ID)
 		if err != nil {
 			reason := conversationStreamCloseReason(err)
-			if reason == conversationClosedServerError {
-				service.logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "error", err)
-			}
+			service.logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
 			return stream.closed(reason)
 		}
 		if cursor, err = stream.replay(ctx, service.store, record.ID, cursor); err != nil {
@@ -197,7 +195,10 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 // the client may reconnect.
 func conversationStreamCloseReason(err error) string {
 	var native *nativeError
+	var membershipLookup *hostedMembershipLookupError
 	switch {
+	case errors.As(err, &membershipLookup):
+		return conversationClosedServerError
 	case errors.As(err, &native):
 		return conversationClosedAccessRevoked
 	case errors.Is(err, sql.ErrNoRows), errors.Is(err, auth.ErrHostedIdentity):

@@ -47,7 +47,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			params.Set("q", request.Query)
 		}
 		page, err := s.readIssues(ctx, scope, params)
-		return hubWorkResult(r, request, operatortool.NativeItemPage(request.ProjectID, page), err)
+		return hubWorkResult(r, request, operatortool.NativeItemPage(request.ProjectID, page.Page), err)
 	}
 	if name == operatortool.WorkConfig {
 		project, err := readNativeProject(ctx, s.database.db, scope)
@@ -129,7 +129,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		}
 		for _, pr := range prs {
 			if pr.Number > 0 && pr.URL != "" {
-				refs = append(refs, operatortool.WorkReference{Kind: "pull_request", ID: strconv.Itoa(pr.Number), URL: pr.URL, ObservedAt: &pr.FetchedAt})
+				refs = append(refs, operatortool.WorkReference{Kind: "pull_request", State: pr.State, ID: strconv.Itoa(pr.Number), URL: pr.URL, ObservedAt: &pr.FetchedAt})
 			}
 		}
 		page := operatortool.OffsetPage(refs, request.Offset, request.Limit)
@@ -164,7 +164,7 @@ func safeWorkReadError(err error) error {
 func (s *Service) resolveOperatorNativeItem(ctx context.Context, scope nativeScope, reference string) (tracker.NativeIssue, error) {
 	if strings.HasPrefix(reference, "wi_") {
 		item, _, err := readNativeIssue(ctx, s.database.db, scope, reference)
-		return item, err
+		return s.nativeIssueResponse(item), err
 	}
 	value := reference
 	if prefix, number, ok := strings.Cut(reference, "#"); ok {
@@ -182,7 +182,7 @@ func (s *Service) resolveOperatorNativeItem(ctx context.Context, scope nativeSco
 		return tracker.NativeIssue{}, err
 	}
 	item, _, err := readNativeIssue(ctx, s.database.db, scope, id)
-	return item, err
+	return s.nativeIssueResponse(item), err
 }
 
 func (operatorWorkReads) WorkReadNames(context.Context) []string {

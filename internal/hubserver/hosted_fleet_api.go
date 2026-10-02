@@ -29,33 +29,32 @@ type hostedFleetLease struct {
 }
 
 type hostedFleetRunner struct {
-	Capacity     *runnerauth.CapacityView `json:"capacity_configuration,omitempty"`
-	Problems     []runnerauth.Problem     `json:"problems"`
-	ID           string                   `json:"id"`
-	DisplayName  string                   `json:"display_name"`
-	Hostname     string                   `json:"hostname"`
-	Health       string                   `json:"health"`
-	State        string                   `json:"state"`
-	OS           string                   `json:"os"`
-	Architecture string                   `json:"architecture"`
-	// Version is the Detent build this runner's host reported. The settings
-	// screen compares it against the response's Current to draw the update
-	// state the footer's pill points at.
-	Version          string                  `json:"version"`
-	HostCapacity     int                     `json:"host_capacity"`
-	HostUsed         int                     `json:"host_used"`
-	CapacityLimit    int                     `json:"capacity_limit"`
-	ReportedCapacity int                     `json:"reported_capacity"`
-	ProviderCapacity []providercapacity.View `json:"provider_capacity"`
-	LastHeartbeatAt  time.Time               `json:"last_heartbeat_at"`
-	Leases           []hostedFleetLease      `json:"leases"`
-	HomeProjectIDs   []tracker.ProjectID     `json:"home_project_ids"`
-	HomeStatus       string                  `json:"home_status"`
-	HomeDrySince     *time.Time              `json:"home_dry_since"`
-	IsolationTier    string                  `json:"isolation_tier"`
-	Availability     runnerauth.Availability `json:"availability"`
-	Routing          *runnerauth.Routing     `json:"routing,omitempty"`
-	Revision         int64                   `json:"revision,omitempty"`
+	Update             runnerauth.UpdateView    `json:"update"`
+	Capacity           *runnerauth.CapacityView `json:"capacity_configuration,omitempty"`
+	Problems           []runnerauth.Problem     `json:"problems"`
+	ID                 string                   `json:"id"`
+	DisplayName        string                   `json:"display_name"`
+	Hostname           string                   `json:"hostname"`
+	Health             string                   `json:"health"`
+	State              string                   `json:"state"`
+	OS                 string                   `json:"os"`
+	Architecture       string                   `json:"architecture"`
+	ClaimRefusalReason string                   `json:"claim_refusal_reason"`
+	Version            string                   `json:"version"`
+	HostCapacity       int                      `json:"host_capacity"`
+	HostUsed           int                      `json:"host_used"`
+	CapacityLimit      int                      `json:"capacity_limit"`
+	ReportedCapacity   int                      `json:"reported_capacity"`
+	ProviderCapacity   []providercapacity.View  `json:"provider_capacity"`
+	LastHeartbeatAt    time.Time                `json:"last_heartbeat_at"`
+	Leases             []hostedFleetLease       `json:"leases"`
+	HomeProjectIDs     []tracker.ProjectID      `json:"home_project_ids"`
+	HomeStatus         string                   `json:"home_status"`
+	HomeDrySince       *time.Time               `json:"home_dry_since"`
+	IsolationTier      string                   `json:"isolation_tier"`
+	Availability       runnerauth.Availability  `json:"availability"`
+	Routing            *runnerauth.Routing      `json:"routing,omitempty"`
+	Revision           int64                    `json:"revision,omitempty"`
 
 	machine string
 }
@@ -100,7 +99,8 @@ type hostedFleetResponse struct {
 	// Current is the Detent build this hub runs, which is the version a runner
 	// is expected to be on: the hub and the runner are the same binary, and an
 	// operator upgrades a host to match the hub it enrolled against.
-	Current string `json:"current"`
+	Current              string `json:"current"`
+	MinimumRunnerVersion string `json:"minimum_runner_version"`
 }
 
 // hostedFleet answers GET /fleet for any member of the organization.
@@ -149,7 +149,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
-	return hostedFleetResponse{Runners: runners, Editable: editable, Usage: usage, Current: detentVersion(s.config.Version)}, nil
+	return hostedFleetResponse{Runners: runners, Editable: editable, Usage: usage, Current: detentVersion(s.config.Version), MinimumRunnerVersion: minimumRunnerVersion(s.config.Version)}, nil
 }
 
 func (s *Service) hostedFleetRunners(ctx context.Context, visible map[tracker.ProjectID]bool, editable bool) ([]hostedFleetRunner, error) {
@@ -180,6 +180,7 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
 		view := hostedFleetRunnerView(runner, entry.version, visible, s.config.now())
+		view.ClaimRefusalReason = runnerClaimRefusal(minimumRunnerVersion(s.config.Version), entry.version)
 		if editable {
 			view.Routing = &runner.Routing
 			view.Revision = runner.Revision
@@ -213,7 +214,8 @@ func scopeHostUsage(runners []hostedFleetRunner) {
 
 func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map[tracker.ProjectID]bool, now time.Time) hostedFleetRunner {
 	view := hostedFleetRunner{
-		ID: runner.RunnerID, DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Status(now),
+		Update: runner.UpdateView(now),
+		ID:     runner.RunnerID, DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Status(now),
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},

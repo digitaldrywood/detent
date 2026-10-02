@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -42,8 +43,9 @@ type cloudFileConfig struct {
 		APIURL    string `yaml:"api_url"`
 		IssuerURL string `yaml:"issuer_url"`
 	} `yaml:"workos"`
-	Allocation *cloudAllocationFileConfig `yaml:"allocation"`
-	Billing    *cloudBillingFileConfig    `yaml:"billing"`
+	Allocation  *cloudAllocationFileConfig `yaml:"allocation"`
+	Billing     *cloudBillingFileConfig    `yaml:"billing"`
+	Attachments *attachment.Config         `yaml:"attachments"`
 }
 
 type cloudBillingFileConfig struct {
@@ -96,7 +98,7 @@ func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []
 	}
 	var environment []string
 	for _, name := range names {
-		if validEnvName(name) {
+		if validEnvName(name) && name != "DETENT_ATTACHMENTS_ACCESS_KEY_ID" && name != "DETENT_ATTACHMENTS_SECRET_ACCESS_KEY" {
 			environment = append(environment, name+"="+lookupEnv(name))
 		}
 	}
@@ -268,6 +270,11 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	result := cloudentry.Config{
 		PublicURL: config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
 		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, EntitlementAdministrators: config.EntitlementAdministrators, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(), ConfigPath: path,
+	}
+	if config.Attachments != nil {
+		config.Attachments.AccessKeyID = lookupEnv("DETENT_ATTACHMENTS_ACCESS_KEY_ID")
+		config.Attachments.SecretAccessKey = lookupEnv("DETENT_ATTACHMENTS_SECRET_ACCESS_KEY")
+		result.Attachments = config.Attachments
 	}
 	if allocation := config.Allocation; allocation != nil {
 		binary := allocation.Binary

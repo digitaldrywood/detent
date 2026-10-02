@@ -14,6 +14,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -62,6 +63,154 @@ func (f nativeFixture) create(t *testing.T, name string) tracker.NativeIssue {
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, response, &issue)
 	return issue
+}
+
+func TestNativeIssueWebURL(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		prefix string
+	}{
+		{"local", ""},
+		{"hosted", "https://cloud.detent.build/work/i/"},
+		{"shared", "https://hub.example.test/organizations/org_security/work/i/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var base string
+			var request func(string, string, any) *httptest.ResponseRecorder
+			switch test.name {
+			case "local":
+				f := newDefaultNativeFixture(t, Config{})
+				base = f.base
+				request = func(method, path string, body any) *httptest.ResponseRecorder {
+					return performHubAPIRequest(t, f.service, method, "https://untrusted.example"+path, f.token, body)
+				}
+			case "hosted":
+				f := newHostedSecurityFixture(t, func(cfg *Config) {
+					cfg.Hosted.PublicURL = "https://cloud.detent.build"
+				})
+				owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+				base = f.base
+				request = func(method, path string, body any) *httptest.ResponseRecorder {
+					return f.request(t, owner, method, "https://untrusted.example"+path, body)
+				}
+			case "shared":
+				f := newHostedSharedFixture(t)
+				owner := f.member(t, "owner", "owner", "write")
+				base = f.base
+				request = func(method, path string, body any) *httptest.ResponseRecorder {
+					var encoded []byte
+					if body != nil {
+						var err error
+						encoded, err = json.Marshal(body)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					return f.serve(t, hostedSharedRequest{user: &owner, method: method, target: "https://untrusted.example" + path, body: string(encoded), csrf: cloudassert.CSRFToken("shared-user_owner", "org_security"), headers: map[string]string{
+						"X-Forwarded-Host": "forwarded.example", "X-Forwarded-Proto": "http", "Forwarded": "host=forwarded.example;proto=http",
+					}})
+				}
+			}
+			assertURL := func(t *testing.T, body []byte) tracker.NativeIssue {
+				t.Helper()
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(body, &fields); err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := fields["web_url"]; !ok {
+					t.Fatal("work item response is missing web_url")
+				}
+				var issue tracker.NativeIssue
+				if err := json.Unmarshal(body, &issue); err != nil {
+					t.Fatal(err)
+				}
+				want := ""
+				if test.prefix != "" {
+					want = test.prefix + string(issue.WorkItemID)
+				}
+				if issue.WebURL != want {
+					t.Fatalf("web_url = %q, want %q", issue.WebURL, want)
+				}
+				return issue
+			}
+			create := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-url"}, Title: "Linked work item", State: "Todo"}
+			response := request(http.MethodPost, base+"/work-items", create)
+			requireNativeStatus(t, response, http.StatusOK)
+			issue := assertURL(t, response.Body.Bytes())
+			path := base + "/work-items/" + string(issue.WorkItemID)
+			title := "Edited work item"
+			update := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "update-url"}, ExpectedRevision: issue.Revision, Title: &title}
+			for _, endpoint := range []struct {
+				name, method, path string
+				body               any
+				list               bool
+			}{
+				{"create retry", http.MethodPost, base + "/work-items", create, false},
+				{"get", http.MethodGet, path, nil, false},
+				{"list", http.MethodGet, base + "/work-items", nil, true},
+				{"update", http.MethodPatch, path, update, false},
+				{"update retry", http.MethodPatch, path, update, false},
+				{"version", http.MethodGet, path + "/versions/1", nil, false},
+			} {
+				t.Run(endpoint.name, func(t *testing.T) {
+					response := request(endpoint.method, endpoint.path, endpoint.body)
+					requireNativeStatus(t, response, http.StatusOK)
+					if endpoint.list {
+						var page tracker.Page[json.RawMessage]
+						decodeHubResponse(t, response, &page)
+						if len(page.Items) != 1 {
+							t.Fatalf("list contains %d items, want 1", len(page.Items))
+						}
+						assertURL(t, page.Items[0])
+					} else {
+						got := assertURL(t, response.Body.Bytes())
+						if got.WorkItemID != issue.WorkItemID {
+							t.Fatalf("work_item_id = %q, want %q", got.WorkItemID, issue.WorkItemID)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestNativeIssueOrganizationLookup(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "granted")
+	granted := f.create(t, "readable")
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "ungranted")
+	ungranted := other.create(t, "private")
+	for _, test := range []struct {
+		name         string
+		organization tracker.OrganizationID
+		item         tracker.NativeWorkItemID
+		want         int
+	}{
+		{"granted project", f.project.OrganizationID, granted.WorkItemID, http.StatusOK},
+		{"ungranted project", f.project.OrganizationID, ungranted.WorkItemID, http.StatusNotFound},
+		{"unknown ID", f.project.OrganizationID, "wi_unknown", http.StatusNotFound},
+		{"other organization", "org_other", granted.WorkItemID, http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := "/api/v2/organizations/" + string(test.organization) + "/work-items/" + string(test.item)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+			requireNativeStatus(t, response, test.want)
+			if test.want != http.StatusOK {
+				requireNativeCode(t, response, http.StatusNotFound, "not_found")
+				return
+			}
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			if issue.WorkItemID != granted.WorkItemID || issue.ProjectID != f.project.ID || issue.Title != granted.Title {
+				t.Fatalf("issue = %#v", issue)
+			}
+			if response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("issue lookup must not be cached")
+			}
+		})
+	}
 }
 
 func TestNativeWorkflowRefusalCode(t *testing.T) {

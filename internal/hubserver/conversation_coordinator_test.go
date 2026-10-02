@@ -730,7 +730,7 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 		}
 		return nil
 	}
-	if item := find(got.Blocked, blocked.WorkItemID); item == nil || !strings.Contains(item.Reason, string(blocker.WorkItemID)) || item.URL != "/chat/issues/"+string(blocked.WorkItemID) || item.Title != "blocked" {
+	if item := find(got.Blocked, blocked.WorkItemID); item == nil || !strings.Contains(item.Reason, string(blocker.WorkItemID)) || item.URL != "/work/i/"+string(blocked.WorkItemID) || item.Title != "blocked" {
 		t.Fatalf("blocked = %#v, want the dependency-blocked issue with reason and url", got.Blocked)
 	}
 	if item := find(got.Running, running.WorkItemID); item == nil || item.Reason == "" {

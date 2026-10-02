@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -167,6 +169,138 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, external := range []bool{false, true} {
+		t.Run(fmt.Sprintf("external=%v", external), func(t *testing.T) {
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
+			repository := "https://github.com/example/repo"
+			runRunnerGit(t, source, "config", "url.file://"+remote+".insteadOf", repository+".git")
+			runRunnerGit(t, source, "remote", "add", "origin", repository+".git")
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "native", Identifier: "native#170"}
+			code, err := backend.Create(t.Context(), workspaceIssue("project", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(code.Path, "README.md"), []byte("preserved staged source\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runRunnerGit(t, code.Path, "add", "README.md")
+			if err := os.WriteFile(filepath.Join(code.Path, "untracked"), []byte("preserved working source\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			recovery := filepath.Join(t.TempDir(), "recovery")
+			sourceBranch := "operator/recovery"
+			runRunnerGit(t, source, "worktree", "add", "-b", sourceBranch, recovery, "main")
+			if err := os.WriteFile(filepath.Join(recovery, "feature.txt"), []byte("genuine operator source\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runRunnerGit(t, recovery, "add", "feature.txt")
+			runRunnerGit(t, recovery, "commit", "-m", "finish preserved source")
+			head := strings.TrimSpace(runRunnerGit(t, recovery, "rev-parse", "HEAD"))
+			target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: repository, Method: "merge", GitHubPullRequest: true}
+			if external {
+				target.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
+				runRunnerGit(t, source, "push", "origin", head+":refs/heads/"+sourceBranch, head+":refs/pull/7/head")
+			}
+			files := make(map[string][]byte)
+			for _, path := range []string{source, code.Path, recovery} {
+				for _, name := range []string{"HEAD", "index"} {
+					file := strings.TrimSpace(runRunnerGit(t, path, "rev-parse", "--path-format=absolute", "--git-path", name))
+					data, err := os.ReadFile(file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					files[file] = data
+				}
+			}
+			for _, file := range []string{filepath.Join(source, "README.md"), filepath.Join(code.Path, "README.md"), filepath.Join(code.Path, "untracked"), filepath.Join(recovery, "feature.txt")} {
+				data, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				files[file] = data
+			}
+			refs := make(map[string]string)
+			for _, ref := range []string{"main", code.Branch, sourceBranch} {
+				refs[ref] = runRunnerGit(t, source, "rev-parse", ref)
+			}
+			publishedBranch := sourceBranch
+			var operations []string
+			originalClient := http.DefaultClient
+			http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
+				response := ""
+				if req.URL.Path == "/graphql" {
+					return workerGitHubPrincipalResponse(), nil
+				}
+				operations = append(operations, req.Method)
+				if req.Method == http.MethodGet && req.URL.Path == "/repos/example/repo/pulls" {
+					publishedBranch = strings.TrimPrefix(req.URL.Query().Get("head"), "example:")
+				}
+				pull := fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"ref":"main","repo":{"full_name":"example/repo"}}}`, head, publishedBranch)
+				switch req.Method {
+				case http.MethodGet:
+					response = pull
+					if req.URL.Path == "/repos/example/repo/pulls" {
+						response = "[" + pull + "]"
+					}
+				case http.MethodPut:
+					var body map[string]string
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+					published := strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", "refs/heads/"+publishedBranch))
+					if body["sha"] != head || body["merge_method"] != target.Method || published != head {
+						t.Fatalf("merge lost reviewed identity: %v, published %s", body, published)
+					}
+					runRunnerGit(t, remote, "update-ref", "refs/heads/main", head)
+					response = fmt.Sprintf(`{"merged":true,"sha":%q}`, head)
+				default:
+					t.Fatalf("unexpected forge operation %s %s", req.Method, req.URL)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+			})}
+			t.Cleanup(func() { http.DefaultClient = originalClient })
+			cfg := config.Config{}
+			cfg.Worker.GitHubToken = t.Name()
+			cfg.Tracker.Kind = config.TrackerGitHub
+			cfg.Tracker.Endpoint = "https://native-landing.test/graphql"
+			provider := &fakeCodexClient{}
+			runner, err := NewRunner(Dependencies{ProjectID: "project", Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider})
+			if err != nil {
+				t.Fatal(err)
+			}
+			execution := &landingRunExecution{landingStub: landingStub{target: target}}
+			result, err := runner.Run(t.Context(), RunRequest{Mode: RunModeMerge, Execution: execution, Issue: issue})
+			if err != nil || result.Output != RunOutputNativeLanded || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.MergeSHA != head || len(execution.recorded) != 1 || provider.calls != 0 {
+				t.Fatalf("landing result = %#v, execution %#v, provider calls %d, error %v", result, execution, provider.calls, err)
+			}
+			if external && strings.Join(operations, ",") != "GET,GET,PUT" || !external && publishedBranch == code.Branch {
+				t.Fatalf("landing used wrong publication owner: %s, %v", publishedBranch, operations)
+			}
+			for file, expected := range files {
+				actual, err := os.ReadFile(file)
+				if err != nil || !bytes.Equal(actual, expected) {
+					t.Fatalf("landing changed owner file %s: %v", file, err)
+				}
+			}
+			for ref, expected := range refs {
+				if actual := runRunnerGit(t, source, "rev-parse", ref); actual != expected {
+					t.Fatalf("landing changed source ref %s: %s", ref, actual)
+				}
+			}
+		})
+	}
+}
+
 func TestLandNativeChange(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("c", 40)
@@ -196,8 +330,10 @@ func TestLandNativeChange(t *testing.T) {
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalConflict, wantGitHub: true},
 		{name: "an atomic GitHub head refusal retains reviewed identity without a receipt", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "Head branch was modified (HTTP 409)"}},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalHeadMoved, wantGitHub: true},
-		{name: "unproven GitHub conflict retains identity for infrastructure retry", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request repos/example/repo/pulls/7/merge"}, forgeavailability.ClassServer, &github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: 405, Body: `{"message":"Pull Request has merge conflicts"}`})},
+		{name: "genuine GitHub outage retains identity for infrastructure retry", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request repos/example/repo/pulls/7/merge"}, forgeavailability.ClassServer, &github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: 503, Body: `{"message":"Service Unavailable"}`})},
 			wantErr: "forge_unavailable", wantGitHub: true, infrastructure: true},
+		{name: "genuine refresh outage takes precedence over projection continuation", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: errors.Join(&workspace.LandRefusal{Kind: workspace.LandRefusalBaseMoved, Reason: "GitHub returned mergeability HTTP 405"}, forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "git fetch"}, forgeavailability.ClassTimeout, errors.New("operation timed out")))},
+			wantErr: "operation timed out", wantGitHub: true, infrastructure: true},
 		{name: "quota evidence takes precedence over repository refusal", stub: landingStub{target: target}, backend: landingBackend{err: errors.Join(fmt.Errorf("%w: remaining=0 reserve=100", ErrWorkerGitHubRESTReserved), &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "HTTP 403"})},
 			wantErr: "remaining=0 reserve=100"},
 		{name: "typed quota evidence takes precedence over repository refusal", stub: landingStub{target: target}, backend: landingBackend{err: errors.Join(&github.StatusError{Err: github.ErrRateLimited, StatusCode: http.StatusForbidden, RateLimitKind: "primary_exhausted", CredentialIdentity: "landing-token", ObservedAt: time.Now()}, &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "HTTP 403"})},

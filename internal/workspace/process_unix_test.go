@@ -416,11 +416,11 @@ func TestWorkspaceProcessIDsScanBudget(t *testing.T) {
 			wantFactoryCalls: 2,
 		},
 		{
-			name:             "timed out stage stops renewal",
+			name:             "timed out scratch stage retains independent cwd evidence",
 			returnScratchErr: true,
 			wantErr:          context.DeadlineExceeded,
-			wantPIDs:         []int{scratchPID},
-			wantFactoryCalls: 1,
+			wantPIDs:         []int{scratchPID, cwdPID},
+			wantFactoryCalls: 2,
 		},
 		{
 			name:             "caller cancellation stops renewal",

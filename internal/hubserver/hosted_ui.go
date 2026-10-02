@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
@@ -214,13 +216,22 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	if err := s.requireHostedProject(c.Request().Context(), s.database.db, initialScope, false); err != nil {
 		return c.NoContent(http.StatusForbidden)
 	}
+	workspaceID := c.QueryParam("workspace")
+	if workspaceID != "" {
+		if _, err := s.readWorkspace(c.Request().Context(), initialScope, workspaceID); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	if err := s.hostedAudit(c.Request().Context(), initial.Hosted, "action", "GET /projects/:project/events", string(initialScope.project), http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set(echo.HeaderContentType, "text/event-stream")
+	c.Response().Header().Set("Cache-Control", "no-cache")
+	c.Response().Header().Set("X-Accel-Buffering", "no")
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	for {
+	var workspaceRevision int64
+	for s.ready.Load() {
 		credential, _, err := s.hostedCredential(c)
 		if err != nil {
 			return nil
@@ -230,11 +241,27 @@ func (s *Service) hostedEvents(c echo.Context) error {
 			return nil
 		}
 		var sequence int64
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT COALESCE(MAX(event_sequence),0) FROM issues WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&sequence); err != nil {
+		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT COALESCE(MAX(rowid),0) FROM collaboration_events WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&sequence); err != nil {
 			return nil
 		}
 		if _, err := fmt.Fprintf(c.Response(), "event: activity\ndata: %d\n\n", sequence); err != nil {
 			return nil
+		}
+		if workspaceID != "" {
+			record, err := s.workspaces.readWorkspaceForActor(c.Request().Context(), s.database.db, scope, workspaceID)
+			if err != nil {
+				return nil
+			}
+			if record.Revision != workspaceRevision {
+				resource, err := json.Marshal(s.workspaces.presentWorkspace(c.Request().Context(), scope, record))
+				if err != nil {
+					return nil
+				}
+				if _, err := fmt.Fprintf(c.Response(), "event: %s\ndata: %s\n\n", workspacesession.EventType(record.State), resource); err != nil {
+					return nil
+				}
+				workspaceRevision = record.Revision
+			}
 		}
 		c.Response().Flush()
 		select {
@@ -243,6 +270,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		case <-ticker.C:
 		}
 	}
+	return nil
 }
 
 func (s *Service) hostedMetadata(c echo.Context) error {

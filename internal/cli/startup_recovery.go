@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/notify"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
@@ -27,7 +29,10 @@ func newDefaultStartupRecovery(_ context.Context, cfg BootConfig) (StartupRecove
 	var updater detentupdate.Updater
 	autoUpdate := cfg.Global.Update.AutoCheckEnabled && cfg.Global.Update.AutoApplyEnabled
 	if autoUpdate {
-		updater = newRuntimeUpdater(cfg, executable, version)
+		updater, err = newRuntimeUpdater(cfg, executable, version)
+		if err != nil {
+			return nil, err
+		}
 	}
 	hostname, hostnameErr := os.Hostname()
 	if hostnameErr != nil {
@@ -56,8 +61,8 @@ func newDefaultStartupRecovery(_ context.Context, cfg BootConfig) (StartupRecove
 	})
 }
 
-func newRuntimeUpdater(cfg BootConfig, executable string, version string) detentupdate.Updater {
-	return detentupdate.NewService(detentupdate.Config{
+func newRuntimeUpdater(cfg BootConfig, executable string, version string) (detentupdate.Updater, error) {
+	updateConfig := detentupdate.Config{
 		CurrentVersion: version,
 		CurrentCommit:  cfg.Build.Commit,
 		ExecutablePath: executable,
@@ -66,7 +71,21 @@ func newRuntimeUpdater(cfg BootConfig, executable string, version string) detent
 		Client: detentupdate.NewGitHubClient(detentupdate.GitHubClientConfig{
 			Token: strings.TrimSpace(cfg.Runtime.GitHubToken.Value),
 		}),
-	})
+	}
+	if cfg.Global.Client.Configured() {
+		settings := cfg.Global.Client.Normalized()
+		client, err := hubclient.New(hubclient.Config{
+			URL:          settings.URL,
+			IdentityFile: settings.IdentityFile,
+			TokenSource:  func() string { return os.Getenv(settings.TokenEnvironment) },
+			HTTPClient:   &http.Client{Timeout: settings.RequestTimeout()},
+		})
+		if err != nil {
+			return nil, err
+		}
+		updateConfig.TargetVersion = client.Version
+	}
+	return detentupdate.NewService(updateConfig), nil
 }
 
 func candidateStartupPreflight(cfg BootConfig) detentupdate.BinaryPreflight {

@@ -547,20 +547,22 @@ type conversationResource struct {
 	ProjectID      tracker.ProjectID       `json:"project_id"`
 	Title          string                  `json:"title"`
 	Visibility     conversation.Visibility `json:"visibility"`
+	Origin         string                  `json:"origin"`
 	Status         conversation.Status     `json:"status"`
 	// Preferences are the conversation's turn preferences; each field is
 	// "auto" or an explicit value (decisions section 14).
-	Preferences   conversation.Preferences      `json:"preferences"`
-	WorkItemID    *string                       `json:"work_item_id"`
-	LinkedAt      *time.Time                    `json:"linked_at"`
-	WorkItem      *conversationWorkItemResource `json:"work_item"`
-	Owner         conversationOwnerResource     `json:"owner"`
-	Execution     conversationExecutionResource `json:"execution"`
-	Revision      int64                         `json:"revision"`
-	EventSeq      int64                         `json:"event_seq"`
-	CreatedAt     time.Time                     `json:"created_at"`
-	UpdatedAt     time.Time                     `json:"updated_at"`
-	LastMessageAt *time.Time                    `json:"last_message_at"`
+	Preferences       conversation.Preferences      `json:"preferences"`
+	SubjectWorkItemID *string                       `json:"subject_work_item_id,omitempty"`
+	WorkItemID        *string                       `json:"work_item_id"`
+	LinkedAt          *time.Time                    `json:"linked_at"`
+	WorkItem          *conversationWorkItemResource `json:"work_item"`
+	Owner             conversationOwnerResource     `json:"owner"`
+	Execution         conversationExecutionResource `json:"execution"`
+	Revision          int64                         `json:"revision"`
+	EventSeq          int64                         `json:"event_seq"`
+	CreatedAt         time.Time                     `json:"created_at"`
+	UpdatedAt         time.Time                     `json:"updated_at"`
+	LastMessageAt     *time.Time                    `json:"last_message_at"`
 	// MessageCount is the whole history, so the share confirmation can say
 	// how much becomes readable (decisions section 10.5).
 	MessageCount int64 `json:"message_count"`
@@ -746,24 +748,26 @@ func conversationWorkItemKey(organization, project, workItem string) string {
 
 func projectConversation(record conversationRecord) conversationResource {
 	return conversationResource{
-		ID:             record.ID,
-		OrganizationID: record.OrganizationID,
-		ProjectID:      record.ProjectID,
-		Title:          record.Title,
-		Visibility:     record.Visibility,
-		Status:         record.Status,
-		Preferences:    record.Preferences.Normalized(),
-		WorkItemID:     conversationOptional(record.WorkItemID),
-		LinkedAt:       record.LinkedAt,
-		WorkItem:       projectWorkItem(record),
-		Owner:          conversationOwnerResource{PrincipalID: record.OwnerPrincipalID, Subject: record.OwnerSubject},
-		Execution:      projectExecution(record.Execution),
-		Revision:       record.Revision,
-		EventSeq:       record.EventSeq,
-		CreatedAt:      record.CreatedAt,
-		UpdatedAt:      record.UpdatedAt,
-		LastMessageAt:  record.LastMessageAt,
-		MessageCount:   record.MessageCount,
+		ID:                record.ID,
+		OrganizationID:    record.OrganizationID,
+		ProjectID:         record.ProjectID,
+		Title:             record.Title,
+		Visibility:        record.Visibility,
+		Origin:            record.Origin,
+		Status:            record.Status,
+		Preferences:       record.Preferences.Normalized(),
+		SubjectWorkItemID: conversationOptional(record.SubjectWorkItemID),
+		WorkItemID:        conversationOptional(record.WorkItemID),
+		LinkedAt:          record.LinkedAt,
+		WorkItem:          projectWorkItem(record),
+		Owner:             conversationOwnerResource{PrincipalID: record.OwnerPrincipalID, Subject: record.OwnerSubject},
+		Execution:         projectExecution(record.Execution),
+		Revision:          record.Revision,
+		EventSeq:          record.EventSeq,
+		CreatedAt:         record.CreatedAt,
+		UpdatedAt:         record.UpdatedAt,
+		LastMessageAt:     record.LastMessageAt,
+		MessageCount:      record.MessageCount,
 	}
 }
 

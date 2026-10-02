@@ -3,15 +3,52 @@ package cli
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
+
+func TestHubRuntimeUpdateSchedule(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		client   globalconfig.HubClient
+		hours    int
+		interval time.Duration
+	}{
+		{name: "Hub heartbeat default", client: globalconfig.HubClient{URL: "https://hub.example.test"}, interval: 30 * time.Second},
+		{name: "Hub configured heartbeat", client: globalconfig.HubClient{URL: "https://hub.example.test", HeartbeatIntervalSeconds: 45}, interval: 45 * time.Second},
+		{name: "Hub explicit check interval", client: globalconfig.HubClient{URL: "https://hub.example.test"}, hours: 2, interval: 2 * time.Hour},
+		{name: "standalone default", interval: 6 * time.Hour},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := BootConfig{Global: globalconfig.Config{
+				Path:   filepath.Join(t.TempDir(), "config.yaml"),
+				Client: test.client,
+				Update: globalconfig.Update{AutoCheckEnabled: true, AutoApplyEnabled: true, CheckIntervalHours: test.hours},
+			}}
+			scheduler, err := newRuntimeUpdateScheduler(cfg, nil,
+				func(context.Context) (func(), bool) { return func() {}, true },
+				func(context.Context) (func(), error) { return func() {}, nil },
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status := scheduler.Status(); !status.Enabled || !status.AutoApplyEnabled || status.CheckInterval != test.interval {
+				t.Fatalf("Status() = %#v, want automatic update interval %s", status, test.interval)
+			}
+		})
+	}
+}
 
 func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 	t.Parallel()

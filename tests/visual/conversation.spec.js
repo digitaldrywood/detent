@@ -19,7 +19,9 @@ let hub;
 
 test.beforeAll(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
-  hub = await startHostedHub("conversation");
+  hub = await startHostedHub("conversation", {
+    env: { DETENT_HOSTED_BROWSER_CHAT_ORIGIN: "1" },
+  });
 });
 
 test.afterAll(async () => {
@@ -94,6 +96,40 @@ async function openWorkIssue(page, account = "owner") {
 
 function shell(page) {
   return page.locator("[data-slot='sidebar-wrapper']");
+}
+
+for (const selection of ["all projects", "different project", "no remembered project"]) {
+  test(`opens an issue link with ${selection}`, async ({ page }) => {
+    await openChat(page);
+    const issueProject = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
+    const created = await hubAPI(page, "POST", `/projects/${issueProject}/work-items`, {
+      idempotency_key: `issue-link-${selection}`,
+      title: `Issue link with ${selection}`,
+      body: "This issue has no linked conversation and resolves its own project.",
+      state: "Todo",
+    });
+    expect(created.status).toBe(200);
+    const item = created.payload.work_item_id;
+    const projectKey = "detent.conversation.lastProject";
+    const otherProject = hub.fixture.project_id;
+    if (selection === "all projects") {
+      await page.goto(new URL("/work", hub.fixture.url).toString());
+      await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), projectKey)).toBe("");
+    } else if (selection === "different project") {
+      await page.goto(`${hub.fixture.chat}/p/${otherProject}`);
+      await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), projectKey)).toBe(otherProject);
+    } else {
+      await page.evaluate((key) => localStorage.removeItem(key), projectKey);
+      expect(await page.evaluate((key) => localStorage.getItem(key), projectKey)).toBeNull();
+    }
+    await page.goto(new URL(`/work/i/${item}`, hub.fixture.url).toString());
+    await expect(page.getByRole("heading", { name: `Issue link with ${selection}`, exact: true })).toBeVisible();
+    await expect(page.getByTestId("issue-properties")).toBeVisible();
+    await expect(page.getByTestId("issue-body")).toContainText("resolves its own project");
+    const lookup = await hubAPI(page, "GET", `/work-items/${item}`);
+    expect(lookup.status).toBe(200);
+    expect(lookup.payload.project_id).toBe(issueProject);
+  });
 }
 
 function sidebar(page) {
@@ -366,6 +402,54 @@ test("keeps every character of a long draft typed at speed", async ({ page }) =>
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.press("Backspace");
   await expectComposerText(page, "");
+  expect(errors).toEqual([]);
+});
+
+test("keeps runner conversations out of Chat while preserving issue access", async ({ page }) => {
+  const errors = watchConsole(page);
+  await openChat(page);
+  await sendWithKeyboard(page, "Manual chat stays visible");
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  const rows = sidebar(page).getByTestId("sidebar-row-card");
+  await expect(rows.filter({ hasText: "Manual chat stays visible" })).toBeVisible();
+  await expect(rows.filter({ hasText: "Lease renewal under load" })).toBeVisible();
+  await expect(rows.filter({ hasText: "Runner session isolation" })).toHaveCount(0);
+
+  for (const path of [
+    "/conversations",
+    `/projects/${hub.fixture.project_id}/conversations`,
+  ]) {
+    const listed = await hubAPI(page, "GET", path);
+    expect(listed.status).toBe(200);
+    expect(listed.payload.conversations.map((chat) => chat.id)).not.toContain(hub.fixture.worker_conversation);
+    expect(listed.payload.conversations.map((chat) => chat.id)).toContain(hub.fixture.conversation);
+  }
+
+  await page.addInitScript((id) => {
+    const NativeEventSource = window.EventSource;
+    window.workerConversationStream = { opened: false, updates: 0 };
+    window.EventSource = class extends NativeEventSource {
+      constructor(url, options) {
+        super(url, options);
+        if (!String(url).includes(`/conversations/${id}/events`)) return;
+        this.addEventListener("open", () => { window.workerConversationStream.opened = true; });
+        this.addEventListener("conversation.updated", () => { window.workerConversationStream.updates++; });
+      }
+    };
+  }, hub.fixture.worker_conversation);
+  await page.goto(new URL(`/work/i/${hub.fixture.worker_work_item}?panel=conversation`, hub.fixture.url).toString());
+  await expect(page.getByTestId("issue-properties")).toBeVisible();
+  await expect(page.getByTestId("conversation-surface")).toBeVisible();
+  const linked = await hubAPI(page, "GET", `/projects/${hub.fixture.project_id}/work-items/${hub.fixture.worker_work_item}/conversation`);
+  expect(linked.status).toBe(200);
+  expect(linked.payload.conversation.id).toBe(hub.fixture.worker_conversation);
+  await expect.poll(() => page.evaluate(() => window.workerConversationStream.opened)).toBe(true);
+  const updated = await hubAPI(page, "PATCH", conversationPath(hub.fixture.worker_conversation), {
+    title: "Runner session remains on the issue",
+  });
+  expect(updated.status).toBe(200);
+  await expect.poll(() => page.evaluate(() => window.workerConversationStream.updates)).toBeGreaterThan(0);
+  await expect(sidebar(page).getByTestId("sidebar-row-card").filter({ hasText: /Runner session/ })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

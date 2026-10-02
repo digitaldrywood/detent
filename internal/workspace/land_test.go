@@ -1,10 +1,12 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -79,14 +81,27 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
 		name, change, refusal string
-		external, held        bool
+		external, detached    bool
+		unsafe                bool
+		wantError             string
 	}{
 		{name: "hydrate external reviewed head", external: true},
 		{name: "hydrate operator head without external PR"},
 		{name: "reuse worker published head", change: "worker"},
-		{name: "preserve dirty workspace", external: true, change: "dirty", refusal: LandRefusalHeadMoved},
-		{name: "preserve moved local branch", external: true, change: "branch", refusal: LandRefusalHeadMoved},
-		{name: "preserve another active worktree", external: true, change: "held", held: true},
+		{name: "preserve dirty Code workspace", external: true, change: "dirty"},
+		{name: "preserve operator Code workspace and recovery branch", change: "dirty"},
+		{name: "preserve dirty detached Code and original branch holder", change: "dirty-held"},
+		{name: "preserve Code workspace with detached landing", change: "dirty", detached: true},
+		{name: "refuse dirty landing workspace", external: true, change: "landing-dirty", refusal: LandRefusalHeadMoved},
+		{name: "refuse moved landing workspace", change: "landing-head", refusal: LandRefusalHeadMoved},
+		{name: "refuse foreign landing workspace", change: "landing-repository", refusal: LandRefusalProtected},
+		{name: "refuse mutable head", change: "mutable", refusal: LandRefusalMissingHead},
+		{name: "unavailable reviewed commit retains hydration failure", change: "missing", wantError: "hydrate reviewed landing head"},
+		{name: "refuse redirected landing parent", change: "path", unsafe: true},
+		{name: "another reviewed head preserves earlier landing checkout", change: "version"},
+		{name: "source lock cancellation preserves owners", change: "locked"},
+		{name: "preserve moved source branch", external: true, change: "branch"},
+		{name: "preserve another active source worktree", external: true, change: "held"},
 		{name: "refuse moved fetched PR head", external: true, change: "remote", refusal: LandRefusalHeadMoved},
 		{name: "refuse cross-project source", external: true, change: "repository", refusal: LandRefusalProtected},
 		{name: "refuse cross-org external reference", external: true, change: "external", refusal: LandRefusalProtected},
@@ -103,7 +118,7 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			repository := "https://github.com/example/repo"
 			runGit(t, receiver, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
 			runGit(t, receiver, "remote", "set-url", "origin", repository+".git")
-			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: true})
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: !test.detached})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -125,7 +140,22 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			}
 			issue := Issue{ProjectID: "project", Identifier: "native-98", Landing: options}
 			var before Info
+			var unchanged []func()
 			switch test.change {
+			case "mutable":
+				options.HeadSHA = "main"
+			case "missing":
+				options.HeadSHA = strings.Repeat("d", 40)
+			case "path":
+				skipWindows(t)
+				other := initSourceRepo(t)
+				if err := os.MkdirAll(filepath.Join(backend.root, ".detent"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(other, filepath.Join(backend.root, ".detent", "landing")); err != nil {
+					t.Fatal(err)
+				}
+				unchanged = append(unchanged, preserveLandingOwner(t, other))
 			case "repository":
 				options.Repository = "https://github.com/another/repo"
 			case "external":
@@ -134,10 +164,12 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 				runGit(t, fixture.remote, "update-ref", "refs/pull/7/head", fixture.remoteMain(t))
 			case "branch", "held":
 				runGit(t, receiver, "branch", branch, "main")
-				if test.held {
-					runGit(t, receiver, "worktree", "add", filepath.Join(t.TempDir(), "active"), branch)
+				if test.change == "held" {
+					active := filepath.Join(t.TempDir(), "active")
+					runGit(t, receiver, "worktree", "add", active, branch)
+					unchanged = append(unchanged, preserveLandingOwner(t, active))
 				}
-			case "dirty", "worker":
+			case "dirty", "dirty-held", "worker":
 				runGit(t, receiver, "fetch", "origin", fixture.head)
 				prepared := issue
 				prepared.Landing = nil
@@ -148,33 +180,93 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				runGit(t, before.Path, "reset", "--hard", fixture.head)
-				if test.change == "dirty" {
+				if test.change == "worker" {
+					runGit(t, before.Path, "reset", "--hard", fixture.head)
+				}
+				if test.change == "dirty" || test.change == "dirty-held" {
+					recovery := filepath.Join(t.TempDir(), "recovery")
+					runGit(t, receiver, "worktree", "add", "-b", "operator/recovery", recovery, fixture.head)
+					unchanged = append(unchanged, preserveLandingOwner(t, recovery))
+					if err := os.WriteFile(filepath.Join(before.Path, "README.md"), []byte("staged source"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, before.Path, "add", "README.md")
 					if err := os.WriteFile(filepath.Join(before.Path, "uncommitted"), []byte("keep me"), 0o600); err != nil {
 						t.Fatal(err)
 					}
+					if test.change == "dirty-held" {
+						runGit(t, before.Path, "checkout", "--detach")
+						holder := filepath.Join(t.TempDir(), "original-owner")
+						runGit(t, receiver, "worktree", "add", holder, before.Branch)
+						unchanged = append(unchanged, preserveLandingOwner(t, holder))
+					}
 				}
+			case "landing-dirty", "landing-head", "version":
+				before, err = backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.change == "landing-dirty" {
+					if err := os.WriteFile(filepath.Join(before.Path, "uncommitted"), []byte("keep me"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else if test.change == "version" {
+					options.HeadSHA = fixture.remoteMain(t)
+				} else {
+					runGit(t, before.Path, "reset", "--hard", "main")
+				}
+			case "landing-repository":
+				before, err = backend.infoForIssue(issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				initSourceRepoAt(t, before.Path)
 			}
+			if before.Path != "" {
+				unchanged = append(unchanged, preserveLandingOwner(t, before.Path))
+			}
+			unchanged = append(unchanged, preserveLandingOwner(t, receiver), preserveLandingOwner(t, fixture.source), preserveLandingOwner(t, fixture.info.Path))
 			bundle := filepath.Join(t.TempDir(), "source.bundle")
 			runGit(t, fixture.info.Path, "bundle", "create", bundle, "HEAD")
-			info, err := backend.Create(t.Context(), issue)
-			if test.refusal != "" {
+			ctx := t.Context()
+			if test.change == "locked" {
+				release, err := backend.acquireSourceOperation(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(release)
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+			info, err := backend.Create(ctx, issue)
+			if test.change == "locked" {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("Create() error = %v, want cancellation while source lock is held", err)
+				}
+			} else if test.unsafe {
+				if !errors.Is(err, ErrUnsafePath) {
+					t.Fatalf("Create() error = %v, want unsafe path", err)
+				}
+			} else if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("Create() error = %v, want %s", err, test.wantError)
+				}
+			} else if test.refusal != "" {
 				var refusal *LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != test.refusal {
 					t.Fatalf("Create() error = %v, want %s", err, test.refusal)
-				}
-			} else if test.held {
-				var held *BranchHeldError
-				if !errors.As(err, &held) {
-					t.Fatalf("Create() error = %v, want branch held", err)
 				}
 			} else {
 				if err != nil {
 					t.Fatal(err)
 				}
 				head, err := backend.Head(t.Context(), info, issue)
-				if err != nil || strings.TrimSpace(head) != fixture.head || test.external && info.Branch != branch {
+				if err != nil || strings.TrimSpace(head) != options.HeadSHA || test.external && (info.ReviewBranch != branch || info.Branch == branch) {
 					t.Fatalf("landing workspace = %#v, head %s, error %v", info, head, err)
+				}
+				if before.Path != "" && info.Path == before.Path {
+					t.Fatal("landing reused Code workspace")
 				}
 				if err := backend.VerifyReviewTree(t.Context(), info, issue); err != nil {
 					t.Fatal(err)
@@ -191,12 +283,60 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			if head := strings.TrimSpace(runGit(t, fixture.info.Path, "rev-parse", "HEAD")); head != fixture.head {
 				t.Fatal("source worktree was changed", head)
 			}
+			for _, check := range unchanged {
+				check()
+			}
 			for _, method := range requests {
 				if method != http.MethodGet {
 					t.Fatalf("workspace hydration performed external writes: %v", requests)
 				}
 			}
 		})
+	}
+}
+
+func preserveLandingOwner(t *testing.T, path string) func() {
+	t.Helper()
+	files := make(map[string][]byte)
+	if err := filepath.WalkDir(path, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		data, err := os.ReadFile(name)
+		files[name] = data
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"HEAD", "index"} {
+		gitPath := strings.TrimSpace(runGit(t, path, "rev-parse", "--git-path", name))
+		if !filepath.IsAbs(gitPath) {
+			gitPath = filepath.Join(path, gitPath)
+		}
+		data, err := os.ReadFile(gitPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[gitPath] = data
+	}
+	head := runGit(t, path, "rev-parse", "HEAD")
+	return func() {
+		t.Helper()
+		for name, expected := range files {
+			actual, err := os.ReadFile(name)
+			if err != nil || !bytes.Equal(actual, expected) {
+				t.Fatalf("landing changed owner file %s: %v", name, err)
+			}
+		}
+		if actual := runGit(t, path, "rev-parse", "HEAD"); actual != head {
+			t.Fatalf("landing changed owner head at %s: %s", path, actual)
+		}
 	}
 }
 

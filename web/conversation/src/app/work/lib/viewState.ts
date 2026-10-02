@@ -24,13 +24,7 @@ export const SORT_LABELS: Readonly<Record<WorkSort, string>> = {
   title: "Title",
 };
 
-export interface WorkPage {
-  readonly cursor: string;
-  readonly number: number;
-}
-
 export interface WorkViewState {
-  readonly pages?: Readonly<Record<string, WorkPage>>;
   readonly view: WorkViewMode;
   readonly archived?: boolean;
   readonly q: string;
@@ -50,7 +44,6 @@ export interface WorkViewState {
 }
 
 export const DEFAULT_VIEW_STATE: WorkViewState = {
-  pages: {},
   view: "board",
   q: "",
   state: [],
@@ -87,20 +80,6 @@ function writeList(values: readonly string[]): string {
   return [...new Set(values)].toSorted().join(",");
 }
 
-function readPages(raw: string | null): Readonly<Record<string, WorkPage>> {
-  try {
-    const parsed: unknown = JSON.parse(raw ?? "{}");
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed).filter(([, page]) =>
-      page !== null && typeof page === "object" &&
-      typeof page.cursor === "string" && page.cursor.length > 0 &&
-      Number.isSafeInteger(page.number) && page.number >= 2,
-    ));
-  } catch {
-    return {};
-  }
-}
-
 export function parseViewState(search: string | URLSearchParams): WorkViewState {
   const params = typeof search === "string" ? new URLSearchParams(search) : search;
   const view = params.get("view");
@@ -109,7 +88,6 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
   return {
     view: WORK_VIEWS.includes(view as WorkViewMode) ? (view as WorkViewMode) : DEFAULT_VIEW_STATE.view,
     ...(params.get("archived") === "true" ? { archived: true } : {}),
-    pages: readPages(params.get("pages")),
     q: params.get("q") ?? "",
     state: readList(params.get("state")),
     label: readList(params.get("label")),
@@ -128,8 +106,6 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
  */
 export function serializeViewState(state: WorkViewState): string {
   const params = new URLSearchParams();
-  const pages = Object.entries(state.pages ?? {}).toSorted(([a], [b]) => a.localeCompare(b));
-  if (pages.length > 0) params.set("pages", JSON.stringify(Object.fromEntries(pages)));
   if (state.archived === true) params.set("archived", "true");
   if (state.view !== DEFAULT_VIEW_STATE.view) params.set("view", state.view);
   if (state.q.trim().length > 0) params.set("q", state.q.trim());
@@ -193,7 +169,7 @@ export function readStoredViewState(projectId: string): WorkViewState | null {
   try {
     const raw = globalThis.localStorage?.getItem(`${STORAGE_PREFIX}${projectId}`);
     if (raw === null || raw === undefined || raw === "") return null;
-    return { ...parseViewState(raw), pages: {} };
+    return parseViewState(raw);
   } catch {
     return null;
   }
@@ -203,7 +179,7 @@ export function readStoredViewState(projectId: string): WorkViewState | null {
 export function writeStoredViewState(projectId: string, state: WorkViewState): void {
   try {
     const key = `${STORAGE_PREFIX}${projectId}`;
-    const serialized = serializeViewState({ ...state, pages: {} });
+    const serialized = serializeViewState(state);
     if (serialized === "") globalThis.localStorage?.removeItem(key);
     else globalThis.localStorage?.setItem(key, serialized);
   } catch {

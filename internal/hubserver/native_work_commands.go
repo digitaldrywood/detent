@@ -19,14 +19,14 @@ import (
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
-	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return createNativeIssueTx(ctx, tx, scope, request, now)
 	})
 }
 
 func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.UpdateIssue) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item, Item: item, RequireLease: true, Feature: "collaboration"}
-	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err
@@ -66,13 +66,18 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 		if err := validateNativeContent(issue.Title, issue.Body, issue.Labels, issue.Assignees, issue.Priority); err != nil {
 			return nil, err
 		}
+		if request.Body != nil {
+			if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), "", issue.Body); err != nil {
+				return nil, err
+			}
+		}
 		return persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: fields}, now)
 	})
 }
 
 func (s *Service) changeNativeDependencyCommand(ctx context.Context, scope nativeScope, item string, request tracker.DependencyMutation) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/dependencies", Item: item, RequireLease: true, Feature: "collaboration"}
-	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, dependentID, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err
@@ -182,6 +187,9 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
+		if err := bindCloudAttachmentReferences(ctx, tx, scope, string(comment.WorkItemID), comment.ID, comment.Body); err != nil {
+			return nil, err
+		}
 		if err := recordNativeChange(ctx, tx, scope, comment, string(comment.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {
 			return nil, err
 		}
@@ -195,7 +203,7 @@ func (s *Service) setNativeArchiveCommand(ctx context.Context, scope nativeScope
 		operation = "archive"
 	}
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items/" + item + "/" + operation, Item: item, RequireLease: true, Feature: "collaboration", Completion: archived}
-	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, id, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err
@@ -229,7 +237,7 @@ func (s *Service) setNativeArchiveCommand(ctx context.Context, scope nativeScope
 
 func (s *Service) nativeWorkObservation(ctx context.Context, scope nativeScope, item string) (tracker.NativeIssue, error) {
 	issue, _, err := readNativeIssue(ctx, s.database.db, scope, item)
-	return issue, err
+	return s.nativeIssueResponse(issue), err
 }
 
 func (s *Service) nativeWorkComments(ctx context.Context, scope nativeScope, item string, limit int, cursor string) (tracker.Page[tracker.NativeComment], error) {

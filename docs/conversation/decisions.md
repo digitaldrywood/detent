@@ -240,7 +240,7 @@ Conversation:
 ```json
 {
   "id": "conv_…", "organization_id": "…", "project_id": "…",
-  "title": "…", "visibility": "private|shared",
+  "title": "…", "visibility": "private|shared", "origin": "user|worker",
   "status": "active|archived",
   "work_item_id": "wi_…|null", "linked_at": "…|null",
   "work_item": {"id": "wi_…", "identifier": "<project>#<number>", "title": "…", "lane": "…", "runner_bound": false}|null,
@@ -295,7 +295,7 @@ Receipt:
 | Method and path | Body | Result |
 |---|---|---|
 | `POST /conversations` | `{title?, first_message?: {key, text}}` | 201 conversation (+ receipt when a first message was sent) |
-| `GET /conversations?cursor&limit&q&include_archived` | | `{conversations: [...], next_cursor}` visible to the actor, most recent activity first |
+| `GET /conversations?cursor&limit&q&include_archived` | | `{conversations: [...], next_cursor}` user-origin conversations visible to the actor, including linked chats, most recent activity first |
 | `GET /api/v2/organizations/:organization/conversations?...` | | Same across projects the actor can read |
 | `GET /conversations/:conversation` | | `{conversation, messages (latest page), questions, cursor}`; `questions` carries every question still awaiting an answer plus the ones the current attempt already settled, newest 20, so a reloading tab renders a locked card instead of losing it |
 | `GET /conversations/:conversation/messages?before=<seq>&limit` | | Older page, ordered by seq |
@@ -2598,3 +2598,30 @@ settled.
    (`app/lib/connectionTooltips.ts`) so one client is never explained two
    ways: "Live: updates arrive over the project event stream." and
    "Not streaming: showing data from 9:02 AM, Reload fetches the board again."
+
+### Issue questions (#171)
+
+The issue header's Ask button (`A`) and inline question field open the Ask
+surface in the right panel. Ask lists the creator's private threads for this
+issue, newest first, and opens the latest thread or an empty question composer.
+Starting a question creates a conversation with optional `subject_work_item_id`
+and `first_message`; the title is `#<number> · <first question>`. Open in Chat
+opens the same conversation at `/chat/c/:id`.
+
+A subject is separate from `work_item_id`: multiple private question threads can
+coexist with the canonical worker conversation. Subjects do not redirect to the
+issue or change handoff. The creator's current project access and normal private
+conversation visibility govern reads. Subject chats cannot be linked or shared.
+`GET /conversations?subject_work_item_id=:id` lists only the creator's private
+subject threads in that project.
+
+Each coordinator turn pins the subject and refreshes the full body, all comment,
+lane/phase history and attempt pages, the latest Workpad, dependencies and PR
+references/state through the shared operator work-read adapter. The
+`read_issue_history` tool reads paginated sections and individual attempt receipts
+for the pinned subject. Issue records are untrusted data. Answers cite history,
+comments and attempts with `#issue-history-<event_id>`,
+`#issue-comment-<comment_id>` and `#issue-attempt-<attempt_id>` links; clicking one
+on the issue page reveals and highlights the corresponding Activity record.
+Moving the issue or posting an answer uses the existing coordinator approval
+forms. Private questions and answers are never copied into issue comments.

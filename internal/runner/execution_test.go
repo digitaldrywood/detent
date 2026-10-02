@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -14,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -48,6 +52,67 @@ func (e *testExecution) Finish(_ context.Context, outcome string) error {
 }
 func (e *testExecution) Recovery() tracker.NativeRecovery { return e.recovery }
 
+type readToolTestExecution struct {
+	testExecution
+	reads int
+}
+
+func (e *readToolTestExecution) AgentTools() ([]AgentTool, AgentToolHandler) {
+	return []AgentTool{{Name: "work_item", InputSchema: json.RawMessage(`{"type":"object"}`)}}, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		if err := e.Validate(ctx); err != nil {
+			return AgentToolResult{}, err
+		}
+		e.reads++
+		return AgentToolResult{Content: "authenticated native context", Success: true}, nil
+	}
+}
+
+type executionToolTestBackend struct {
+	fakeCodexClient
+	testing *testing.T
+}
+
+func (b *executionToolTestBackend) RunTurnWithTools(ctx context.Context, request AgentTurnRequest, tools []AgentTool, handler AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if !request.SupplementalTools || request.ReadOnly {
+		b.testing.Fatal("native read tools restricted the ordinary coding turn")
+	}
+	if len(tools) != 2 {
+		b.testing.Fatalf("tools=%d, want native read and existing worker tool", len(tools))
+	}
+	for _, name := range []string{"work_item", "existing_worker_tool"} {
+		result, err := handler(ctx, AgentToolCall{Name: name})
+		if err != nil || !result.Success {
+			b.testing.Fatalf("tool %s failed: %v", name, err)
+		}
+	}
+	return b.fakeCodexClient.RunTurn(ctx, request, update)
+}
+
+func TestRunnerExecutionReadToolsPreserveCodingAndExistingTools(t *testing.T) {
+	t.Parallel()
+	execution := &readToolTestExecution{}
+	agent := &executionToolTestBackend{testing: t}
+	backend := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousCalls := 0
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement,
+		AgentTools: []AgentTool{{Name: "existing_worker_tool"}},
+		AgentToolHandler: func(context.Context, AgentToolCall) (AgentToolResult, error) {
+			previousCalls++
+			return AgentToolResult{Success: true}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.reads != 1 || previousCalls != 1 || agent.calls != 1 || !execution.started {
+		t.Fatalf("reads=%d previous=%d turns=%d started=%t", execution.reads, previousCalls, agent.calls, execution.started)
+	}
+}
+
 type retainedExecutionWorkspace struct {
 	*fakeWorkspaceBackend
 	retained bool
@@ -56,6 +121,155 @@ type retainedExecutionWorkspace struct {
 func (w *retainedExecutionWorkspace) PreserveIssue(context.Context, workspace.Issue) (workspace.Preservation, error) {
 	w.retained = true
 	return workspace.Preservation{Preserved: true}, nil
+}
+
+type resumedExecutionWorkspace struct {
+	*workspace.LocalGit
+	afterRun bool
+}
+
+func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace.Info, issue workspace.Issue) {
+	w.afterRun = true
+	w.LocalGit.AfterRun(ctx, info, issue)
+}
+
+func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		dirty         bool
+		edit          func(*testExecution, *fakeCodexClient)
+		blocked       bool
+		changedPolicy bool
+	}{
+		{name: "clean 94"},
+		{name: "dirty 181", dirty: true},
+		{name: "provider unavailable", dirty: true, blocked: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
+		{name: "clean provider unavailable", blocked: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
+		{name: "persisted policy differs", dirty: true, blocked: true, changedPolicy: true},
+		{name: "policy changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].PolicyID = "other-policy" }},
+		{name: "model authority changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Identity.Model = "other-model" }},
+		{name: "clean checkpoint unavailable", blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
+		}},
+		{name: "local attempt missing", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID++ }},
+		{name: "workspace changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
+		}},
+		{name: "host changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
+		{name: "ambiguous effect", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
+			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			db, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "sessions.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			approved := runnerTestPolicy()
+			metadata, err := json.Marshal(map[string]policy.Descriptor{"policy": approved})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := time.Date(2026, 10, 2, 14, 4, 0, 0, time.UTC)
+			identity := agentidentity.Configured("codex", "codex", "", "code", "original-model", "openai", "high", "", started)
+			attemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started, WorkerMetadataJSON: string(metadata), RuntimeIdentity: identity})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := db.StartSession(ctx, store.SessionStart{ProjectID: "native", IssueID: "work", WorkAttemptID: attemptID, StartedAt: started, RequestedModel: "original-model", Model: "original-model", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code", RuntimeIdentity: identity})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.FinishSession(ctx, sessionID, store.SessionFinish{CompletedAt: started.Add(18 * time.Second), FinalState: "failed", ProviderThreadID: "original-thread", ProviderSessionID: "original-session"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(18 * time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalCapacity, WorkerMetadataJSON: string(metadata)}); err != nil {
+				t.Fatal(err)
+			}
+			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: initRunnerSourceRepo(t), AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "work", Identifier: "native#181", State: "In Progress", BranchName: "native/work"}
+			info, err := gitWorkspace.Create(ctx, workspaceIssue("native", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			worktree := "clean"
+			contents := []byte("source repo\n")
+			if test.dirty {
+				worktree = "dirty"
+				contents = []byte("unfinished original source\n")
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			local, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
+			overload := errors.New("serverOverloaded: selected model at capacity")
+			agent := &fakeCodexClient{err: overload, result: AgentTurnResult{ThreadID: "original-thread", SessionID: "original-session"}}
+			nativeIdentity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "original-model"}
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "host", PolicyID: approved.ID}, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: approved.ID, Identity: &nativeIdentity, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: worktree, HeadSHA: local.HeadSHA, WorkspaceDigest: local.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}}}}}
+			if test.edit != nil {
+				test.edit(execution, agent)
+			}
+			if test.changedPolicy {
+				approved.Gates.MergeMethod = "merge"
+				approved = approved.WithID()
+			}
+			currentAttemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started.Add(time.Minute), WorkerMetadataJSON: string(metadata)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Config{Policy: approved}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: "code", Backend: "codex", Model: "new-default-model", Default: true}}
+			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: execution, WorkAttemptID: currentAttemptID, Issue: issue, Mode: RunModeImplement})
+			if test.blocked {
+				if err == nil || agent.calls != 0 || execution.started {
+					t.Fatalf("invalid recovery ran: error=%v turns=%d started=%v", err, agent.calls, execution.started)
+				}
+			} else {
+				want := AgentResume{ThreadID: "original-thread", SessionID: "original-session"}
+				if !errors.Is(err, overload) || agent.calls != 1 || agent.request.Resume != want || agent.verifiedResume != want || agent.request.Model != "original-model" || agent.request.ReasoningEffort != "high" || agent.request.Workspace != info.Path {
+					t.Fatalf("recovery: error=%v turns=%d resume=%+v verified=%+v model=%s", err, agent.calls, agent.request.Resume, agent.verifiedResume, agent.request.Model)
+				}
+				if result.NativeChange != nil || result.FinalState != FinalStateFailed {
+					t.Fatalf("overload manufactured completion: %+v", result)
+				}
+				if execution.checkpoint == nil || execution.checkpoint.HeadSHA != local.HeadSHA || execution.checkpoint.WorkspaceDigest != local.WorkspaceFingerprint || execution.checkpoint.Resume != "resume_session" {
+					t.Fatalf("checkpoint changed: %+v", execution.checkpoint)
+				}
+				latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumed, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
+				if err != nil || resumed.ResumedFromSessionID.Int64 != sessionID || resumed.WorkAttemptID.Int64 != currentAttemptID || resumed.FinalState.String != "failed" {
+					t.Fatalf("persisted continuation=%+v error=%v", resumed, err)
+				}
+			}
+			got, readErr := os.ReadFile(filepath.Join(info.Path, "README.md"))
+			if readErr != nil || string(got) != string(contents) || backend.afterRun {
+				t.Fatalf("continuation workspace changed: %q error=%v cleaned=%v", got, readErr, backend.afterRun)
+			}
+			observed, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+			if err != nil || observed.HeadSHA != local.HeadSHA || observed.WorkspaceFingerprint != local.WorkspaceFingerprint {
+				t.Fatalf("workspace authority changed: %+v error=%v", observed, err)
+			}
+		})
+	}
 }
 
 func TestNativeRecoveryDecision(t *testing.T) {
@@ -312,6 +526,7 @@ type artifactExecutionProbe struct {
 	testExecution
 	failure   error
 	finalized bool
+	evidence  []ValidationEvidence
 }
 
 func (*artifactExecutionProbe) PrepareArtifacts(context.Context, string) error { return nil }
@@ -319,6 +534,11 @@ func (*artifactExecutionProbe) ArtifactLog(context.Context, string) error      {
 func (e *artifactExecutionProbe) FinalizeArtifacts(context.Context, string) error {
 	e.finalized = true
 	return e.failure
+}
+
+func (e *artifactExecutionProbe) PublishValidationEvidence(_ context.Context, files []ValidationEvidence) error {
+	e.evidence = files
+	return nil
 }
 
 func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
@@ -330,7 +550,9 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 		failed      bool
 		finalized   bool
 		after       bool
+		screenshot  bool
 	}{
+		{name: "clean with screenshots", screenshot: true, state: workspace.RecoveryState{HeadSHA: "head"}, finalized: true, after: true},
 		{name: "clean", state: workspace.RecoveryState{HeadSHA: "head"}, finalized: true, after: true},
 		{name: "failed capture", state: workspace.RecoveryState{HeadSHA: "head"}, failed: true, finalized: true},
 		{name: "unpushed finalized head", state: workspace.RecoveryState{HeadSHA: "head", UnpushedCommits: 1}, finalized: true},
@@ -340,11 +562,24 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{test.state}, recoveryErr: test.recoveryErr}}
 			execution := &artifactExecutionProbe{}
+			directory := t.TempDir()
+			if test.screenshot {
+				path := filepath.Join(directory, ".detent", "validation", "1")
+				if err := os.MkdirAll(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(path, "test.png"), []byte("screenshot bytes"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.failed {
 				execution.failure = errors.New("upload unavailable")
 			}
 			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
-			err := r.afterExecution(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{})
+			err := r.afterExecution(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{Path: directory}, workspace.Issue{})
+			if test.screenshot && (len(execution.evidence) != 1 || string(execution.evidence[0].Content) != "screenshot bytes" || execution.evidence[0].Name != "test.png") {
+				t.Fatalf("evidence=%+v", execution.evidence)
+			}
 			if execution.finalized != test.finalized || backend.afterRun != test.after || (err != nil) != test.failed {
 				t.Fatal("cleanup preceded durable finalization", err, backend.afterRun)
 			}

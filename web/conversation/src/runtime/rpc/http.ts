@@ -115,6 +115,7 @@ export interface DetentHttpClient {
     readonly settled?: boolean;
   }) => Effect.Effect<typeof ConversationListResponse.Type, HttpFailure>;
   readonly listProjectConversations: (input: {
+    readonly subjectWorkItemId?: string;
     readonly projectId: string;
     readonly cursor?: string | null;
     readonly limit?: number;
@@ -133,6 +134,7 @@ export interface DetentHttpClient {
     readonly limit?: number;
   }) => Effect.Effect<typeof MessagePageResponse.Type, HttpFailure>;
   readonly createConversation: (input: {
+    readonly subjectWorkItemId?: string;
     readonly projectId: string;
     /**
      * The create key. Mandatory (decisions.md §10.2): creating a conversation
@@ -398,6 +400,7 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
         ConversationListResponse,
         "GET",
         url(`${projectBase(input.projectId)}/conversations`, {
+          subject_work_item_id: input.subjectWorkItemId,
           cursor: input.cursor ?? undefined,
           limit: input.limit,
           q: input.q,
@@ -428,6 +431,7 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
         url(`${projectBase(input.projectId)}/conversations`),
         {
           key: input.key,
+          ...(input.subjectWorkItemId === undefined ? {} : { subject_work_item_id: input.subjectWorkItemId }),
           ...(input.title === undefined ? {} : { title: input.title }),
           ...(input.firstMessage === undefined ? {} : { first_message: input.firstMessage }),
         },

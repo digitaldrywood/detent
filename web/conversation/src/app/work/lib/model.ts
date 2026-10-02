@@ -167,11 +167,6 @@ export function sortItems(
   });
 }
 
-/**
- * Client-side search over what is already loaded. The hub filters by state,
- * label, assignee and priority; it has no text search on work items, so this
- * is the honest fallback and the toolbar says it searches the loaded board.
- */
 export function searchItems(
   items: readonly WorkItemView[],
   query: string,
@@ -199,11 +194,17 @@ export interface BoardStats {
   readonly total: number;
 }
 
-/**
- * The stats strip (A.1). Every counter is derived from the loaded issues, so
- * it cannot drift from the cards on screen: a strip that came from a separate
- * endpoint would sooner or later say "1 running" over an empty lane.
- */
+export interface ScopedWorkStats {
+  readonly lanes: Readonly<Record<string, number>>;
+  readonly running: number;
+  readonly ready: number;
+  readonly waiting: number;
+  readonly completed: number;
+  readonly total: number;
+  readonly asOf: string;
+  readonly truncated: boolean;
+}
+
 export function boardStats(
   items: readonly WorkItemView[],
   lanes: readonly Lane[],

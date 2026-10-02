@@ -40,6 +40,7 @@ type claimAPIRequest struct {
 }
 
 type claimCandidateQuery struct {
+	MinimumRunnerVersion    string
 	DispatchPriorityByState []string
 	DispatchPriorityByLabel []string
 	PrioritizeUnblockers    bool
@@ -131,16 +132,17 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 	}
 	claim := tracker.ClaimRequest{WorkItemID: request.WorkItemID, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}
 	lease, err := s.database.claimNext(c.Request().Context(), claim, claimCandidateQuery{
-		PolicyID:       request.PolicyID,
-		RequirePolicy:  true,
-		RepositoryIDs:  request.RepositoryIDs,
-		Repositories:   request.Repositories,
-		WorkflowStates: request.WorkflowState,
-		Authors:        request.Authors,
-		Assignees:      request.Assignees,
-		LabelInclude:   request.LabelInclude,
-		LabelExclude:   request.LabelExclude,
-		Scope:          request.Scope,
+		MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
+		PolicyID:             request.PolicyID,
+		RequirePolicy:        true,
+		RepositoryIDs:        request.RepositoryIDs,
+		Repositories:         request.Repositories,
+		WorkflowStates:       request.WorkflowState,
+		Authors:              request.Authors,
+		Assignees:            request.Assignees,
+		LabelInclude:         request.LabelInclude,
+		LabelExclude:         request.LabelExclude,
+		Scope:                request.Scope,
 	}, s.config.ReconcileInterval)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -337,6 +339,13 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			return tracker.Lease{}, fmt.Errorf("commit idempotent hub claim next: %w", err)
 		}
 		return leaseFromRecord(existing), nil
+	}
+	var version string
+	if err := tx.QueryRowContext(ctx, "SELECT version FROM machines WHERE id = ?", request.MachineID).Scan(&version); err != nil {
+		return tracker.Lease{}, err
+	}
+	if err := runnerVersionError(query.MinimumRunnerVersion, version); err != nil {
+		return tracker.Lease{}, err
 	}
 	if request.WorkItemID > 0 {
 		if err := requireWorkItem(ctx, tx, request.WorkItemID); err != nil {

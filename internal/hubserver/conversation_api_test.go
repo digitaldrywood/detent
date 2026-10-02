@@ -227,6 +227,20 @@ func TestConversationAPIListVisibility(t *testing.T) {
 	private := f.create(t, f.token, map[string]any{"title": "Private plan"}).Conversation
 	shared := f.create(t, f.token, map[string]any{"title": "Shared release"}).Conversation
 	requireNativeStatus(t, f.link(t, f.token, shared.ID, "link-shared", true, "Release checklist"), http.StatusOK)
+	shared = f.snapshot(t, f.token, shared.ID).Conversation
+	issue := f.nativeFixture.create(t, "Runner session")
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	worker, err := f.service.conversations.ensureWorkerConversation(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: f.ownerID}}, string(issue.WorkItemID), f.service.config.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	list := func(token, path string) conversationListResponse {
 		t.Helper()
 		response := performHubAPIRequest(t, f.service, http.MethodGet, path, token, nil)
@@ -254,6 +268,32 @@ func TestConversationAPIListVisibility(t *testing.T) {
 		{name: "title filter", token: f.token, path: f.base + "/conversations?q=PLAN", want: []string{private.ID}},
 		{name: "organization list", token: f.token, path: organizationPath, want: []string{shared.ID, private.ID}},
 		{name: "organization list other", token: f.other, path: organizationPath + "?q=release", want: []string{shared.ID}},
+		{name: "project excludes worker search", token: f.token, path: f.base + "/conversations?q=Runner", want: nil},
+		{name: "organization excludes worker search", token: f.token, path: organizationPath + "?q=Runner", want: nil},
+	}
+	for _, record := range []struct {
+		name   string
+		id     string
+		item   string
+		origin string
+	}{
+		{"worker", worker.ID, worker.WorkItemID, conversationOriginWorker},
+		{"linked user", shared.ID, shared.WorkItem.ID, conversationOriginUser},
+	} {
+		t.Run(record.name+" issue conversation remains accessible", func(t *testing.T) {
+			for _, token := range []string{f.token, f.other} {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+record.item+"/conversation", token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var snapshot conversationSnapshotResponse
+				decodeHubResponse(t, response, &snapshot)
+				if snapshot.Conversation.ID != record.id {
+					t.Fatalf("issue conversation = %q, want %q", snapshot.Conversation.ID, record.id)
+				}
+				if snapshot.Conversation.Origin != record.origin {
+					t.Fatalf("issue conversation origin = %q, want %q", snapshot.Conversation.Origin, record.origin)
+				}
+			}
+		})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -3032,6 +3032,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             organization_id: ORGANIZATION.id,
             project_id: projectId,
             work_item_id: `wi_${number}`,
+            web_url: `http://mock.local/work/i/wi_${number}`,
             number,
             revision: "1",
             profile: project?.profile ?? "native",
@@ -3142,7 +3143,13 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             break;
           case "/__mock/drop-open-streams":
             for (const entry of store.values()) {
-              for (const subscriber of entry.subscribers) subscriber.response.destroy();
+              for (const subscriber of [...entry.subscribers]) {
+                if (body.reason === "server_error") {
+                  writeFrame(entry, subscriber, null, { type: "closed", data: { reason: "server_error" } });
+                } else {
+                  subscriber.response.destroy();
+                }
+              }
               entry.subscribers.clear();
             }
             break;

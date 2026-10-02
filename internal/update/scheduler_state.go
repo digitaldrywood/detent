@@ -8,16 +8,19 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 const schedulerStateSchema = 1
 
 type schedulerState struct {
-	Schema           int        `json:"schema"`
-	LastCheckAt      time.Time  `json:"last_check_at"`
-	AvailableVersion string     `json:"available_version,omitempty"`
-	PendingSince     *time.Time `json:"pending_since,omitempty"`
-	Critical         bool       `json:"critical,omitempty"`
+	EnrolledReceipt  *runnerauth.UpdateReceipt `json:"enrolled_receipt,omitempty"`
+	Schema           int                       `json:"schema"`
+	LastCheckAt      time.Time                 `json:"last_check_at"`
+	AvailableVersion string                    `json:"available_version,omitempty"`
+	PendingSince     *time.Time                `json:"pending_since,omitempty"`
+	Critical         bool                      `json:"critical,omitempty"`
 }
 
 func loadSchedulerState(path string) (schedulerState, bool, error) {
@@ -38,6 +41,9 @@ func loadSchedulerState(path string) (schedulerState, bool, error) {
 	}
 	if state.Schema != schedulerStateSchema {
 		return schedulerState{}, false, fmt.Errorf("decode scheduler state: unsupported schema %d", state.Schema)
+	}
+	if state.EnrolledReceipt != nil && state.EnrolledReceipt.Validate() != nil {
+		return schedulerState{}, false, errors.New("decode scheduler state: invalid enrolled update receipt")
 	}
 	if state.LastCheckAt.IsZero() {
 		return schedulerState{}, false, errors.New("decode scheduler state: last check timestamp is required")

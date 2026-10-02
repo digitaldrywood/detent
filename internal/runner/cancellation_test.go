@@ -69,6 +69,8 @@ func TestCancellationDoesNotInventFailureOrExposeCause(t *testing.T) {
 	}{
 		{"success", nil, false},
 		{"ordinary error", errors.New("failure"), false},
+		{"cleanup deadline", errors.Join(ErrWorkerProcessReap, context.DeadlineExceeded), false},
+		{"cleanup cancellation", errors.Join(ErrWorkerProcessReap, context.Canceled), false},
 		{"backend cancellation", context.Canceled, true},
 		{"backend deadline", context.DeadlineExceeded, true},
 	} {

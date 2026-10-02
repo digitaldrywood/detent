@@ -26,6 +26,9 @@ current authority, so revocation before confirmation prevents execution.
 
 ## Organization URLs
 
+Issue and comment attachment storage uses the authenticated organization and
+project routes described in [Cloud attachments](cloud-attachments.md).
+
 Copy the URLs shown on this page. On shared Cloud their complete shapes are:
 
 ```text

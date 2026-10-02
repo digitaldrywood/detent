@@ -95,6 +95,9 @@ func decodeFleetRequest(name string, raw json.RawMessage) (fleetRequest, error) 
 	if err := operatortool.DecodeArguments(raw, &r); err != nil {
 		return r, err
 	}
+	if name == operatortool.UpdateApply && (r.RunnerID != "" || len(r.Change) != 0) {
+		return r, operatortool.ErrInvalidArguments
+	}
 	if r.Limit == 0 {
 		r.Limit = 100
 	}
@@ -277,7 +280,7 @@ func (s *Server) fleetActionProposal(ctx context.Context, name string, raw json.
 			if runner.RunnerID == r.RunnerID && runner.Revision == change.ExpectedRevision {
 				found = true
 				a.CurrentState = strconv.FormatInt(runner.Revision, 10)
-				a.MaterialChange = operatortool.RoutingRequiresApproval(runner.Routing, change.Routing) || runner.CapacityRequiresApplication(change.CapacityLimit, s.now())
+				a.MaterialChange = operatortool.RoutingRequiresApproval(runner.Routing, change.Routing) || runner.CapacityRequiresApplication(change.CapacityLimit)
 			}
 		}
 		if !found {

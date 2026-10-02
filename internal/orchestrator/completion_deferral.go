@@ -32,6 +32,8 @@ type deferredCompletion struct {
 	Request             deferredCompletionRequest      `json:"request"`
 	Result              runpkg.RunResult               `json:"result"`
 	Error               string                         `json:"error,omitempty"`
+	TerminalState       store.WorkAttemptTerminalState `json:"terminal_state,omitempty"`
+	WorkerProcessReap   bool                           `json:"worker_process_reap,omitempty"`
 	CompletedAt         time.Time                      `json:"completed_at"`
 	Retryable           bool                           `json:"retryable,omitempty"`
 	RetryAttempt        int                            `json:"retry_attempt,omitempty"`
@@ -76,16 +78,18 @@ type deferredCompletionAvailability struct {
 func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr error, deferredAt time.Time) deferredCompletion {
 	running.CompletionOwnershipReleased = true
 	record := deferredCompletion{
-		Schema:       deferredCompletionSchema,
-		Running:      running,
-		Request:      deferredCompletionRequestFromRun(event.Request),
-		Result:       event.Result,
-		Error:        errorString(event.Err),
-		CompletedAt:  event.CompletedAt,
-		Retryable:    event.Retryable,
-		RetryAttempt: event.RetryAttempt,
-		RetryDelay:   event.RetryDelay,
-		DeferredAt:   deferredAt,
+		Schema:            deferredCompletionSchema,
+		TerminalState:     terminalStateForRun(event.Err, event.Result.FinalState),
+		WorkerProcessReap: errors.Is(event.Err, runpkg.ErrWorkerProcessReap),
+		Running:           running,
+		Request:           deferredCompletionRequestFromRun(event.Request),
+		Result:            event.Result,
+		Error:             errorString(event.Err),
+		CompletedAt:       event.CompletedAt,
+		Retryable:         event.Retryable,
+		RetryAttempt:      event.RetryAttempt,
+		RetryDelay:        event.RetryDelay,
+		DeferredAt:        deferredAt,
 	}
 	record.ForgeAvailability = &forgeWaitMetadata{}
 	if fenceErr != nil {
@@ -180,6 +184,17 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		event.Err = forgeavailability.NewError(forgeavailability.Scope{
 			Host: r.ForgeAvailability.Host, Operation: r.ForgeAvailability.Operation,
 		}, r.ForgeAvailability.ErrorClass, event.Err)
+	}
+	if event.Err != nil {
+		if r.WorkerProcessReap {
+			event.Err = errors.Join(runpkg.ErrWorkerProcessReap, event.Err)
+		}
+		switch r.TerminalState {
+		case store.WorkAttemptTerminalCancelled:
+			event.Err = errors.Join(event.Err, context.Canceled)
+		case store.WorkAttemptTerminalTimedOut:
+			event.Err = errors.Join(event.Err, context.DeadlineExceeded)
+		}
 	}
 	return event
 }

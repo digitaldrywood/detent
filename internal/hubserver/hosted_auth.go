@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -21,6 +22,18 @@ import (
 )
 
 const hostedCookie = "detent_hosted_session"
+
+type hostedMembershipLookupError struct {
+	err error
+}
+
+func (e *hostedMembershipLookupError) Error() string {
+	return "lookup hosted memberships: " + e.err.Error()
+}
+
+func (e *hostedMembershipLookupError) Unwrap() error {
+	return e.err
+}
 
 func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecord) error {
 	if s.config.Hosted == nil || record.Identity == nil {
@@ -88,7 +101,7 @@ func (s *Service) hostedMembership(ctx context.Context, identity *auth.HostedIde
 	}
 	memberships, err := s.config.Hosted.Provider.Memberships(ctx, identity.Subject, identity.OrganizationID)
 	if err != nil {
-		return auth.Membership{}, auth.ErrHostedIdentity
+		return auth.Membership{}, &hostedMembershipLookupError{err: err}
 	}
 	for _, membership := range memberships {
 		if membership.UserID == identity.Subject && membership.OrganizationID == identity.OrganizationID && membership.Status == "active" && auth.ValidOrganizationRole(membership.Role.Slug) {
@@ -120,7 +133,13 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 	var membership auth.Membership
 	var local string
 	err := s.database.db.QueryRowContext(ctx, "SELECT membership_id, role FROM hosted_members WHERE user_id = ? AND active = 1", session.Identity.Subject).Scan(&membership.ID, &local)
-	if err != nil || !auth.ValidOrganizationRole(local) {
+	if errors.Is(err, sql.ErrNoRows) {
+		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+	}
+	if err != nil {
+		return apiCredential{}, http.StatusInternalServerError, fmt.Errorf("read shared hosted membership: %w", err)
+	}
+	if !auth.ValidOrganizationRole(local) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	membership.Role.Slug = lesserHostedRole(role, local)
@@ -141,6 +160,10 @@ func lesserHostedRole(a, b string) string {
 func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Session, hash string) (apiCredential, int, error) {
 	membership, err := s.hostedMembership(ctx, session.Identity)
 	if err != nil {
+		var lookup *hostedMembershipLookupError
+		if errors.As(err, &lookup) {
+			return apiCredential{}, http.StatusInternalServerError, err
+		}
 		return apiCredential{}, http.StatusForbidden, err
 	}
 	return s.hostedMemberCredential(ctx, session, hash, membership)
@@ -151,14 +174,23 @@ func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Sessi
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	providerID, err := s.hostedProviderOrganization(ctx)
-	if err != nil || providerID == "" || session.Identity.OrganizationID != providerID {
+	if errors.Is(err, sql.ErrNoRows) {
+		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+	}
+	if err != nil {
+		return apiCredential{}, http.StatusInternalServerError, fmt.Errorf("read hosted provider organization: %w", err)
+	}
+	if providerID == "" || session.Identity.OrganizationID != providerID {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, SessionHash: hash, HostedRole: membership.Role.Slug, HostedMembership: membership.ID}
 	var localRole string
 	err = s.database.db.QueryRowContext(ctx, "SELECT m.principal_id,t.token_hash,m.role FROM hosted_members m JOIN api_tokens t ON t.id = m.principal_id WHERE m.user_id = ? AND m.membership_id = ? AND m.active = 1 AND t.revoked_at IS NULL", session.Identity.Subject, membership.ID).Scan(&credential.ID, &credential.Hash, &localRole)
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+	}
+	if err != nil {
+		return apiCredential{}, http.StatusInternalServerError, fmt.Errorf("read hosted member credential: %w", err)
 	}
 	if !auth.ValidOrganizationRole(localRole) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity

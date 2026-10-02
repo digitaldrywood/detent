@@ -50,6 +50,7 @@ export interface ActivityComment {
 }
 
 export interface ActivityRow {
+  readonly reason?: string;
   /** Stable across re-reads: the source record's own id. */
   readonly key: string;
   readonly kind: ActivityKind;
@@ -248,6 +249,7 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
     const written = historySentence(event);
     rows.push({
       key: `history:${event.event_id}`,
+      ...(event.data.reason === undefined ? {} : { reason: event.data.reason }),
       kind: "event",
       icon: written.icon,
       at: stamp(event.recorded_at),

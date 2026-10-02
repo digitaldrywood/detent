@@ -48,18 +48,19 @@ type Client struct {
 }
 
 type Machine struct {
-	CapacityConfig   *runnerauth.CapacityConfig `json:"-"`
-	LocalChecks      *runnerauth.LocalChecks    `json:"local_checks,omitempty"`
-	Problems         []runnerauth.Problem       `json:"-"`
-	BackendIsolation isolationpolicy.Report     `json:"-"`
-	ProviderReports  []providercapacity.Report  `json:"provider_reports,omitempty"`
-	ID               tracker.MachineID          `json:"id"`
-	Hostname         string                     `json:"hostname"`
-	DisplayName      string                     `json:"display_name,omitempty"`
-	Capabilities     map[string]any             `json:"capabilities,omitempty"`
-	Capacity         int                        `json:"capacity"`
-	Version          string                     `json:"version"`
-	LastHeartbeatAt  time.Time                  `json:"last_heartbeat_at,omitempty"`
+	Update           *runnerauth.UpdateObservation `json:"-"`
+	CapacityConfig   *runnerauth.CapacityConfig    `json:"-"`
+	LocalChecks      *runnerauth.LocalChecks       `json:"local_checks,omitempty"`
+	Problems         []runnerauth.Problem          `json:"-"`
+	BackendIsolation isolationpolicy.Report        `json:"-"`
+	ProviderReports  []providercapacity.Report     `json:"provider_reports,omitempty"`
+	ID               tracker.MachineID             `json:"id"`
+	Hostname         string                        `json:"hostname"`
+	DisplayName      string                        `json:"display_name,omitempty"`
+	Capabilities     map[string]any                `json:"capabilities,omitempty"`
+	Capacity         int                           `json:"capacity"`
+	Version          string                        `json:"version"`
+	LastHeartbeatAt  time.Time                     `json:"last_heartbeat_at,omitempty"`
 	// WorkspaceCapabilities and WorkspaceIsolation are what this runner can
 	// serve for a workspace session. The hub reads the report from the same
 	// row it stamps the heartbeat on, so the two travel together.
@@ -235,7 +236,10 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		httpClient = clientWithTimeout(httpClient, timeout)
 	}
 	var body io.Reader
-	if input != nil {
+	stream, streaming := input.(io.Reader)
+	if streaming {
+		body = stream
+	} else if input != nil {
 		encoded, err := json.Marshal(input)
 		if err != nil {
 			return fmt.Errorf("encode Hub request: %w", err)
@@ -261,7 +265,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	}
 	request.Header.Set("Authorization", token)
 	request.Header.Set("Accept", "application/json")
-	if input != nil {
+	if input != nil && !streaming {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := httpClient.Do(request)

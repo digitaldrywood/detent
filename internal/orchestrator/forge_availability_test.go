@@ -4,16 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestApprovalDeniedDeliverableUsesInstanceForgeWait(t *testing.T) {
@@ -192,6 +196,57 @@ func TestRecoverDurableForgeAvailabilityWait(t *testing.T) {
 	}
 	if terminalAttemptRetryableFailure(telemetryWorkAttempt(attempts.recent[0], now)) {
 		t.Fatal("durable forge wait treated as a generic terminal retry")
+	}
+	for _, test := range []struct {
+		name       string
+		withOutage bool
+		legacy     bool
+		body       string
+		wantLocal  bool
+	}{
+		{name: "native projection alone", body: `{"message":"Pull Request has merge conflicts"}`, wantLocal: true},
+		{name: "native projection alongside genuine transport", body: `{"message":"Pull Request is not mergeable"}`, withOutage: true, wantLocal: true},
+		{name: "malformed persisted response retains outage authority", body: `{"message":"Pull Request has merge conflicts"`},
+		{name: "metadata conflict text retains outage authority", body: `{"message":"Service Unavailable","errors":["merge conflicts"]}`},
+		{name: "legacy tracker retains its owner", body: `{"message":"Pull Request has merge conflicts"}`, legacy: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			projected := dispatchTestIssue("old-projection", "Merging")
+			projected.URL = "https://github.com/example/repo/pull/7"
+			operation := "github.update_pull_request repos/example/repo/pulls/7/merge"
+			errorMessage := forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: operation}, forgeavailability.ClassServer,
+				fmt.Errorf("GitHub refused PUT repos/example/repo/pulls/7/merge: %w", &github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: http.StatusMethodNotAllowed, Body: test.body})).Error()
+			receipts := []store.WorkAttempt{{
+				ID: 4, IssueID: projected.ID, Identifier: projected.Identifier, IssueURL: projected.URL, Lane: projected.State, AttemptNumber: 2,
+				Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalCapacity, CompletedAt: now.Add(-time.Minute),
+				ErrorClass: forgeUnavailableErrorClass, ErrorMessage: errorMessage,
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"forge_wait": forgeWaitMetadata{Host: "github.com", Operation: operation, ErrorClass: forgeavailability.ClassServer, NextProbeAt: now.Add(10 * time.Minute)}}),
+			}}
+			if test.withOutage {
+				receipts = append(receipts, attempts.recent[0])
+			}
+			nativeCfg := cfg
+			nativeCfg.ActiveStates = append(append([]string(nil), cfg.ActiveStates...), "merging")
+			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{projected, waiting}}
+			var tracker connector.Connector = &nativeWorkflowConnector{autoPromoteTickConnector: tick}
+			if test.legacy {
+				tracker = tick
+			}
+			owner := Orchestrator{cfg: nativeCfg, connector: tracker}
+			restarted := newState(nativeCfg)
+			owner.recoverForgeAvailabilityWaits(t.Context(), &restarted, receipts, now)
+			restored := restarted.Retry[projected.ID]
+			if restored.Attempt != 2 || restored.Issue.State != "Merging" || restored.ForgeUnavailable == test.wantLocal || test.wantLocal && (!restored.DueAt.Equal(now.Add(cfg.ContinuationRetryDelay)) || restored.ForgeRetry != nil) {
+				t.Fatalf("restart changed projection continuation ownership: %#v", restored)
+			}
+			_, paused := restarted.ForgeUnavailable["github.com"]
+			if paused != (test.withOutage || !test.wantLocal) {
+				t.Fatalf("restart changed independent outage authority: %#v", restarted.ForgeUnavailable)
+			}
+			if test.withOutage && (restarted.ForgeUnavailable["github.com"].ErrorClass != forgeavailability.ClassTransport || !restarted.Retry[waiting.ID].ForgeUnavailable) {
+				t.Fatalf("synthetic wait replaced real outage on restart: %#v", restarted)
+			}
+		})
 	}
 }
 
@@ -380,35 +435,72 @@ func TestWorkerGitHubCredentialAvailabilityBlocksProjectAcrossHosts(t *testing.T
 
 func TestForgeAvailabilityProbeClearsOnlyForgeCondition(t *testing.T) {
 	t.Parallel()
-
 	now := time.Date(2026, 8, 17, 18, 0, 0, 0, time.UTC)
 	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ForgeHost: "github.com", MaxConcurrentAgents: 1})
 	orch := Orchestrator{cfg: cfg, now: func() time.Time { return now }}
-	state := newState(cfg)
-	issue := dispatchTestIssue("forge-probe", "In Progress")
-	state.TrackerUnavailable = &TrackerCondition{Connector: "github", DetectedAt: now.Add(-time.Minute)}
-	state.ForgeUnavailable["github.com"] = ForgeCondition{
-		Host:         "github.com",
-		ProbeIssueID: issue.ID,
-		DetectedAt:   now.Add(-time.Minute),
-	}
-	state.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(time.Hour), ForgeUnavailable: true, ForgeHost: "github.com"}
+	operation := "github.update_pull_request repos/example/repo/pulls/7/merge"
+	projectionError := forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: operation}, forgeavailability.ClassServer,
+		fmt.Errorf("GitHub refused PUT repos/example/repo/pulls/7/merge: %w", &github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: http.StatusMethodNotAllowed, Body: `{"message":"Pull Request has merge conflicts"}`})).Error()
+	for _, test := range []struct {
+		name         string
+		write        bool
+		class        string
+		message      string
+		refusal      string
+		genuineRetry bool
+		wantCleared  bool
+	}{
+		{name: "successful write", write: true, wantCleared: true},
+		{name: "clean projection releases synthetic wait", class: forgeavailability.ClassServer, message: projectionError, refusal: workspace.LandRefusalBaseMoved, wantCleared: true},
+		{name: "proved conflict releases synthetic wait", class: forgeavailability.ClassServer, message: projectionError, refusal: workspace.LandRefusalConflict, wantCleared: true},
+		{name: "independent genuine retry retains host authority", class: forgeavailability.ClassServer, message: projectionError, refusal: workspace.LandRefusalBaseMoved, genuineRetry: true},
+		{name: "clean projection preserves genuine server outage", class: forgeavailability.ClassServer, message: "github transient error: status 503", refusal: workspace.LandRefusalBaseMoved},
+		{name: "clean projection preserves credential authority", class: forgeavailability.ClassWorkerGitHubCredentialUnavailable, message: projectionError, refusal: workspace.LandRefusalBaseMoved},
+		{name: "unproven completion preserves synthetic wait", class: forgeavailability.ClassServer, message: projectionError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newState(cfg)
+			issue := dispatchTestIssue("forge-probe", "In Progress")
+			state.TrackerUnavailable = &TrackerCondition{Connector: "github", DetectedAt: now.Add(-time.Minute)}
+			state.ForgeUnavailable["github.com"] = ForgeCondition{
+				Host:         "github.com",
+				ProbeIssueID: issue.ID,
+				DetectedAt:   now.Add(-time.Minute),
+				Operation:    operation,
+				ErrorClass:   test.class,
+				LastError:    test.message,
+			}
+			retry := Retry{Issue: issue, DueAt: now.Add(time.Hour), ForgeUnavailable: true, ForgeHost: "github.com", Error: projectionError,
+				ForgeRetry: &runpkg.ForgeRetry{Host: "github.com", Operation: operation}}
+			if test.genuineRetry {
+				retry.Error = "github transient error: status 503"
+			}
+			state.Retry[issue.ID] = retry
+			var landing *runpkg.NativeLanding
+			if test.refusal != "" {
+				landing = &runpkg.NativeLanding{RefusalKind: test.refusal}
+			}
 
-	orch.finishForgeAvailabilityProbe(&state, runpkg.Completion{
-		IssueID:     issue.ID,
-		Result:      runpkg.RunResult{ForgeWriteCompleted: true},
-		CompletedAt: now,
-	}, Running{Issue: issue, ForgeProbeHost: "github.com"})
+			orch.finishForgeAvailabilityProbe(&state, runpkg.Completion{
+				IssueID:     issue.ID,
+				Result:      runpkg.RunResult{ForgeWriteCompleted: test.write, NativeLanding: landing},
+				CompletedAt: now,
+			}, Running{Issue: issue, ForgeProbeHost: "github.com"})
 
-	if len(state.ForgeUnavailable) != 0 {
-		t.Fatalf("ForgeUnavailable = %#v, want cleared", state.ForgeUnavailable)
-	}
-	if state.TrackerUnavailable == nil {
-		t.Fatal("TrackerUnavailable cleared with independent forge condition")
-	}
-	retry := state.Retry[issue.ID]
-	if retry.ForgeUnavailable || !retry.DueAt.Equal(now) {
-		t.Fatalf("Retry[%q] = %#v, want released", issue.ID, retry)
+			if (len(state.ForgeUnavailable) == 0) != test.wantCleared {
+				t.Fatalf("ForgeUnavailable = %#v, want cleared %v", state.ForgeUnavailable, test.wantCleared)
+			}
+			if state.TrackerUnavailable == nil {
+				t.Fatal("TrackerUnavailable cleared with independent forge condition")
+			}
+			retry = state.Retry[issue.ID]
+			if test.wantCleared && (retry.ForgeUnavailable || !retry.DueAt.Equal(now)) {
+				t.Fatalf("Retry[%q] = %#v, want released", issue.ID, retry)
+			}
+			if !test.wantCleared && (!retry.ForgeUnavailable || !retry.DueAt.Equal(now.Add(time.Hour)) || state.ForgeUnavailable["github.com"].ProbeIssueID != "") {
+				t.Fatalf("responsive refusal lost independent outage/probe boundary: %#v, %#v", retry, state.ForgeUnavailable)
+			}
+		})
 	}
 }
 

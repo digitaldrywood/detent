@@ -55,7 +55,10 @@ WHERE i.organization_id = ? AND i.native_id = ? AND g.token_id = ?`, scope.organ
 		}
 		issue.Dependencies = slices.DeleteFunc(issue.Dependencies, func(id tracker.NativeWorkItemID) bool { return !visible[id] })
 		issue.Blockers = slices.DeleteFunc(issue.Blockers, func(dependency tracker.NativeDependency) bool { return !visible[dependency.ID] })
-		return json.Marshal(issue)
+		return json.Marshal(s.nativeIssueResponse(issue))
+	}
+	if recordID == item {
+		return s.nativeIssueJSON(json.RawMessage(body))
 	}
 	return json.RawMessage(body), nil
 }

@@ -609,6 +609,7 @@ export function makeClient(options: ClientOptions) {
         withoutPending(detail, input.key),
       ),
     createConversation: (input: {
+      subjectWorkItemId?: string;
       projectId: string;
       key: string;
       title?: string;

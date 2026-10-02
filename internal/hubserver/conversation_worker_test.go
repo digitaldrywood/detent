@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -426,6 +427,9 @@ func TestConversationWorkerBind(t *testing.T) {
 		decodeHubResponse(t, response, &bound)
 		f.record.ID = bound.ConversationID
 		record := f.load(t)
+		if record.Origin != conversationOriginWorker {
+			t.Fatalf("ordinary binding origin = %q, want worker", record.Origin)
+		}
 		if bound.Continuation || record.WorkItemID != string(f.issue.WorkItemID) || record.Visibility != conversation.VisibilityShared || record.Execution.Owner.AttemptID != f.attempt || record.Execution.Owner.RunID != f.run || len(bound.Pending) != 0 || len(f.messages(t)) != 0 {
 			t.Fatalf("ordinary binding = %#v, pending = %#v", record, bound.Pending)
 		}
@@ -467,6 +471,9 @@ func TestConversationWorkerBind(t *testing.T) {
 		t.Fatalf("expected/cursor = %#v/%d", bound.Pending[0].Expected, bound.Cursor)
 	}
 	record := f.load(t)
+	if record.Origin != conversationOriginUser {
+		t.Fatalf("linked user conversation origin = %q, want user", record.Origin)
+	}
 	if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Owner.AttemptID != f.attempt || record.Execution.Owner.LeaseID != string(f.lease.ID) || record.Execution.Owner.FencingToken != int64(f.lease.FencingToken) || record.Execution.Owner.RunID != f.run || record.Execution.Owner.MachineID != "conversation-machine" {
 		t.Fatalf("execution = %#v", record.Execution)
 	}
@@ -606,6 +613,51 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 		f.attempt = newNativeID("attempt")
 		defer func() { f.attempt = attempt }()
 		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
+	})
+
+	t.Run("shutdown drains a waiting poll", func(t *testing.T) {
+		var cursor int64
+		for _, message := range f.messages(t) {
+			cursor = max(cursor, message.Seq)
+		}
+		pollResult := make(chan *httptest.ResponseRecorder, 1)
+		go func() { pollResult <- f.controls(t, cursor, 30) }()
+
+		waitContext, cancelWait := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancelWait()
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			f.chat.broker.mu.Lock()
+			waiting := len(f.chat.broker.subscribers[f.record.ID]) > 0
+			f.chat.broker.mu.Unlock()
+			if waiting {
+				break
+			}
+			select {
+			case <-ticker.C:
+			case response := <-pollResult:
+				t.Fatalf("poll returned before shutdown: %s", response.Body.String())
+			case <-waitContext.Done():
+				t.Fatal("poll did not subscribe")
+			}
+		}
+		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := f.service.Shutdown(shutdownContext); err != nil {
+			t.Fatalf("Shutdown() with waiting poll: %v", err)
+		}
+		select {
+		case response := <-pollResult:
+			requireNativeStatus(t, response, http.StatusOK)
+			var result workerControlsResponse
+			decodeHubResponse(t, response, &result)
+			if len(result.Controls) != 0 || result.Cursor != cursor {
+				t.Fatalf("shutdown poll = %+v", result)
+			}
+		case <-shutdownContext.Done():
+			t.Fatal("Shutdown() left the control poll waiting")
+		}
 	})
 }
 

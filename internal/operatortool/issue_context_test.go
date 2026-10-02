@@ -1,0 +1,96 @@
+package operatortool
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+)
+
+type issueContextReader struct {
+	fail      string
+	malformed bool
+	repeated  bool
+	calls     map[string]int
+}
+
+func (r *issueContextReader) ReadWork(_ context.Context, name string, request WorkReadRequest) (Result, error) {
+	r.calls[name]++
+	if name == r.fail {
+		return Result{}, ErrAccessDenied
+	}
+	if r.malformed {
+		return Result{Content: json.RawMessage(`{"data":`)}, nil
+	}
+	if request.ProjectID != "project" || request.Reference != "issue" || request.Limit != MaxItemLimit {
+		return Result{}, ErrInvalidArguments
+	}
+	var data any
+	switch name {
+	case WorkItem:
+		data = map[string]string{"body": "entire issue body" + strings.Repeat("x", 5000) + " tail evidence"}
+	case WorkRelationships:
+		data = map[string]any{"dependencies": []string{"dependency"}, "blockers": []string{"blocker"}}
+	case WorkReferences:
+		if request.Offset == 0 {
+			data = OffsetPage([]string{"change", "PR open"}, 0, 1)
+		} else {
+			data = OffsetPage([]string{"change", "PR open"}, request.Offset, 1)
+		}
+	default:
+		if request.Cursor == "" || r.repeated {
+			item := map[string]string{"record": name + " first", "body": "## Codex Workpad\nold", "created_at": "2026-01-01T00:00:00Z", "comment_id": "old"}
+			data = map[string]any{"items": []any{item}, "next_cursor": "second"}
+		} else {
+			item := map[string]string{"record": name + " second", "body": "## Codex Workpad\nlatest", "created_at": "2026-02-01T00:00:00Z", "comment_id": "latest", "reason": "Needs branch approval", "outcome": "failed"}
+			data = map[string]any{"items": []any{item}}
+		}
+	}
+	return EncodeResult(WorkReadResult[any]{Data: data})
+}
+
+func TestReadIssueContext(t *testing.T) {
+	for _, test := range []struct {
+		name, fail          string
+		malformed, repeated bool
+		want                error
+	}{
+		{name: "complete paginated history"},
+		{name: "current authority denial", fail: WorkHistory, want: ErrAccessDenied},
+		{name: "malformed read", malformed: true},
+		{name: "non advancing history", repeated: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &issueContextReader{fail: test.fail, malformed: test.malformed, repeated: test.repeated, calls: map[string]int{}}
+			result, err := ReadIssueContext(t.Context(), reader, WorkReadRequest{ProjectID: "project", Reference: "issue"})
+			if test.fail != "" {
+				if !errors.Is(err, test.want) {
+					t.Fatalf("err=%v", err)
+				}
+				return
+			}
+			if test.malformed || test.repeated {
+				if err == nil {
+					t.Fatal("invalid pagination accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Comments) != 2 || len(result.History) != 2 || len(result.Attempts) != 2 || len(result.References) != 2 || result.LatestWorkpad == nil || result.LatestWorkpad.ID != "latest" {
+				t.Fatalf("incomplete context: %+v", result)
+			}
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"entire issue body", "tail evidence", "Needs branch approval", "failed", "dependency", "blocker", "PR open", "work_comments second", "work_history second", "work_runs second"} {
+				if !strings.Contains(string(encoded), want) {
+					t.Fatalf("missing %q in %s", want, encoded)
+				}
+			}
+		})
+	}
+}

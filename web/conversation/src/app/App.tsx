@@ -1137,7 +1137,7 @@ export function ConversationView({
       isServerThread: true,
       workItemId: detail.conversation.work_item_id,
       issueIdentifier: issue?.identifier ?? detail.conversation.work_item_id,
-      onCreateIssue: linked || closed ? null : () => openHandoff(null),
+      onCreateIssue: linked || closed || detail.conversation.subject_work_item_id != null ? null : () => openHandoff(null),
     },
     <>
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -1153,7 +1153,7 @@ export function ConversationView({
             onDismiss={(entry) =>
               void dismissPending({ projectId, conversationId, key: entry.key })
             }
-            onCreateIssue={linked || closed ? undefined : (proposal) => openHandoff(proposal)}
+            onCreateIssue={linked || closed || detail.conversation.subject_work_item_id != null ? undefined : (proposal) => openHandoff(proposal)}
             onOpenIssue={openIssue}
 
             renderQuestion={(question) =>
@@ -1281,7 +1281,7 @@ export function ConversationView({
               // — the three pickers, the paperclip, the draft, the interrupt —
               // the composer supplies from its own handles.
               slashCommands={[
-                ...(linked || closed
+                ...(linked || closed || detail.conversation.subject_work_item_id != null
                   ? []
                   : [
                       {
@@ -1306,7 +1306,14 @@ export function ConversationView({
                 },
               ]}
               contextStrip={
-                <ChatContextStrip
+                detail.conversation.subject_work_item_id != null ? (
+                  <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+                    <button type="button" onClick={() => openIssue(detail.conversation.subject_work_item_id as string)} className="rounded-md border border-border px-2 py-1 hover:bg-muted">
+                      {detail.conversation.title.match(/^#\d+/)?.[0] ?? "Issue"} attached
+                    </button>
+                    <span>Private · Never posted to the issue</span>
+                  </div>
+                ) : <ChatContextStrip
                   projectId={projectId}
                   workItemId={detail.conversation.work_item_id}
                   projectName={project?.name ?? null}
@@ -1314,7 +1321,7 @@ export function ConversationView({
                     linked ? (issue?.identifier ?? detail.conversation.work_item_id) : null
                   }
                   issueLane={detail.conversation.work_item?.lane ?? issue?.lane ?? null}
-                  onCreateIssue={linked || closed ? null : () => openHandoff(null)}
+                  onCreateIssue={linked || closed || detail.conversation.subject_work_item_id != null ? null : () => openHandoff(null)}
                   onOpenIssue={
                     linked && detail.conversation.work_item_id !== null
                       ? () => openIssue(detail.conversation.work_item_id as string)

@@ -19,6 +19,7 @@ import (
 const HeartbeatTimeout = 2 * time.Minute
 
 type Routing struct {
+	UpdateRequest   *UpdateRequest      `json:"update_request,omitempty"`
 	CapacityRequest *CapacityRequest    `json:"capacity_request,omitempty"`
 	DisplayName     string              `json:"display_name"`
 	Tags            []string            `json:"tags"`
@@ -62,6 +63,7 @@ type HostChange struct {
 }
 
 type Runner struct {
+	Update           *UpdateObservation      `json:"update,omitempty"`
 	CapacityConfig   *CapacityConfig         `json:"capacity_configuration,omitempty"`
 	Problems         []Problem               `json:"problems"`
 	HomeDrySince     *time.Time              `json:"home_dry_since"`
@@ -156,6 +158,11 @@ func (r Routing) Normalized() Routing {
 }
 
 func (r Routing) Validate() error {
+	if r.UpdateRequest != nil {
+		if err := r.UpdateRequest.Validate(); err != nil {
+			return err
+		}
+	}
 	if r.CapacityRequest != nil {
 		if err := r.CapacityRequest.Validate(); err != nil {
 			return err

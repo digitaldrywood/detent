@@ -15,9 +15,17 @@ import (
 )
 
 func readLinkedIssueSource(ctx context.Context, query nativeQueryer, id string) (*tracker.LinkedIssueSource, error) {
+	return readLinkedIssueSourceProjection(ctx, query, id, false)
+}
+
+func readLinkedIssueSourceProjection(ctx context.Context, query nativeQueryer, id string, compact bool) (*tracker.LinkedIssueSource, error) {
 	var source tracker.LinkedIssueSource
 	var raw sql.NullString
-	err := query.QueryRowContext(ctx, "SELECT source_url, snapshot_json FROM linked_issue_sources WHERE work_item_id = ?", id).Scan(&source.URL, &raw)
+	snapshotColumn := "snapshot_json"
+	if compact {
+		snapshotColumn = "CASE WHEN snapshot_json IS NULL THEN NULL ELSE '{}' END"
+	}
+	err := query.QueryRowContext(ctx, "SELECT source_url, "+snapshotColumn+" FROM linked_issue_sources WHERE work_item_id = ?", id).Scan(&source.URL, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil //nolint:nilnil // No linked source is valid for an ordinary native issue.
 	}
@@ -27,8 +35,10 @@ func readLinkedIssueSource(ctx context.Context, query nativeQueryer, id string) 
 	source.Status = "pending"
 	if raw.Valid {
 		source.Status = "complete"
-		if err := json.Unmarshal([]byte(raw.String), &source.Snapshot); err != nil {
-			return nil, err
+		if !compact {
+			if err := json.Unmarshal([]byte(raw.String), &source.Snapshot); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return &source, nil

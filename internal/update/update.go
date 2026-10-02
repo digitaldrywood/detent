@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,6 +98,7 @@ type ReleaseAssets struct {
 
 type ReleaseClient interface {
 	ListReleases(context.Context) ([]Release, error)
+	GetRelease(context.Context, string) (Release, error)
 	Download(context.Context, string) ([]byte, error)
 }
 
@@ -151,9 +153,25 @@ func (c *GitHubClient) ListReleases(ctx context.Context) ([]Release, error) {
 }
 
 func (c *GitHubClient) listReleases(ctx context.Context, token string) ([]Release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/releases?per_page=20", nil)
+	var releases []Release
+	err := c.releaseRequest(ctx, "/releases?per_page=20", token, &releases)
+	return releases, err
+}
+
+func (c *GitHubClient) GetRelease(ctx context.Context, tag string) (Release, error) {
+	var release Release
+	path := "/releases/tags/" + url.PathEscape(tag)
+	err := c.releaseRequest(ctx, path, c.token, &release)
+	if err != nil && c.token != "" && isGitHubAuthStatusError(err) {
+		err = c.releaseRequest(ctx, path, "", &release)
+	}
+	return release, err
+}
+
+func (c *GitHubClient) releaseRequest(ctx context.Context, path string, token string, output any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create releases request: %w", err)
+		return fmt.Errorf("create release request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", defaultRequestUserAgent)
@@ -163,18 +181,17 @@ func (c *GitHubClient) listReleases(ctx context.Context, token string) ([]Releas
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("list releases: %w", err)
+		return fmt.Errorf("read release: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("list releases: GitHub returned %s", resp.Status)
+		return fmt.Errorf("read release: GitHub returned %s", resp.Status)
 	}
 
-	var releases []Release
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return nil, fmt.Errorf("decode releases: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(output); err != nil {
+		return fmt.Errorf("decode release: %w", err)
 	}
-	return releases, nil
+	return nil
 }
 
 func isGitHubAuthStatusError(err error) bool {
@@ -285,6 +302,7 @@ func IsDevelopmentVersion(version string) bool {
 }
 
 type Config struct {
+	TargetVersion             func(context.Context) (string, error)
 	CurrentVersion            string
 	CurrentCommit             string
 	ExecutablePath            string
@@ -304,6 +322,7 @@ type Service struct {
 }
 
 type ApplyOptions struct {
+	ExpectedVersion       string
 	AssumeYes             bool
 	FromRelease           bool
 	Confirm               func(Status) (bool, error)
@@ -341,18 +360,21 @@ type Replacement struct {
 }
 
 type Status struct {
-	CurrentVersion  string        `json:"current_version"`
-	LatestCommit    string        `json:"latest_commit,omitempty"`
-	LatestVersion   string        `json:"latest_version,omitempty"`
-	LatestTag       string        `json:"latest_tag,omitempty"`
-	UpdateAvailable bool          `json:"update_available"`
-	InstallSource   InstallSource `json:"install_source"`
-	Action          Action        `json:"action"`
-	Message         string        `json:"message,omitempty"`
-	Command         string        `json:"command,omitempty"`
-	Binary          string        `json:"binary,omitempty"`
-	Asset           string        `json:"asset,omitempty"`
-	Critical        bool          `json:"critical,omitempty"`
+	ReplacementPending bool          `json:"replacement_pending,omitempty"`
+	BinarySHA256       string        `json:"binary_sha256,omitempty"`
+	VerifiedRelease    bool          `json:"verified_release"`
+	CurrentVersion     string        `json:"current_version"`
+	LatestCommit       string        `json:"latest_commit,omitempty"`
+	LatestVersion      string        `json:"latest_version,omitempty"`
+	LatestTag          string        `json:"latest_tag,omitempty"`
+	UpdateAvailable    bool          `json:"update_available"`
+	InstallSource      InstallSource `json:"install_source"`
+	Action             Action        `json:"action"`
+	Message            string        `json:"message,omitempty"`
+	Command            string        `json:"command,omitempty"`
+	Binary             string        `json:"binary,omitempty"`
+	Asset              string        `json:"asset,omitempty"`
+	Critical           bool          `json:"critical,omitempty"`
 }
 
 func NewService(cfg Config) *Service {
@@ -386,6 +408,10 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 	status, release, err := s.plan(ctx)
 	if err != nil {
 		return status, err
+	}
+	if opts.ExpectedVersion != "" && opts.ExpectedVersion != status.LatestVersion {
+		status.Action = ActionRefused
+		return status, ErrRefused
 	}
 	if !status.UpdateAvailable {
 		status.Action = ActionUpToDate
@@ -595,6 +621,19 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return status, err
 	}
 
+	installed := binary
+	if s.cfg.GOOS == "windows" {
+		status.ReplacementPending = true
+	} else {
+		installed, err = os.ReadFile(s.cfg.ExecutablePath)
+		if err != nil {
+			status.Action = ActionUpdated
+			return status, err
+		}
+	}
+	sum := sha256.Sum256(installed)
+	status.BinarySHA256 = hex.EncodeToString(sum[:])
+	status.VerifiedRelease = true
 	status.Action = ActionUpdated
 	status.Asset = assets.Archive.Name
 	status.Message = updateAppliedMessage(status, s.cfg.GOOS, releaseSwap)
@@ -629,13 +668,7 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 		return status, Release{}, ErrRefused
 	}
 
-	releases, err := s.cfg.Client.ListReleases(ctx)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, Release{}, err
-	}
-	release, ok, err := SelectLatestRelease(s.cfg.CurrentVersion, releases)
+	release, ok, err := s.targetRelease(ctx)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -665,6 +698,37 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 		status.Message = fmt.Sprintf("Detent %s is up to date.", status.CurrentVersion)
 	}
 	return status, release, nil
+}
+
+func (s *Service) targetRelease(ctx context.Context) (Release, bool, error) {
+	if s.cfg.TargetVersion == nil {
+		releases, err := s.cfg.Client.ListReleases(ctx)
+		if err != nil {
+			return Release{}, false, err
+		}
+		return SelectLatestRelease(s.cfg.CurrentVersion, releases)
+	}
+	target, err := s.cfg.TargetVersion(ctx)
+	if err != nil {
+		return Release{}, false, fmt.Errorf("read Hub update target: %w", err)
+	}
+	target = strings.TrimSpace(target)
+	cmp, err := CompareVersions(target, s.cfg.CurrentVersion)
+	if err != nil {
+		return Release{}, false, fmt.Errorf("invalid Hub update target: %w", err)
+	}
+	tag := "v" + strings.TrimPrefix(target, "v")
+	if cmp <= 0 {
+		return Release{TagName: tag}, true, nil
+	}
+	release, err := s.cfg.Client.GetRelease(ctx, tag)
+	if err != nil {
+		return Release{}, false, err
+	}
+	if release.Draft || release.TagName != tag {
+		return Release{}, false, fmt.Errorf("Hub update target %s did not resolve to its published release", tag)
+	}
+	return release, true, nil
 }
 
 func releaseCritical(release Release) bool {

@@ -59,6 +59,7 @@ func TestReadCloudConfig(t *testing.T) {
 		{name: "valid", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}},
 		{name: "missing signing key", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test"}, wantError: true},
 		{name: "literal secret rejected", body: base + "signing_key: " + seed + "\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
+		{name: "attachment secret in YAML rejected", body: base + "attachments:\n  endpoint: https://nyc3.digitaloceanspaces.com\n  region: nyc3\n  bucket: private\n  access_key_id: forbidden\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
 		{name: "invalid env name", body: strings.Replace(base, "issuer: detent-cloud", "issuer: detent-cloud\n  signing_key_env: bad-name", 1), wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -169,16 +170,20 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
 	body := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nstaff_emails: [support@example.test]\nsupport_actors: [support@example.test]\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n"
+	body += "attachments:\n  endpoint: https://nyc3.digitaloceanspaces.com\n  region: nyc3\n  bucket: detent-private-attachments\n"
 	path := filepath.Join(t.TempDir(), "cloud.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}
+	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_ATTACHMENTS_ACCESS_KEY_ID": "spaces-key", "DETENT_ATTACHMENTS_SECRET_ACCESS_KEY": "spaces-secret"}
 	config, err := readCloudConfig(path, func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatal(err)
 	}
 	allocation := config.Allocation
+	if config.Attachments == nil || config.Attachments.AccessKeyID != env["DETENT_ATTACHMENTS_ACCESS_KEY_ID"] || config.Attachments.SecretAccessKey != env["DETENT_ATTACHMENTS_SECRET_ACCESS_KEY"] {
+		t.Fatal("entry attachment credentials were not loaded from the environment")
+	}
 	if allocation == nil || allocation.MaxTenants != 4 || allocation.MaxConcurrent != 1 || allocation.MaxPerIdentity != 1 || allocation.RetryLimit != 5 {
 		t.Fatalf("allocation = %+v", allocation)
 	}
@@ -196,6 +201,14 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "sk_test") || strings.Contains(string(raw), seed) {
 		t.Fatal("tenant configuration contains a secret")
+	}
+	if strings.Contains(string(raw), "attachments") || strings.Contains(string(raw), "spaces-key") || strings.Contains(string(raw), "spaces-secret") {
+		t.Fatal("tenant configuration contains attachment storage configuration or credentials")
+	}
+	for _, value := range launcher.Environment {
+		if strings.HasPrefix(value, "DETENT_ATTACHMENTS_") || strings.Contains(value, "spaces-key") || strings.Contains(value, "spaces-secret") {
+			t.Fatal("tenant environment contains Spaces credentials")
+		}
 	}
 	tenantPath := filepath.Join(t.TempDir(), "tenant.yaml")
 	if err := os.WriteFile(tenantPath, raw, 0o600); err != nil {

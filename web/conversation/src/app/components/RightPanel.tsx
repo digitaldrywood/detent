@@ -26,6 +26,7 @@ import { isWorkspaceLive, useWorkspace, workspaceSessionFacts } from "../adapter
 import { useTerminals } from "../adapters/terminalStream.ts";
 import { terminalBlockedReason, type TerminalPolicy } from "../adapters/terminalPolicy.ts";
 
+const ASK_SURFACE: RightPanelSurface = { id: "ask", kind: "ask" };
 const DIFF_SURFACE: RightPanelSurface = { id: "diff", kind: "diff" };
 const FILES_SURFACE: RightPanelSurface = { id: "files", kind: "files" };
 const OUTPUT_SURFACE: RightPanelSurface = { id: "output", kind: "output" };
@@ -97,6 +98,7 @@ export interface RightPanelWorkspace {
   /** Opens the Pull request surface. A no-op with no mirrored pull request. */
   readonly openPullRequest: () => void;
   readonly pullRequestAvailable: boolean;
+  readonly openAsk: () => void;
   /** Opens the Conversation surface. A no-op where there is no conversation. */
   readonly openConversation: () => void;
   readonly conversationAvailable: boolean;
@@ -159,6 +161,7 @@ export function useRightPanelWorkspace(input: {
   readonly attempts: readonly NativeAttempt[];
   readonly history: readonly CollaborationEvent[];
   readonly now: number;
+  readonly ask?: React.ReactNode;
   readonly conversation?: ConversationPanel | null;
   /** The route's name, for the narrow sheet's own heading. */
   readonly title?: string;
@@ -204,6 +207,7 @@ export function useRightPanelWorkspace(input: {
   const addTerminal = React.useCallback(() => panel.addSurface(TERMINAL_SURFACE), [panel]);
   const noop = React.useCallback(() => {}, []);
 
+  const addAsk = React.useCallback(() => panel.addSurface(ASK_SURFACE), [panel]);
   const conversation = input.conversation ?? null;
   const conversationId = conversation?.conversationId ?? null;
   const addConversation = React.useCallback(() => {
@@ -435,7 +439,7 @@ export function useRightPanelWorkspace(input: {
   }, [addFile, filesAvailable]);
 
   const content =
-    activeSurface === null ? null : activeSurface.kind === "diff" ? (
+    activeSurface === null ? null : activeSurface.kind === "ask" ? input.ask : activeSurface.kind === "diff" ? (
       <DiffSurface
         change={input.surfaces.change}
         source={input.surfaces.source}
@@ -551,7 +555,7 @@ export function useRightPanelWorkspace(input: {
   );
 
   const tabProps = {
-    surfaces: panel.surfaces,
+    surfaces: input.ask == null ? panel.surfaces : [ASK_SURFACE, ...panel.surfaces.filter((surface) => surface.kind !== "ask")],
     environmentId: HUB_ENVIRONMENT_ID,
     activeSurfaceId: panel.activeSurfaceId,
     pendingSurfaceIds: EMPTY_IDS,
@@ -620,6 +624,7 @@ export function useRightPanelWorkspace(input: {
     diffAvailable,
     openPullRequest: addPullRequest,
     pullRequestAvailable,
+    openAsk: addAsk,
     openConversation: addConversation,
     conversationAvailable: conversationId !== null,
     openFiles: filesAvailable ? addFiles : noop,

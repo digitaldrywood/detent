@@ -30,7 +30,7 @@ import (
 func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	const adminToken = "runner-client-test-admin"
 	const hubURL = "https://runner-hub.example.test"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken)})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken), Version: "v1.2.4"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +122,9 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	client, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if version, err := client.Version(t.Context()); err != nil || version != "v1.2.4" {
+		t.Fatalf("enrolled runner Hub version = %q, %v, want v1.2.4", version, err)
 	}
 	native, err := client.Native(organization, project.ID)
 	if err != nil {
@@ -217,6 +220,19 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("old runner refusal retains the version in the logged error", func(t *testing.T) {
+		oldMachine := machine
+		oldMachine.Version = "v1.2.3"
+		oldScheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: oldMachine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidates, err := oldScheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor})
+		var refusal *APIError
+		if len(candidates) != 0 || !errors.As(err, &refusal) || refusal.Status != http.StatusUpgradeRequired || refusal.Message != "Too old to take work, needs v1.2.4" || !strings.Contains(err.Error(), refusal.Message) || errors.Is(err, ErrNoClaimableWork) {
+			t.Fatalf("runner refusal lost its visible reason: candidates=%d, error=%v", len(candidates), err)
+		}
+	})
 	candidates, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor})
 	if err != nil || len(candidates) != 1 || candidates[0].ID != string(issue.WorkItemID) {
 		t.Fatalf("enrolled scheduler: candidates=%d err=%v", len(candidates), err)

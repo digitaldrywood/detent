@@ -225,6 +225,8 @@ type browserHostedFixture struct {
 	privateProject string
 	conversation   string
 	workItem       string
+	workerChat     string
+	workerItem     string
 	stop           chan struct{}
 	stopOnce       sync.Once
 }
@@ -731,6 +733,31 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 	if f.workItem == "" {
 		t.Fatal("linked issue has no work item id")
 	}
+	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ORIGIN") == "" {
+		return
+	}
+	var issue tracker.NativeIssue
+	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{
+		Mutation: tracker.Mutation{IdempotencyKey: "browser-worker-issue"}, Title: "Runner session isolation", State: "Todo",
+	}, http.StatusOK), &issue)
+	store := f.service.conversations.store
+	owner, err := store.readConversationByID(t.Context(), f.service.database.db, f.conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	worker, err := f.service.conversations.ensureWorkerConversation(t.Context(), tx, nativeScope{organization: owner.OrganizationID, project: owner.ProjectID, credential: apiCredential{ID: owner.OwnerPrincipalID}}, string(issue.WorkItemID), f.service.config.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	f.workerChat, f.workerItem = worker.ID, worker.WorkItemID
 }
 
 func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Handler) http.Handler {
@@ -791,6 +818,9 @@ func TestHostedBrowserPreviewSeed(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
+		f.seedIssueAsk(t)
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
 		f.seedCoordinatorActions(t)
 	}
@@ -831,6 +861,9 @@ func TestHostedBrowserPreview(t *testing.T) {
 		})}
 	}
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
+		f.seedIssueAsk(t)
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
 		f.seedCoordinatorActions(t)
 	}
@@ -924,6 +957,8 @@ func TestHostedBrowserPreview(t *testing.T) {
 		ProjectID         string             `json:"project_id"`
 		Conversation      string             `json:"conversation"`
 		WorkItem          string             `json:"work_item"`
+		WorkerChat        string             `json:"worker_conversation"`
+		WorkerItem        string             `json:"worker_work_item"`
 		OwnerEmail        string             `json:"owner_email"`
 		Accounts          map[string]string  `json:"accounts"`
 		Stop              string             `json:"stop"`
@@ -934,6 +969,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 		URL: f.server.URL, Login: f.server.URL + "/login", Organization: f.server.URL + "/organization",
 		Project: f.server.URL + "/projects/" + f.project, PrivateProject: f.server.URL + "/projects/" + f.privateProject,
 		Chat: f.server.URL + "/chat", ProjectID: f.project, Conversation: f.conversation, WorkItem: f.workItem,
+		WorkerChat: f.workerChat, WorkerItem: f.workerItem,
 		OwnerEmail: browserHostedOwnerEmail, Accounts: accounts, Stop: f.server.URL + "/__preview/stop", Expires: time.Now().Add(browserHostedPreviewLifetime),
 		ProblemRunner: problemRunner, ProblemCredential: problemCredential,
 	}

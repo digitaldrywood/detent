@@ -20,6 +20,7 @@ import (
 )
 
 const nativeBase = "/api/v2/organizations/:organization/projects/:project"
+const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type nativeScope struct {
 	organization       tracker.OrganizationID
@@ -101,6 +102,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerOnboardingRoutes(e)
 	s.registerArtifactRoutes(e)
+	s.registerCloudAttachmentRoutes(e)
 	s.registerIntegrationRoutes(e)
 	s.registerChangeRoutes(e)
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
@@ -124,6 +126,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
 	e.GET(nativeBase+"/work-items", s.listNativeIssues, read)
 	e.POST(nativeBase+"/work-items", s.createNativeIssue, write)
+	e.GET(nativeOrganizationIssuePath, s.getNativeIssue, read)
 	e.GET(nativeBase+"/work-items/:item", s.getNativeIssue, read)
 	e.PATCH(nativeBase+"/work-items/:item", s.updateNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/archive", s.archiveNativeIssue, write)
@@ -208,6 +211,12 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
+			if c.Path() == nativeOrganizationIssuePath {
+				err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
+				if err != nil {
+					return s.nativeAPIError(c, err)
+				}
+			}
 			runnerHeartbeat := c.Path() == nativeBase+"/machines/:machine/heartbeat" && credential.Runner.RunnerID != ""
 			if runnerHeartbeat {
 				if credential.Runner.OrganizationID != scope.organization {

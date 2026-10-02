@@ -209,9 +209,10 @@ type conversationCreateRequest struct {
 	// stored response and a different payload under the same key is
 	// idempotency_conflict (decisions section 10.2). first_message.key
 	// stays the message command key.
-	Key          string                    `json:"key"`
-	Title        string                    `json:"title"`
-	FirstMessage *conversationFirstMessage `json:"first_message"`
+	Key               string                    `json:"key"`
+	Title             string                    `json:"title"`
+	FirstMessage      *conversationFirstMessage `json:"first_message"`
+	SubjectWorkItemID string                    `json:"subject_work_item_id,omitempty"`
 }
 
 type conversationCreatedResponse struct {
@@ -552,6 +553,7 @@ func (s *Service) listConversationsPage(c echo.Context, filter conversationListQ
 		filter.Settled = &settled
 	}
 	filter.Title = strings.TrimSpace(c.QueryParam("q"))
+	filter.SubjectWorkItemID = strings.TrimSpace(c.QueryParam("subject_work_item_id"))
 	value, err := s.readConversationsPage(c.Request().Context(), scope, filter)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -1059,6 +1061,14 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 		if err := service.requireActorAuthority(ctx, tx, scope, now); err != nil {
 			return nil, err
 		}
+		var subject tracker.NativeIssue
+		if request.SubjectWorkItemID != "" {
+			var err error
+			subject, _, err = readNativeIssue(ctx, tx, scope, request.SubjectWorkItemID)
+			if err != nil {
+				return nil, err
+			}
+		}
 		title := request.Title
 		if title == "" {
 			title = conversationDefaultTitle
@@ -1066,17 +1076,22 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 				title = deriveConversationTitle(request.FirstMessage.Text)
 			}
 		}
+		if request.SubjectWorkItemID != "" {
+			title = boundRunes(fmt.Sprintf("#%d · %s", subject.Number, title), conversationTitleMaxRunes)
+		}
 		record = conversationRecord{
-			ID:               conversation.NewConversationID(),
-			OrganizationID:   scope.organization,
-			ProjectID:        scope.project,
-			OwnerPrincipalID: scope.credential.ID,
-			Title:            title,
-			Visibility:       conversation.VisibilityPrivate,
-			Status:           conversation.StatusActive,
-			Execution:        conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now},
-			CreatedAt:        now,
-			UpdatedAt:        now,
+			SubjectWorkItemID: request.SubjectWorkItemID,
+			ID:                conversation.NewConversationID(),
+			OrganizationID:    scope.organization,
+			ProjectID:         scope.project,
+			OwnerPrincipalID:  scope.credential.ID,
+			Origin:            conversationOriginUser,
+			Title:             title,
+			Visibility:        conversation.VisibilityPrivate,
+			Status:            conversation.StatusActive,
+			Execution:         conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now},
+			CreatedAt:         now,
+			UpdatedAt:         now,
 		}
 		if scope.credential.Hosted != nil {
 			record.OwnerSubject = scope.credential.Hosted.Subject
@@ -1205,6 +1220,9 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 		if !request.ShareHistory {
 			return nil, conversationShareRequired()
 		}
+		if record.SubjectWorkItemID != "" {
+			return nil, nativeInvalid("Issue questions cannot be linked or shared")
+		}
 		if record.WorkItemID != "" {
 			return nil, conversationAlreadyLinked(record.ID)
 		}
@@ -1282,7 +1300,15 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 	if notify {
 		service.committed(linked)
 	}
-	return value, err
+	if err != nil {
+		return nil, err
+	}
+	var response conversationLinkResult
+	if err := json.Unmarshal(value, &response); err != nil {
+		return nil, err
+	}
+	response.Issue.NativeIssue = s.nativeIssueResponse(response.Issue.NativeIssue)
+	return json.Marshal(response)
 }
 
 func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {

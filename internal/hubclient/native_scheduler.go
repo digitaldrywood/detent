@@ -50,7 +50,21 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	if !last.IsZero() && s.now().Before(last.Add(s.heartbeatInterval)) {
 		return nil
 	}
+	owner := s.updateOwner
 	s.mu.Unlock()
+	var update *runnerauth.UpdateObservation
+	var updateSupported bool
+	if owner != nil && s.client.runner != nil {
+		supported, err := source.client.HubFeature(ctx, tracker.NativeRunnerUpdateCapability)
+		if err != nil {
+			s.mu.Lock()
+			return err
+		}
+		updateSupported = supported
+		if supported {
+			update = owner(ctx, nil)
+		}
+	}
 	var capacityConfig *runnerauth.CapacityConfig
 	var capacitySupported bool
 	if s.capacityConfiguration != nil && s.client.runner != nil {
@@ -88,6 +102,7 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 			return err
 		}
 	}
+	s.machine.Update = update
 	s.machine.CapacityConfig = capacityConfig
 	if capacityConfig != nil {
 		s.machine.Capacity = min(capacityConfig.RuntimeLimit, capacityConfig.ClientLimit, capacityConfig.LocalLimit)
@@ -139,6 +154,20 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	} else {
 		if err := source.client.RegisterMachine(ctx, machine); err != nil {
 			return err
+		}
+	}
+	if updateSupported {
+		if request := s.client.runner.updateRequest(); request != nil && (machine.Update == nil || machine.Update.Receipt == nil || machine.Update.Receipt.Request != *request) {
+			s.mu.Unlock()
+			applied := owner(ctx, request)
+			s.mu.Lock()
+			if applied != nil {
+				s.machine.Update = applied
+				machine.Update = applied
+				if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if capacitySupported {
@@ -215,7 +244,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 			leases = append(leases, lease)
 		}
 	}
-	if errors.Is(err, ErrNoClaimableWork) || len(leases) > 0 && nativeAdmissionCapacityFull(err) {
+	if errors.Is(err, ErrNoClaimableWork) || nativeAdmissionCapacityFull(err) {
 		err = nil
 	}
 	release := func(cause error) error {

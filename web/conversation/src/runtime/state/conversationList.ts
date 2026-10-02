@@ -52,7 +52,7 @@ function sortByActivity(conversations: readonly Conversation[]): readonly Conver
     return Number.isNaN(parsed) ? 0 : parsed;
   };
   return conversations
-    .slice()
+    .filter((conversation) => conversation.origin !== "worker")
     .toSorted((left, right) => at(right) - at(left) || left.id.localeCompare(right.id));
 }
 
@@ -92,7 +92,7 @@ export const makeConversationListState = Effect.fn("ConversationList.make")(func
 
   const state = yield* SubscriptionRef.make<ConversationListState>({
     ...EMPTY_CONVERSATION_LIST_STATE,
-    conversations: Option.getOrElse(cached, () => [] as ReadonlyArray<Conversation>),
+    conversations: sortByActivity(Option.getOrElse(cached, () => [] as ReadonlyArray<Conversation>)),
     status: Option.isSome(cached) ? "cached" : "empty",
   });
 

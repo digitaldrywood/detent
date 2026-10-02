@@ -45,8 +45,11 @@ func nativeLandingGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, sourceConflict bool) *nativeLandingJourney {
+func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, mergeStatus int, sourceConflict bool) *nativeLandingJourney {
 	t.Helper()
+	if mergeStatus == 0 {
+		mergeStatus = http.StatusMethodNotAllowed
+	}
 	source := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	nativeLandingGit(t, source, "init", "-b", "main")
@@ -127,15 +130,17 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 		merge = nativeLandingGit(t, source, "commit-tree", tree, "-p", freshBase, "-m", "land reviewed feature")
 	}
 	var puts atomic.Int64
+	publishedBranch := info.Branch
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case request.Method == http.MethodPost && request.URL.Path == "/graphql":
 			fmt.Fprint(w, `{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/repos/example/repo/pulls":
-			fmt.Fprintf(w, `[{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}]`, head, info.Branch, nativeLandingGit(t, remote, "rev-parse", "refs/heads/main"))
+			publishedBranch = strings.TrimPrefix(request.URL.Query().Get("head"), "example:")
+			fmt.Fprintf(w, `[{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}]`, head, publishedBranch, nativeLandingGit(t, remote, "rev-parse", "refs/heads/main"))
 		case request.Method == http.MethodGet && request.URL.Path == "/repos/example/repo/pulls/7":
-			fmt.Fprintf(w, `{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}`, head, info.Branch, base)
+			fmt.Fprintf(w, `{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}`, head, publishedBranch, base)
 		case request.Method == http.MethodPut && request.URL.Path == "/repos/example/repo/pulls/7/merge":
 			body, err := io.ReadAll(request.Body)
 			if err != nil || !strings.Contains(string(body), head) || !strings.Contains(string(body), "squash") {
@@ -143,9 +148,9 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			if puts.Add(1) == 1 || sourceConflict || !strings.HasPrefix(mergeMessage, "Base branch was modified") && mergeMessage != "Pull Request has merge conflicts" {
+			if puts.Add(1) == 1 || sourceConflict || mergeStatus == http.StatusMethodNotAllowed && !strings.HasPrefix(mergeMessage, "Base branch was modified") && mergeMessage != "Pull Request has merge conflicts" {
 				nativeLandingGit(t, source, "push", "origin", freshBase+":refs/heads/main")
-				w.WriteHeader(http.StatusMethodNotAllowed)
+				w.WriteHeader(mergeStatus)
 				fmt.Fprintf(w, `{"message":%q}`, mergeMessage)
 				return
 			}

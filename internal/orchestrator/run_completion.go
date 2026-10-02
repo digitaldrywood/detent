@@ -295,7 +295,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.finishForgeAvailabilityProbe(state, event, running)
-	if event.Err != nil {
+	_, nativeCompletion := o.connector.(connector.WorkflowStateReader)
+	if event.Err != nil && !nativeCompletion {
 		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}
 	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
@@ -369,7 +370,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
 		return
 	}
-	if o.handlePreTurnFailure(ctx, state, event, running) {
+	if !(nativeCompletion && errors.Is(event.Err, runpkg.ErrWorkerProcessReap)) && o.handlePreTurnFailure(ctx, state, event, running) {
 		return
 	}
 	if running.Mode == runpkg.RunModeTriage {
@@ -382,6 +383,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 
 	if o.completeNativeChangeRun(ctx, state, event, running, event.Result.FinalState) {
 		return
+	}
+	if event.Err != nil && nativeCompletion {
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}
 
 	if event.Err != nil {
@@ -2008,7 +2012,7 @@ func (o *Orchestrator) waitForMergeWorkerRetry(
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
-		map[string]any{mergeReservationMetadataKey: state.mergeReservations[issue.ID]})
+		mergeWorkAttemptMetadata(map[string]any{mergeReservationMetadataKey: state.mergeReservations[issue.ID]}, nativeLandingMetadata(event.Result.NativeLanding)))
 	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
 	if attempt < 1 {
 		attempt = 1

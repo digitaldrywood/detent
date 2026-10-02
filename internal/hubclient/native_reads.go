@@ -3,11 +3,15 @@ package hubclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -88,4 +92,102 @@ func (c *NativeClient) Labels(ctx context.Context) ([]tracker.NativeLabel, error
 	}
 	err := c.client.request(ctx, http.MethodGet, c.base()+"/labels", nil, &result)
 	return result.Items, err
+}
+
+func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHandler) {
+	var tools []runner.AgentTool
+	for _, definition := range append(operatortool.WorkReadCatalog(), operatortool.ChangeCatalog()...) {
+		switch definition.Name {
+		case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory:
+			definition.Description += " reference must be a canonical native work-item ID beginning with wi_; numbers, titles and URLs are not supported. Use cursor, not offset, for paging."
+			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
+		case operatortool.ListChanges, operatortool.GetChange:
+			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
+		}
+	}
+	return tools, func(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+		if err := e.Validate(ctx); err != nil {
+			return runner.AgentToolResult{Content: "Native execution authority is unavailable"}, err
+		}
+		result, err := e.claim.source.client.readAgentTool(ctx, call, e.scheduler.now())
+		if err != nil {
+			return runner.AgentToolResult{Content: err.Error()}, err
+		}
+		return runner.AgentToolResult{Content: string(result.Content), Success: true}, nil
+	}
+}
+
+func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolCall, now time.Time) (operatortool.Result, error) {
+	var value any
+	var err error
+	switch call.Name {
+	case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory:
+		request, decodeErr := operatortool.DecodeWorkRead(call.Name, call.Arguments)
+		if decodeErr != nil {
+			return operatortool.Result{}, decodeErr
+		}
+		if request.ProjectID != string(c.project) {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		id := tracker.NativeWorkItemID(request.Reference)
+		if _, err := nativeItemPath(id); err != nil {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		if request.Offset != 0 {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		switch call.Name {
+		case operatortool.WorkItem:
+			var issue tracker.NativeIssue
+			issue, err = c.Issue(ctx, id)
+			if err == nil && (issue.ProjectID != c.project || issue.WorkItemID != id) {
+				return operatortool.Result{}, operatortool.ErrAccessDenied
+			}
+			value = operatortool.NativeItemView(request.ProjectID, issue)
+		case operatortool.WorkComments:
+			value, err = c.CommentsPage(ctx, id, request.Cursor, request.Limit)
+		case operatortool.WorkHistory:
+			value, err = c.HistoryPage(ctx, id, request.Cursor, request.Limit)
+		}
+		value = operatortool.WorkReadResult[any]{ProjectID: request.ProjectID, Reference: request.Reference, GeneratedAt: now, Freshness: explain.SourceAvailable, Data: value}
+	case operatortool.ListChanges, operatortool.GetChange:
+		request, decodeErr := operatortool.DecodeChangeArguments(call.Name, call.Arguments)
+		if decodeErr != nil {
+			return operatortool.Result{}, decodeErr
+		}
+		if request.ProjectID != string(c.project) {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		id := tracker.NativeWorkItemID(request.ItemID)
+		result := operatortool.ChangeResult{OrganizationID: string(c.organization), ProjectID: request.ProjectID, WorkItemID: request.ItemID, GeneratedAt: now, Freshness: "available"}
+		if call.Name == operatortool.ListChanges {
+			var changes []tracker.ChangeRequest
+			changes, err = c.Changes(ctx, id)
+			for _, change := range changes {
+				if change.ProjectID != c.project || change.WorkItemID != id {
+					return operatortool.Result{}, operatortool.ErrAccessDenied
+				}
+			}
+			page := operatortool.OffsetPage(changes, request.Offset, request.Limit)
+			result.Changes, result.NextOffset = page.Items, page.NextOffset
+		} else {
+			var detail tracker.ChangeDetail
+			detail, err = c.Change(ctx, id, request.ChangeID)
+			if err == nil && (detail.Change.ProjectID != c.project || detail.Change.WorkItemID != id || detail.Change.ID != request.ChangeID) {
+				return operatortool.Result{}, operatortool.ErrAccessDenied
+			}
+			result.ChangeID, result.Detail = request.ChangeID, &detail
+		}
+		value = result
+	default:
+		return operatortool.Result{}, operatortool.ErrUnknownTool
+	}
+	if err != nil {
+		var refusal *APIError
+		if errors.As(err, &refusal) && (refusal.Status == http.StatusForbidden || refusal.Status == http.StatusUnauthorized || refusal.Status == http.StatusNotFound) {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		return operatortool.Result{}, operatortool.ErrReadUnavailable
+	}
+	return operatortool.EncodeResult(value)
 }

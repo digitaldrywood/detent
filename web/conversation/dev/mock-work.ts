@@ -41,6 +41,7 @@ interface MockIssue {
   organization_id: string;
   project_id: string;
   work_item_id: string;
+  web_url: string;
   number: number;
   revision: string;
   profile: string;
@@ -169,13 +170,14 @@ export function createWorkMock(options: {
       const count = pagination ? (project.id === options.projects[0]?.id ? 137 : 4) : project.id === options.projects[0]?.id ? 32 : 8;
       for (let index = 0; index < count; index += 1) {
         number += 1;
-        const lane = pagination ? (index === 136 ? "In Progress" : index === 120 ? "Done" : index === 2 ? "In Review" : "Todo") : LANES[index % LANES.length]!;
+        const lane = pagination ? (index === 136 || index === 134 ? "In Progress" : index === 132 || index === 133 || index < 3 ? "Todo" : "Done") : LANES[index % LANES.length]!;
         const id = `wi_${pad(number)}`;
         const created = new Date(now - (index + 1) * 3_600_000).toISOString();
         issues.push({
           organization_id: options.organizationId,
           project_id: project.id,
           work_item_id: id,
+          web_url: `http://mock.local/work/i/${id}`,
           number,
           revision: "1",
           profile: "native",
@@ -217,7 +219,7 @@ export function createWorkMock(options: {
   }
   build();
 
-  const running = () => issues.filter((issue) => issue.state === "In Progress").slice(0, 3);
+  const running = () => issues.filter((issue) => issue.state === "In Progress" && (!pagination || issue.title === "Observed later-page worker")).slice(0, 3);
   const changed = () =>
     issues.filter((issue) => issue.state === "In Review" || issue.state === "Merging").slice(0, 4);
 
@@ -482,14 +484,13 @@ export function createWorkMock(options: {
     json(response, 422, { code: "invalid_request", message });
   }
 
-  /** The real hub's rule: every parameter must be known and appear once. */
-  function validateQuery(url: URL, allowed: readonly string[]): string | null {
+  function validateQuery(url: URL, allowed: readonly string[], multi: readonly string[] = []): string | null {
     const seen = new Set<string>();
     for (const key of url.searchParams.keys()) {
       if (!allowed.includes(key) && key !== "limit" && key !== "cursor") {
         return "Query contains an unsupported field or value";
       }
-      if (seen.has(key)) return "Query contains an unsupported field or value";
+      if (seen.has(key) && !multi.includes(key)) return "Query contains an unsupported field or value";
       seen.add(key);
     }
     return null;
@@ -543,8 +544,23 @@ export function createWorkMock(options: {
         if (!pagination) {
           pagination = true;
           build();
+          for (const [index, choice] of [[120, "a"], [121, "b"]] as const) {
+            const older = issues[index];
+            if (older === undefined) continue;
+            older.title = `Older title needle ${choice}`;
+            older.labels = ["older-label", `choice-${choice}`];
+            older.assignees = [`operator-${choice}`];
+            older.priority = choice === "a" ? 0 : 1;
+          }
           const active = issues.find((issue) => issue.title === "Observed later-page worker");
           if (active !== undefined) active.updated_at = new Date(now).toISOString();
+        }
+        if (body.openOverflow === true) {
+          for (const issue of issues) {
+            if (issue.state !== "Done" || issue.provenance !== undefined) continue;
+            issue.state = "Todo";
+            issue.terminal = false;
+          }
         }
         revoked = body.revoked === true;
         expired = body.expired === true;
@@ -579,6 +595,15 @@ export function createWorkMock(options: {
         response.write(`event: activity\ndata: ${sequence}\n\n`);
         streams.add(response);
         response.on("close", () => streams.delete(response));
+        return true;
+      }
+
+      const itemLookup = path.match(new RegExp(`^${options.apiBase}/work-items/([^/]+)$`));
+      if (itemLookup !== null && method === "GET") {
+        const issue = issues.find((candidate) => candidate.work_item_id === decodeURIComponent(itemLookup[1]!));
+        json(response, issue === undefined ? 404 : 200, issue ?? {
+          code: "not_found", message: "Resource was not found",
+        });
         return true;
       }
 
@@ -638,17 +663,18 @@ export function createWorkMock(options: {
       const scoped = issues.filter((issue) => issue.project_id === projectId);
 
       if (segments.length === 2 && method === "GET") {
-        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived"]);
+        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived", "q"], ["state", "label", "assignee", "priority"]);
         if (problem !== null) {
           invalid(response, problem);
           return true;
         }
-        const state = url.searchParams.get("state");
-        const label = url.searchParams.get("label");
-        const assignee = url.searchParams.get("assignee");
-        const priority = url.searchParams.get("priority");
+        const state = url.searchParams.getAll("state");
+        const label = url.searchParams.getAll("label");
+        const assignee = url.searchParams.getAll("assignee");
+        const priority = url.searchParams.getAll("priority");
         const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), 200);
-        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, url.searchParams.get("archived")]);
+        const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
+        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, url.searchParams.get("archived")]);
         let after = Number(url.searchParams.get("cursor") ?? "0");
         if (pagination && url.searchParams.has("cursor")) {
           try {
@@ -660,18 +686,36 @@ export function createWorkMock(options: {
             return true;
           }
         }
-        const matching = scoped
+        const filtered = scoped
           .filter(() => url.searchParams.get("archived") !== "true")
-          .filter((issue) => state === null || issue.state === state)
-          .filter((issue) => label === null || issue.labels.includes(label))
-          .filter((issue) => assignee === null || issue.assignees.includes(assignee))
-          .filter((issue) => priority === null || String(issue.priority ?? "") === priority)
-          .filter((issue) => issue.number > after)
+          .filter((issue) => state.length === 0 || state.includes(issue.state))
+          .filter((issue) => label.length === 0 || label.some((value) => issue.labels.includes(value)))
+          .filter((issue) => assignee.length === 0 || assignee.some((value) => issue.assignees.includes(value)))
+          .filter((issue) => priority.length === 0 || priority.includes(String(issue.priority ?? "")))
+          .filter((issue) => q === "" || issue.title.toLowerCase().includes(q)
+            || `${project(projectId)?.name}#${issue.number}`.toLowerCase().includes(q)
+            || `${projectId}#${issue.number}`.toLowerCase().includes(q)
+            || issue.labels.some((value) => value.toLowerCase().includes(q)));
+        const matching = filtered.filter((issue) => issue.number > after)
           .toSorted((a, b) => a.number - b.number);
         const page = matching.slice(0, limit);
         const last = page.at(-1);
+        const workIncluded = url.searchParams.get("include") === "work";
+        const open = filtered.filter((issue) => !issue.terminal).toSorted((a, b) =>
+          Number(running().includes(b)) - Number(running().includes(a))
+          || Number(STATES.find((state) => state.name === b.state)?.dispatchable ?? false)
+            - Number(STATES.find((state) => state.name === a.state)?.dispatchable ?? false)
+          || b.number - a.number);
         json(response, 200, {
-          items: page,
+          items: workIncluded ? page.map((issue) => ({ ...issue, body: "" })) : page,
+          ...(workIncluded ? { work: {
+            items: open.slice(0, limit).map((issue) => ({ ...issue, body: "" })),
+            lanes: [...new Set(filtered.map((issue) => issue.state))].map((state) => ({
+              state, total: filtered.filter((issue) => issue.state === state).length,
+              running: filtered.filter((issue) => issue.state === state && running().includes(issue)).length,
+            })),
+            truncated: open.length > limit, as_of: new Date(now).toISOString(),
+          } } : {}),
           ...(last !== undefined && matching.length > page.length
             ? { next_cursor: pagination ? btoa(JSON.stringify({ scope: cursorScope, after: last.number })) : String(last.number) }
             : {}),

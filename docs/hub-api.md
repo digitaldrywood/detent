@@ -499,8 +499,9 @@ native machine. Native tokens cannot read legacy global lists through v1.
 
 ## Native collaboration protocol
 
-`GET /api/v2/capabilities` reports server identity, supported protocol majors,
-event schemas, required native features, request size and page limits. Native
+`GET /api/v2/capabilities` reports server identity, the Hub's running `version`,
+supported protocol majors, event schemas, required native features, request size
+and page limits. Native
 clients negotiate major 2 and schema 1. A native claim supplies `protocol_major: 2`
 and `capabilities: ["native_issues", "scoped_collaboration"]`. Incompatible
 negotiation fails without switching tracker or scheduler.
@@ -514,7 +515,7 @@ events require worker scope. Instance administrators can perform these operation
 | --- | --- |
 | `GET /` | Project profile, states, transitions and readiness policy |
 | `POST /work-items` | `idempotency_key`, `title`, full `body`, configured `state`, optional `priority`, `labels`, `assignees`, import `provenance` |
-| `GET /work-items` | Paged issues; optional exact `state`, `label`, `assignee`, `priority` filters |
+| `GET /work-items` | Paged issues; repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor |
 | `GET /work-items/{id}` | Full content, immutable scope, revision, authenticated author, import provenance, dependencies and optional external references |
 | `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `title`, `body`, `priority`, `labels` or `assignees` |
 | `POST /work-items/{id}/workflow` | `idempotency_key`, `expected_revision`, target `state`, typed `reason` |
@@ -530,6 +531,17 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /leases/{lease_id}/renew` | `fencing_token`, `ttl_seconds` |
 | `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason` |
 | `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
+
+Every work-item representation returned by create, get, list and update includes
+`web_url`. Hosted Hubs build this absolute link from the configured
+`hosted.public_url`, never from request Host or forwarding headers. Shared Cloud
+links use
+`https://cloud.detent.build/organizations/{organization_id}/work/i/{work_item_id}`;
+dedicated hosted Hubs use `{public_url}/work/i/{work_item_id}`. The link opens the
+existing conversation app route. Non-hosted Hubs have no configured public URL
+or conversation app and return an empty string. Replayed mutations and historical
+work-item versions project the link using the serving Hub's current configuration;
+the URL is not immutable content.
 
 Collaboration mutations return the committed representation with status 200,
 including identical retries. Idempotency keys are scoped to the authenticated
@@ -616,6 +628,21 @@ lease reads omit private isolation configuration. Current candidate readiness is
 not full runner eligibility, and board counts or nil PRs cannot establish it.
 Historical decisions are recorded only when the existing scheduler evaluates
 them, with actor, item revision, source and server time; reads add no history.
+
+`GET /work-items?include=work` adds a compact `work` member to the existing
+inventory page. `work.lanes` contains state, total and observed running counts
+for the same authorized project and server filters, independent of the cursor.
+Running counts require a recorded running attempt with a current unreleased
+lease; In Progress membership is not evidence of a live worker.
+`work.as_of` is the server observation time. `work.items` selects at most the
+requested page limit of nonterminal items, ordered by live attempt, dispatchable
+state and descending issue number. `work.truncated` marks additional open items;
+state filters and the existing inventory cursor still navigate them.
+Both item selections omit issue bodies and linked-source snapshots in this
+projection; the existing item detail read retains full content. The ordinary
+inventory page keeps ascending issue-number ordering and its scoped opaque
+cursor. Clients retain bounded per-item observations with known, unchecked,
+unavailable and partial coverage rather than inferring worker state from lanes.
 
 Ordered events may include `runtime`: local attempt/generation attribution,
 observed backend/model/effort provenance, phase intervals, heartbeat, bounded

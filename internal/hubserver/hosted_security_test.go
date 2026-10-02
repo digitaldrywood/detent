@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -24,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type hostedSecurityProvider struct {
@@ -750,27 +750,14 @@ func TestHostedSecuritySSEAudit(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			f.seedIssue(t, 1)
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", actor)
-			server := httptest.NewServer(f.service.Handler())
-			t.Cleanup(server.Close)
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/projects/"+string(f.project)+"/events", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
-			response, err := server.Client().Do(request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer response.Body.Close()
-			scanner := bufio.NewScanner(response.Body)
-			if response.StatusCode != http.StatusOK || !scanner.Scan() || scanner.Text() != "event: activity" {
-				t.Fatalf("stream status=%d, error=%v", response.StatusCode, scanner.Err())
+			reader := openHostedTestStream(t, f, user, "")
+			kind, _ := readHostedEvent(t, reader)
+			if kind != "activity" {
+				t.Fatalf("initial event = %q", kind)
 			}
 			var actual, effective, organization, project, reason string
 			var count int
-			err = f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,project_id,reason,count(*) FROM hosted_audit WHERE session_id = ? AND route = ? GROUP BY actual_actor,effective_user,organization_id,project_id,reason", user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&actual, &effective, &organization, &project, &reason, &count)
+			err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,project_id,reason,count(*) FROM hosted_audit WHERE session_id = ? AND route = ? GROUP BY actual_actor,effective_user,organization_id,project_id,reason", user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&actual, &effective, &organization, &project, &reason, &count)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -794,33 +781,62 @@ func TestHostedSecuritySSEAudit(t *testing.T) {
 	}
 }
 
+type hostedEventRecorder struct {
+	*httptest.ResponseRecorder
+	flush func()
+}
+
+func (r hostedEventRecorder) Flush() {
+	r.ResponseRecorder.Flush()
+	r.flush()
+}
+
 func TestHostedSecuritySSERevocation(t *testing.T) {
 	t.Parallel()
-	for _, revocation := range []string{"provider session", "membership", "project grant"} {
+	for _, revocation := range []string{"provider session", "membership", "project grant", "shutdown"} {
 		t.Run(revocation, func(t *testing.T) {
 			t.Parallel()
-			f := newHostedSecurityFixture(t)
+			f := newHostedSecurityFixture(t, func(cfg *Config) {
+				cfg.Workspace = &WorkspaceConfig{Enabled: true}
+			})
+			owner := f.user(t, "member", "member", "member@example.test", "write", "")
+			item := f.seedIssue(t, 1)
+			created := f.request(t, owner, http.MethodPost, f.base+"/workspaces", workspaceRequest{
+				Mutation: tracker.Mutation{IdempotencyKey: "revocation-workspace"}, WorkItemID: string(item), Requires: []string{"files"},
+			})
+			requireNativeStatus(t, created, http.StatusCreated)
+			var workspace workspacesession.Session
+			decodeHubResponse(t, created, &workspace)
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
-			server := httptest.NewServer(f.service.Handler())
-			t.Cleanup(server.Close)
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			defer cancel()
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/projects/"+string(f.project)+"/events", nil)
-			if err != nil {
-				t.Fatal(err)
+			if revocation == "shutdown" {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/projects/"+string(f.project)+"/events?workspace="+workspace.ID, nil)
+				request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
+				var shutdownErr error
+				frames := 0
+				response := hostedEventRecorder{ResponseRecorder: httptest.NewRecorder(), flush: func() {
+					frames++
+					if frames == 1 {
+						shutdownErr = f.service.Shutdown(ctx)
+					} else {
+						cancel()
+					}
+				}}
+				f.service.Handler().ServeHTTP(response, request)
+				if response.Code != http.StatusOK || frames != 1 || shutdownErr != nil || ctx.Err() != nil {
+					t.Fatalf("shutdown stream: status=%d frames=%d shutdown=%v context=%v", response.Code, frames, shutdownErr, ctx.Err())
+				}
+				return
 			}
-			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
-			response, err := server.Client().Do(request)
-			if err != nil {
-				t.Fatal(err)
+			reader := openHostedTestStream(t, f, user, "?workspace="+workspace.ID)
+			kind, _ := readHostedEvent(t, reader)
+			if kind != "activity" {
+				t.Fatalf("initial event = %q", kind)
 			}
-			defer response.Body.Close()
-			if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
-				t.Fatalf("stream response = %d %s", response.StatusCode, response.Header.Get("Content-Type"))
-			}
-			scanner := bufio.NewScanner(response.Body)
-			if !scanner.Scan() || scanner.Text() != "event: activity" || !scanner.Scan() || scanner.Text() != "data: 0" || !scanner.Scan() || scanner.Text() != "" {
-				t.Fatalf("initial event is invalid: %v", scanner.Err())
+			kind, _ = readHostedEvent(t, reader)
+			if kind != "workspace.requested" {
+				t.Fatalf("workspace event = %q", kind)
 			}
 			switch revocation {
 			case "provider session":
@@ -836,11 +852,9 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if scanner.Scan() {
-				t.Fatalf("revoked stream produced %q", scanner.Text())
-			}
-			if err := scanner.Err(); err != nil {
-				t.Fatalf("stream did not close cleanly: %v", err)
+			frame, err := readSSEFrame(reader)
+			if !errors.Is(err, io.EOF) {
+				t.Fatalf("revoked stream produced %+v, error=%v", frame, err)
 			}
 		})
 	}

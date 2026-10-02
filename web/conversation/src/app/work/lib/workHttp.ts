@@ -130,28 +130,19 @@ export interface WorkHttpOptions {
   readonly fetch?: FetchLike;
 }
 
-/**
- * The hub's list filters are strictly single-valued: `validateNativeQuery`
- * rejects a repeated parameter with `422`. A multi-select filter therefore
- * pushes exactly one value to the server and the rest are applied to what came
- * back; `serverFilter` is where that decision is made, in one place, so no
- * call site can accidentally send two.
- */
-export function serverFilter(values: readonly string[]): string | undefined {
-  return values.length === 1 ? values[0] : undefined;
-}
-
 export interface ListWorkItemsInput {
   readonly signal?: AbortSignal;
   readonly projectId: string;
-  readonly state?: string | undefined;
-  readonly label?: string | undefined;
-  readonly assignee?: string | undefined;
-  readonly priority?: string | undefined;
+  readonly state?: string | readonly string[] | undefined;
+  readonly label?: string | readonly string[] | undefined;
+  readonly assignee?: string | readonly string[] | undefined;
+  readonly priority?: string | readonly string[] | undefined;
+  readonly q?: string;
   readonly cursor?: string | undefined;
   readonly limit?: number | undefined;
   /** Coordinator work items are excluded unless this is on. */
   readonly includeCoordinator?: boolean;
+  readonly includeWork?: boolean;
   readonly archived?: boolean;
 }
 
@@ -162,10 +153,11 @@ export interface WorkHttp {
    * The hosted activity stream. It is a page route, not an API route, and it
    * emits `event: activity` with a bare decimal sequence as its data.
    */
-  readonly eventsUrl: (projectId: string) => string;
+  readonly eventsUrl: (projectId: string, workspaceId?: string) => string;
   readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
+  readonly getWorkItemById: (itemId: string) => Promise<NativeIssue>;
   readonly getWorkItemConversation: (projectId: string, itemId: string) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
     projectId: string;
@@ -214,6 +206,7 @@ export interface WorkHttp {
     itemId: string,
     limit?: number,
     signal?: AbortSignal,
+    cursor?: string,
   ) => Promise<AttemptPage>;
   /**
    * The latest stored diff on one issue (decisions.md §18.5), or `{diff: null}`
@@ -442,11 +435,11 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   const actionBase = (projectId: string, actionId: string) =>
     `${projectBase(projectId)}/actions/${encodeURIComponent(actionId)}`;
 
-  const url = (path: string, query?: Record<string, string | number | boolean | undefined>) => {
+  const url = (path: string, query?: Record<string, string | readonly string[] | number | boolean | undefined>) => {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(query ?? {})) {
       if (value === undefined) continue;
-      search.set(key, String(value));
+      for (const entry of Array.isArray(value) ? value : [value]) search.append(key, String(entry));
     }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `${options.origin}${path}${suffix}`;
@@ -537,14 +530,15 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
-    eventsUrl: (projectId) =>
-      `${options.origin}${hubPath(`/projects/${encodeURIComponent(projectId)}/events`)}`,
+    eventsUrl: (projectId, workspaceId) =>
+      url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId }),
     getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
     listWorkItems: (input) =>
       send(
         WorkItemPage,
         "GET",
         url(`${projectBase(input.projectId)}/work-items`, {
+          q: input.q?.trim() || undefined,
           state: input.state,
           archived: input.archived === true ? "true" : undefined,
           label: input.label,
@@ -552,13 +546,15 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
           priority: input.priority,
           cursor: input.cursor,
           limit: input.limit,
-          include: input.includeCoordinator === true ? "coordinator" : undefined,
+          include: input.includeWork === true ? "work" : input.includeCoordinator === true ? "coordinator" : undefined,
         }),
         undefined,
         input.signal,
       ),
     getWorkItem: (projectId, itemId) =>
       send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
+    getWorkItemById: (itemId) =>
+      send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`)),
     getWorkItemConversation: (projectId, itemId) =>
       send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`)),
     listLabels: (projectId) =>
@@ -595,8 +591,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         related_work_item_id: input.relatedWorkItemId,
         operation: input.operation,
       }),
-    listAttempts: (projectId, itemId, limit, signal) =>
-      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit }), undefined, signal),
+    listAttempts: (projectId, itemId, limit, signal, cursor) =>
+      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor }), undefined, signal),
     getWorkItemDiff: (projectId, itemId) =>
       send(WorkItemDiff, "GET", url(`${itemBase(projectId, itemId)}/diff`)),
     listHistory: (input) =>

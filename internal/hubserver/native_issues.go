@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -15,15 +16,47 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeIssue {
+	issue.WebURL = ""
+	if s.config.Hosted != nil {
+		issue.WebURL = s.config.Hosted.PublicURL + s.hostedPath("/work/i/"+url.PathEscape(string(issue.WorkItemID)))
+	}
+	return issue
+}
+
+func (s *Service) nativeIssueJSON(body json.RawMessage) (json.RawMessage, error) {
+	var issue tracker.NativeIssue
+	if err := json.Unmarshal(body, &issue); err != nil {
+		return nil, err
+	}
+	return json.Marshal(s.nativeIssueResponse(issue))
+}
+
+func (s *Service) executeNativeIssueMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (json.RawMessage, error) {
+	result, err := s.executeNativeMutation(ctx, scope, options, command, input, operation)
+	if err != nil {
+		return nil, err
+	}
+	return s.nativeIssueJSON(result)
+}
+
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
+	return readNativeIssueProjection(ctx, query, scope, id, false)
+}
+
+func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID
 	var labels, assignees, actor, created, updated, externalID string
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
 	var provenance sql.NullString
 	var priority sql.NullInt64
+	bodyColumn := "i.body"
+	if compact {
+		bodyColumn = "''"
+	}
 	err := query.QueryRowContext(ctx, `SELECT i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
- i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
+ i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
  i.actor_json, i.provenance_json, i.native_created_at, i.native_updated_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -50,7 +83,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 			return issue, 0, err
 		}
 	}
-	issue.LinkedSource, err = readLinkedIssueSource(ctx, query, id)
+	issue.LinkedSource, err = readLinkedIssueSourceProjection(ctx, query, id, compact)
 	if err != nil {
 		return issue, 0, err
 	}
@@ -124,7 +157,7 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	return c.JSON(http.StatusOK, issue)
+	return c.JSON(http.StatusOK, s.nativeIssueResponse(issue))
 }
 
 // nativeIssueChangeIncluded reads the work item resource's include query. The
@@ -291,6 +324,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, '', 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, 
 	if _, err := tx.ExecContext(ctx, "INSERT INTO queue_entries (issue_id, workflow_state_id, scope, state, rank, priority_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, workflowID, scope.project, issue.State, string(issue.WorkItemID), issue.Priority, formatHubTime(now), formatHubTime(now)); err != nil {
 		return tracker.NativeIssue{}, err
 	}
+	if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), "", issue.Body); err != nil {
+		return tracker.NativeIssue{}, err
+	}
 	if err := recordNativeChange(ctx, tx, scope, issue, string(issue.WorkItemID), issue.Revision, "issue.created", tracker.CollaborationData{Revision: issue.Revision}, now); err != nil {
 		return tracker.NativeIssue{}, err
 	}
@@ -298,6 +334,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?, '', 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, 
 }
 
 func recordNativeChange(ctx context.Context, tx *sql.Tx, scope nativeScope, record any, workItemID string, revision tracker.Revision, eventType string, data tracker.CollaborationData, now time.Time) error {
+	switch value := record.(type) {
+	case tracker.NativeIssue:
+		if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, "", value.Body); err != nil {
+			return err
+		}
+	case tracker.NativeComment:
+		if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, value.ID, value.Body); err != nil {
+			return err
+		}
+	}
 	recordID := workItemID
 	if data.CommentID != "" {
 		recordID = data.CommentID
@@ -400,7 +446,7 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 
 func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: true, Feature: "collaboration"}
-	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err

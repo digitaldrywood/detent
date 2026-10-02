@@ -78,6 +78,9 @@ func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, iss
 	if err != nil {
 		return comment, err
 	}
+	if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), comment.ID, body); err != nil {
+		return comment, err
+	}
 	if err := recordNativeChange(ctx, tx, scope, comment, string(issue.WorkItemID), comment.Revision, "comment.created", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {
 		return comment, err
 	}

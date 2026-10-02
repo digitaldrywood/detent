@@ -118,14 +118,15 @@ func (a DashboardAccess) IsZero() bool {
 }
 
 type Update struct {
-	AutoCheckEnabled   bool `yaml:"auto_check_enabled,omitempty"`
+	configured         bool
+	AutoCheckEnabled   bool `yaml:"auto_check_enabled"`
 	CheckIntervalHours int  `yaml:"check_interval_hours,omitempty"`
-	AutoApplyEnabled   bool `yaml:"auto_apply_enabled,omitempty"`
+	AutoApplyEnabled   bool `yaml:"auto_apply_enabled"`
 	MaxDeferralHours   int  `yaml:"max_deferral_hours,omitempty"`
 }
 
 func (u Update) IsZero() bool {
-	return !u.AutoCheckEnabled && u.CheckIntervalHours == 0 && !u.AutoApplyEnabled && u.MaxDeferralHours == 0
+	return !u.configured && !u.AutoCheckEnabled && u.CheckIntervalHours == 0 && !u.AutoApplyEnabled && u.MaxDeferralHours == 0
 }
 
 func (u Update) NormalizedCheckIntervalHours() int {
@@ -2086,7 +2087,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
-	update, err := buildUpdate(attrs["update"])
+	update, err := buildUpdate(attrs["update"], client.Configured())
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
@@ -2220,14 +2221,18 @@ func dashboardAccessProblems(access DashboardAccess) []string {
 	return nil
 }
 
-func buildUpdate(value any) (Update, error) {
+func buildUpdate(value any, hubRunner bool) (Update, error) {
+	update := Update{AutoCheckEnabled: hubRunner, AutoApplyEnabled: hubRunner}
 	if value == nil {
-		return Update{}, nil
+		return update, nil
 	}
-	if _, err := mapValue(value, "update"); err != nil {
+	attrs, err := mapValue(value, "update")
+	if err != nil {
 		return Update{}, err
 	}
-	var update Update
+	_, checkConfigured := attrs["auto_check_enabled"]
+	_, applyConfigured := attrs["auto_apply_enabled"]
+	update.configured = checkConfigured || applyConfigured
 	if err := decodeYAMLValue(value, &update); err != nil {
 		return Update{}, fmt.Errorf("update: %w", err)
 	}

@@ -21,7 +21,7 @@ import { useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { boardScopeMeta } from "./lib/format.ts";
 import { transitionsFrom } from "./lib/fromWire.ts";
-import { boardStats, searchItems, sortItems, type Lane, type WorkItemView } from "./lib/model.ts";
+import { boardStats, sortItems, type Lane, type WorkItemView } from "./lib/model.ts";
 import { moveItem, useBoard, useNow, useWorkHttp } from "./lib/useWork.ts";
 import { useViewState } from "./lib/useViewState.ts";
 import { laneVisible, type WorkViewState } from "./lib/viewState.ts";
@@ -37,13 +37,11 @@ import { NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
 import { StatsRow } from "./components/StatsRow.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { WorkList } from "./components/WorkList.tsx";
-import { WorkPagination } from "./components/WorkPagination.tsx";
 import { WorkToolbar } from "./components/WorkToolbar.tsx";
 import { FreshnessChip, WorkTopBar } from "./components/WorkTopBar.tsx";
 import { useShell } from "../App.tsx";
 import { boardConnectionChip } from "./lib/freshness.ts";
 
-/** The client-side half of the filters the hub could not take (single-valued). */
 function applyFilters(
   items: readonly WorkItemView[],
   view: WorkViewState,
@@ -170,7 +168,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         terminal: board.lanes.find((lane) => lane.name === state)?.terminal ?? item.terminal,
       };
     });
-    return sortItems(searchItems(applyFilters(overridden, view), view.q), view.sort);
+    return sortItems(applyFilters(overridden, view), view.sort);
   }, [board.items, board.lanes, moved, view]);
 
   const stats = React.useMemo(() => boardStats(items, board.lanes), [items, board.lanes]);
@@ -317,7 +315,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const firstRun =
     noProjects ||
     (!board.loading && board.error === null && board.items.length === 0 && !narrowed(view) &&
-      board.pages.every((page) => page.number === 1 && page.nextCursor === undefined));
+      !board.hasMore);
   const firstRunPanel = firstRun ? (
     <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
   ) : null;
@@ -371,17 +369,16 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         }}
         searchRef={searchRef}
         freshness={<FreshnessChip chip={chip} testId="board-freshness" />}
-        loadedCount={board.items.length}
       />
 
-      <StatsRow stats={stats} truncated={board.truncated} loadedCount={board.items.length} loading={board.loading} />
+      <StatsRow stats={stats} totals={board.totals} truncated={board.truncated} loadedCount={board.items.length} loading={board.loading} />
 
-      <WorkPagination pages={board.pages} loading={board.loading} onChange={(id, page) => {
-        const pages = { ...view.pages };
-        if (page === undefined) delete pages[id];
-        else pages[id] = page;
-        setView({ ...view, pages });
-      }} />
+      <div className="flex items-center gap-3 px-5 pb-3 text-muted-foreground text-xs">
+        <span>Search and filters cover the selected projects. Sorting applies to loaded results.</span>
+        {board.hasMore ? <Button size="xs" variant="outline" disabled={board.loading} onClick={board.loadMore}>
+          Load more matching work
+        </Button> : null}
+      </div>
 
       {board.error === null ? null : (
         <div className="mx-5 mb-3 rounded-lg border border-error/32 bg-error-surface px-3 py-2 text-error-foreground text-sm">
@@ -414,6 +411,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   key={lane.name}
                   lane={lane}
                   items={items.filter((item) => item.state === lane.name)}
+                  total={board.totals?.lanes[lane.name] ?? (board.totals === null ? undefined : 0)}
                   showProject={projectId === null}
                   now={now}
                   onOpen={open}

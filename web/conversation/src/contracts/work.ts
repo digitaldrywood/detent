@@ -131,6 +131,7 @@ export const NativeIssue = Schema.Struct({
   project_id: ProjectId,
   work_item_id: NativeWorkItemId,
   number: Schema.Number,
+  web_url: Schema.String,
   revision: Revision,
   profile: Schema.String,
   title: Schema.String,
@@ -157,7 +158,19 @@ export const NativeIssue = Schema.Struct({
 });
 export type NativeIssue = typeof NativeIssue.Type;
 
-export const WorkItemPage = Page(NativeIssue);
+export const NativeWorkSummary = Schema.Struct({
+  items: Schema.Array(NativeIssue),
+  lanes: Schema.Array(Schema.Struct({ state: Schema.String, total: Schema.Number, running: Schema.Number })),
+  truncated: Schema.Boolean,
+  as_of: Schema.String,
+});
+export type NativeWorkSummary = typeof NativeWorkSummary.Type;
+
+export const WorkItemPage = Schema.Struct({
+  items: Schema.Array(NativeIssue),
+  next_cursor: Schema.optional(Schema.String),
+  work: Schema.optional(NativeWorkSummary),
+});
 export type WorkItemPage = typeof WorkItemPage.Type;
 
 /** Priority as the hub numbers it, in the order the tracker ranks it. */

@@ -41,8 +41,11 @@ import { newCommandKey, useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { ChatWorkspace, useWorkspacePanel } from "../components/ChatWorkspace.tsx";
 import { Markdown } from "../components/Markdown.tsx";
+import { AttachmentEditor } from "./components/AttachmentEditor.tsx";
 import { canInterrupt, executionCopy, expectedOwner, isActive } from "../lib/execution.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
+import { useActivityCitation } from "./lib/useActivityCitation.ts";
+import { IssueAskEntry, IssueAskPanel, useIssueAsk, type IssueAsk } from "./IssueAsk.tsx";
 import { ActivityFeed, LiveRow } from "./components/ActivityFeed.tsx";
 import { IssueComposer } from "./components/IssueComposer.tsx";
 import {
@@ -111,9 +114,21 @@ export function selectChangeId(
   return changes.at(-1)?.change_id ?? null;
 }
 
+async function allIssueRecords<T>(read: (cursor?: string) => Promise<{ readonly items: readonly T[]; readonly next_cursor?: string | null }>): Promise<readonly T[]> {
+  const result: T[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await read(cursor);
+    result.push(...page.items);
+    const next = page.next_cursor ?? undefined;
+    if (next !== undefined && next === cursor) throw new Error("Issue history cursor did not advance");
+    cursor = next;
+  } while (cursor !== undefined);
+  return result;
+}
+
 function useIssue(
   http: WorkHttp,
-  projectId: string | null,
   workItemId: string,
   requestedChange: string | null = null,
 ): {
@@ -130,19 +145,18 @@ function useIssue(
   const [nonce, setNonce] = React.useState(0);
 
   React.useEffect(() => {
-    if (projectId === null) return;
     let cancelled = false;
+    setError(null);
     setLoading(true);
     void (async () => {
       try {
-        const [issue, project, attempts, history, comments, changes] = await Promise.all([
-          http.getWorkItem(projectId, workItemId),
+        const issue = await http.getWorkItemById(workItemId);
+        const projectId = issue.project_id;
+        const [project, attempts, history, comments, changes] = await Promise.all([
           http.getProject(projectId),
-          http.listAttempts(projectId, workItemId, 20).then((page) => page.items),
-          http.listHistory({ projectId, itemId: workItemId, limit: 100 }).then((page) => page.items),
-          http
-            .listComments({ projectId, itemId: workItemId, limit: 100 })
-            .then((page) => page.items)
+          allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)),
+          allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })),
+          allIssueRecords((cursor) => http.listComments({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) }))
             .catch(() => []),
           http.listChanges(projectId, workItemId).catch(() => []),
         ]);
@@ -159,6 +173,7 @@ function useIssue(
         setError(null);
       } catch (cause) {
         if (cancelled) return;
+        setData(null);
         setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
         if (!cancelled) setLoading(false);
@@ -167,9 +182,15 @@ function useIssue(
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, workItemId, requestedChange, nonce]);
+  }, [http, workItemId, requestedChange, nonce]);
 
-  return { data, error, loading, reload: () => setNonce((value) => value + 1), apply: setData };
+  return {
+    data: data?.issue.work_item_id === workItemId ? data : null,
+    error,
+    loading,
+    reload: () => setNonce((value) => value + 1),
+    apply: setData,
+  };
 }
 
 /**
@@ -245,10 +266,12 @@ export function IssuePage(): React.ReactElement {
   const { workItemId } = useParams({ from: "/work/i/$workItemId" });
   const shell = useShell();
   const http = useWorkHttp();
+  const search = useSearch({ strict: false }) as { change?: string };
+  const issueState = useIssue(http, workItemId, search.change ?? null);
+  const projectId = issueState.data?.issue.project_id ?? null;
   const indexed = shell.conversations.find(
-    (conversation) => conversation.work_item_id === workItemId,
+    (conversation) => conversation.work_item_id === workItemId && conversation.project_id === projectId,
   );
-  const projectId = indexed?.project_id ?? shell.projectId ?? null;
   const [resolved, setResolved] = React.useState<Conversation | undefined>();
   React.useEffect(() => {
     let cancelled = false;
@@ -281,17 +304,19 @@ export function IssuePage(): React.ReactElement {
       ? resolved
       : undefined);
   if (linked === undefined) {
-    return <IssueSurface workItemId={workItemId} projectHint={null} conversation={null} />;
+    return <IssueSurface key={workItemId} workItemId={workItemId} issueState={issueState} conversation={null} />;
   }
-  return <LinkedIssue key={linked.id} workItemId={workItemId} conversation={linked} />;
+  return <LinkedIssue key={linked.id} workItemId={workItemId} issueState={issueState} conversation={linked} />;
 }
 
 /** The issue page with a conversation behind it. Subscribes to its atoms. */
 function LinkedIssue({
   workItemId,
+  issueState,
   conversation,
 }: {
   readonly workItemId: string;
+  readonly issueState: ReturnType<typeof useIssue>;
   readonly conversation: Conversation;
 }): React.ReactElement {
   const client = useClient();
@@ -358,7 +383,7 @@ function LinkedIssue({
   );
 
   return (
-    <IssueSurface workItemId={workItemId} projectHint={projectId} conversation={bridge} />
+    <IssueSurface workItemId={workItemId} issueState={issueState} conversation={bridge} />
   );
 }
 
@@ -380,22 +405,21 @@ const BODY_CLAMP = 900;
 
 function IssueSurface({
   workItemId,
-  projectHint,
+  issueState,
   conversation,
 }: {
   readonly workItemId: string;
-  readonly projectHint: string | null;
+  readonly issueState: ReturnType<typeof useIssue>;
   readonly conversation: ConversationBridge | null;
 }): React.ReactElement {
-  const shell = useShell();
   const navigate = useNavigate();
   const client = useClient();
   const http = useWorkHttp();
   const now = useNow();
   const search = useSearch({ strict: false }) as { panel?: string; change?: string };
 
-  const projectId = projectHint ?? shell.projectId ?? null;
-  const { data, error, loading, reload, apply } = useIssue(http, projectId, workItemId, search.change ?? null);
+  const { data, error, loading, reload, apply } = issueState;
+  const projectId = data?.issue.project_id ?? null;
   const [saving, setSaving] = React.useState(false);
   const [posting, setPosting] = React.useState(false);
 
@@ -423,6 +447,7 @@ function IssueSurface({
       ? null
       : (client.bootstrap.projects.find((candidate) => candidate.id === projectId) ?? null);
   const canWrite = project?.can_write !== false;
+  const ask = useIssueAsk(projectId, workItemId);
 
   const item = React.useMemo<WorkItemView | null>(() => {
     if (data === null) return null;
@@ -503,6 +528,7 @@ function IssueSurface({
           title: "Could not post the comment",
           description: cause instanceof Error ? cause.message : String(cause),
         });
+        throw cause;
       } finally {
         setPosting(false);
       }
@@ -540,6 +566,7 @@ function IssueSurface({
       onNewThreadInProject={() => void navigate({ to: "/chat" })}
       attempts={data?.attempts ?? []}
       history={data?.history ?? []}
+      askPanel={projectId === null ? null : <IssueAskPanel ask={ask} projectId={projectId} identifier={item === null ? workItemId : issueNumber(item.identifier, item.number)} canWrite={canWrite} />}
       conversationPanel={conversationPanel}
     >
       <PanelIntent wanted={search.panel === "conversation"} />
@@ -547,15 +574,7 @@ function IssueSurface({
     </ChatWorkspace>
   );
 
-  if (projectId === null) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-muted-foreground text-sm">
-        No project is selected for this issue.
-      </div>
-    );
-  }
-
-  if (item === null || data === null) {
+  if (item === null || data === null || projectId === null) {
     return frame(
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-muted-foreground text-sm">
         <h1 className="dc-sr-only">{workItemId}</h1>
@@ -572,6 +591,12 @@ function IssueSurface({
 
   return frame(
     <IssueBody
+      onBodySave={async (body) => {
+        const updated = await http.patchWorkItem({ projectId, itemId: workItemId, key: newWorkKey("body"), expectedRevision: data.issue.revision, body });
+        apply((current) => current === null ? current : { ...current, issue: updated });
+        reload();
+      }}
+      ask={ask}
       item={item}
       data={data}
       moves={moves}
@@ -702,6 +727,8 @@ function IssueSurface({
 }
 
 interface IssueBodyProps {
+  readonly onBodySave: (body: string) => Promise<void>;
+  readonly ask: IssueAsk;
   readonly item: WorkItemView;
   readonly data: IssueData;
   readonly moves: readonly string[];
@@ -738,6 +765,11 @@ interface IssueBodyProps {
  * published inside `ChatWorkspace`.
  */
 function IssueBody(props: IssueBodyProps): React.ReactElement {
+  const [editingBody, setEditingBody] = React.useState(false);
+  const [bodyDraft, setBodyDraft] = React.useState("");
+  const [bodyUploading, setBodyUploading] = React.useState(false);
+  const [bodySaving, setBodySaving] = React.useState(false);
+  const [bodyError, setBodyError] = React.useState<string | null>(null);
   const panel = useWorkspacePanel();
   const panelOpen = panel?.open === true;
   // The composer's `/shortcuts`. The keybindings are a settings section rather
@@ -746,6 +778,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const navigate = useNavigate();
   const { data, item, conversation } = props;
   const [expanded, setExpanded] = React.useState(false);
+  const highlightedId = useActivityCitation(item.id);
 
   const runnerNames = useRunnerNames();
   const running = data.attempts.at(-1)?.status === "running" ? data.attempts.at(-1) : undefined;
@@ -1024,17 +1057,32 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 							<summary>Original source context</summary>
 							<p className="text-xs text-muted-foreground">Observed {data.issue.linked_source.snapshot.provenance.observed_at}</p>
 							<p>{data.issue.linked_source.snapshot.title}</p>
-							<Markdown source={data.issue.linked_source.snapshot.body} />
+                            <Markdown projectId={data.project.project_id} source={data.issue.linked_source.snapshot.body} />
 						</details>
 					)}
 				</div>
 			)}
-            <div className={truncated ? "relative max-h-64 overflow-hidden" : undefined}>
-              <Markdown source={truncated ? item.body.slice(0, BODY_CLAMP) : item.body} />
+            {editingBody ? <form onSubmit={(event) => {
+              event.preventDefault();
+              if (bodyUploading || bodySaving) return;
+              setBodySaving(true);
+              setBodyError(null);
+              void props.onBodySave(bodyDraft).then(() => setEditingBody(false), (cause: unknown) => setBodyError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBodySaving(false));
+            }}>
+              <AttachmentEditor projectId={data.project.project_id} value={bodyDraft} onChange={setBodyDraft}
+                onUploadingChange={setBodyUploading} disabled={bodySaving} aria-label="Issue body" />
+              {bodyError === null ? null : <p role="alert" className="text-sm text-destructive">{bodyError}</p>}
+              <div className="mt-2 flex gap-2">
+                <Button type="submit" size="xs" disabled={bodyUploading || bodySaving}>Save body</Button>
+                <Button type="button" size="xs" variant="ghost" disabled={bodySaving} onClick={() => setEditingBody(false)}>Cancel</Button>
+              </div>
+            </form> : <div className={truncated ? "relative max-h-64 overflow-hidden" : undefined}>
+              <Markdown projectId={data.project.project_id} source={truncated ? item.body.slice(0, BODY_CLAMP) : item.body} />
               {truncated ? (
                 <span className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-card to-transparent" />
               ) : null}
-            </div>
+            </div>}
+            {props.canWrite && !editingBody && data.project.profile === "native" ? <Button type="button" size="xs" variant="ghost" onClick={() => { setBodyDraft(item.body); setBodyError(null); setEditingBody(true); }}>Edit body</Button> : null}
             {conversation?.detail?.conversation.visibility !== "shared" ? null : (
               <p className="mt-2.5 text-muted-foreground text-xs">
                 Conversation history shared with the project
@@ -1073,13 +1121,17 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             </TooltipPopup>
           </Tooltip>
 
+          <IssueAskEntry ask={props.ask} canWrite={props.canWrite} />
+
           <IssueResources rows={resources} />
 
           <ActivityFeed
+            projectId={data.project.project_id}
+            highlightedId={highlightedId}
             rows={rows}
             live={live}
             liveAt={liveAt}
-            onReply={props.canWrite ? (body) => void props.onComment(body) : null}
+            onReply={props.canWrite ? props.onComment : null}
             posting={props.posting}
           />
 
@@ -1087,6 +1139,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
               runner is steered from the conversation surface the Activity
               feed's live row opens, not from a second mode on this card. */}
           <IssueComposer
+            projectId={data.project.project_id}
             canWrite={props.canWrite}
             onComment={props.onComment}
             onOpenShortcuts={() =>

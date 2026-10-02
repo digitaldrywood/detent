@@ -8018,7 +8018,7 @@ func (s *fakeRunnerBudgetSpendStore) IssueTokenSpend(context.Context, store.Issu
 	return s.issue, nil
 }
 
-func (s *fakeSessionStore) LatestCompletedAgentResumeState(_ context.Context, attrs store.AgentResumeLookup) (store.AgentResumeState, error) {
+func (s *fakeSessionStore) LatestAgentResumeState(_ context.Context, attrs store.AgentResumeLookup) (store.AgentResumeState, error) {
 	s.resumeLookups++
 	s.resumeLookup = attrs
 	if s.resumeErr != nil {

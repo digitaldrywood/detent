@@ -2,14 +2,21 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -54,6 +61,9 @@ func newRuntimeUpdateScheduler(
 	reserveDrain func(context.Context) (func(), error),
 ) (*detentupdate.Scheduler, error) {
 	interval := time.Duration(cfg.Global.Update.NormalizedCheckIntervalHours()) * time.Hour
+	if cfg.Global.Client.Configured() && cfg.Global.Update.CheckIntervalHours == 0 {
+		interval = cfg.Global.Client.HeartbeatInterval()
+	}
 	schedulerConfig := detentupdate.SchedulerConfig{
 		Enabled:          cfg.Global.Update.AutoCheckEnabled,
 		AutoApplyEnabled: cfg.Global.Update.AutoApplyEnabled,
@@ -63,6 +73,7 @@ func newRuntimeUpdateScheduler(
 		ReserveDrain:     reserveDrain,
 		Logger:           logger,
 		StatePath:        runtimeUpdateStatePath(cfg),
+		RunningBuild:     runnerRunningBuild(cfg.Build, cfg.Version),
 		ApplyOptions: detentupdate.ApplyOptions{
 			Preflight:         candidateStartupPreflight(cfg),
 			RecoveryStatePath: detentupdate.RecoveryStatePath(cfg.Global.Path),
@@ -80,12 +91,17 @@ func newRuntimeUpdateScheduler(
 		GOOS:           runtime.GOOS,
 	})
 	version := runtimeUpdateVersion(cfg)
-	schedulerConfig.Updater = newRuntimeUpdater(cfg, executable, version)
-	schedulerConfig.RequestRestart = func(binary string) bool {
-		if strings.TrimSpace(binary) == "" {
-			binary = executable
+	schedulerConfig.Updater, err = newRuntimeUpdater(cfg, executable, version)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Shutdown != nil && cfg.Restart != nil {
+		schedulerConfig.RequestRestart = func(binary string) bool {
+			if strings.TrimSpace(binary) == "" {
+				binary = executable
+			}
+			return requestUpdateRestart(cfg.Shutdown, cfg.Restart, binary)
 		}
-		return requestUpdateRestart(cfg.Shutdown, cfg.Restart, binary)
 	}
 	return detentupdate.NewScheduler(schedulerConfig)
 }
@@ -242,4 +258,42 @@ func requestUpdateRestart(controller *ShutdownController, restart *RestartReques
 	return controller.RequestDrainIfIdle(func() {
 		restart.set(binary)
 	})
+}
+
+func runnerRunningBuild(info buildinfo.Info, version string) runnerauth.BuildEvidence {
+	if info.Version == "" {
+		info.Version = version
+	}
+	info = buildinfo.Normalize(info)
+	build := runnerauth.BuildEvidence{Version: info.Version, Commit: info.Commit, Source: "unknown", OS: runtime.GOOS, Architecture: runtime.GOARCH, ObservedAt: time.Now().UTC()}
+	path, err := os.Executable()
+	if err == nil {
+		build.Source = string(detentupdate.DetectInstallSource(detentupdate.DetectionOptions{ExecutablePath: path, CurrentVersion: info.Version, GOOS: runtime.GOOS}).Source)
+		file, err := os.Open(path)
+		if err == nil {
+			hash := sha256.New()
+			_, readErr := io.Copy(hash, file)
+			closeErr := file.Close()
+			if readErr == nil && closeErr == nil {
+				build.SHA256 = hex.EncodeToString(hash.Sum(nil))
+			}
+		}
+	}
+	patched := info.Dirty
+	if metadata, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range metadata.Settings {
+			if setting.Key == "vcs.modified" && setting.Value == "true" {
+				patched = true
+			}
+		}
+		for _, dependency := range metadata.Deps {
+			if dependency.Replace != nil {
+				patched = true
+			}
+		}
+	}
+	if patched {
+		build.Source = "private_patched_source"
+	}
+	return build
 }

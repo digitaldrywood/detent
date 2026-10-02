@@ -220,6 +220,9 @@ func (s *Service) proxy(c echo.Context) error {
 	started := time.Now()
 	request := c.Request()
 	ctx := request.Context()
+	if strings.Contains(request.URL.Path, "/attachment-metadata") {
+		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
+	}
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
 	if err != nil {
 		if pending, lookupErr := s.registry.Organization(ctx, c.Param("organization")); lookupErr == nil && pending.Managed && (pending.State == "requested" || pending.State == "allocating" || pending.State == "failed") && request.Method == http.MethodGet && !strings.HasPrefix(request.URL.Path, "/api/") {
@@ -270,6 +273,9 @@ func (s *Service) proxy(c echo.Context) error {
 			r.Out.ContentLength = int64(len(body))
 		},
 		ModifyResponse: func(response *http.Response) error {
+			if err := s.attachmentMCPResponse(c, body, response); err != nil {
+				return err
+			}
 			response.Header.Del("Set-Cookie")
 			response.Header.Set("Cache-Control", "no-store")
 			response.Header.Set("Content-Security-Policy", contentSecurity)
@@ -318,6 +324,10 @@ func (s *Service) machineCall(ctx context.Context, organization Organization, me
 }
 
 func (s *Service) signedCall(ctx context.Context, organization Organization, claims cloudassert.Claims, body []byte, bearer string) (int, []byte, error) {
+	return s.signedCallCSRF(ctx, organization, claims, body, bearer, "")
+}
+
+func (s *Service) signedCallCSRF(ctx context.Context, organization Organization, claims cloudassert.Claims, body []byte, bearer, csrf string) (int, []byte, error) {
 	assertion, err := cloudassert.Sign(s.config.SigningKey, claims)
 	if err != nil {
 		return 0, nil, err
@@ -337,6 +347,9 @@ func (s *Service) signedCall(ctx context.Context, organization Organization, cla
 		request.Header.Set(echo.HeaderAuthorization, "Bearer "+bearer)
 	}
 	request.Header.Set(cloudassert.Header, assertion)
+	if csrf != "" {
+		request.Header.Set("X-CSRF-Token", csrf)
+	}
 	response, err := (&http.Client{Transport: transport, Timeout: 15 * time.Second}).Do(request)
 	if err != nil {
 		return 0, nil, err

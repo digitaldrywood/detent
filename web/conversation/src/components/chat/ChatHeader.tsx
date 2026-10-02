@@ -64,6 +64,7 @@ interface ChatHeaderProps {
   rightPanelOpen: boolean;
   gitCwd: string | null;
   readonly onOpenPullRequest?: ((number: number) => void) | undefined;
+  onAsk?: (() => void) | undefined;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
   onRunProjectScript: (script: ProjectScript) => void;
@@ -133,6 +134,7 @@ export const ChatHeader = memo(function ChatHeader({
   rightPanelOpen,
   gitCwd,
   onOpenPullRequest,
+  onAsk,
   onNewThreadInProject,
   onOpenProjectSettings,
   onRunProjectScript,
@@ -409,6 +411,11 @@ export const ChatHeader = memo(function ChatHeader({
           "[[data-panel-animations=true]_&]:motion-safe:transition-[padding-right] [[data-panel-animations=true]_&]:motion-safe:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:motion-safe:ease-out",
         )}
       >
+        {onAsk === undefined ? null : (
+          <button type="button" onClick={onAsk} data-testid="issue-ask-button" title="Ask about this issue (A). Private; never posted to the issue." className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring">
+            Ask <kbd className="ml-1 text-xs text-muted-foreground">A</kbd>
+          </button>
+        )}
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

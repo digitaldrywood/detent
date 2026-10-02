@@ -19,6 +19,8 @@ const NativeDispatchPriorityCapability = "dispatch_priority"
 
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
 const NativeCheckoutRepositoryCapability = "runner_checkout_repository"
+const NativeRunnerUpdateCapability = "runner_installed_update"
+
 const NativeRunnerCapacityCapability = "runner_capacity_configuration"
 const NativeLocalChecksCapability = "runner_local_checks"
 
@@ -63,6 +65,7 @@ type NativeIssue struct {
 	LinkedSource       *LinkedIssueSource `json:"linked_source,omitempty"`
 	IgnoreDependencies bool               `json:"ignore_dependencies,omitempty"`
 	NativeReference
+	WebURL             string              `json:"web_url"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	State              string              `json:"state"`
@@ -329,6 +332,24 @@ type CollaborationData struct {
 type Page[T any] struct {
 	Items      []T    `json:"items"`
 	NextCursor string `json:"next_cursor,omitempty"`
+}
+
+type NativeIssuePage struct {
+	Page[NativeIssue]
+	Work *NativeWorkSummary `json:"work,omitempty"`
+}
+
+type NativeWorkSummary struct {
+	Items     []NativeIssue    `json:"items"`
+	Lanes     []NativeWorkLane `json:"lanes"`
+	Truncated bool             `json:"truncated"`
+	AsOf      time.Time        `json:"as_of"`
+}
+
+type NativeWorkLane struct {
+	State   string `json:"state"`
+	Total   int    `json:"total"`
+	Running int    `json:"running"`
 }
 
 type NativeState struct {

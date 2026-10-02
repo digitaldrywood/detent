@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -50,20 +51,45 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	checkpoint.Data.Handoff = nativeTestCheckpoint()
 	finish := start
 	finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 3, "succeeded"
+	lifecycleTest := t
 	for _, test := range []struct {
-		name   string
-		event  tracker.NativeRunEvent
-		status int
+		name    string
+		event   tracker.NativeRunEvent
+		status  int
+		restart bool
 	}{
-		{"checkpoint before start", checkpoint, http.StatusConflict},
-		{"start", start, http.StatusOK},
-		{"same command", start, http.StatusOK},
-		{"completion skips checkpoint", finish, http.StatusConflict},
-		{"checkpoint", checkpoint, http.StatusOK},
-		{"complete", finish, http.StatusOK},
-		{"duplicate completion", finish, http.StatusOK},
+		{"checkpoint before start", checkpoint, http.StatusConflict, false},
+		{"start", start, http.StatusOK, false},
+		{"same command", start, http.StatusOK, false},
+		{"completion skips checkpoint", finish, http.StatusConflict, false},
+		{"checkpoint", checkpoint, http.StatusOK, false},
+		{"complete after restart", finish, http.StatusOK, true},
+		{"duplicate completion", finish, http.StatusOK, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.restart {
+				config := f.service.config
+				started := time.Now()
+				shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := f.service.Shutdown(shutdownContext); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.Close(); err != nil {
+					t.Fatal(err)
+				}
+				f.service = openTestService(lifecycleTest, config)
+				t.Logf("hub_restart_seconds=%.6f", time.Since(started).Seconds())
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90})
+				requireNativeStatus(t, response, http.StatusOK)
+				var renewed tracker.NativeLease
+				decodeHubResponse(t, response, &renewed)
+				if renewed.ID != lease.ID || renewed.FencingToken != lease.FencingToken || renewed.SessionID != lease.SessionID {
+					t.Fatalf("restart changed execution ownership: %+v", renewed)
+				}
+				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: lease.PolicyID, WorkItemID: issue.WorkItemID, MachineID: lease.MachineID, SessionID: "replacement", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+				requireNativeStatus(t, response, http.StatusConflict)
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, test.event), test.status)
 		})
 	}

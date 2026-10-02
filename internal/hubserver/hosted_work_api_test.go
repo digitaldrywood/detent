@@ -60,7 +60,8 @@ func TestHostedWorkAccess(t *testing.T) {
 				f.provider.sessions[user.identity.Hosted.SessionID] = identity
 				f.provider.mu.Unlock()
 			}
-			for _, path := range []string{api, api + "/changes/" + change.ID} {
+			organizationAPI := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/work-items/" + string(item)
+			for _, path := range []string{api, organizationAPI, api + "/changes/" + change.ID, f.base + "/work-items?include=work&limit=100"} {
 				response := f.request(t, user, http.MethodGet, path, nil)
 				if test.allowed {
 					requireNativeStatus(t, response, http.StatusOK)

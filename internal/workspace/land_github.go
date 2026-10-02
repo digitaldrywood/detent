@@ -107,7 +107,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		if err != nil {
 			return LandResult{}, err
 		}
-		if pull.Head.Ref != branch {
+		if pull.Head.Ref != githubLandingBranch(normalized, opts) {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the external pull request branch differs from the landing workspace")
 		}
 	}
@@ -164,8 +164,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 			if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) {
 				return LandResult{}, fmt.Errorf("merge reviewed head %s into %s at fetched base %s (pull request base %s): %w", head, base, baseBefore, pull.Base.SHA, err)
 			}
-			var status *github.StatusError
-			if errors.Is(err, forgeavailability.ErrUnavailable) && errors.As(err, &status) && status.StatusCode == http.StatusMethodNotAllowed {
+			if GitHubLandingMergeabilityRefusal(http.MethodPut, fmt.Sprintf("repos/%s/pulls/%d/merge", repository, pull.Number), err) {
 				return LandResult{}, l.verifyGitHubLandingConflict(ctx, normalized, issue, opts, remote, repository, base, pull.Number, err)
 			}
 			return LandResult{}, err
@@ -187,41 +186,46 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	return LandResult{MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil}, nil
 }
 
+func githubLandingBranch(info Info, opts LandOptions) string {
+	if opts.External != nil && info.ReviewBranch != "" {
+		return info.ReviewBranch
+	}
+	return info.Branch
+}
+
 func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, issue Issue, opts LandOptions, remote, repository, base string, number int, refusal error) error {
+	branch := githubLandingBranch(info, opts)
 	var pull githubLandingPull
 	if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "GET", fmt.Sprintf("repos/%s/pulls/%d", repository, number)); err != nil {
-		if errors.Is(err, github.ErrRateLimited) {
-			return fmt.Errorf("%w; original landing refusal: %v", err, refusal)
-		}
-		return errors.Join(refusal, err)
+		return fmt.Errorf("%w; original landing refusal: %v", err, refusal)
 	}
 	if pull.Number != number || pull.State != "open" || pull.Merged || pull.MergedAt != "" ||
-		pull.Head.SHA != opts.HeadSHA || pull.Head.Ref != info.Branch || pull.Head.Repo.FullName != repository ||
+		pull.Head.SHA != opts.HeadSHA || pull.Head.Ref != branch || pull.Head.Repo.FullName != repository ||
 		pull.Base.Ref != base || pull.Base.Repo.FullName != repository || !validLandingHead(pull.Base.SHA) {
 		return fmt.Errorf("conflict projection does not identify the current reviewed source: %w", refusal)
 	}
 	if err := l.verifyLandingWorktree(ctx, info, issue, opts); err != nil {
-		return errors.Join(refusal, err)
+		return errors.Join(err, refusal)
 	}
 	head, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
 	if err != nil {
 		return errors.Join(refusal, err)
 	}
 	if strings.TrimSpace(head) != opts.HeadSHA {
-		return errors.Join(refusal, refuse(LandRefusalHeadMoved, "the worktree moved after the reviewed head "+opts.HeadSHA))
+		return errors.Join(refuse(LandRefusalHeadMoved, "the worktree moved after the reviewed head "+opts.HeadSHA), refusal)
 	}
 	baseRef := "refs/remotes/" + remote + "/" + base
 	if _, err := runGitAt(ctx, info.Path, "fetch", remote, "+refs/heads/"+base+":"+baseRef); err != nil {
-		return errors.Join(refusal, fmt.Errorf("refresh refused landing base: %w", err))
+		return githubLandingConflictReadFailure("git fetch", fmt.Errorf("refresh refused landing base: %w", err), refusal)
 	}
 	fetched, err := runGitAt(ctx, info.Path, "rev-parse", baseRef)
 	if err != nil {
 		return errors.Join(refusal, err)
 	}
 	fetched = strings.TrimSpace(fetched)
-	refs, err := runGitAt(ctx, info.Path, "ls-remote", remote, "refs/heads/"+info.Branch, "refs/heads/"+base)
+	refs, err := runGitAt(ctx, info.Path, "ls-remote", remote, "refs/heads/"+branch, "refs/heads/"+base)
 	if err != nil {
-		return errors.Join(refusal, fmt.Errorf("verify refused landing refs: %w", err))
+		return githubLandingConflictReadFailure("git ls-remote", fmt.Errorf("verify refused landing refs: %w", err), refusal)
 	}
 	current := make(map[string]string)
 	for _, line := range strings.Split(refs, "\n") {
@@ -230,7 +234,7 @@ func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, i
 			current[fields[1]] = fields[0]
 		}
 	}
-	if current["refs/heads/"+info.Branch] != opts.HeadSHA || current["refs/heads/"+base] != fetched {
+	if current["refs/heads/"+branch] != opts.HeadSHA || current["refs/heads/"+base] != fetched {
 		return fmt.Errorf("conflict projection differs from the current published head or base: %w", refusal)
 	}
 	output, err := runGitAt(ctx, info.Path, "merge-tree", "--write-tree", "--name-only", fetched, opts.HeadSHA)
@@ -245,6 +249,19 @@ func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, i
 		}
 	}
 	return errors.Join(refusal, fmt.Errorf("inspect refused landing source merge: %w", err))
+}
+
+func githubLandingConflictReadFailure(operation string, err, refusal error) error {
+	detail := err.Error() + "\n" + commandErrorOutput(err)
+	class, unavailable := forgeavailability.Classify(operation, detail)
+	if strings.Contains(strings.ToLower(detail), "permission denied (publickey)") || strings.Contains(strings.ToLower(detail), "authentication failed") {
+		class, unavailable = forgeavailability.ClassTransport, true
+	}
+	cause := errors.Join(err, refusal)
+	if unavailable {
+		return forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: operation}, class, cause)
+	}
+	return cause
 }
 
 func readExternalLandingPull(ctx context.Context, client GitHubRESTClient, repositoryURL string, external *tracker.ChangeExternalReference, head, base string) (githubLandingPull, error) {
@@ -317,9 +334,9 @@ func githubLandingAPI(ctx context.Context, client GitHubRESTClient, result any, 
 					if strings.Contains(message, "pull request is closed") || strings.Contains(message, "pull request is not open") {
 						return refuse(LandRefusalHeadMoved, "GitHub refused the reviewed head merge: "+status.Error())
 					}
-					if strings.Contains(message, "merge conflict") || strings.Contains(message, "pull request is not mergeable") {
-						return forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request " + path}, forgeavailability.ClassServer,
-							fmt.Errorf("GitHub refused %s %s: %w", method, path, err))
+					if GitHubLandingMergeabilityRefusal(method, path, err) {
+						return fmt.Errorf("GitHub refused %s %s: %w: %w", method, path,
+							refuse(LandRefusalBaseMoved, "the pull request mergeability projection requires current source verification"), err)
 					}
 				}
 			}
@@ -328,8 +345,35 @@ func githubLandingAPI(ctx context.Context, client GitHubRESTClient, result any, 
 		case http.StatusUnauthorized, http.StatusForbidden, http.StatusMethodNotAllowed, http.StatusUnprocessableEntity:
 			return refuse(LandRefusalProtected, "GitHub refused the pull request operation: "+status.Error()+". Resolve its authentication, reviews, checks or branch protection, then approve the Change Request again.")
 		}
+		if status.StatusCode >= http.StatusInternalServerError && status.StatusCode <= 599 {
+			return forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request " + path}, forgeavailability.ClassServer, err)
+		}
+		return fmt.Errorf("GitHub pull request operation failed: %w", err)
+	}
+	operation := "github.update_pull_request " + path
+	if class, unavailable := forgeavailability.Classify(operation, err.Error()); unavailable {
+		return forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: operation}, class, err)
 	}
 	return fmt.Errorf("GitHub pull request operation failed: %w", err)
+}
+
+func GitHubLandingMergeabilityRefusal(method, path string, err error) bool {
+	if method != http.MethodPut || !githubLandingMergePath(path) || errors.Is(err, github.ErrRateLimited) {
+		return false
+	}
+	var status *github.StatusError
+	if !errors.As(err, &status) || status.StatusCode != http.StatusMethodNotAllowed {
+		return false
+	}
+	var response struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(status.Body), &response) != nil {
+		return false
+	}
+	message := strings.ToLower(response.Message)
+	return !strings.Contains(message, "pull request is closed") && !strings.Contains(message, "pull request is not open") &&
+		(strings.Contains(message, "merge conflict") || strings.Contains(message, "pull request is not mergeable"))
 }
 
 func githubLandingMergePath(path string) bool {

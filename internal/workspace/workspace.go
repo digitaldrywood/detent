@@ -262,10 +262,11 @@ type Issue struct {
 }
 
 type Info struct {
-	Path    string
-	Key     string
-	Branch  string
-	Created bool
+	Path         string
+	Key          string
+	Branch       string
+	ReviewBranch string
+	Created      bool
 }
 
 type Hooks struct {
@@ -605,11 +606,18 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 		return Info{}, err
 	}
 	info.Created = created
-
 	if created {
 		if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
+	}
+	if issue.Landing != nil {
+		if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
+			return Info{}, err
+		}
+	}
+
+	if created {
 		if err := l.runHook(ctx, "after_create", l.hooks.AfterCreate, info, issue); err != nil {
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
@@ -727,7 +735,7 @@ func (l *LocalGit) AfterRun(ctx context.Context, info Info, issue Issue) {
 
 func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 	key := issueKey(issue)
-	path, err := l.workspacePath(key)
+	path, err := l.workspacePathForIssue(issue, key)
 	if err != nil {
 		return Info{}, err
 	}
@@ -792,7 +800,7 @@ func (l *LocalGit) normalizeInfo(info Info, issue Issue) (Info, error) {
 	path := info.Path
 	if path == "" {
 		var err error
-		path, err = l.workspacePath(key)
+		path, err = l.workspacePathForIssue(issue, key)
 		if err != nil {
 			return Info{}, err
 		}
@@ -818,9 +826,22 @@ func (l *LocalGit) workspacePath(key string) (string, error) {
 	return validateWorkspacePath(l.root, filepath.Join(l.root, key))
 }
 
+func (l *LocalGit) workspacePathForIssue(issue Issue, key string) (string, error) {
+	if issue.Landing == nil {
+		return l.workspacePath(key)
+	}
+	if !validLandingHead(issue.Landing.HeadSHA) {
+		return "", refuse(LandRefusalMissingHead, "landing requires an immutable commit identity")
+	}
+	return validateWorkspacePath(l.root, filepath.Join(l.root, ".detent", "landing", issue.Landing.HeadSHA, key))
+}
+
 func (l *LocalGit) branchName(issue Issue, key string) string {
 	if !l.autoBranch {
 		return ""
+	}
+	if issue.Landing != nil {
+		return autoBranchPrefix + "landing/" + strings.ToLower(key) + "/" + issue.Landing.HeadSHA
 	}
 	if issue.WorkspaceSession {
 		return workspaceSessionBranchName(key)

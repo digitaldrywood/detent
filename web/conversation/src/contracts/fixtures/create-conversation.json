@@ -5,6 +5,7 @@
     "project_id": "proj_port_app",
     "title": "New chat",
     "visibility": "private",
+    "origin": "user",
     "status": "active",
     "work_item_id": null,
     "linked_at": null,

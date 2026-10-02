@@ -9,6 +9,7 @@ import { IssueCard } from "./IssueCard.tsx";
 export interface BoardLaneProps {
   readonly lane: Lane;
   readonly items: readonly WorkItemView[];
+  readonly total?: number;
   readonly showProject: boolean;
   readonly now: number;
   readonly onOpen: (item: WorkItemView) => void;
@@ -30,6 +31,7 @@ export interface BoardLaneProps {
 export function BoardLane({
   lane,
   items,
+  total,
   showProject,
   now,
   onOpen,
@@ -85,6 +87,7 @@ export function BoardLane({
         ) : null}
         <span
           data-testid={`lane-count-${lane.name}`}
+          title={total === undefined ? "Loaded items" : `${items.length} shown / ${total} in project scope with server filters`}
           className={cn(
             "inline-grid h-5 min-w-5 place-items-center rounded-md px-1.5 font-normal text-[11px] tabular-nums",
             blocked && !lane.terminal
@@ -92,7 +95,7 @@ export function BoardLane({
               : "bg-accent text-muted-foreground",
           )}
         >
-          {items.length}
+          {total ?? items.length}
         </span>
         {collapsed || live === 0 ? null : (
           <span className="font-normal text-[11px] text-muted-foreground">{live} live</span>

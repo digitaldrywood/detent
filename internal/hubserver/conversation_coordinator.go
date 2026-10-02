@@ -545,9 +545,23 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	// hub-side coordinator reads them straight out of the store, where the
 	// runner-dispatched one downloads them (decisions section 17.1).
 	attachments, runErr := c.coordinatorAttachments(turnCtx, state.users)
+	prompt := coordinatorPrompt(transcript, state.users)
+	if runErr == nil {
+		record, err := c.readConversation(turnCtx, c.service.store.db, conversationID)
+		if err != nil {
+			runErr = err
+		} else if record.SubjectWorkItemID != "" {
+			data, err := newCoordinatorToolset(c, state).issueContext(turnCtx, record)
+			if err != nil {
+				runErr = err
+			} else {
+				prompt, runErr = coordinatorSubjectPrompt(prompt, record, data)
+			}
+		}
+	}
 	request := runner.AgentTurnRequest{
 		Workspace:        c.service.config.Workspace,
-		Prompt:           appendCoordinatorData(coordinatorPrompt(transcript, state.users), attachments),
+		Prompt:           appendCoordinatorData(prompt, attachments),
 		Resume:           runner.AgentResume{ThreadID: state.threadID},
 		ReadOnly:         true,
 		Model:            c.service.config.Model,
@@ -813,7 +827,7 @@ func escapeCoordinatorData(value string) string {
 	return coordinatorDataDelimiters.Replace(value)
 }
 
-var coordinatorDataDelimiters = strings.NewReplacer("<transcript>", "&lt;transcript&gt;", "</transcript>", "&lt;/transcript&gt;")
+var coordinatorDataDelimiters = strings.NewReplacer("<transcript>", "&lt;transcript&gt;", "</transcript>", "&lt;/transcript&gt;", "<issue_context>", "&lt;issue_context&gt;", "</issue_context>", "&lt;/issue_context&gt;")
 
 // handleUpdate reacts to backend progress. Failures to persist progress are
 // logged and never abort the turn: the completion write carries the final

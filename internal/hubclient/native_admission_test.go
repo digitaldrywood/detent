@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -19,14 +21,19 @@ import (
 func TestNativeAdmissionBatch(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name      string
-		slots     int
-		budget    int
-		waiting   int
-		preview   bool
-		failAfter int
-		failClaim int
-		want      int
+		name         string
+		slots        int
+		budget       int
+		waiting      int
+		preview      bool
+		failAfter    int
+		failClaim    int
+		want         int
+		failCode     string
+		failStatus   int
+		failPreview  bool
+		emptyPreview bool
+		wantError    bool
 	}{
 		{name: "six slots", slots: 6, budget: 14, preview: true, want: 6},
 		{name: "project slots", slots: 2, budget: 10, preview: true, want: 2},
@@ -35,6 +42,28 @@ func TestNativeAdmissionBatch(t *testing.T) {
 		{name: "direct claims", slots: 6, budget: 14, want: 6},
 		{name: "hydration releases whole batch", slots: 6, budget: 14, preview: true, failAfter: 2},
 		{name: "claim failure releases partial batch", slots: 6, budget: 14, preview: true, failClaim: 3},
+		{name: "direct provider full", slots: 6, budget: 14, failClaim: 1, failCode: "provider_capacity"},
+		{name: "direct runner full", slots: 6, budget: 14, failClaim: 1, failCode: "runner_capacity"},
+		{name: "direct host full", slots: 6, budget: 14, failClaim: 1, failCode: "host_capacity"},
+		{name: "preview provider full", slots: 6, budget: 14, preview: true, failPreview: true, failCode: "provider_capacity"},
+		{name: "preview runner full", slots: 6, budget: 14, preview: true, failPreview: true, failCode: "runner_capacity"},
+		{name: "preview host full", slots: 6, budget: 14, preview: true, failPreview: true, failCode: "host_capacity"},
+		{name: "preview claim provider full", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "provider_capacity"},
+		{name: "preview claim runner full", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "runner_capacity"},
+		{name: "preview claim host full", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "host_capacity"},
+		{name: "empty provider preview strict provider full", slots: 6, budget: 14, preview: true, emptyPreview: true, failClaim: 1, failCode: "provider_capacity"},
+		{name: "empty provider preview strict runner full", slots: 6, budget: 14, preview: true, emptyPreview: true, failClaim: 1, failCode: "runner_capacity"},
+		{name: "empty provider preview strict host full", slots: 6, budget: 14, preview: true, emptyPreview: true, failClaim: 1, failCode: "host_capacity"},
+		{name: "partial provider full", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "provider_capacity", want: 2},
+		{name: "partial runner full", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "runner_capacity", want: 2},
+		{name: "partial host full", slots: 6, budget: 14, failClaim: 3, failCode: "host_capacity", want: 2},
+		{name: "unauthorized", slots: 6, budget: 14, failClaim: 1, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
+		{name: "policy denied releases partial batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "claim_not_permitted", failStatus: http.StatusForbidden, wantError: true},
+		{name: "unrelated conflict releases partial batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "policy_mismatch", wantError: true},
+		{name: "draining", slots: 6, budget: 14, preview: true, failPreview: true, failCode: "runner_draining", wantError: true},
+		{name: "disabled", slots: 6, budget: 14, failClaim: 1, failCode: "runner_disabled", wantError: true},
+		{name: "offline", slots: 6, budget: 14, failClaim: 1, failCode: "runner_offline", wantError: true},
+		{name: "malformed preview", slots: 6, budget: 14, preview: true, failPreview: true, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -48,6 +77,13 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			evaluations := 0
 			var readyIDs []string
 			request := orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Todo"}, AdmissionLimit: test.slots, CandidateLimit: test.budget}
+			if test.emptyPreview {
+				h.scheduler.providerReports = func() ([]providercapacity.Report, error) { return nil, nil }
+				request.ProviderRequirement = func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+					t.Error("empty preview resolved a provider requirement")
+					return providercapacity.Requirement{}, nil
+				}
+			}
 			if test.preview {
 				request.CandidateReady = func(_ context.Context, issue connector.Issue) bool {
 					evaluations++
@@ -62,11 +98,30 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			recoveries := 0
 			claims := 0
 			h.failChanges.next = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if test.emptyPreview && strings.HasSuffix(r.URL.Path, "/claims/preview") {
+					response := httptest.NewRecorder()
+					response.WriteString(`{"items":[]}`)
+					return response.Result(), nil
+				}
 				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
 					claims++
-					if claims == test.failClaim {
+					if claims == test.failClaim && test.failCode == "" {
 						return nil, errors.New("injected claim failure")
 					}
+				}
+				if test.failPreview && strings.HasSuffix(r.URL.Path, "/claims/preview") || test.failCode != "" && claims == test.failClaim && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
+					response := httptest.NewRecorder()
+					if test.failCode == "" {
+						response.WriteString(`{"items":`)
+					} else {
+						status := test.failStatus
+						if status == 0 {
+							status = http.StatusConflict
+						}
+						response.WriteHeader(status)
+						fmt.Fprintf(response, `{"code":%q,"message":"injected refusal"}`, test.failCode)
+					}
+					return response.Result(), nil
 				}
 				if strings.HasSuffix(r.URL.Path, "/comments") {
 					recoveries++
@@ -77,9 +132,15 @@ func TestNativeAdmissionBatch(t *testing.T) {
 				return transport.RoundTrip(r)
 			})
 			issues, err := h.scheduler.FetchCandidateIssues(t.Context(), request)
-			if test.failAfter != 0 || test.failClaim != 0 {
+			if test.failAfter != 0 || test.failClaim != 0 && test.failCode == "" || test.wantError {
 				if err == nil || len(issues) != 0 {
 					t.Fatalf("hydration failure = %d issues, %v", len(issues), err)
+				}
+				if test.failCode != "" {
+					var failure *APIError
+					if !errors.As(err, &failure) || failure.Code != test.failCode {
+						t.Fatalf("refusal lost its typed owner: %v", err)
+					}
 				}
 				h.failChanges.next = transport
 				readyIDs = nil
@@ -90,6 +151,12 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			} else if err != nil || len(issues) != test.want || evaluations > test.budget {
 				t.Fatalf("admitted=%d evaluated=%d error=%v, want %d", len(issues), evaluations, err, test.want)
 			}
+			if test.failCode != "" && !test.wantError && (claims != test.failClaim || len(h.scheduler.nativeClaims) != test.want) {
+				t.Fatalf("capacity refusal overclaimed: claims=%d retained=%d", claims, len(h.scheduler.nativeClaims))
+			}
+			h.failChanges.next = transport
+			h.scheduler.providerReports = nil
+			request.ProviderRequirement = nil
 			seen := make(map[string]bool)
 			sessions := make(map[string]bool)
 			for i, issue := range issues {

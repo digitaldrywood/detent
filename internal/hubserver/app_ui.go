@@ -164,8 +164,9 @@ func conversationClientIdentity(fsys fs.FS, version string, at time.Time) appCli
 // hub's version is a host somebody has to go and upgrade.
 
 type appUpdateRunner struct {
-	RunnerID    string `json:"runner_id"`
-	DisplayName string `json:"display_name"`
+	ClaimRefusalReason string `json:"claim_refusal_reason"`
+	RunnerID           string `json:"runner_id"`
+	DisplayName        string `json:"display_name"`
 	// Version is what the host's heartbeat last reported, empty for a runner
 	// that has never reported one.
 	Version string `json:"version"`
@@ -174,6 +175,7 @@ type appUpdateRunner struct {
 }
 
 type appUpdates struct {
+	MinimumRunnerVersion string `json:"minimum_runner_version"`
 	// Current is the version every runner is expected to be on.
 	Current string `json:"current"`
 	// Source names where Current came from, so a reader is never left guessing
@@ -226,7 +228,8 @@ func (s *Service) appUpdates(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	current := detentVersion(s.config.Version)
-	payload := appUpdates{Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
+	minimum := minimumRunnerVersion(current)
+	payload := appUpdates{MinimumRunnerVersion: minimum, Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
 	rows, err := s.database.db.QueryContext(c.Request().Context(), `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
 WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.id`, s.config.Hosted.OrganizationID)
@@ -247,7 +250,8 @@ WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.
 		}
 		// The same window readRunner calls "offline".
 		runner.Online = !now.Before(at) && now.Before(at.Add(runnerauth.HeartbeatTimeout))
-		runner.Behind = runnerBehind(current, runner.Version)
+		runner.ClaimRefusalReason = runnerClaimRefusal(minimum, runner.Version)
+		runner.Behind = runner.ClaimRefusalReason != ""
 		if runner.Behind {
 			payload.BehindCount++
 		}

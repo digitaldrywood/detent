@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -96,11 +95,61 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 	shared := f.record(f.other, "shared", base.Add(3*time.Minute))
 	shared.Visibility = conversation.VisibilityShared
 	shared = f.create(t, shared)
+	issue := f.nativeFixture.create(t, "linked user chat")
+	shared.WorkItemID, shared.LinkedAt = string(issue.WorkItemID), &base
+	tx := f.tx(t)
+	if err := f.store.updateConversation(t.Context(), tx, &shared, shared.Revision); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, tx)
+	worker := f.record(f.owner, "worker session", base.Add(time.Hour))
+	worker.Origin, worker.Visibility = conversationOriginWorker, conversation.VisibilityShared
+	workerIssue := f.nativeFixture.create(t, "runner issue")
+	worker.WorkItemID, worker.LinkedAt = string(workerIssue.WorkItemID), &base
+	worker = f.create(t, worker)
+	privateWorker := f.record(f.owner, "private worker session", base.Add(2*time.Hour))
+	privateWorker.Origin = conversationOriginWorker
+	privateWorker = f.create(t, privateWorker)
 	settled := f.record(f.owner, "settled", base.Add(4*time.Minute))
 	settled.Status = conversation.StatusSettled
 	settledAt := base.Add(4 * time.Minute)
 	settled.SettledAt = &settledAt
 	settled = f.create(t, settled)
+	for _, scope := range []struct {
+		name    string
+		project tracker.ProjectID
+	}{
+		{"project", f.project.ID},
+		{"organization", ""},
+	} {
+		t.Run(scope.name+" lists only user origins", func(t *testing.T) {
+			tx := f.tx(t)
+			got, _, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: scope.project, Principal: f.owner, Limit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, test := range []struct {
+				record conversationRecord
+				listed bool
+			}{
+				{newer, true}, {shared, true}, {worker, false}, {privateWorker, false},
+			} {
+				t.Run(test.record.Title, func(t *testing.T) {
+					listed := false
+					for _, record := range got {
+						listed = listed || record.ID == test.record.ID
+					}
+					if listed != test.listed {
+						t.Fatalf("listed = %v, want %v", listed, test.listed)
+					}
+					read, err := f.store.readConversation(t.Context(), tx, f.organization, f.project.ID, test.record.ID)
+					if err != nil || read.Origin != test.record.Origin {
+						t.Fatalf("direct read = %#v, %v", read, err)
+					}
+				})
+			}
+		})
+	}
 
 	t.Run("read", func(t *testing.T) {
 		tx := f.tx(t)
@@ -734,7 +783,8 @@ func TestConversationStoreNormalizeAfterRestart(t *testing.T) {
 
 func TestConversationMigrationTables(t *testing.T) {
 	t.Parallel()
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	f := newConversationAPIFixture(t, nil)
+	service := f.service
 	if service.database.schemaVersion != supportedSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion)
 	}
@@ -753,4 +803,57 @@ func TestConversationMigrationTables(t *testing.T) {
 	if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO conversations (id, organization_id, project_id, owner_principal_id, owner_subject, title, visibility, status, execution_json, created_at, updated_at) VALUES ('conv_x', 'org', 'proj', 'tok', '', 't', 'public', 'active', '{}', 'now', 'now')"); err == nil {
 		t.Fatal("visibility CHECK must reject unknown values")
 	}
+	t.Run("origin migration preserves linked user chats", func(t *testing.T) {
+		manual := f.create(t, f.token, map[string]any{"title": "manual"}).Conversation
+		linked := f.create(t, f.token, map[string]any{"title": "linked"}).Conversation
+		requireNativeStatus(t, f.link(t, f.token, linked.ID, "migration-link", true, "linked user issue"), http.StatusOK)
+		private := f.create(t, f.token, map[string]any{"title": "private linked"}).Conversation
+		privateIssue := f.nativeFixture.create(t, "private linked issue")
+		if _, err := service.database.db.ExecContext(t.Context(), "UPDATE conversations SET work_item_id = ?, linked_at = created_at WHERE id = ?", privateIssue.WorkItemID, private.ID); err != nil {
+			t.Fatal(err)
+		}
+		issue := f.nativeFixture.create(t, "worker issue")
+		tx, err := service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback() })
+		worker, err := service.conversations.ensureWorkerConversation(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: f.ownerID}}, string(issue.WorkItemID), service.config.now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.database.db.ExecContext(t.Context(), "ALTER TABLE conversations DROP COLUMN origin"); err != nil {
+			t.Fatal(err)
+		}
+		migrationTx, err := service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = migrationTx.Rollback() })
+		if err := migrateConversationOrigin(t.Context(), migrationTx); err != nil {
+			t.Fatal(err)
+		}
+		if err := migrationTx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct{ name, id, origin string }{
+			{"manual", manual.ID, conversationOriginUser},
+			{"linked user", linked.ID, conversationOriginUser},
+			{"private linked user", private.ID, conversationOriginUser},
+			{"worker", worker.ID, conversationOriginWorker},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				record, err := service.conversations.store.readConversationByID(t.Context(), service.database.db, test.id)
+				if err != nil || record.Origin != test.origin {
+					t.Fatalf("upgraded conversation = %#v, %v, want origin %q", record, err, test.origin)
+				}
+			})
+		}
+		if _, err := service.database.db.ExecContext(t.Context(), "UPDATE conversations SET origin = 'unknown' WHERE id = ?", worker.ID); err == nil {
+			t.Fatal("origin CHECK must reject unknown values")
+		}
+	})
 }

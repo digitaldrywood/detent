@@ -10,6 +10,7 @@ const RIGHT_PANEL_KINDS = [
   "terminal",
   "pull-request",
 
+  "ask",
   "conversation",
 
   "output",
@@ -48,6 +49,7 @@ export type RightPanelSurface =
       url?: string;
     }
   | { id: `conversation:${string}`; kind: "conversation"; conversationId: string }
+  | { id: "ask"; kind: "ask" }
   | { id: "output"; kind: "output" };
 
 export interface RightPanelState {
@@ -130,7 +132,9 @@ export function useRightPanel(scopeKey: string): RightPanelController {
       surface: RightPanelSurface,
     ): RightPanelState => {
       const existing = current.surfaces.find((entry) => entry.id === surface.id);
-      const surfaces = existing === undefined ? [...current.surfaces, surface] : current.surfaces;
+      const surfaces = existing === undefined
+        ? surface.kind === "ask" ? [surface, ...current.surfaces] : [...current.surfaces, surface]
+        : current.surfaces;
       return { ...current, isOpen: true, surfaces, activeSurfaceId: surface.id };
     };
     const without = (current: RightPanelState, ids: ReadonlySet<string>): RightPanelState => {

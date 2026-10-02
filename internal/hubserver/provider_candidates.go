@@ -66,7 +66,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 			if err != nil {
 				return nil, err
 			}
-			page.Items = append(page.Items, issue)
+			page.Items = append(page.Items, s.nativeIssueResponse(issue))
 			if len(page.Items) == 100 {
 				page.Next = id
 				break

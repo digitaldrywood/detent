@@ -1325,7 +1325,7 @@ func (r *Runner) agentResumeState(
 	if !ok {
 		return store.AgentResumeState{}
 	}
-	state, err := resumeStore.LatestCompletedAgentResumeState(ctx, lookup)
+	state, err := resumeStore.LatestAgentResumeState(ctx, lookup)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			r.logger.Warn(
@@ -1464,6 +1464,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if err := req.Policy.Match(workflow.Config.Policy); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if req.Execution != nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
+		resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
+		if err != nil {
+			return RunResult{}, err
+		}
+		req.ResumeState = resume
+		req.RetryMode = RetryModeResume
+		req.retainCheckpoint = true
 	}
 	if err := r.checkResumePolicy(ctx, req, req.ResumeState); err != nil {
 		return RunResult{}, err
@@ -1986,7 +1995,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 	execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 	execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
-	if execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !errors.Is(execution.err, ErrWorkerProcessReap) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
+	if req.Execution == nil && execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !errors.Is(execution.err, ErrWorkerProcessReap) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
 		r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			telemetry.DetentSessionIDKey, sessionID,
@@ -2164,7 +2173,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		r.logWorkerEvent(req.Issue, "worker_command_finished", commandFinishedAttrs...)
 	}
 	afterRunPending = false
-	req.retainCheckpoint = result.Checkpoint != nil && turnErr != nil
+	req.retainCheckpoint = turnErr != nil && (req.Execution != nil || result.Checkpoint != nil)
 	req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil
 	if errors.Is(turnErr, ErrWorkerProcessReap) {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)

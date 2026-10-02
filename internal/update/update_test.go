@@ -9,8 +9,10 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -512,7 +514,7 @@ func (*contextBlockingBody) Close() error {
 	return nil
 }
 
-func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testing.T) {
+func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 	tmp := t.TempDir()
 	binary := filepath.Join(tmp, "bin", "detent")
 	lockPath := filepath.Join(tmp, "state", "install.lock")
@@ -551,12 +553,23 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 		defaultChecksumMinisignPublicKey = previous
 	})
 
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	const releaseURL = "https://releases.example.test"
+	release := Release{TagName: "v1.2.4", Assets: []Asset{
+		{Name: archiveName, BrowserDownloadURL: releaseURL + "/archive"},
+		{Name: checksumName, BrowserDownloadURL: releaseURL + "/checksums"},
+		{Name: signatureName, BrowserDownloadURL: releaseURL + "/checksums.minisig"},
+		{Name: provenanceAssetName, BrowserDownloadURL: releaseURL + "/provenance"},
+	}}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/releases":
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `[{"tag_name":"v1.2.4","draft":false,"prerelease":false,"assets":[{"name":"%s","browser_download_url":"%s/archive"},{"name":"%s","browser_download_url":"%s/checksums"},{"name":"%s","browser_download_url":"%s/checksums.minisig"},{"name":"%s","browser_download_url":"%s/provenance"}]}]`, archiveName, server.URL, checksumName, server.URL, signatureName, server.URL, provenanceAssetName, server.URL)
+			if err := json.NewEncoder(w).Encode([]Release{release}); err != nil {
+				t.Fatal(err)
+			}
+		case "/releases/tags/v1.2.4":
+			if err := json.NewEncoder(w).Encode(release); err != nil {
+				t.Fatal(err)
+			}
 		case "/archive":
 			_, _ = w.Write(archive)
 		case "/checksums":
@@ -568,8 +581,12 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
+	})
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder.Result(), nil
+	})}
 
 	service := NewService(Config{
 		CurrentVersion: "1.2.3",
@@ -578,8 +595,8 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 		GOOS:           "linux",
 		GOARCH:         "amd64",
 		Client: NewGitHubClient(GitHubClientConfig{
-			APIBase:    server.URL,
-			HTTPClient: server.Client(),
+			APIBase:    releaseURL,
+			HTTPClient: httpClient,
 		}),
 		Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
 		BinaryVerifier: func(context.Context, string) (string, error) {
@@ -587,6 +604,14 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 		},
 	})
 
+	if _, err := service.Check(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	service.cfg.TargetVersion = func(context.Context) (string, error) { return "v1.2.4", nil }
+	stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
+	if !errors.Is(staleErr, ErrRefused) || stale.Action != ActionRefused {
+		t.Fatalf("changed selected release = %+v, %v", stale, staleErr)
+	}
 	var preflightPath string
 	status, err := service.Apply(context.Background(), ApplyOptions{
 		AssumeYes:         true,
@@ -611,6 +636,10 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 	}
 	if !status.UpdateAvailable {
 		t.Fatal("UpdateAvailable = false, want true")
+	}
+	expectedBinarySum := sha256.Sum256([]byte("updated"))
+	if status.BinarySHA256 != fmt.Sprintf("%x", expectedBinarySum) || !status.VerifiedRelease || status.LatestCommit != testUpdatedCommit {
+		t.Fatalf("applied provenance = %+v", status)
 	}
 	raw, err := os.ReadFile(binary)
 	if err != nil {
@@ -945,6 +974,89 @@ func TestServiceCheckReportsCriticalReleaseMarker(t *testing.T) {
 			}
 			if status.Critical != tt.critical {
 				t.Fatalf("Check().Critical = %t, want %t", status.Critical, tt.critical)
+			}
+		})
+	}
+}
+
+func TestServiceChoosesHubUpdateTarget(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		target      string
+		hubError    error
+		release     string
+		draft       bool
+		wantTag     string
+		available   bool
+		wantError   bool
+		wantPath    string
+		applyTarget string
+		applyError  error
+	}{
+		{name: "Hub pinned below latest", target: "1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4"},
+		{name: "Hub older than runner", target: "v1.2.2", wantTag: "v1.2.2"},
+		{name: "Hub matches runner", target: "v1.2.3", wantTag: "v1.2.3"},
+		{name: "Hub unreachable", hubError: errors.New("Hub unavailable"), wantError: true},
+		{name: "Hub missing version", wantError: true},
+		{name: "Hub development version", target: "dev", wantError: true},
+		{name: "Hub pin has no release", target: "v1.2.4", wantError: true, wantPath: "/releases/tags/v1.2.4"},
+		{name: "Hub pin resolves to wrong release", target: "v1.2.4", release: "v1.2.5", wantError: true, wantPath: "/releases/tags/v1.2.4"},
+		{name: "Hub pin is draft", target: "v1.2.4", release: "v1.2.4", draft: true, wantError: true, wantPath: "/releases/tags/v1.2.4"},
+		{name: "Hub explicitly pins prerelease", target: "v1.2.4-rc.1", release: "v1.2.4-rc.1", wantTag: "v1.2.4-rc.1", available: true, wantPath: "/releases/tags/v1.2.4-rc.1"},
+		{name: "Hub rolls back before apply", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyTarget: "v1.2.2"},
+		{name: "Hub unreachable before apply", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyError: errors.New("Hub unavailable before apply")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var paths []string
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				paths = append(paths, r.URL.Path)
+				var output any = Release{TagName: test.release, Draft: test.draft, Prerelease: strings.Contains(test.release, "-rc.")}
+				status := http.StatusOK
+				if r.URL.Path == "/releases" {
+					output = []Release{{TagName: "v9.0.0"}}
+				} else if test.release == "" {
+					status = http.StatusNotFound
+				}
+				payload, err := json.Marshal(output)
+				if err != nil {
+					return nil, err
+				}
+				return &http.Response{StatusCode: status, Status: http.StatusText(status), Body: io.NopCloser(bytes.NewReader(payload)), Header: make(http.Header)}, nil
+			})}
+			target, hubError := test.target, test.hubError
+			service := NewService(Config{
+				CurrentVersion: "1.2.3",
+				ExecutablePath: "/opt/detent/bin/detent",
+				GOOS:           "linux",
+				GOARCH:         "amd64",
+				Client:         NewGitHubClient(GitHubClientConfig{APIBase: "https://releases.example.test", HTTPClient: client}),
+				TargetVersion:  func(context.Context) (string, error) { return target, hubError },
+			})
+			status, err := service.Check(t.Context())
+			if (err != nil) != test.wantError {
+				t.Fatalf("Check() error = %v, want error = %t", err, test.wantError)
+			}
+			if status.LatestTag != test.wantTag || status.UpdateAvailable != test.available {
+				t.Fatalf("Check() = %#v, want tag %q, available %t", status, test.wantTag, test.available)
+			}
+			if test.wantPath == "" && len(paths) != 0 || test.wantPath != "" && (len(paths) != 1 || paths[0] != test.wantPath) {
+				t.Fatalf("release requests = %v, want only %q", paths, test.wantPath)
+			}
+			if test.hubError != nil && !errors.Is(err, test.hubError) {
+				t.Fatalf("Check() lost Hub error: %v", err)
+			}
+			if test.applyTarget != "" || test.applyError != nil {
+				target, hubError = test.applyTarget, test.applyError
+				applied, err := service.Apply(t.Context(), ApplyOptions{AssumeYes: true})
+				if !errors.Is(err, test.applyError) || applied.UpdateAvailable || len(paths) != 1 {
+					t.Fatalf("Apply() reused obsolete target: status %#v, error %v, release requests %v", applied, err, paths)
+				}
+				if test.applyError == nil && (applied.Action != ActionUpToDate || applied.LatestTag != test.applyTarget) {
+					t.Fatalf("Apply() = %#v, want up to date at Hub target %s", applied, test.applyTarget)
+				}
 			}
 		})
 	}
@@ -1516,6 +1628,15 @@ type staticReleaseClient struct {
 
 func (c staticReleaseClient) ListReleases(context.Context) ([]Release, error) {
 	return c.releases, nil
+}
+
+func (c staticReleaseClient) GetRelease(_ context.Context, tag string) (Release, error) {
+	for _, release := range c.releases {
+		if release.TagName == tag {
+			return release, nil
+		}
+	}
+	return Release{}, errors.New("release not found")
 }
 
 func (c staticReleaseClient) Download(_ context.Context, url string) ([]byte, error) {

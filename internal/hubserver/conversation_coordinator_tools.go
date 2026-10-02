@@ -67,6 +67,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 		coordinatorTool(coordinatorToolExplainIssue,
 			"Explain one issue: title, body, workflow state, latest attempt, recent comments and its linked conversation.",
 			`{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string","description":"Work item identifier (wi_...)"}},"additionalProperties":false}`),
+		coordinatorTool("read_issue_history", "Read current records for this conversation's attached issue, with pagination. Sections include full body, comments, lane and phase history with reasons, attempts with outcomes, dependencies and PR state.", `{"type":"object","required":["section"],"properties":{"section":{"type":"string","enum":["work_item","work_comments","work_history","work_runs","work_relationships","work_references","work_attempt_receipt"]},"cursor":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer","minimum":1,"maximum":200},"native_attempt_id":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
@@ -120,6 +121,8 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		return nil, errCoordinatorProjectUnreadable
 	}
 	switch call.Name {
+	case "read_issue_history":
+		return t.readIssueHistory(ctx, record, call)
 	case "get_project_integration", "update_project_integration", "move_item", "edit_item", "add_comment":
 		return t.projectAction(ctx, record, call)
 	case coordinatorToolListAttention:
@@ -337,7 +340,7 @@ ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.Or
 			result.Truncated = true
 			break
 		}
-		item.URL = "/chat/issues/" + item.WorkItemID
+		item.URL = "/work/i/" + item.WorkItemID
 		item.Title = boundRunes(item.Title, coordinatorToolSummaryRunes)
 		state := strings.ToLower(item.State)
 		var group *[]coordinatorAttentionItem
@@ -479,7 +482,7 @@ WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?))
 		return nil, fmt.Errorf("read issue: %w", err)
 	}
 	issue.Body = boundRunes(issue.Body, coordinatorIssueBodyRunes)
-	issue.URL = "/chat/issues/" + issue.WorkItemID
+	issue.URL = "/work/i/" + issue.WorkItemID
 	now, err := t.coordinator.service.server.database.currentTime()
 	if err != nil {
 		return nil, err

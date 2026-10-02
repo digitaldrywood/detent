@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -91,7 +92,7 @@ func nextStep(completed string) string {
 
 func (s *Service) startAllocator(parent context.Context) {
 	allocation := s.config.Allocation
-	if allocation == nil {
+	if allocation == nil && s.attachments == nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
@@ -101,7 +102,7 @@ func (s *Service) startAllocator(parent context.Context) {
 	organizations, err := s.registry.List(ctx)
 	if err == nil {
 		for _, organization := range organizations {
-			if organization.Managed && organization.State == "ready" {
+			if allocation != nil && organization.Managed && organization.State == "ready" {
 				if err := allocation.Launcher.Start(ctx, s.tenantSpec(organization)); err != nil {
 					s.config.Logger.Warn("tenant Hub could not start", "organization", organization.ID)
 				}
@@ -113,8 +114,11 @@ func (s *Service) startAllocator(parent context.Context) {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
-			s.resumeDeletions(ctx)
-			s.provisionDue(ctx)
+			if allocation != nil {
+				s.resumeDeletions(ctx)
+				s.provisionDue(ctx)
+			}
+			s.sweepAttachments(ctx)
 			select {
 			case <-ctx.Done():
 				return
@@ -131,6 +135,9 @@ func (s *Service) closeAllocator() error {
 	}
 	s.stopAllocator()
 	<-s.allocatorDone
+	if s.config.Allocation == nil {
+		return nil
+	}
 	return s.config.Allocation.Launcher.Close()
 }
 
@@ -670,6 +677,25 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 }
 
 func (s *Service) finishDeletion(ctx context.Context, id string) error {
+	s.attachmentMu.Lock()
+	defer s.attachmentMu.Unlock()
+	if s.attachments != nil {
+		prefix, err := attachment.OrganizationPrefix(id)
+		if err != nil {
+			return err
+		}
+		if err := s.attachments.Walk(ctx, prefix, func(object attachment.Object) error {
+			if !strings.HasPrefix(object.Key, prefix) {
+				return attachment.ErrInvalid
+			}
+			if err := s.auth.audit(ctx, "entry", id, "attachment_deleted"); err != nil {
+				return err
+			}
+			return s.attachments.Delete(ctx, object.Key)
+		}); err != nil {
+			return err
+		}
+	}
 	revoked, err := s.auth.revokeOrganization(ctx, id)
 	if err != nil {
 		return err

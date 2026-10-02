@@ -307,9 +307,9 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Health webhook | | | `notifications.health.webhook.url` | disabled |
 | Health notification debounce | | | `notifications.health.debounce_seconds` | `300` |
 | Health webhook timeout | | | `notifications.health.webhook.timeout_ms` | `5000` |
-| Automatic update checks | | | `update.auto_check_enabled` | `false` |
-| Update check interval | | | `update.check_interval_hours` | `6` |
-| Automatic update apply when idle | | | `update.auto_apply_enabled` | `false` |
+| Automatic update checks | | | `update.auto_check_enabled` | `true` for Hub runners, otherwise `false` |
+| Update check interval | | | `update.check_interval_hours` | Hub heartbeat interval for Hub runners, otherwise `6` hours |
+| Automatic update apply when idle | | | `update.auto_apply_enabled` | `true` for Hub runners, otherwise `false` |
 | Maximum automatic update deferral | | | `update.max_deferral_hours` | `6` |
 
 Automatic apply waits for an idle runtime until `update.max_deferral_hours`
@@ -556,7 +556,16 @@ retrying and exhausted deliveries. Notification configuration changes require
 a restart. Treat configured headers as secrets and keep host-specific values
 out of checked-in project configuration.
 
-Automatic update checks are host-specific and disabled by default. When
+Automatic update checks and apply are enabled by default when `client.hub_url`
+is configured. These runners check the Hub's running version through its
+authenticated native capabilities response at the configured heartbeat interval,
+unless `update.check_interval_hours` is set. They fetch that exact published
+release rather than GitHub latest. A runner ahead of the Hub stays on its
+installed version; an unreachable Hub, missing version or unpublished target
+does not trigger a fallback update. Explicit `auto_check_enabled: false` or
+`auto_apply_enabled: false` settings opt out and survive configuration writes.
+
+Standalone automatic update checks remain disabled by default. When
 enabled, Detent persists the last check and schedules the next jittered check
 from that timestamp, so restarts preserve the remaining delay and overdue
 checks run promptly. The six-hour default keeps release uptake within the same
@@ -564,8 +573,9 @@ day while using about four GitHub requests per host per day. Detent reports the
 last check, available or applied version, and next check on `/health` and the
 Health dashboard. `detent doctor` surfaces the last and next check times,
 reports whether the host is opted in, and suggests enabling checks when it is
-not. Automatic apply remains off unless explicitly enabled and only replaces
-release-installer binaries; other install sources remain notification-only.
+not. Standalone automatic apply remains off unless explicitly enabled. Automatic
+apply only replaces release-installer binaries; other install sources remain
+notification-only.
 When work attempts are active, Detent shows the pending version in the web and
 terminal dashboards and waits for the next fleet-wide idle window before
 applying it. An operator can instead confirm immediate apply from the web

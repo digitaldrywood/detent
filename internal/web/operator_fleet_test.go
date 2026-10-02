@@ -301,7 +301,7 @@ func TestMCPFleetMutation(t *testing.T) {
 // Catch newly added instance controls reaching services before human approval,
 // and ordinary refresh/inspect/acknowledgment being unnecessarily confirmed.
 func TestMCPOperatorControls(t *testing.T) {
-	for _, label := range []string{operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.ProgressCredit, operatortool.ProgressCredit + "/foreign identity", operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.RecoverAttempt + "/retry_fresh", operatortool.RecoverAttempt + "/stale"} {
+	for _, label := range []string{operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.UpdateApply + "/enrolled target", operatortool.ProgressCredit, operatortool.ProgressCredit + "/foreign identity", operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.RecoverAttempt + "/retry_fresh", operatortool.RecoverAttempt + "/stale"} {
 		t.Run(label, func(t *testing.T) {
 			name, variant, _ := strings.Cut(label, "/")
 			deps := testDeps(t)
@@ -343,8 +343,15 @@ func TestMCPOperatorControls(t *testing.T) {
 					args["action"] = "retry_fresh"
 				}
 			}
+			if variant == "enrolled target" {
+				args["runner_id"] = "remote"
+				args["change"] = map[string]any{"expected_revision": 1, "expected_build_revision": strings.Repeat("a", 64), "service": "detent", "version": "1.2.4"}
+			}
 			response, raw := fleetCall(t, server, "detent_admin_token", name, args)
-			if variant == "foreign identity" {
+			if variant == "foreign identity" || variant == "enrolled target" {
+				if variant == "enrolled target" && update.calls != 0 {
+					t.Fatal("remote selector reached local update owner")
+				}
 				if len(raw) != 0 || !strings.Contains(response.Body.String(), `"isError":true`) {
 					t.Fatalf("foreign progress identity obtained a preview: %s", response.Body.String())
 				}
