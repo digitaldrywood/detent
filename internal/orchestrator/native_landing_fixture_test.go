@@ -45,7 +45,7 @@ func nativeLandingGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string) *nativeLandingJourney {
+func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, sourceConflict bool) *nativeLandingJourney {
 	t.Helper()
 	source := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "origin.git")
@@ -57,7 +57,19 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	if err := os.WriteFile(filepath.Join(source, "base.txt"), []byte("base\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	nativeLandingGit(t, source, "add", "base.txt")
+	matrixFiles := []string{"docs/mcp-capability-matrix.md", "internal/operatortool/capability/matrix.json"}
+	if sourceConflict {
+		for _, name := range matrixFiles {
+			path := filepath.Join(source, name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("initial matrix\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	nativeLandingGit(t, source, "add", ".")
 	nativeLandingGit(t, source, "commit", "-m", "initial")
 	nativeLandingGit(t, source, "init", "--bare", "-b", "main", remote)
 	repository := "https://github.com/example/repo"
@@ -77,17 +89,43 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("reviewed feature\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	nativeLandingGit(t, info.Path, "add", "feature.txt")
+	if sourceConflict {
+		for _, name := range matrixFiles {
+			if err := os.WriteFile(filepath.Join(info.Path, name), []byte("reviewed matrix\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(source, name), []byte("parallel matrix\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	nativeLandingGit(t, info.Path, "add", ".")
 	nativeLandingGit(t, info.Path, "commit", "-m", "reviewed feature")
 	head := nativeLandingGit(t, info.Path, "rev-parse", "HEAD")
 	if err := os.WriteFile(filepath.Join(source, "parallel.txt"), []byte("parallel landing\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	nativeLandingGit(t, source, "add", "parallel.txt")
+	nativeLandingGit(t, source, "add", ".")
 	nativeLandingGit(t, source, "commit", "-m", "parallel landing")
 	freshBase := nativeLandingGit(t, source, "rev-parse", "HEAD")
-	tree := nativeLandingGit(t, source, "merge-tree", "--write-tree", freshBase, head)
-	merge := nativeLandingGit(t, source, "commit-tree", tree, "-p", freshBase, "-m", "land reviewed feature")
+	var merge string
+	if sourceConflict {
+		cmd := exec.CommandContext(t.Context(), "git", "-C", source, "merge-tree", "--write-tree", "--name-only", freshBase, head)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
+		output, err := cmd.CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("fixture did not reproduce a source conflict: %s, %v", output, err)
+		}
+		for _, name := range matrixFiles {
+			if !strings.Contains(string(output), name) {
+				t.Fatalf("fixture conflict missing %s: %s", name, output)
+			}
+		}
+	} else {
+		tree := nativeLandingGit(t, source, "merge-tree", "--write-tree", freshBase, head)
+		merge = nativeLandingGit(t, source, "commit-tree", tree, "-p", freshBase, "-m", "land reviewed feature")
+	}
 	var puts atomic.Int64
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -96,6 +134,8 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 			fmt.Fprint(w, `{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/repos/example/repo/pulls":
 			fmt.Fprintf(w, `[{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}]`, head, info.Branch, nativeLandingGit(t, remote, "rev-parse", "refs/heads/main"))
+		case request.Method == http.MethodGet && request.URL.Path == "/repos/example/repo/pulls/7":
+			fmt.Fprintf(w, `{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}`, head, info.Branch, base)
 		case request.Method == http.MethodPut && request.URL.Path == "/repos/example/repo/pulls/7/merge":
 			body, err := io.ReadAll(request.Body)
 			if err != nil || !strings.Contains(string(body), head) || !strings.Contains(string(body), "squash") {
@@ -103,7 +143,7 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			if puts.Add(1) == 1 || !strings.HasPrefix(mergeMessage, "Base branch was modified") {
+			if puts.Add(1) == 1 || sourceConflict || !strings.HasPrefix(mergeMessage, "Base branch was modified") && mergeMessage != "Pull Request has merge conflicts" {
 				nativeLandingGit(t, source, "push", "origin", freshBase+":refs/heads/main")
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				fmt.Fprintf(w, `{"message":%q}`, mergeMessage)

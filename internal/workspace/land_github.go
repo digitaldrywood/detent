@@ -218,6 +218,7 @@ func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, i
 	if err != nil {
 		return errors.Join(refusal, err)
 	}
+	fetched = strings.TrimSpace(fetched)
 	refs, err := runGitAt(ctx, info.Path, "ls-remote", remote, "refs/heads/"+info.Branch, "refs/heads/"+base)
 	if err != nil {
 		return errors.Join(refusal, fmt.Errorf("verify refused landing refs: %w", err))
@@ -229,18 +230,18 @@ func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, i
 			current[fields[1]] = fields[0]
 		}
 	}
-	if current["refs/heads/"+info.Branch] != opts.HeadSHA || current["refs/heads/"+base] != pull.Base.SHA || strings.TrimSpace(fetched) != pull.Base.SHA {
+	if current["refs/heads/"+info.Branch] != opts.HeadSHA || current["refs/heads/"+base] != fetched {
 		return fmt.Errorf("conflict projection differs from the current published head or base: %w", refusal)
 	}
-	output, err := runGitAt(ctx, info.Path, "merge-tree", "--write-tree", "--name-only", pull.Base.SHA, opts.HeadSHA)
+	output, err := runGitAt(ctx, info.Path, "merge-tree", "--write-tree", "--name-only", fetched, opts.HeadSHA)
 	if err == nil {
-		return fmt.Errorf("source merge of reviewed head %s into %s at %s is clean: %w", opts.HeadSHA, base, pull.Base.SHA, refusal)
+		return fmt.Errorf("source merge of reviewed head %s into %s at %s is clean: %w", opts.HeadSHA, base, fetched, refusal)
 	}
 	var commandErr *CommandError
 	if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
 		var status *github.StatusError
 		if errors.As(refusal, &status) {
-			return refuse(LandRefusalConflict, fmt.Sprintf("GitHub refused the pull request merge: %v; source merge of reviewed head %s into %s at %s conflicts: %s", status, opts.HeadSHA, base, pull.Base.SHA, strings.TrimSpace(output)))
+			return refuse(LandRefusalConflict, fmt.Sprintf("GitHub refused the pull request merge: %v; source merge of reviewed head %s into %s at %s conflicts: %s", status, opts.HeadSHA, base, fetched, strings.TrimSpace(output)))
 		}
 	}
 	return errors.Join(refusal, fmt.Errorf("inspect refused landing source merge: %w", err))

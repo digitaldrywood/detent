@@ -1280,7 +1280,7 @@ Explicit GitHub merge-conflict refusals (#155) establish source Rework only
 when a bounded refresh identifies the exact reviewed published head, PR
 repository/branch/base and current fetched and published base, and Git
 `merge-tree --write-tree` confirms a conflict for those immutable commits.
-Unknown, missing, stale or contradictory forge projections remain with the
+Unknown, missing or contradictory source identity or Git refs remain with the
 existing forge infrastructure retry owner in Merging without source failure
 allowance changes. Clean Git evidence never authorizes landing after a refused
 atomic merge. The original HTTP refusal and native Change/version/head remain
@@ -1291,6 +1291,18 @@ receipt clears its probe; source cleanliness alone cannot clear the refusal.
 `TestLocalGitLandChangeViaGitHub`, `TestLandNativeChange` and
 `TestNativeLandingRunCompletion` cover these consolidated authorities under
 INV-1 and INV-3 without a new reason, poller, configuration or recovery loop.
+
+Current Git base verification (#164) removes the equality pin to GitHub's
+projected PR base SHA. A stale base SHA alone cannot veto conflict evidence:
+the freshly fetched base must match the current published base in the same
+`ls-remote` read that verifies the exact immutable reviewed branch head.
+`merge-tree` uses that fetched commit. PR repository, base ref, head branch and
+head identity, worktree/source authority, policy and quota precedence remain
+required. Changing or unproven Git refs and clean source trees retain the
+existing forge wait; proven current source conflicts select configured Rework
+without reapproval. `TestLocalGitLandChangeViaGitHub` and
+`TestNativeLandingRunCompletion` cover advanced live bases with stale PR
+projections for conflicting matrix files and clean source trees.
 
 Native code/rework (#141, #156) consolidates commit finalization, rebase
 preparation and continuation under

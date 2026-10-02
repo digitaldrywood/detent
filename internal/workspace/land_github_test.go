@@ -80,7 +80,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "real source conflict reaches rework", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantRefusal: LandRefusalConflict},
 		{name: "base advancing at refusal is inspected afresh", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, advanceOnMerge: true, wantRefusal: LandRefusalConflict},
 		{name: "earlier head projection cannot prove a conflict", method: "squash", reworked: true, pullState: "stale", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "head", wantDeferred: true},
-		{name: "stale base projection cannot prove a conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "base", wantDeferred: true},
+		{name: "stale base projection uses current conflicting base", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "base", wantRefusal: LandRefusalConflict},
+		{name: "stale base projection with current clean base defers", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", wantDeferred: true},
 		{name: "moved published head cannot prove reviewed conflict", method: "squash", reworked: true, pullState: "stale", moved: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantDeferred: true},
 		{name: "different PR branch cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "branch", wantDeferred: true},
 		{name: "missing base evidence cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "missing", wantDeferred: true},
@@ -113,6 +114,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			originalBase := fixture.remoteMain(t)
 			if test.sourceConflict && !test.advanceOnMerge {
 				fixture.advanceMain(t, "feature.txt", "base conflict\n")
+			} else if test.projection == "base" {
+				fixture.advanceMain(t, "parallel.txt", "parallel landing\n")
 			}
 			base := fixture.remoteMain(t)
 			repository := "https://github.com/example/repo"
