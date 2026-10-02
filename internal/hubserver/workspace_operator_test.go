@@ -70,6 +70,47 @@ func workspaceOperatorData(t *testing.T, result operatortool.Result) json.RawMes
 	return response.Data
 }
 
+func TestWorkItemConversationLookup(t *testing.T) {
+	f := newConversationAPIFixture(t, nil)
+	issue := f.nativeFixture.create(t, "ordinary issue")
+	created := f.create(t, f.token, map[string]any{"title": "Private history"})
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET work_item_id = ?, linked_at = created_at WHERE id = ?", issue.WorkItemID, created.Conversation.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		token   string
+		project string
+		item    string
+		status  int
+	}{
+		{"owner", f.token, string(f.project.ID), string(issue.WorkItemID), http.StatusOK},
+		{"private history", f.other, string(f.project.ID), string(issue.WorkItemID), http.StatusNotFound},
+		{"foreign project", f.token, "foreign", string(issue.WorkItemID), http.StatusNotFound},
+		{"unknown item", f.token, string(f.project.ID), "missing", http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/projects/" + test.project
+			response := performHubAPIRequest(t, f.service, http.MethodGet, base+"/work-items/"+test.item+"/conversation", test.token, nil)
+			requireNativeStatus(t, response, test.status)
+			ctx := workspaceOperatorContext(t, f.service, test.token, string(f.project.OrganizationID), test.name)
+			result, err := workspaceOperatorCall(t, f.service, ctx, "get_work_item_conversation", map[string]any{"project_id": test.project, "work_item_id": test.item})
+			if test.status == http.StatusOK {
+				if err != nil || !strings.Contains(string(result.Content), created.Conversation.ID) {
+					t.Fatalf("canonical lookup=%s, %v", result.Content, err)
+				}
+				var snapshot conversationSnapshotResponse
+				decodeHubResponse(t, response, &snapshot)
+				if snapshot.Conversation.ID != created.Conversation.ID {
+					t.Fatal("lookup selected another conversation")
+				}
+			} else if err == nil {
+				t.Fatalf("lookup disclosed inaccessible conversation: %s", result.Content)
+			}
+		})
+	}
+}
+
 // Catches duplicated externally visible messages after reconnect, foreign
 // conversation access, and model-controlled authority/approval arguments.
 func TestWorkspaceOperatorConversation(t *testing.T) {

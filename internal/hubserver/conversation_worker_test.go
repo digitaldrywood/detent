@@ -304,6 +304,44 @@ func requireConversationErrorCode(t *testing.T, response *httptest.ResponseRecor
 
 func TestConversationWorkerBind(t *testing.T) {
 	t.Parallel()
+	t.Run("ordinary issue", func(t *testing.T) {
+		f := newConversationWorkerFixture(t)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
+			t.Fatal(err)
+		}
+		body := f.bindBody()
+		body["fencing_token"] = f.lease.FencingToken + 1
+		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
+		var count int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 0 {
+			t.Fatalf("stale owner created conversation: %d, %v", count, err)
+		}
+		response := f.bind(t, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var bound workerBindResponse
+		decodeHubResponse(t, response, &bound)
+		f.record.ID = bound.ConversationID
+		record := f.load(t)
+		if record.WorkItemID != string(f.issue.WorkItemID) || record.Visibility != conversation.VisibilityShared || record.Execution.Owner.AttemptID != f.attempt || record.Execution.Owner.RunID != f.run || len(bound.Pending) != 0 || len(f.messages(t)) != 0 {
+			t.Fatalf("ordinary binding = %#v, pending = %#v", record, bound.Pending)
+		}
+		requireConversationErrorCode(t, f.bind(t, nil), http.StatusConflict, "stale_execution")
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 1 {
+			t.Fatalf("duplicate conversations: %d, %v", count, err)
+		}
+		before := f.load(t)
+		if before.Execution.Owner != record.Execution.Owner || before.EventSeq != record.EventSeq {
+			t.Fatal("repeated binding changed the selected execution")
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET visibility = 'private' WHERE id = ?", f.record.ID); err != nil {
+			t.Fatal(err)
+		}
+		requireNativeStatus(t, f.bind(t, nil), http.StatusNotFound)
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations").Scan(&count); err != nil || count != 1 {
+			t.Fatalf("private history replaced: %d, %v", count, err)
+		}
+	})
+
 	f := newConversationWorkerFixture(t)
 	first := f.queue(t, conversation.MessageText, "key-1", "First question", nil)
 	second := f.queue(t, conversation.MessageContinue, "key-2", "Keep going", nil)

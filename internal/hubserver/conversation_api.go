@@ -39,6 +39,7 @@ func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/conversations", s.listProjectConversations, scope)
 	e.GET("/api/v2/organizations/:organization/conversations", s.listOrganizationConversations, s.requireConversationOrganization())
 	e.GET(nativeBase+"/conversations/:conversation", s.getConversation, scope)
+	e.GET(nativeBase+"/work-items/:item/conversation", s.getWorkItemConversation, scope)
 	e.GET(nativeBase+"/conversations/:conversation/messages", s.listConversationMessages, scope)
 	e.GET(nativeBase+"/conversations/:conversation/events", s.streamConversationEvents, scope)
 	e.POST(nativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope, s.operatorAuthority)
@@ -611,6 +612,18 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
 		return nil, false, fmt.Errorf("list readable projects: %w", err)
 	}
 	return projects, false, nil
+}
+
+func (s *Service) getWorkItemConversation(c echo.Context) error {
+	value, err := s.readWorkItemConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, value)
+}
+
+func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope nativeScope, item string) (json.RawMessage, error) {
+	return s.readConversationSnapshotFor(ctx, scope, "", item)
 }
 
 // getConversation implements GET /conversations/:conversation. The record,
@@ -1273,10 +1286,26 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+	return s.readConversationSnapshotFor(ctx, scope, id, "")
+}
+
+func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id, item string) (json.RawMessage, error) {
 	service := s.conversations
 	var snapshot conversationSnapshot
 	err := service.transact(ctx, func(tx *sql.Tx, _ time.Time) error {
-		record, err := service.loadConversation(ctx, tx, scope, id)
+		var record conversationRecord
+		var err error
+		if item != "" {
+			if _, _, err = readNativeIssue(ctx, tx, scope, item); err != nil {
+				return err
+			}
+			record, err = service.readLinkedConversation(ctx, tx, scope, item)
+			if err == nil {
+				record, err = service.loadConversation(ctx, tx, scope, record.ID)
+			}
+		} else {
+			record, err = service.loadConversation(ctx, tx, scope, id)
+		}
 		if err != nil {
 			return err
 		}

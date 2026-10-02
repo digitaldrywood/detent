@@ -326,6 +326,24 @@ only authorized read tools, while operator actions use the named command tools.
 `TestWorkspaceOperatorUnavailable` and `TestMCPOperatorChatRetry` cover these boundaries.
 No MCP adapter writes tracker lanes or introduces a new protection/recovery mechanism.
 
+Ordinary native workers (native #145) create their canonical, empty shared
+conversation inside the existing lease-fenced bind transaction when none exists.
+The selected attempt/run/lease/fencing token remains the sole execution owner;
+existing conversation-origin history and private visibility are retained.
+Issue Activity/Surface and typed MCP work-item lookup resolve that canonical
+conversation independently of paginated conversation lists, with current
+project and conversation read authority. Comments and Workpads are never copied
+into current control messages. Steering and interrupt retain the existing
+delivery receipts, provider turn identity and material-action confirmation.
+Unsupported backends remain unsupported, including the separate Claude work.
+Workers that skipped binding before this change have no provider control object
+to attach remotely; this change does not restart or replace them.
+`TestConversationWorkerBind`, `TestWorkItemConversationLookup` and both origins
+in `TestConversationRunnerExecutesLiveTurns` cover binding, visibility,
+duplicate refusal, actual selected-turn delivery and preserved comments.
+This consolidates existing conversation/control owners (INV-3); no lane writer,
+recovery loop or second channel is introduced.
+
 Scoped Cloud workspace policy (native #144) survives tenant regeneration through
 the existing shared configuration builder. Only the matching organization's
 existing `workspaces` section is retained; new tenants stay disabled, and shared

@@ -483,6 +483,9 @@ func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name
 			}
 		}
 		return s.readConversationsPage(ctx, scope, filter)
+	case "get_work_item_conversation":
+		raw, err := s.readWorkItemConversationSnapshot(ctx, scope, r.WorkItemID)
+		return boundedOperatorHistory(raw, true, err)
 	case "get_conversation":
 		raw, err := s.readConversationSnapshot(ctx, scope, r.ConversationID)
 		return boundedOperatorHistory(raw, true, err)
