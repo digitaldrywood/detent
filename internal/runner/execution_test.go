@@ -444,7 +444,8 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 				previous.Checkpoint.ExternalEffect = "none"
 				backend.recoveryStates = []workspace.RecoveryState{{HeadSHA: "head", WorkspaceFingerprint: "digest", UntrackedPaths: []string{"docs/detent-cloud-smoke-test.md"}}}
 			}
-			cfg := config.Config{}
+			allowLocalBinding := true
+			cfg := config.Config{Worker: config.Worker{AllowLocalBinding: &allowLocalBinding, ExtraNetworkDomains: []string{"fonts.googleapis.com", "fonts.gstatic.com"}}}
 			cfg.Tracker.Kind = config.TrackerHubNative
 			cfg.Tracker.APIKey = "$NATIVE_HUB_TOKEN"
 			cfg = cfg.WithRuntimeGitHubToken("native-instance-token")
@@ -524,6 +525,12 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 			}
 			if test.blocked && execution.started {
 				t.Fatal("unresolved checkpoint was superseded by a new attempt")
+			}
+			if !test.blocked && len(agent.request.ExtraNetworkDomains) != 2 {
+				t.Fatalf("project domains missing: %#v", agent.request.ExtraNetworkDomains)
+			}
+			if !test.blocked && !agent.request.AllowLocalBinding {
+				t.Fatal("native turn omitted configured localhost permission")
 			}
 			if !test.blocked && (!execution.started || execution.finish == "" || execution.checkpoint == nil) {
 				t.Fatalf("native run omitted lifecycle: %#v", execution)

@@ -58,7 +58,7 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) isolatio
 		}
 		for _, backend := range workflow.Config.AgentBackendConfigs() {
 			key := configured.ID + "/" + backend.ID
-			report[key] = probeBackendTiers(ctx, backend, isolation.Policy{WritableRoots: []string{configured.Workdir}, HostServices: services}, probeBackendIsolation)
+			report[key] = probeBackendTiers(ctx, backend, isolation.Policy{WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, probeBackendIsolation)
 		}
 	}
 	return report

@@ -50,3 +50,41 @@ func TestParseGlobalAgentDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkerLocalBindingDefaults(t *testing.T) {
+	for _, tt := range []struct {
+		name, global, project string
+		want, wantReload      bool
+	}{
+		{name: "disabled by default", wantReload: true},
+		{name: "global grant", global: "worker: {allow_local_binding: true}", want: true},
+		{name: "project grant", project: "worker: {allow_local_binding: true}", want: true, wantReload: true},
+		{name: "project refusal", global: "worker: {allow_local_binding: true}", project: "worker: {allow_local_binding: false}"},
+		{name: "project overrides global refusal", global: "worker: {allow_local_binding: false}", project: "worker: {allow_local_binding: true}", want: true, wantReload: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := "apiVersion: detent/v1\nkind: GlobalConfig\nglobal:\n  max_concurrent_agents: 2\n  scheduling: weighted\n"
+			if tt.global != "" {
+				raw += "  " + tt.global + "\n"
+			}
+			raw += "projects: []\n"
+			global, err := Parse([]byte(raw), "", WithHome(t.TempDir()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker: {kind: memory}\n" + tt.project + "\n---\nDo work.\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := workflow.Config.WithWorkerDefaults(global.Global.Worker)
+			if cfg.Worker.EffectiveAllowLocalBinding() != tt.want {
+				t.Fatalf("grant = %v, want %v", cfg.Worker.EffectiveAllowLocalBinding(), tt.want)
+			}
+			reloaded := !tt.want
+			cfg = cfg.WithWorkerDefaults(workflowconfig.WorkerDefaults{AllowLocalBinding: &reloaded})
+			if cfg.Worker.EffectiveAllowLocalBinding() != tt.wantReload {
+				t.Fatalf("reloaded grant = %v, want %v", cfg.Worker.EffectiveAllowLocalBinding(), tt.wantReload)
+			}
+		})
+	}
+}

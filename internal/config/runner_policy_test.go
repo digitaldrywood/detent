@@ -46,6 +46,12 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		match  bool
 	}{
 		{"unchanged upgrade", func(*Workflow) {}, true},
+		{"empty extra domains", func(w *Workflow) { w.Config.Worker.ExtraNetworkDomains = []string{} }, true},
+		{"project domain grant", func(w *Workflow) {
+			w.Config.Worker.ExtraNetworkDomains = []string{"fonts.googleapis.com", "fonts.gstatic.com"}
+		}, false},
+		{"explicit local binding refusal", func(w *Workflow) { value := false; w.Config.Worker.AllowLocalBinding = &value }, true},
+		{"local binding grant", func(w *Workflow) { value := true; w.Config.Worker.AllowLocalBinding = &value }, false},
 		{"absent host selection", func(w *Workflow) { w.Config.Worker.HostSelection = "" }, true},
 		{"empty host caps", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{} }, true},
 		{"empty required checks", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{} }, true},

@@ -2414,6 +2414,26 @@ Backend policy mapping fails closed instead of retrying as a native process.
 Codex sandbox threads retain the selected `default_permissions` alongside the
 named profile in session configuration, so workspace-requirements reloads keep
 the same filesystem and limited command-network policy (#3753).
+The operator-approved `worker.allow_local_binding` permission defaults to false.
+Project definitions and machine-local overlays override `global.worker` defaults,
+including an explicit false; default reloads preserve that local choice. The
+effective grant changes the existing policy digest, while absent and false retain
+the historical digest. Codex and Claude map the grant to their existing sandbox
+local-binding setting and loopback hosts without changing the claimed tier,
+filesystem roots, external domain allowlist, or Unix socket grants. This permits
+local servers and host-loopback connections, not only test-owned servers. Codex
+also disables its proxy private-destination check when this option is enabled;
+proxy domain rules still apply. Restricted Codex turns retain disabled networking.
+The operator-approved project `worker.extra_network_domains` list adds exact DNS
+hosts to this same sandbox allowlist for builds needing external assets. It is
+empty by default and changes the existing project policy digest when populated;
+empty/absent retain historical approvals. Both backends use the per-turn project
+grant. Wildcards, URLs, IPs, ports, duplicates and uppercase hosts are rejected.
+The grant is scoped to the project, and restricted Codex turns keep networking
+disabled. Domain validation, backend mapping and policy identity tests cover it.
+`TestWorkerLocalBindingDefaults`, `TestRunnerPolicyUpgradeKeepsApprovedID`, and
+the backend isolation tests cover inheritance, policy identity, and enforcement.
+
 The existing lease owns execution isolation; the mutable routing cache is removed
 from backend enforcement rather than adding another cache revision guard.
 Claude verifies effective policy on its worker before sending a model prompt.

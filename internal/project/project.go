@@ -260,7 +260,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}
 
 	workflow := normalizeWorkflow(cfg.Workflow)
-	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget)
+	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget).WithWorkerDefaults(cfg.Project.GlobalWorker)
 	workflow.Config = WithMappedNativeTracker(workflow.Config, deps.Scheduling, id)
 	if err := configureProjectPolicy(context.Background(), cfg.Project, &workflow, deps.Scheduling); err != nil {
 		return nil, projectDefinitionError{err: err}
@@ -601,7 +601,7 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 
 	p.mu.Lock()
 	workflow := p.workflow
-	workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
+	workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget).WithWorkerDefaults(cfg.GlobalWorker)
 	if err := workflow.Config.Validate(); err != nil {
 		p.mu.Unlock()
 		return fmt.Errorf("validate inherited agent configuration: %w", err)
@@ -1512,7 +1512,7 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	previousPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
-	workflow.Config = workflow.Config.WithAgentDefaults(projectConfig.GlobalAgents, projectConfig.GlobalBudget)
+	workflow.Config = workflow.Config.WithAgentDefaults(projectConfig.GlobalAgents, projectConfig.GlobalBudget).WithWorkerDefaults(projectConfig.GlobalWorker)
 	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
@@ -2483,7 +2483,7 @@ func resolveWorkflowWatcherFactory(
 					return workflow, err
 				}
 				workflow = normalizeWorkflow(workflow)
-				workflow.Config = workflow.Config.WithAgentDefaults(project.GlobalAgents, project.GlobalBudget)
+				workflow.Config = workflow.Config.WithAgentDefaults(project.GlobalAgents, project.GlobalBudget).WithWorkerDefaults(project.GlobalWorker)
 				workflow.Config = workflowConfigWithProjectIdentity(project, workflow.Config)
 				workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
 				return workflow, nil

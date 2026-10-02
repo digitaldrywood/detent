@@ -73,6 +73,9 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 // configuration keeps its execution defaults.
 func normalizePolicyConfig(cfg Config) Config {
 	cfg.Policy = policy.Descriptor{}
+	if !cfg.Worker.EffectiveAllowLocalBinding() {
+		cfg.Worker.AllowLocalBinding = nil
+	}
 	if cfg.Worker.HostSelection == "least_loaded" {
 		cfg.Worker.HostSelection = ""
 	}

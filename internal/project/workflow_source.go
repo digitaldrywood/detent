@@ -36,6 +36,7 @@ type gitRefWorkflowWatcher struct {
 	currentProject func() globalconfig.Project
 	agents         workflowconfig.Agents
 	budget         workflowconfig.AgentBudgetDefaults
+	worker         workflowconfig.WorkerDefaults
 	source         workflowGitRefSource
 	interval       time.Duration
 	logger         *slog.Logger
@@ -58,7 +59,7 @@ func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflo
 			}
 		}
 		if err == nil {
-			workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
+			workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget).WithWorkerDefaults(cfg.GlobalWorker)
 		}
 	}()
 	if strings.TrimSpace(cfg.WorkflowRef) == "" {
@@ -355,6 +356,7 @@ func newGitRefWorkflowWatcher(cfg globalconfig.Project, interval time.Duration, 
 	return &gitRefWorkflowWatcher{
 		agents:   cfg.GlobalAgents,
 		budget:   cfg.GlobalBudget,
+		worker:   cfg.GlobalWorker,
 		source:   source,
 		interval: interval,
 		logger:   logger,
@@ -369,12 +371,12 @@ func (w *gitRefWorkflowWatcher) Watch(ctx context.Context) (<-chan configwatcher
 	localWatcher, err := configwatcher.NewFile(w.source.localPath(), func(string) (workflowconfig.Workflow, error) {
 		workflow, _, err := w.source.load(ctx)
 		if err == nil {
-			agents, budget := w.agents, w.budget
+			agents, budget, worker := w.agents, w.budget, w.worker
 			if w.currentProject != nil {
 				project := w.currentProject()
-				agents, budget = project.GlobalAgents, project.GlobalBudget
+				agents, budget, worker = project.GlobalAgents, project.GlobalBudget, project.GlobalWorker
 			}
-			workflow.Config = workflow.Config.WithAgentDefaults(agents, budget)
+			workflow.Config = workflow.Config.WithAgentDefaults(agents, budget).WithWorkerDefaults(worker)
 			err = workflow.Config.Validate()
 		}
 		return workflow, err

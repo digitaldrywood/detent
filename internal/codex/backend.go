@@ -102,6 +102,8 @@ func (b *AgentBackend) runTurn(
 		if policyErr != nil {
 			return runner.AgentTurnResult{}, policyErr
 		}
+		policy.AllowLocalBinding = req.AllowLocalBinding
+		policy.ExtraNetworkDomains = req.ExtraNetworkDomains
 		policy.WritableRoots = append([]string{req.Workspace, req.TempDir}, req.ExtraWritableRoots...)
 		policy.WritableRoots = appendUniqueStrings(nil, policy.WritableRoots...)
 		cacheOptions := Options{ThreadSandbox: "workspace-write", TurnSandboxPolicy: map[string]any{"type": "workspaceWrite"}}

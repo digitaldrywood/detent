@@ -209,6 +209,10 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 		if err != nil {
 			return nil, nil, err
 		}
+		policy.AllowLocalBinding = req.AllowLocalBinding && !req.ReadOnly
+		if !req.ReadOnly {
+			policy.ExtraNetworkDomains = req.ExtraNetworkDomains
+		}
 		policy.WritableRoots = []string{req.Workspace}
 		if req.TempDir != "" {
 			policy.WritableRoots = append(policy.WritableRoots, req.TempDir)

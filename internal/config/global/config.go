@@ -144,6 +144,7 @@ func (u Update) NormalizedMaxDeferralHours() int {
 }
 
 type Settings struct {
+	Worker              workflowconfig.WorkerDefaults      `yaml:"worker,omitempty"`
 	Cache               toolcache.Policy                   `yaml:"cache,omitempty"`
 	Agents              workflowconfig.Agents              `yaml:"agents,omitempty"`
 	Budget              workflowconfig.AgentBudgetDefaults `yaml:"budget,omitempty"`
@@ -225,6 +226,7 @@ type AgentPool struct {
 }
 
 type Project struct {
+	GlobalWorker             workflowconfig.WorkerDefaults      `yaml:"-"`
 	GlobalAgents             workflowconfig.Agents              `yaml:"-"`
 	GlobalBudget             workflowconfig.AgentBudgetDefaults `yaml:"-"`
 	GlobalCache              toolcache.Policy                   `yaml:"-"`
@@ -2107,6 +2109,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	for index := range builtProjects {
 		builtProjects[index].GlobalAgents = settings.Agents
 		builtProjects[index].GlobalBudget = settings.Budget
+		builtProjects[index].GlobalWorker = settings.Worker
 		builtProjects[index].GlobalCache = settings.Cache.Normalized()
 	}
 	return Config{
@@ -2241,6 +2244,11 @@ func buildUpdate(value any, hubRunner bool) (Update, error) {
 
 func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	settings := defaultSettings()
+	if attrs["worker"] != nil {
+		if err := decodeYAMLValue(attrs["worker"], &settings.Worker); err != nil {
+			return Settings{}, fmt.Errorf("global.worker: %w", err)
+		}
+	}
 	if attrs["cache"] != nil {
 		if err := decodeYAMLValue(attrs["cache"], &settings.Cache); err != nil {
 			return Settings{}, fmt.Errorf("global.cache: %w", err)

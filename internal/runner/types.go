@@ -375,6 +375,8 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
+	ExtraNetworkDomains []string
+	AllowLocalBinding   bool
 	// ConversationControl, when set, connects a live conversation to the turn on
 	// backends that implement AgentLiveBackend.
 	ConversationControl *AgentConversationControl

@@ -386,6 +386,9 @@ func fieldDefault(defaultConfig config.Config, node *schemaNode) (string, string
 	if node.synthetic {
 		return optionDefault(node.path)
 	}
+	if node.path == "worker.allow_local_binding" {
+		return "global.worker.allow_local_binding, otherwise false", "null"
+	}
 	if node.path == "worker.github_token" {
 		return "top-level github_token", `""`
 	}
