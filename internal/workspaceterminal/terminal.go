@@ -1,23 +1,5 @@
 // Package workspaceterminal runs one PTY in one worktree and streams what it
 // writes (decisions section 18.3).
-//
-// It is not the exec channel with a shell typed into it. An action (section
-// 18.12) is a command the project wrote down: it is non-interactive, it ends on
-// its own, it produces one bounded output with the issue's audience, and it may
-// run with nobody watching. A terminal is the runner account's authority handed
-// to a person, interactively, for as long as they keep looking at it. Every
-// difference that follows -- a pseudo-terminal rather than a pipe, a window size
-// the person controls, no output cap, a SIGHUP-then-SIGKILL teardown, and a
-// process that outlives a dropped connection for the resume window -- is a
-// consequence of that one.
-//
-// What this package is worth as a boundary is section 18.3's own admission,
-// repeated here because a reader of this file is exactly who needs it:
-// stripping environment variables does not confine a shell. At `user` isolation
-// the process runs as the runner's account and can read that account's provider
-// login files, its credential store, other checkouts and anything else it can
-// reach. The scrub below is a courtesy. The boundary is who may open one, and
-// that is enforced by the hub before a frame ever arrives here.
 package workspaceterminal
 
 import (
@@ -97,31 +79,20 @@ type Service struct {
 
 // ErrContainerIsolation reports that container isolation was asked for and this
 // runner cannot provide it.
-//
-// Section 18.3 describes `container` as a PTY inside a container that mounts
-// only the worktree, has no access to the runner's home directory, credential
-// files or sockets, and runs as an unprivileged user. This repository ships no
-// container runtime hook of any kind -- there is nothing in the runner that
-// starts, attaches to or even names a container -- so there is nothing here to
-// hang that level on. Returning a plain PTY and calling it `container` would be
-// the one failure this whole surface must not have: an organization choosing
-// the recommended level and receiving the other one, silently. A runner that
-// cannot provide container reports `user` and the terminal card stays disabled
-// for organizations that require container, with the reason, which is exactly
-// what section 18.3 says such a runner must do.
 var ErrContainerIsolation = errors.New("workspaceterminal: container isolation is not implemented by this runner")
 
-// New prepares a service for a worktree. It starts no process.
-//
-// isolation is the level the organization asked for. `user` is served; anything
-// else is refused with ErrContainerIsolation rather than approximated, and the
-// caller reports the runner's own level so the hub and the client can say why
-// the card is disabled.
 func New(worktree string, shellName string, isolation string, logger *slog.Logger) (*Service, error) {
+	if isolation == workspacesession.IsolationSandbox && AvailableIsolation() != workspacesession.IsolationSandbox {
+		return nil, ErrSandboxIsolation
+	}
+	return newService(worktree, shellName, isolation, logger)
+}
+
+func newService(worktree string, shellName string, isolation string, logger *slog.Logger) (*Service, error) {
 	if isolation == "" {
 		isolation = workspacesession.IsolationUser
 	}
-	if isolation != workspacesession.IsolationUser {
+	if isolation != workspacesession.IsolationUser && isolation != workspacesession.IsolationSandbox {
 		if !workspacesession.ValidIsolation(isolation) {
 			return nil, fmt.Errorf("workspaceterminal: unknown isolation %q", isolation)
 		}
@@ -137,6 +108,18 @@ func New(worktree string, shellName string, isolation string, logger *slog.Logge
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("worktree %q is not a directory", canonical)
+	}
+	canonical, err = filepath.Abs(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("absolute worktree: %w", err)
+	}
+	if isolation == workspacesession.IsolationSandbox {
+		if err := validateSandboxRoot(canonical); err != nil {
+			return nil, err
+		}
+		if err := sandboxHostProbe(); err != nil {
+			return nil, err
+		}
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -236,7 +219,13 @@ func (s *Service) Open(
 	cmd.Dir = directory
 	cmd.Env = terminalEnvironment(os.Environ(), s.worktree, options.Cols, options.Rows)
 
-	file, err := startPTY(cmd, options.Cols, options.Rows)
+	if s.isolation == workspacesession.IsolationSandbox {
+		if err := validateSandboxRoot(s.worktree); err != nil {
+			return nil, refuse(workspacesession.CodeUnsupported, err)
+		}
+		cmd.Env = sandboxEnvironment(s.worktree, options.Cols, options.Rows)
+	}
+	file, err := startPTY(cmd, options.Cols, options.Rows, s.isolation, s.worktree)
 	if err != nil {
 		return nil, refuse(startCode(err), fmt.Errorf("start terminal: %w", err))
 	}
@@ -272,14 +261,6 @@ func (s *Service) Open(
 
 // resolveCwd turns the open's optional relative directory into an absolute one
 // inside the worktree.
-//
-// Containment is checked here rather than trusted, on the same reasoning the
-// files channel applies (section 18.4): a path a client supplied must not be
-// able to name somewhere else. It matters less than it does there -- the shell
-// can cd anywhere the runner's account can reach the moment it starts, which
-// section 18.3 says outright -- but starting a person somewhere they did not
-// ask to be is still a surprise, and a refusal that names the reason is better
-// than a shell that silently opens in the wrong tree.
 func (s *Service) resolveCwd(relative string) (string, error) {
 	if relative == "" {
 		return s.worktree, nil
@@ -287,6 +268,13 @@ func (s *Service) resolveCwd(relative string) (string, error) {
 	joined, err := pathsafe.WorkspaceRelative(s.worktree, relative)
 	if err != nil {
 		return "", refuse(workspacesession.CodeForbidden, fmt.Errorf("cwd %q: %w", relative, err))
+	}
+	joined, err = filepath.EvalSymlinks(joined)
+	if err != nil {
+		return "", refuse(workspacesession.CodeNotFound, fmt.Errorf("resolve cwd %q: %w", relative, err))
+	}
+	if !containsPath(s.worktree, joined) {
+		return "", refuse(workspacesession.CodeForbidden, fmt.Errorf("cwd %q is outside the worktree", relative))
 	}
 	info, err := os.Stat(joined)
 	if err != nil {
@@ -402,7 +390,7 @@ func (t *Terminal) Close() {
 			}
 			return
 		case <-poll.C:
-			if t.ended() && !groupAlive(t.pid) {
+			if !groupAlive(t.pid) {
 				return
 			}
 		}
@@ -449,6 +437,7 @@ func (t *Terminal) ended() bool {
 // one leaked descriptor per terminal, on a session that may run for hours.
 func (t *Terminal) wait() {
 	defer func() {
+		t.Close()
 		close(t.done)
 		t.closeFile()
 	}()
@@ -609,7 +598,7 @@ func credentialKey(key string) bool {
 // runner simply cannot run the project's shell.
 func startCode(err error) string {
 	switch {
-	case errors.Is(err, ErrNoPTY):
+	case errors.Is(err, ErrNoPTY), errors.Is(err, ErrSandboxIsolation):
 		return workspacesession.CodeUnsupported
 	case errors.Is(err, exec.ErrNotFound), errors.Is(err, fs.ErrNotExist):
 		return workspacesession.CodeUnsupported

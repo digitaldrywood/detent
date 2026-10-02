@@ -5,12 +5,16 @@ package workspaceterminal
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
+
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 // ErrNoPTY reports a platform with no pseudo-terminal. It exists on both builds
@@ -33,7 +37,7 @@ const Supported = true
 // that asks isatty would answer no and switch to its non-interactive behaviour.
 // Setsid also puts the shell in a session and a process group of its own, which
 // is what lets the teardown signal the whole group.
-func startPTY(cmd *exec.Cmd, cols, rows int) (*os.File, error) {
+func startPTY(cmd *exec.Cmd, cols, rows int, isolation, worktree string) (*os.File, error) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
@@ -62,9 +66,52 @@ func startPTY(cmd *exec.Cmd, cols, rows int) (*os.File, error) {
 	}
 	file := os.NewFile(uintptr(fd), master.Name())
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+	var confirmation *os.File
+	var ready *os.File
+	if isolation == workspacesession.IsolationSandbox {
+		confirmation, ready, err = os.Pipe()
+		if err != nil {
+			file.Close()
+			return nil, err
+		}
+		defer confirmation.Close()
+		defer ready.Close()
+		cmd.ExtraFiles = []*os.File{ready}
+		if err := sandboxCommand(cmd, worktree, tty.Name()); err != nil {
+			file.Close()
+			return nil, err
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		_ = file.Close() //nolint:errcheck // Best effort cleanup before reporting the start failure.
 		return nil, err
+	}
+	if confirmation != nil {
+		ready.Close()
+		err := confirmation.SetReadDeadline(time.Now().Add(5 * time.Second))
+		var marker [1]byte
+		if err == nil {
+			_, err = io.ReadFull(confirmation, marker[:])
+		}
+		if err != nil || marker[0] != 1 {
+			file.Close()
+			groupErr := kill(cmd)
+			processErr := cmd.Process.Kill()
+			waited := make(chan struct{})
+			go func() {
+				cmd.Wait()
+				close(waited)
+			}()
+			if groupErr != nil && processErr != nil && !errors.Is(processErr, os.ErrProcessDone) {
+				return nil, fmt.Errorf("%w: launch cleanup: %v", ErrSandboxIsolation, errors.Join(groupErr, processErr))
+			}
+			select {
+			case <-waited:
+			case <-time.After(KillGrace):
+				return nil, fmt.Errorf("%w: launch cleanup did not finish", ErrSandboxIsolation)
+			}
+			return nil, fmt.Errorf("%w: launch was not confirmed", ErrSandboxIsolation)
+		}
 	}
 	return file, nil
 }
