@@ -422,17 +422,27 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 		name       string
 		blocked    bool
 		workerAuth bool
+		local      bool
 	}{
 		{name: "first run without worker GitHub access"},
 		{name: "lost checkpoint", blocked: true},
+		{name: "preserved planner checkpoint", local: true},
 		{name: "explicit worker GitHub access", workerAuth: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}}
 			agent := &fakeCodexClient{}
 			execution := &testExecution{}
-			if test.blocked {
+			if test.blocked || test.local {
 				execution.recovery = tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "new-machine"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{MachineID: "lost-machine"}, Checkpoint: &tracker.NativeCheckpoint{Storage: "local_only", WorktreeState: "dirty", Resume: "resume_session"}}}}
+			}
+			if test.local {
+				previous := &execution.recovery.Attempts[0]
+				previous.MachineID = "new-machine"
+				previous.Checkpoint.HeadSHA = "head"
+				previous.Checkpoint.WorkspaceDigest = "digest"
+				previous.Checkpoint.ExternalEffect = "none"
+				backend.recoveryStates = []workspace.RecoveryState{{HeadSHA: "head", WorkspaceFingerprint: "digest", UntrackedPaths: []string{"docs/detent-cloud-smoke-test.md"}}}
 			}
 			cfg := config.Config{}
 			cfg.Tracker.Kind = config.TrackerHubNative
