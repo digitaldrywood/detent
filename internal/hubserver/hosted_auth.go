@@ -328,11 +328,13 @@ func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope n
 			return auth.ErrHostedIdentity
 		}
 		var local, keyScope string
-		err = tx.QueryRowContext(ctx, `SELECT m.role,t.operator_key_scope FROM hosted_members m JOIN api_tokens t ON t.hosted_user_id=m.user_id AND t.hosted_membership_id=m.membership_id
-WHERE t.id=? AND t.token_hash=? AND t.revoked_at IS NULL AND t.native_only=1 AND t.scope IN ('operator','admin') AND t.hosted_organization_id=? AND julianday(t.expires_at)>julianday(?) AND m.user_id=? AND m.membership_id=? AND m.active=1`, scope.credential.ID, scope.credential.Hash, scope.organization, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&local, &keyScope)
-		if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required) || !hostedKeyAllows(apikey.Scope(keyScope), required) {
+		var access hostedProjectAccess
+		err = tx.QueryRowContext(ctx, `SELECT m.role,t.operator_key_scope,t.operator_project_access,m.principal_id FROM hosted_members m JOIN api_tokens t ON t.hosted_user_id=m.user_id AND t.hosted_membership_id=m.membership_id JOIN api_tokens p ON p.id=m.principal_id AND p.revoked_at IS NULL
+WHERE t.id=? AND t.token_hash=? AND t.revoked_at IS NULL AND t.native_only=1 AND t.scope IN ('operator','admin') AND t.hosted_organization_id=? AND julianday(t.expires_at)>julianday(?) AND m.user_id=? AND m.membership_id=? AND m.active=1`, scope.credential.ID, scope.credential.Hash, scope.organization, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&local, &keyScope, &access, &scope.credential.HostedPrincipal)
+		if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required) || !hostedKeyAllows(apikey.Scope(keyScope), required) || access != hostedProjectsAll && access != hostedProjectsSelected {
 			return auth.ErrHostedIdentity
 		}
+		scope.credential.HostedProjectAccess = access
 	} else {
 		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions s, hosted_members m
 WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday(?) AND m.user_id = ? AND m.membership_id = ? AND m.active = 1`, scope.credential.SessionHash, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&count)
@@ -341,7 +343,18 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 		}
 	}
 	if scope.project != "" {
-		return s.requireHostedProject(ctx, tx, scope, true)
+		if err := s.requireHostedProject(ctx, tx, scope, true); err != nil {
+			return err
+		}
+		condition, args := scope.credential.projectGrantSQL("p.organization_id", "p.id")
+		args = append([]any{scope.organization, scope.project}, args...)
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects p WHERE p.organization_id=? AND p.id=? AND ("+condition+")", args...).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return nativeNotFound()
+		}
+		return nil
 	}
 	if scope.credential.ManageRunners {
 		var projects, granted int

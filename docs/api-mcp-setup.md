@@ -14,11 +14,14 @@ fresh read after a saved removal; a command retry returns its original receipt.
 
 Sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,
-choose Read, Write or Admin, select only the required projects, and choose an
-expiry (7, 30 or 90 days in the UI; the creation API accepts 1–90 days).
+choose Read, Write or Admin, and choose an expiry (7, 30 or 90 days in the UI; the creation API accepts 1–90 days).
+Project access defaults to **All projects, including future projects** within
+this organization and your current permissions. You can create this key before
+any project exists. Choose **Selected projects** and select at least one project
+to narrow access. Existing restricted keys keep their selected grants.
 Copy the once-displayed key directly to a private secret store or environment
-as `DETENT_API_KEY`. The page lists scope, project IDs, expiry, fingerprint and
-revocation state; it never retrieves an existing secret. Revoke keys here.
+as `DETENT_API_KEY`. The page lists scope, all-project access or selected
+project names, expiry, fingerprint and revocation state; it never retrieves an existing secret. Revoke keys here.
 Removing client configuration does not revoke a key.
 
 The same key authenticates direct API requests and MCP. Effective permissions
@@ -28,6 +31,20 @@ replacing membership, losing project access, expiry and revocation deny later
 calls, including calls on an already initialized MCP session. An API key cannot
 change organizations or impersonate another user. Runner and worker credentials
 remain separate and cannot connect as operators.
+
+The browser creation API accepts `project_access: "all" | "selected"` and
+`project_ids`. Omitting the mode and project selection defaults to all projects;
+legacy requests supplying project IDs remain selected. Explicit selected mode
+without IDs returns 422 with a clear error. All mode with selected IDs is rejected
+as ambiguous. Creation and listing metadata both return `project_access` and
+`project_ids` (an empty array for all-project keys). All mode is durable, never a
+snapshot of existing IDs; new authorized projects work with the original key and
+MCP session without synchronization or reconnection. Removing grants from a
+selected key never changes its mode or widens its access.
+
+The hosted MCP `credential_create` tool uses the same `project_access` and
+`project_ids` contract through the shared key owner. Its existing scope, expiry,
+browser approval and connection-bound secret delivery requirements still apply.
 
 Key management requires the issuing user's browser session and CSRF state.
 API and MCP client connections require only `Authorization: Bearer`, without

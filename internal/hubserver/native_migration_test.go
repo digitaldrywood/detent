@@ -83,6 +83,8 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 		onboarding     bool
 		crlf           bool
 	}{
+		{"selected operator keys", 55, "1", true, true, false},
+		{"current selected operator keys", 67, "1", true, true, false},
 		{"artifacts", 16, "0", false, false, false},
 		{"hosted identity", 17, "1", false, false, false},
 		{"viewed files version 18", 18, "1", true, false, false},
@@ -120,7 +122,7 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 					migrations[file.Name()] = &fstest.MapFile{Data: data}
 					continue
 				}
-				if file.Name() >= "00018_" && file.Name() != "00018_change_viewed_files.sql" {
+				if file.Name() >= "00018_" && file.Name() != "00018_change_viewed_files.sql" && test.version < 55 {
 					continue
 				}
 				if file.Name() == "00018_change_viewed_files.sql" && !test.viewed {
@@ -150,7 +152,7 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 					migrations["00018_project_onboarding.sql"] = &fstest.MapFile{Data: data}
 				}
 			}
-			provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()))
+			provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()), goose.WithGoMigrations(hubGoMigrations()...))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -159,6 +161,12 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 			}
 			_, issueID := seedProjection(t, db)
 			if _, err := provider.UpTo(t.Context(), test.version); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,scope,token_hash,token_fingerprint,created_at,updated_at,native_only) VALUES ('legacy-key','legacy key','operator','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','legacy-fingerprint','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1)`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO token_grants(token_id,organization_id,project_id) SELECT 'legacy-key',organization_id,project_id FROM issues WHERE id=?`, issueID); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json)
@@ -203,6 +211,8 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 			}
 			service = openTestService(t, cfg)
 			for _, check := range []struct{ name, query, want string }{
+				{"legacy key access", "SELECT operator_project_access FROM api_tokens WHERE id='legacy-key'", "selected"},
+				{"legacy key grants", "SELECT count(*) FROM token_grants g JOIN issues i ON i.organization_id=g.organization_id AND i.project_id=g.project_id WHERE g.token_id='legacy-key'", "1"},
 				{"schema version", "SELECT max(version_id) FROM hub_schema_version WHERE is_applied = 1", strconv.FormatInt(supportedSchemaVersion, 10)},
 				{"onboarding migration", "SELECT count(*) FROM hub_schema_version WHERE version_id = 19 AND is_applied = 1", "1"},
 				{"allowance migration", "SELECT count(*) FROM hub_schema_version WHERE version_id = 20 AND is_applied = 1", "1"},

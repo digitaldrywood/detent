@@ -587,16 +587,12 @@ func (s *Service) listOrganizationConversations(c echo.Context) error {
 // the organization; every is true when all projects are readable (instance
 // administrators).
 func (s *Service) readableConversationProjects(ctx context.Context, scope nativeScope) (projects []tracker.ProjectID, every bool, err error) {
-	query := "SELECT project_id FROM token_grants WHERE token_id = ? AND organization_id = ?"
-	args := []any{scope.credential.ID, scope.organization}
-	switch {
-	case scope.credential.Hosted != nil:
-		query = `SELECT g.project_id FROM hosted_project_grants g JOIN hosted_members m ON m.user_id = g.user_id
-WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
-		args = []any{scope.credential.Hosted.Subject, scope.organization}
-	case scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly:
+	if scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly {
 		return nil, true, nil
 	}
+	condition, grantArgs := scope.credential.projectGrantSQL("p.organization_id", "p.id")
+	query := "SELECT p.id FROM projects p WHERE p.organization_id=? AND (" + condition + ")"
+	args := append([]any{scope.organization}, grantArgs...)
 	rows, err := s.database.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, false, fmt.Errorf("list readable projects: %w", err)

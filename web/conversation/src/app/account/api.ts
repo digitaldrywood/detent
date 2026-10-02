@@ -158,7 +158,7 @@ export function makeAccountApi(options: AccountApiOptions) {
 
   return {
     apiKeys: () => send(OperatorAPIKeys, "GET", `${base}/api-keys`),
-    createAPIKey: (input: { name: string; scope: string; expires_days: number; project_ids: readonly string[] }) =>
+    createAPIKey: (input: { name: string; scope: string; expires_days: number; project_access?: "all" | "selected"; project_ids?: readonly string[] }) =>
       send(CreatedOperatorAPIKey, "POST", `${base}/api-keys`, input),
     revokeAPIKey: (id: string) => send(null, "DELETE", `${base}/api-keys/${encodeURIComponent(id)}`),
     origin: options.origin,

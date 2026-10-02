@@ -768,6 +768,9 @@ export const ProjectSecretStatus = Schema.Struct({
 });
 export type ProjectSecretStatus = typeof ProjectSecretStatus.Type;
 
+export const OperatorProjectAccess = Schema.Literals(["all", "selected"]);
+export type OperatorProjectAccess = typeof OperatorProjectAccess.Type;
+
 export const OperatorAPIKey = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -775,8 +778,10 @@ export const OperatorAPIKey = Schema.Struct({
   expires_at: Schema.String,
   fingerprint: Schema.String,
   revoked: Schema.Boolean,
+  project_access: OperatorProjectAccess,
   project_ids: Schema.Array(Schema.String),
 });
 export type OperatorAPIKey = typeof OperatorAPIKey.Type;
 export const OperatorAPIKeys = Schema.Struct({ keys: Schema.Array(OperatorAPIKey) });
-export const CreatedOperatorAPIKey = Schema.Struct({ token: Schema.String });
+export const CreatedOperatorAPIKey = Schema.Struct({ token: Schema.String, project_access: OperatorProjectAccess, project_ids: Schema.Array(Schema.String) });
+export type CreatedOperatorAPIKey = typeof CreatedOperatorAPIKey.Type;

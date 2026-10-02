@@ -46,8 +46,9 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id 
 		visible := make(map[tracker.NativeWorkItemID]bool, len(issue.Dependencies))
 		for _, id := range issue.Dependencies {
 			var count int
-			err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN token_grants g ON g.organization_id = i.organization_id AND g.project_id = i.project_id
-WHERE i.organization_id = ? AND i.native_id = ? AND g.token_id = ?`, scope.organization, id, scope.credential.ID).Scan(&count)
+			condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+			args := append([]any{scope.organization, id}, grantArgs...)
+			err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM issues i WHERE i.organization_id=? AND i.native_id=? AND (`+condition+`)`, args...).Scan(&count)
 			if err != nil {
 				return nil, err
 			}

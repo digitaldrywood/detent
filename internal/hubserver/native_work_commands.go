@@ -88,10 +88,12 @@ func (s *Service) changeNativeDependencyCommand(ctx context.Context, scope nativ
 		if request.Operation != "add" && request.Operation != "remove" {
 			return nil, nativeInvalid("Dependency operation must be add or remove")
 		}
+		condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+		args := append([]any{scope.organization, request.RelatedWorkItemID}, grantArgs...)
 		var blockerID tracker.WorkItemID
 		var blockerProject tracker.ProjectID
 		err = tx.QueryRowContext(ctx, `SELECT i.id, i.project_id FROM issues i WHERE i.organization_id = ? AND i.native_id = ?
-AND (? = 1 OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = ? AND g.organization_id = i.organization_id AND g.project_id = i.project_id))`, scope.organization, request.RelatedWorkItemID, scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly, scope.credential.ID).Scan(&blockerID, &blockerProject)
+AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 		if err != nil {
 			return nil, err
 		}

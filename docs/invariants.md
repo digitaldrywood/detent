@@ -405,8 +405,9 @@ existing owners. Durable business retries retain safe metadata without the
 created secret. `TestHostedCredentialMCP` and
 `TestHostedCredentialMCPAuthorityChanges` cover both transports and deployments,
 browser approval, current authority and connection-bound delivery. Native #48
-owns dynamic All projects semantics; this checkout's hosted key owner still
-uses explicit project IDs. Native #26 remains open for final parity acceptance.
+adds durable all/selected project access through this same owner; browser and
+MCP creation share the mode default and validation. Native #26 remains open for
+final parity acceptance.
 
 Invitation withdrawal revokes the provider invitation before atomically removing
 the local invitation and releasing its seat. Provider refusal preserves both;
@@ -500,7 +501,13 @@ assertions authenticate transport, while the tenant resolves the operator key.
 Every API authentication and MCP discovery/call/approved execution resolves
 current provider membership, the lesser provider/local role, active issuer
 principal, key expiry/revocation and the intersection of key and user project
-grants. Keys cannot switch organizations, elevate their issuer, become runner
+grants. Hosted keys persist an explicit all/selected project-access mode (#3837).
+All-project keys use the issuer's current grants in the same organization,
+including newly authorized projects without key updates or MCP reconnection.
+Selected keys retain their own grant rows intersected with current issuer access;
+legacy keys migrate to selected, and absent or removed grants never widen access.
+Read projections and transaction-time writes enforce the same intersection.
+Keys cannot switch organizations, elevate their issuer, become runner
 credentials, manage keys through bearer traffic, or approve operations. Browser
 key creation/revocation retain session/CSRF authorization; listings expose only
 metadata and creation returns the secret once. Key-originated material previews
