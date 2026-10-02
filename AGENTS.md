@@ -96,9 +96,12 @@ source of incidents.
 
 ## Repository invariants
 
-Follow [docs/invariants.md](docs/invariants.md). Changes to an invariant or its
-enforcement must update that document in the same PR and identify the invariant
-in the PR template.
+Follow [docs/invariants.md](docs/invariants.md). Start with its headings and
+read the sections governing the touched behavior, including linked prerequisites.
+Read additional sections when the affected boundary requires them; do not dump
+the entire document into startup context. All repository invariants still apply.
+Changes to an invariant or its enforcement must update that document in the same
+PR and identify the invariant in the PR template.
 
 ## Validation
 
@@ -118,10 +121,15 @@ for the text of documentation or configuration, or to move a coverage number.
 A test that only re-executes a path another test already asserts is removed in
 review (see [docs/test-suite-audit.md](docs/test-suite-audit.md)).
 
-Focused `go test ./<touched-package>/...`, `go vet`, targeted regressions, and
-[safety-critical coverage and fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
+Focused `go test -timeout=60s ./<touched-package>/...`, `go vet`, targeted
+regressions, and [safety-critical coverage and fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
 are available for diagnostics during edits; they do not become completion
-gates. Ordinary submission, completion, admission, and merge do not wait for a
+gates. Give each diagnostic `go test` command an explicit timeout appropriate to
+the selected fixtures instead of using Go's ten-minute default. Use a longer
+timeout when the named diagnostic needs it. Inspect a timeout or instance failure
+before repeating the command; do not retry an unchanged unsupported fixture.
+Repeat diagnostics only to verify changed behavior or resolve a concrete remaining
+risk. Ordinary submission, completion, admission, and merge do not wait for a
 coverage percentage, fuzz duration, local status, or scheduled run. The scheduled
 full suite validates pinned `develop` commits and tags only green commits.
 Every `develop` push still deploys to staging.
