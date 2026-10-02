@@ -38,6 +38,10 @@ and cleanup attribution across lane-write retries. `TestNativeChangeRunCompletio
 and `TestNativePlannerAutomaticHandoff` cover failed settlement, stale refusal,
 preserved staged source and lease-retirement ordering.
 
+Organization-scoped issue reads resolve the project from the work item ID,
+then reuse the native read authority to check current organization and project
+grants before returning the item (#174). Sidebar selection confers no authority.
+
 Native runtime evidence (#92) reuses the scoped work, explanation and Change
 application owners for API and MCP. Direct reads recheck current connection
 scope, project grants and work-item/attempt ownership, including local attempt

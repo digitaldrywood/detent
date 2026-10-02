@@ -167,6 +167,7 @@ export interface WorkHttp {
   readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
+  readonly getWorkItemById: (itemId: string) => Promise<NativeIssue>;
   readonly getWorkItemConversation: (projectId: string, itemId: string) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
     projectId: string;
@@ -561,6 +562,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       ),
     getWorkItem: (projectId, itemId) =>
       send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
+    getWorkItemById: (itemId) =>
+      send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`)),
     getWorkItemConversation: (projectId, itemId) =>
       send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`)),
     listLabels: (projectId) =>

@@ -2630,7 +2630,7 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 Get native issue
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
-- Decision: Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
+- Decision: Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes. Organization-scoped item lookup resolves the owning project by item ID, then applies the same native project read grants; browser selection does not supply authority.
 - Tool: `board.work_item` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.getNativeIssue; handler-owned application validation/read/command
@@ -2644,7 +2644,7 @@ Get native issue
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item](../internal/hubserver/native_api.go#L127), [web/conversation/src/app/work/lib/workHttp.ts:552](../web/conversation/src/app/work/lib/workHttp.ts#L552), [web/conversation/src/app/components/TimelineCards.tsx:153](../web/conversation/src/app/components/TimelineCards.tsx#L153), [web/conversation/src/app/work/IssuePage.tsx:989](../web/conversation/src/app/work/IssuePage.tsx#L989)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item](../internal/hubserver/native_api.go#L127), [web/conversation/src/app/work/lib/workHttp.ts:552](../web/conversation/src/app/work/lib/workHttp.ts#L552), [web/conversation/src/app/components/TimelineCards.tsx:153](../web/conversation/src/app/components/TimelineCards.tsx#L153), [web/conversation/src/app/work/IssuePage.tsx:989](../web/conversation/src/app/work/IssuePage.tsx#L989), [GET /api/v2/organizations/:organization/work-items/:item](../internal/hubserver/native_api.go#L128), [web/conversation/src/app/work/lib/workHttp.ts:564](../web/conversation/src/app/work/lib/workHttp.ts#L564)
 ## hubserver.get_native_project
 
 Get native project

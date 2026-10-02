@@ -128,7 +128,6 @@ async function allIssueRecords<T>(read: (cursor?: string) => Promise<{ readonly 
 
 function useIssue(
   http: WorkHttp,
-  projectId: string | null,
   workItemId: string,
   requestedChange: string | null = null,
 ): {
@@ -145,13 +144,14 @@ function useIssue(
   const [nonce, setNonce] = React.useState(0);
 
   React.useEffect(() => {
-    if (projectId === null) return;
     let cancelled = false;
+    setError(null);
     setLoading(true);
     void (async () => {
       try {
-        const [issue, project, attempts, history, comments, changes] = await Promise.all([
-          http.getWorkItem(projectId, workItemId),
+        const issue = await http.getWorkItemById(workItemId);
+        const projectId = issue.project_id;
+        const [project, attempts, history, comments, changes] = await Promise.all([
           http.getProject(projectId),
           allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)),
           allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })),
@@ -172,6 +172,7 @@ function useIssue(
         setError(null);
       } catch (cause) {
         if (cancelled) return;
+        setData(null);
         setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
         if (!cancelled) setLoading(false);
@@ -180,9 +181,15 @@ function useIssue(
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, workItemId, requestedChange, nonce]);
+  }, [http, workItemId, requestedChange, nonce]);
 
-  return { data, error, loading, reload: () => setNonce((value) => value + 1), apply: setData };
+  return {
+    data: data?.issue.work_item_id === workItemId ? data : null,
+    error,
+    loading,
+    reload: () => setNonce((value) => value + 1),
+    apply: setData,
+  };
 }
 
 /**
@@ -258,10 +265,12 @@ export function IssuePage(): React.ReactElement {
   const { workItemId } = useParams({ from: "/work/i/$workItemId" });
   const shell = useShell();
   const http = useWorkHttp();
+  const search = useSearch({ strict: false }) as { change?: string };
+  const issueState = useIssue(http, workItemId, search.change ?? null);
+  const projectId = issueState.data?.issue.project_id ?? null;
   const indexed = shell.conversations.find(
-    (conversation) => conversation.work_item_id === workItemId,
+    (conversation) => conversation.work_item_id === workItemId && conversation.project_id === projectId,
   );
-  const projectId = indexed?.project_id ?? shell.projectId ?? null;
   const [resolved, setResolved] = React.useState<Conversation | undefined>();
   React.useEffect(() => {
     let cancelled = false;
@@ -294,17 +303,19 @@ export function IssuePage(): React.ReactElement {
       ? resolved
       : undefined);
   if (linked === undefined) {
-    return <IssueSurface key={workItemId} workItemId={workItemId} projectHint={null} conversation={null} />;
+    return <IssueSurface key={workItemId} workItemId={workItemId} issueState={issueState} conversation={null} />;
   }
-  return <LinkedIssue key={linked.id} workItemId={workItemId} conversation={linked} />;
+  return <LinkedIssue key={linked.id} workItemId={workItemId} issueState={issueState} conversation={linked} />;
 }
 
 /** The issue page with a conversation behind it. Subscribes to its atoms. */
 function LinkedIssue({
   workItemId,
+  issueState,
   conversation,
 }: {
   readonly workItemId: string;
+  readonly issueState: ReturnType<typeof useIssue>;
   readonly conversation: Conversation;
 }): React.ReactElement {
   const client = useClient();
@@ -371,7 +382,7 @@ function LinkedIssue({
   );
 
   return (
-    <IssueSurface workItemId={workItemId} projectHint={projectId} conversation={bridge} />
+    <IssueSurface workItemId={workItemId} issueState={issueState} conversation={bridge} />
   );
 }
 
@@ -393,22 +404,21 @@ const BODY_CLAMP = 900;
 
 function IssueSurface({
   workItemId,
-  projectHint,
+  issueState,
   conversation,
 }: {
   readonly workItemId: string;
-  readonly projectHint: string | null;
+  readonly issueState: ReturnType<typeof useIssue>;
   readonly conversation: ConversationBridge | null;
 }): React.ReactElement {
-  const shell = useShell();
   const navigate = useNavigate();
   const client = useClient();
   const http = useWorkHttp();
   const now = useNow();
   const search = useSearch({ strict: false }) as { panel?: string; change?: string };
 
-  const projectId = projectHint ?? shell.projectId ?? null;
-  const { data, error, loading, reload, apply } = useIssue(http, projectId, workItemId, search.change ?? null);
+  const { data, error, loading, reload, apply } = issueState;
+  const projectId = data?.issue.project_id ?? null;
   const [saving, setSaving] = React.useState(false);
   const [posting, setPosting] = React.useState(false);
 
@@ -562,15 +572,7 @@ function IssueSurface({
     </ChatWorkspace>
   );
 
-  if (projectId === null) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-muted-foreground text-sm">
-        No project is selected for this issue.
-      </div>
-    );
-  }
-
-  if (item === null || data === null) {
+  if (item === null || data === null || projectId === null) {
     return frame(
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-muted-foreground text-sm">
         <h1 className="dc-sr-only">{workItemId}</h1>

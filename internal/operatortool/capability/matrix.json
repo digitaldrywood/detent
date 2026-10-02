@@ -12129,6 +12129,24 @@
           "definition": "href={data.issue.linked_source.url}",
           "occurrence": 1,
           "line": 989
+        },
+        {
+          "source": "internal/hubserver/native_api.go",
+          "kind": "route",
+          "definition": "e.GET(nativeOrganizationIssuePath, s.getNativeIssue, read) [route=\"/api/v2/organizations/:organization/work-items/:item\"]",
+          "occurrence": 1,
+          "line": 128,
+          "method": "GET",
+          "path": "nativeOrganizationIssuePath",
+          "handler": "s.getNativeIssue",
+          "resolved_path": "/api/v2/organizations/:organization/work-items/:item"
+        },
+        {
+          "source": "web/conversation/src/app/work/lib/workHttp.ts",
+          "kind": "request",
+          "definition": "send(NativeIssue,\"GET\",url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`))",
+          "occurrence": 1,
+          "line": 564
         }
       ],
       "availability": [
@@ -12196,7 +12214,7 @@
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
       "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
-      "decision": "Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
+      "decision": "Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes. Organization-scoped item lookup resolves the owning project by item ID, then applies the same native project read grants; browser selection does not supply authority."
     },
     {
       "id": "hubserver.get_native_project",
