@@ -1373,13 +1373,16 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 ## INV-3 — Mechanism moratorium
 
 Hub migration collision repair (native #194) consolidates conversation origin
-under forward migration 64. Applied attachment migration 62 and runner observation
+under forward migration 65. Applied attachment migration 62 and runner observation
 migration 63 remain immutable. The existing Goose transaction restores missing
 effects from either previously deployed origin lineage without overwriting existing
-origin values or attachment data. Fresh, schema-60, attachment-62, origin-62 and
-origin-63 fixtures exercise forward upgrades. This adds no startup reconciliation
-loop, migration allocator, validation gate or configuration key. Once migration 64
-is applied, deployment rollback requires a binary that supports schema 64.
+origin values or attachment data. Attachment-reference migration 64 executes its
+unchanged SQL through the same Goose owner after repairing missing prerequisites;
+databases that already applied 64 retain those effects. Fresh, schema-60,
+attachment-62, origin-62, origin-63 and reference-64 fixtures exercise forward
+upgrades. This adds no startup reconciliation loop, migration allocator, validation
+gate or configuration key. Once migration 65 is applied, deployment rollback
+requires a binary that supports schema 65.
 
 Reviewed checkout isolation (#170) consolidates preparation under LocalGit's
 existing source-operation lock, path confinement, workspace usage and cleanup

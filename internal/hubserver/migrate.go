@@ -16,10 +16,10 @@ import (
 
 const (
 	hubSchemaTable         = "hub_schema_version"
-	supportedSchemaVersion = int64(64)
+	supportedSchemaVersion = int64(65)
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/*.sql migration_steps/*.sql
 var migrationFiles embed.FS
 
 func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64, error) {
@@ -117,11 +117,25 @@ func hubGoMigrations() []*goose.Migration {
 			&goose.GoFunc{RunTx: backfillChangeReviewPolicies},
 			&goose.GoFunc{RunTx: func(context.Context, *sql.Tx) error { return nil }},
 		),
-		goose.NewGoMigration(64, &goose.GoFunc{RunTx: migrateConversationOrigin}, nil),
+		goose.NewGoMigration(64, &goose.GoFunc{RunTx: migrateAttachmentReferences}, nil),
+		goose.NewGoMigration(65, &goose.GoFunc{RunTx: migrateConversationOrigin}, nil),
 	}
 }
 
-func migrateConversationOrigin(ctx context.Context, tx *sql.Tx) error {
+func migrateAttachmentReferences(ctx context.Context, tx *sql.Tx) error {
+	if err := migrateAttachmentAndUpdaterSchemas(ctx, tx); err != nil {
+		return err
+	}
+	data, err := migrationFiles.ReadFile("migration_steps/00064_cloud_attachment_references.sql")
+	if err != nil {
+		return err
+	}
+	up, _, _ := strings.Cut(string(data), "-- +goose Down")
+	_, err = tx.ExecContext(ctx, up)
+	return err
+}
+
+func migrateAttachmentAndUpdaterSchemas(ctx context.Context, tx *sql.Tx) error {
 	var attachments int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'attachments'").Scan(&attachments); err != nil {
 		return err
@@ -148,6 +162,13 @@ func migrateConversationOrigin(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, string(data)); err != nil {
 			return fmt.Errorf("restore runner update observation schema: %w", err)
 		}
+	}
+	return nil
+}
+
+func migrateConversationOrigin(ctx context.Context, tx *sql.Tx) error {
+	if err := migrateAttachmentAndUpdaterSchemas(ctx, tx); err != nil {
+		return err
 	}
 	var origin int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('conversations') WHERE name = 'origin'").Scan(&origin); err != nil {
