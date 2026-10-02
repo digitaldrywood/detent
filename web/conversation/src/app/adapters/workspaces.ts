@@ -295,7 +295,7 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
   React.useEffect(() => {
     if (projectId === null || workspaceId === null) return;
     if (typeof globalThis.EventSource !== "function") return;
-    const source = new globalThis.EventSource(http.eventsUrl(projectId), {
+    const source = new globalThis.EventSource(http.eventsUrl(projectId, workspaceId), {
       withCredentials: true,
     });
     const onWorkspaceEvent = (event: MessageEvent<string>) => {
