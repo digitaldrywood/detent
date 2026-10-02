@@ -202,7 +202,15 @@ func (e *landingRunExecution) Guard(ctx context.Context) (context.Context, func(
 }
 
 func TestNativeLandingQuotaFinishesRun(t *testing.T) {
-	t.Parallel()
+	originalClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "native-finish.test" || req.URL.Path != "/graphql" {
+			t.Errorf("unexpected credential request: %s", req.URL)
+			return nil, errors.New("unexpected credential request")
+		}
+		return workerGitHubPrincipalResponse(), nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = originalClient })
 	head := strings.Repeat("c", 40)
 	now := time.Now().UTC()
 	execution := &landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}}

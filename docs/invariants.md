@@ -579,9 +579,12 @@ Retry-After evidence in the existing persisted wait contract, without fabricated
 reserve or reset values. The reviewed Change Request/version/head stays in
 Merging across retries and restart; capacity completions consume no failed coding
 attempt allowance. Native coding and completions that need no exhausted GitHub
-operation continue normally. Synthetic quota probes cannot clear actual landing
-response evidence; the runner retries through ordinary landing dispatch and
-fresh same-credential operation evidence establishes recovery. Authentication,
+operation continue normally. Explicit native `worker.github_token` access retains
+the existing worker credential policy, isolated environment and capacity accounting;
+omitted access performs no worker credential lookup or GitHub request. Synthetic
+quota probes cannot clear actual landing response evidence; the runner retries
+through ordinary landing dispatch and fresh same-credential operation evidence
+establishes recovery. Authentication,
 review, check and repository refusals keep their existing handling. Runner
 credentials remain local. This consolidates classification and completion under
 INV-1/INV-2/INV-3 without a mechanism or lane writer.

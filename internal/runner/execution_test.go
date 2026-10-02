@@ -5,6 +5,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -192,43 +197,111 @@ func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
 	}
 }
 
+type nativeExecutionTransport func(*http.Request) (*http.Response, error)
+
+func (f nativeExecutionTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
-	t.Parallel()
-	for _, blocked := range []bool{false, true} {
-		name := "first run"
-		if blocked {
-			name = "lost checkpoint"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		blocked    bool
+		workerAuth bool
+	}{
+		{name: "first run without worker GitHub access"},
+		{name: "lost checkpoint", blocked: true},
+		{name: "explicit worker GitHub access", workerAuth: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}}
 			agent := &fakeCodexClient{}
 			execution := &testExecution{}
-			if blocked {
+			if test.blocked {
 				execution.recovery = tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "new-machine"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{MachineID: "lost-machine"}, Checkpoint: &tracker.NativeCheckpoint{Storage: "local_only", WorktreeState: "dirty", Resume: "resume_session"}}}}
 			}
 			cfg := config.Config{}
-			cfg.Worker.GitHubToken = "$NATIVE_UNUSED_GITHUB_TOKEN"
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Tracker.APIKey = "$NATIVE_HUB_TOKEN"
+			cfg = cfg.WithRuntimeGitHubToken("native-instance-token")
+			if test.workerAuth {
+				cfg.Worker.GitHubToken = "$NATIVE_WORKER_GITHUB_TOKEN"
+				cfg.Worker.GitHubRESTMinReserve = 500
+				cfg.Worker.GitHubRESTPollIntervalMS = 3600000
+			}
+			cliDir := t.TempDir()
+			cliName := "gh"
+			cliBody := "#!/bin/sh\n[ -r \"$GH_CONFIG_DIR/hosts.yml\" ] || exit 1\nprintf %s native-worker-token\n"
+			if runtime.GOOS == "windows" {
+				cliName = "gh.bat"
+				cliBody = "@echo off\r\nif not exist \"%GH_CONFIG_DIR%\\hosts.yml\" exit /b 1\r\necho native-worker-token\r\n"
+			}
+			if err := os.WriteFile(filepath.Join(cliDir, cliName), []byte(cliBody), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			identityReads, budgetReads := 0, 0
+			originalClient := http.DefaultClient
+			http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
+				if !test.workerAuth || req.URL.Host != "api.github.com" || req.Header.Get("Authorization") != "Bearer native-worker-token" {
+					t.Errorf("unexpected worker GitHub request: %s", req.URL)
+					return nil, errors.New("unexpected worker GitHub request")
+				}
+				switch req.URL.Path {
+				case "/graphql":
+					identityReads++
+					return workerGitHubPrincipalResponse(), nil
+				case "/rate_limit":
+					budgetReads++
+					return workerGitHubRateLimitResponse(), nil
+				default:
+					t.Errorf("unexpected worker GitHub path: %s", req.URL.Path)
+					return nil, errors.New("unexpected worker GitHub path")
+				}
+			})}
+			t.Cleanup(func() { http.DefaultClient = originalClient })
 			githubCredentialReads := 0
 			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, lookupEnv: func(key string) string {
-				if key == "NATIVE_UNUSED_GITHUB_TOKEN" {
-					githubCredentialReads++
+				githubCredentialReads++
+				if key == "NATIVE_WORKER_GITHUB_TOKEN" {
+					return "native-worker-token"
 				}
+				t.Errorf("resolved an unused credential: %s", key)
 				return ""
 			}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
-			if githubCredentialReads != 0 {
-				t.Fatal("native coding resolved an unused GitHub credential")
+			result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+			if test.workerAuth {
+				if githubCredentialReads != 1 || identityReads != 1 || budgetReads != 1 {
+					t.Fatalf("worker credential/identity/budget reads = %d/%d/%d, want 1/1/1", githubCredentialReads, identityReads, budgetReads)
+				}
+				policy := agent.request.workerGitHub
+				if !policy.Enabled || policy.Token != "native-worker-token" || policy.PrincipalID != 42 || policy.Principal.Login != "detent-worker[bot]" {
+					t.Fatal("native worker lost its selected credential or principal")
+				}
+				variables := agent.request.Environment.Variables
+				if variables["GH_CONFIG_DIR"] != filepath.Join(agent.request.TempDir, "github-cli") || variables["GH_TOKEN"] != "" || variables["GITHUB_TOKEN"] != "" {
+					t.Fatal("native worker lost its isolated GitHub environment")
+				}
+				if result.RateLimits == nil || len(result.RateLimits.GitHubRESTBudgets) != 1 {
+					t.Fatal("native worker omitted its GitHub budget accounting")
+				}
+				budget := result.RateLimits.GitHubRESTBudgets[0]
+				if budget.CredentialIdentity != policy.CredentialIdentity || budget.CredentialIdentity == "" || budget.Consumer != telemetry.RESTConsumerWorker || budget.Remaining != 4200 || budget.MinRemainingReserve != 500 {
+					t.Fatalf("native worker budget = %+v", budget)
+				}
+			} else if githubCredentialReads != 0 || identityReads != 0 || budgetReads != 0 {
+				t.Fatal("native coding resolved or used an unused GitHub credential")
 			}
-			if errors.Is(err, ErrNativeRecoveryRequired) != blocked {
+			if errors.Is(err, ErrNativeRecoveryRequired) != test.blocked || (!test.blocked && err != nil) {
 				t.Fatalf("run error = %v", err)
 			}
-			if blocked && execution.started {
+			if test.blocked && execution.started {
 				t.Fatal("unresolved checkpoint was superseded by a new attempt")
 			}
-			if !blocked && (!execution.started || execution.finish == "" || execution.checkpoint == nil) {
+			if !test.blocked && (!execution.started || execution.finish == "" || execution.checkpoint == nil) {
 				t.Fatalf("native run omitted lifecycle: %#v", execution)
 			}
 		})

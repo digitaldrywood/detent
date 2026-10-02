@@ -1486,11 +1486,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			Output:     RunOutputMergeFastPathCheckedHead,
 		}, nil
 	}
-	workerGitHub := workerGitHubPolicy{}
-	var err error
-	if req.Execution == nil {
-		workerGitHub, err = r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
-	}
+	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
 	if err != nil {
 		r.logWorkerGitHubPolicyError(req.Issue, err, telemetry.WorkAttemptIDKey, req.WorkAttemptID)
 		return RunResult{}, err
