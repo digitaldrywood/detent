@@ -4,19 +4,51 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	t.Parallel()
-	h := newNativeChangeHub(t, true)
+	h := newNativeChangeHub(t)
 	issue := h.createInProgress(t, "Read current native evidence")
+	identityPath := filepath.Join(t.TempDir(), "private", "identity.json")
+	file, err := runnerauth.Initialize(identityPath, h.admin.client.baseURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := h.admin.client.CreateRunnerEnrollment(t.Context(), h.organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{h.project}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := Machine{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "read-tools", DisplayName: "Read tool runner", Capacity: 1, Version: "test"}
+	if _, err := EnrollRunner(t.Context(), identityPath, h.organization, enrollment.Token, machine); err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(Config{URL: file.HubURL, IdentityFile: identityPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.native, err = client.Native(h.organization, h.project); err != nil {
+		t.Fatal(err)
+	}
+	h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.claim(t, issue.ID)
+	file, err = runnerauth.Load(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	item := tracker.NativeWorkItemID(issue.ID)
 	if _, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Genuine native discussion"}); err != nil {
 		t.Fatal(err)
@@ -50,6 +82,11 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if len(tools) != 5 {
 		t.Fatalf("read tools = %d, want 5", len(tools))
 	}
+	for _, tool := range tools {
+		if tool.Name == operatortool.WorkItem && !strings.Contains(tool.Description, "canonical native work-item ID") {
+			t.Fatal("read tool advertised an unsupported reference contract")
+		}
+	}
 	for _, test := range []struct {
 		name  string
 		extra map[string]any
@@ -71,7 +108,7 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 			if err != nil || !result.Success || !strings.Contains(result.Content, test.want) {
 				t.Fatalf("read success=%t error=%v, expected genuine evidence %q", result.Success, err, test.want)
 			}
-			if strings.Contains(result.Content, nativeChangeAdminToken) || strings.Contains(result.Content, h.native.client.tokenSource()) || strings.Contains(result.Content, "Bearer ") {
+			if strings.Contains(result.Content, nativeChangeAdminToken) || strings.Contains(result.Content, file.Credential) || strings.Contains(result.Content, "Bearer ") {
 				t.Fatal("read exposed a host credential")
 			}
 		})
@@ -81,6 +118,9 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		args map[string]any
 		want error
 	}{
+		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": "195"}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": "Read current native evidence"}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": "https://cloud.detent.build/work/195"}, operatortool.ErrInvalidArguments},
 		{operatortool.WorkItem, map[string]any{"project_id": foreignProject.ID, "reference": foreignIssue.WorkItemID}, operatortool.ErrAccessDenied},
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": foreignIssue.WorkItemID}, operatortool.ErrAccessDenied},
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": issue.ID, "url": "https://foreign.invalid"}, operatortool.ErrInvalidArguments},

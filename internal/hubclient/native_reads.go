@@ -98,7 +98,10 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 	var tools []runner.AgentTool
 	for _, definition := range append(operatortool.WorkReadCatalog(), operatortool.ChangeCatalog()...) {
 		switch definition.Name {
-		case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.ListChanges, operatortool.GetChange:
+		case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory:
+			definition.Description += " reference must be a canonical native work-item ID beginning with wi_; numbers, titles and URLs are not supported. Use cursor, not offset, for paging."
+			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
+		case operatortool.ListChanges, operatortool.GetChange:
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
 		}
 	}
@@ -127,6 +130,9 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}
 		id := tracker.NativeWorkItemID(request.Reference)
+		if _, err := nativeItemPath(id); err != nil {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
 		if request.Offset != 0 {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
