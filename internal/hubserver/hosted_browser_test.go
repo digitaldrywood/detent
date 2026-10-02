@@ -160,6 +160,14 @@ func (p *browserHostedProvider) AcceptInvitation(_ context.Context, token, user 
 	return nil
 }
 
+func (p *browserHostedProvider) InvitationByID(ctx context.Context, id string) (auth.Invitation, error) {
+	return p.Invitation(ctx, id)
+}
+
+func (p *browserHostedProvider) AcceptInvitationByID(ctx context.Context, id, user string) error {
+	return p.AcceptInvitation(ctx, id, user)
+}
+
 func (p *browserHostedProvider) RevokeSession(_ context.Context, id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
