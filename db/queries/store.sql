@@ -245,7 +245,10 @@ WHERE s.completed_at IS NOT NULL
     OR (CAST(sqlc.arg(work_attempt_id) AS INTEGER) > 0 AND s.work_attempt_id = CAST(sqlc.arg(work_attempt_id) AS INTEGER)
       AND lower(trim(COALESCE(s.final_state, ''))) IN ('completed', 'failed'))
   )
-  AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
+  AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != ''
+    OR (CAST(sqlc.arg(work_attempt_id) AS INTEGER) > 0
+      AND lower(trim(COALESCE(s.final_state, ''))) = 'failed'
+      AND s.turns = 0 AND s.input_tokens = 0 AND s.output_tokens = 0 AND s.total_tokens = 0))
   AND s.project_id = sqlc.arg(project_id)
   AND w.project_id = sqlc.arg(project_id)
   AND (CAST(sqlc.arg(work_attempt_id) AS INTEGER) > 0 OR (COALESCE(

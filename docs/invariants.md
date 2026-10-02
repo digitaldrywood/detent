@@ -1830,8 +1830,15 @@ interrupted `resume_session` checkpoint also selects its exact persisted local
 attempt through the existing session lookup, including overload-ended failed
 Code sessions without a PR or experimental automatic resume. Native recovery
 verifies policy, configured runtime identity, provider availability, host, head
-and workspace digest before continuing. Native continuation no longer shares
-the generic fresh-session fallback; unavailable or changed continuation remains
+and workspace digest before continuing. A worktree does not establish a provider
+session. Checkpoints select continuation only after a real provider identity is
+returned or observed. The exact persisted attempt lookup can also identify a
+failed startup with no provider identity, turns or tokens; only its unchanged,
+available clean local workspace with no external effects can use the existing
+fresh-session decision. Missing persisted records, actual provider activity,
+dirty work and unverifiable real sessions retain recovery-required ownership.
+History-based lookup still requires a provider identity. Native continuation no
+longer shares the generic fresh-session fallback; unavailable or changed continuation remains
 with the existing recovery-required outcome. Failed native turns retain their
 checkpoint workspace. No retry loop, recovery path or reservation is added.
 `TestHubSchedulingPreservesOverloadRetryAcrossAdmissions` covers bounded omission

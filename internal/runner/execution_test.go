@@ -136,16 +136,31 @@ func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace
 func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name          string
-		dirty         bool
-		edit          func(*testExecution, *fakeCodexClient)
-		blocked       bool
-		changedPolicy bool
+		name               string
+		dirty              bool
+		edit               func(*testExecution, *fakeCodexClient)
+		blocked            bool
+		changedPolicy      bool
+		providerNotStarted bool
+		providerHadTurns   bool
+		startupFailsAgain  bool
+		observedProvider   bool
 	}{
 		{name: "clean 94"},
+		{name: "clean provider never started", providerNotStarted: true},
+		{name: "provider startup fails again", providerNotStarted: true, startupFailsAgain: true},
+		{name: "provider start identity retained", providerNotStarted: true, startupFailsAgain: true, observedProvider: true},
+		{name: "provider identity missing after turn", providerNotStarted: true, providerHadTurns: true, blocked: true},
+		{name: "dirty provider never started", providerNotStarted: true, dirty: true, blocked: true},
+		{name: "startup policy changed", providerNotStarted: true, changedPolicy: true, blocked: true},
+		{name: "startup host changed", providerNotStarted: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
+		{name: "startup digest changed", providerNotStarted: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
+		}},
 		{name: "dirty 181", dirty: true},
 		{name: "provider unavailable", dirty: true, blocked: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
 		{name: "clean provider unavailable", blocked: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
+		{name: "clean persisted session missing", blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
 		{name: "persisted policy differs", dirty: true, blocked: true, changedPolicy: true},
 		{name: "policy changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].PolicyID = "other-policy" }},
 		{name: "model authority changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Identity.Model = "other-model" }},
@@ -184,7 +199,15 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := db.FinishSession(ctx, sessionID, store.SessionFinish{CompletedAt: started.Add(18 * time.Second), FinalState: "failed", ProviderThreadID: "original-thread", ProviderSessionID: "original-session"}); err != nil {
+			originalResume := AgentResume{ThreadID: "original-thread", SessionID: "original-session"}
+			if test.providerNotStarted {
+				originalResume = AgentResume{}
+			}
+			priorTurns := int64(0)
+			if test.providerHadTurns {
+				priorTurns = 1
+			}
+			if err := db.FinishSession(ctx, sessionID, store.SessionFinish{Turns: priorTurns, CompletedAt: started.Add(18 * time.Second), FinalState: "failed", ProviderThreadID: originalResume.ThreadID, ProviderSessionID: originalResume.SessionID}); err != nil {
 				t.Fatal(err)
 			}
 			if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(18 * time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalCapacity, WorkerMetadataJSON: string(metadata)}); err != nil {
@@ -215,6 +238,12 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
 			overload := errors.New("serverOverloaded: selected model at capacity")
 			agent := &fakeCodexClient{err: overload, result: AgentTurnResult{ThreadID: "original-thread", SessionID: "original-session"}}
+			if test.startupFailsAgain {
+				agent.result = AgentTurnResult{}
+			}
+			if test.observedProvider {
+				agent.updates = []AgentUpdate{{Type: AgentUpdateTurnStarted, ThreadID: "observed-thread", ProviderSessionID: "observed-session", TurnID: "observed-turn"}}
+			}
 			nativeIdentity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "original-model"}
 			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "host", PolicyID: approved.ID}, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: approved.ID, Identity: &nativeIdentity, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: worktree, HeadSHA: local.HeadSHA, WorkspaceDigest: local.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}}}}}
 			if test.edit != nil {
@@ -231,6 +260,9 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			cfg := config.Config{Policy: approved}
 			cfg.Tracker.Kind = config.TrackerHubNative
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: "code", Backend: "codex", Model: "new-default-model", Default: true}}
+			if test.providerNotStarted {
+				cfg.Agents.Routes[0].Model = "original-model"
+			}
 			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
@@ -242,22 +274,35 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				}
 			} else {
 				want := AgentResume{ThreadID: "original-thread", SessionID: "original-session"}
-				if !errors.Is(err, overload) || agent.calls != 1 || agent.request.Resume != want || agent.verifiedResume != want || agent.request.Model != "original-model" || agent.request.ReasoningEffort != "high" || agent.request.Workspace != info.Path {
+				if test.providerNotStarted {
+					want = AgentResume{}
+				}
+				if !errors.Is(err, overload) || agent.calls != 1 || agent.request.Resume != want || agent.verifiedResume != want || (!test.providerNotStarted && (agent.request.Model != "original-model" || agent.request.ReasoningEffort != "high")) || agent.request.Workspace != info.Path {
 					t.Fatalf("recovery: error=%v turns=%d resume=%+v verified=%+v model=%s", err, agent.calls, agent.request.Resume, agent.verifiedResume, agent.request.Model)
 				}
 				if result.NativeChange != nil || result.FinalState != FinalStateFailed {
 					t.Fatalf("overload manufactured completion: %+v", result)
 				}
-				if execution.checkpoint == nil || execution.checkpoint.HeadSHA != local.HeadSHA || execution.checkpoint.WorkspaceDigest != local.WorkspaceFingerprint || execution.checkpoint.Resume != "resume_session" {
+				wantCheckpoint := "resume_session"
+				if test.startupFailsAgain && !test.observedProvider {
+					wantCheckpoint = "fresh_checkout"
+				}
+				if execution.checkpoint == nil || execution.checkpoint.HeadSHA != local.HeadSHA || execution.checkpoint.WorkspaceDigest != local.WorkspaceFingerprint || execution.checkpoint.Resume != wantCheckpoint {
 					t.Fatalf("checkpoint changed: %+v", execution.checkpoint)
 				}
-				latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
-				if err != nil {
-					t.Fatal(err)
-				}
-				resumed, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
-				if err != nil || resumed.ResumedFromSessionID.Int64 != sessionID || resumed.WorkAttemptID.Int64 != currentAttemptID || resumed.FinalState.String != "failed" {
-					t.Fatalf("persisted continuation=%+v error=%v", resumed, err)
+				if !test.startupFailsAgain || test.observedProvider {
+					latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
+					if err != nil {
+						t.Fatal(err)
+					}
+					resumed, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
+					from := sessionID
+					if test.providerNotStarted {
+						from = 0
+					}
+					if err != nil || resumed.ResumedFromSessionID.Int64 != from || resumed.WorkAttemptID.Int64 != currentAttemptID || resumed.FinalState.String != "failed" {
+						t.Fatalf("persisted continuation=%+v error=%v", resumed, err)
+					}
 				}
 			}
 			got, readErr := os.ReadFile(filepath.Join(info.Path, "README.md"))
@@ -324,7 +369,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 				Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "dirty", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"},
 			}}}
 			test.edit(&recovery, &local, &available)
-			action, reason := nativeRecoveryAction(recovery, local, available, identity)
+			action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity)
 			if action != test.action || reason != test.reason {
 				t.Fatalf("recovery = %s/%s, want %s/%s", action, reason, test.action, test.reason)
 			}
@@ -356,7 +401,7 @@ func TestNativeEpiloguePreservesBeforeCleanup(t *testing.T) {
 				cancel()
 			}
 			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
-			err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{})
+			err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{}, AgentResume{})
 			if errors.Is(err, ErrExecutionAuthorityUnavailable) != test.lost || backend.retained != test.retained || backend.afterRun != test.after {
 				t.Fatalf("epilogue error=%v retained=%v hook=%v", err, backend.retained, backend.afterRun)
 			}
@@ -597,7 +642,7 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, validationEvidenceSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
 				return tracker.AttemptDiffRequest{Files: []tracker.AttemptDiffFile{{Path: ".detent/validation/1/test.png", Status: "added"}}}, test.screenshot
 			}}
-			err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{})
+			err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}, AgentResume{})
 			if test.screenshot && (len(execution.evidence) != 1 || string(execution.evidence[0].Content) != "screenshot bytes" || execution.evidence[0].Name != "test.png") {
 				t.Fatalf("evidence=%+v", execution.evidence)
 			}
@@ -642,7 +687,7 @@ func TestAvailabilityDeadlinePublishesBeforeFinish(t *testing.T) {
 			cancel(context.Canceled)
 			defer cancel(context.Canceled)
 			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
-			err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{})
+			err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{}, AgentResume{})
 			if !backend.published || backend.afterRun {
 				t.Fatalf("published=%t cleaned=%t", backend.published, backend.afterRun)
 			}
@@ -833,7 +878,7 @@ func TestValidationEvidenceUsesCurrentAttemptDiff(t *testing.T) {
 	backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{HeadSHA: diff.HeadSHA}}}}
 	execution := &artifactExecutionProbe{}
 	req := RunRequest{Execution: execution, validationEvidenceSource: source}
-	if err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}); err != nil {
+	if err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}, AgentResume{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(execution.evidence) != 3 {
@@ -845,7 +890,7 @@ func TestValidationEvidenceUsesCurrentAttemptDiff(t *testing.T) {
 		}
 	}
 	execution.evidenceFailure = errors.New("attachment upload unavailable")
-	if err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}); !errors.Is(err, execution.evidenceFailure) {
+	if err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}, AgentResume{}); !errors.Is(err, execution.evidenceFailure) {
 		t.Fatalf("genuine publication failure lost: %v", err)
 	}
 	for i := range 11 {

@@ -1853,7 +1853,10 @@ WHERE s.completed_at IS NOT NULL
     OR (CAST(?1 AS INTEGER) > 0 AND s.work_attempt_id = CAST(?1 AS INTEGER)
       AND lower(trim(COALESCE(s.final_state, ''))) IN ('completed', 'failed'))
   )
-  AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
+  AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != ''
+    OR (CAST(?1 AS INTEGER) > 0
+      AND lower(trim(COALESCE(s.final_state, ''))) = 'failed'
+      AND s.turns = 0 AND s.input_tokens = 0 AND s.output_tokens = 0 AND s.total_tokens = 0))
   AND s.project_id = ?2
   AND w.project_id = ?2
   AND (CAST(?1 AS INTEGER) > 0 OR (COALESCE(
