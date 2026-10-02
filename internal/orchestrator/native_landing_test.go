@@ -56,6 +56,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		err                error
 		wantInfrastructure bool
 		mergeMessage       string
+		sourceConflict     bool
 	}{
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
@@ -63,6 +64,8 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "a conflict enters configured rework with human review", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
 		{name: "a protected refusal remains blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "was not landed", wantMoves: 1},
 		{name: "unproven conflict retains landing retry without coding rework", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, err: projectionErr, wantInfrastructure: true},
+		{name: "stale base projection with current conflict enters configured rework", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
+		{name: "stale base projection with current clean source retains landing wait", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, noHumanReview: true, wantInfrastructure: true},
 		{name: "base race retains reviewed landing without human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, wantInfrastructure: true},
 		{name: "base race retains reviewed landing with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
 		{name: "strict head protection returns to review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
@@ -90,18 +93,35 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			landingHead := head
 			landed := *landed
 			if test.mergeMessage != "" {
-				journey = newNativeLandingJourney(t, issue, test.mergeMessage)
+				journey = newNativeLandingJourney(t, issue, test.mergeMessage, test.sourceConflict)
 				result, runErr = journey.run(t)
 				branch, landingHead = journey.issue.BranchName, journey.target.HeadSHA
 				landed.HeadSHA = landingHead
 				if test.wantInfrastructure {
 					var status *github.StatusError
-					if !errors.Is(runErr, connector.ErrPullRequestBaseOutOfDate) || !errors.As(runErr, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.mergeMessage) || !strings.Contains(runErr.Error(), "PUT repos/example/repo/pulls/7/merge") || !strings.Contains(runErr.Error(), journey.base) || !strings.Contains(runErr.Error(), landingHead) || len(journey.execution.recorded) != 0 {
-						t.Fatalf("base race lost refusal evidence or fabricated landing: result %#v, error %v", result, runErr)
+					wantError := connector.ErrPullRequestBaseOutOfDate
+					base := journey.base
+					if test.mergeMessage == "Pull Request has merge conflicts" {
+						wantError = forgeavailability.ErrUnavailable
+						base = nativeLandingGit(t, journey.info.Path, "rev-parse", "refs/remotes/origin/main")
+						if base == journey.base || base != nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main") {
+							t.Fatal("conflict verification did not refresh the advanced base")
+						}
+					}
+					if !errors.Is(runErr, wantError) || !errors.As(runErr, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.mergeMessage) || !strings.Contains(runErr.Error(), "PUT repos/example/repo/pulls/7/merge") || !strings.Contains(runErr.Error(), base) || !strings.Contains(runErr.Error(), landingHead) || len(journey.execution.recorded) != 0 {
+						t.Fatalf("landing wait lost refusal evidence or fabricated landing: result %#v, error %v", result, runErr)
 					}
 				} else {
-					if runErr != nil || result.Output != runpkg.RunOutputNativeLandingRefused || result.NativeLanding.RefusalKind != workspace.LandRefusalProtected || !strings.Contains(result.NativeLanding.Refusal, test.mergeMessage) || !strings.Contains(result.NativeLanding.Refusal, "status 405") || result.NativeLanding.Landed || result.NativeLanding.MergeSHA != "" || len(journey.execution.recorded) != 0 || journey.provider.calls.Load() != 0 || journey.execution.started != 1 {
-						t.Fatalf("strict protection lost refusal ownership or fabricated landing: landing %#v, error %v", result.NativeLanding, runErr)
+					wantRefusal := workspace.LandRefusalProtected
+					if test.sourceConflict {
+						wantRefusal = workspace.LandRefusalConflict
+						base := nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main")
+						if base == journey.base || !strings.Contains(result.NativeLanding.Refusal, base) || !strings.Contains(result.NativeLanding.Refusal, landingHead) {
+							t.Fatalf("conflict lost current Git base or reviewed head: %#v, %v", result.NativeLanding, runErr)
+						}
+					}
+					if runErr != nil || result.Output != runpkg.RunOutputNativeLandingRefused || result.NativeLanding.RefusalKind != wantRefusal || !strings.Contains(result.NativeLanding.Refusal, test.mergeMessage) || !strings.Contains(result.NativeLanding.Refusal, "status 405") || result.NativeLanding.Landed || result.NativeLanding.MergeSHA != "" || len(journey.execution.recorded) != 0 || journey.provider.calls.Load() != 0 || journey.execution.started != 1 {
+						t.Fatalf("landing lost refusal ownership or fabricated landing: landing %#v, error %v", result.NativeLanding, runErr)
 					}
 					test.landing = result.NativeLanding
 				}
