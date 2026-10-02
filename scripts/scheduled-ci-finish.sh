@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-jobs_file="$RUNNER_TEMP/scheduled-ci-jobs.json"
-issues_file="$RUNNER_TEMP/scheduled-ci-issues.json"
+scratch_dir="${TMPDIR:-${TMP:-${TEMP:?scheduled validation requires provided scratch}}}"
+jobs_file="$scratch_dir/scheduled-ci-jobs.json"
+issues_file="$scratch_dir/scheduled-ci-issues.json"
+evidence_file="$scratch_dir/scheduled-ci-evidence.jsonl"
 run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
 gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' | jq -s . > "$jobs_file"
 report_failure() {
-  go run ./tools/cifailure < "$jobs_file"
+  go run ./tools/cifailure < "$jobs_file" >> "$evidence_file"
 }
 
 failures="$(jq -r '.[] | select(.name != "Finalize scheduled validation" and .conclusion != "success") | .name' "$jobs_file")"
@@ -18,8 +20,9 @@ fi
 
 publish_failure() {
   trap - ERR
-  jq -n --arg url "$run_url" '[{name:"Finalize scheduled validation",conclusion:"failure",html_url:$url,id:0}]' > "$jobs_file"
-  report_failure
+  publisher_jobs_file="$scratch_dir/scheduled-ci-publisher-jobs.json"
+  jq -n --arg url "$run_url" '[{name:"Finalize scheduled validation",conclusion:"failure",html_url:$url,id:0}]' > "$publisher_jobs_file"
+  go run ./tools/cifailure < "$publisher_jobs_file" >> "$evidence_file"
   exit 1
 }
 trap publish_failure ERR
@@ -42,7 +45,7 @@ else
   tag=v0.0.1
 fi
 
-message_file="$RUNNER_TEMP/scheduled-ci-tag-message"
+message_file="$scratch_dir/scheduled-ci-tag-message"
 cat > "$message_file" <<EOF
 Validated development build $tag
 
@@ -51,7 +54,11 @@ EOF
 git tag -a "$tag" "$CI_DEVELOP_SHA" -F "$message_file"
 git push origin "refs/tags/$tag"
 gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$tag"
-gh issue list --repo "$GITHUB_REPOSITORY" --label ci-scheduled-failure --state open --limit 10000 --json number > "$issues_file"
-for number in $(jq -r '.[].number' "$issues_file"); do
-  gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Scheduled full validation passed: $run_url"
-done
+if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
+  go run ./tools/cifailure < "$jobs_file" >> "$evidence_file"
+else
+  gh issue list --repo "$GITHUB_REPOSITORY" --label ci-scheduled-failure --state open --limit 10000 --json number > "$issues_file"
+  for number in $(jq -r '.[].number' "$issues_file"); do
+    gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Scheduled full validation passed: $run_url"
+  done
+fi
