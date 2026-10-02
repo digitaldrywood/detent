@@ -695,8 +695,7 @@ func startupSnapshot(
 	now time.Time,
 	updateSources ...autoUpdateStatusSource,
 ) telemetry.Snapshot {
-	nextRefreshAt := now
-	refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefreshAt}
+	refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing}
 	unknown := telemetry.SnapshotSection{Source: telemetry.SnapshotSourceUnknown}
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:    now,

@@ -34,6 +34,16 @@ the bytes. Markdown references bind to the same project and item/comment in the
 content transaction; copied references never grant read access or reassign a
 bound upload. `TestAttachmentRoutesIsolation` covers API/MCP PNG round-trips,
 foreign-project tokens, automatic comment binding and the evidence publisher.
+Worker screenshot capture (#197) selects only changed image paths from the
+existing attempt diff anchored before native Code/Rework execution. Unchanged
+inherited images and deleted paths are not current evidence. Programmatic
+landing never collects or republishes validation screenshots. The same rooted
+filesystem, regular-file, ten-image and per-image byte limits remain in force;
+no directory-wide fallback substitutes historical evidence when attribution is
+unavailable. `TestValidationEvidenceUsesCurrentAttemptDiff` covers inherited,
+new, modified, renamed and deleted images, bounds and publication failures.
+`TestNativeLandingDoesNotRepublishValidationEvidence` preserves the genuine
+landing receipt and successful completion with excess inherited images.
 `TestArtifactsFinalizeBeforeWorkspaceCleanup` covers worker screenshot capture.
 The client renders only the exact Cloud attachment path as a direct same-origin
 image; other filesystem paths retain workspace classification.
@@ -2872,6 +2882,27 @@ acceptance into the existing binary identity verifier. The existing verification
 must remain to reject unverified artifacts before replacement.
 Startup, serving, and readiness workers share cancellation and are joined before
 identity-failure exits allow caller-owned resources to be cleaned up.
+
+Runner boot (#132) publishes the existing initializing snapshot without reading
+lifetime totals and serves HTTP before startup process cleanup, Codex retention,
+board-cache loading, or local setup/policy/provider observations. The initial
+snapshot has no scheduled refresh deadline until dispatch starts, so
+maintenance time cannot turn initializing tracker state into a late refresh.
+The existing listener identity probe runs in the joined startup worker before that work;
+updater health verification and lifecycle readiness still wait for startup.
+The manager receives its scheduling source only after actual setup observations
+complete, so a responsive initializing health route grants no dispatch authority.
+Enrolled identity, current approved policy, provider authority, grants, leases
+and fencing retain their existing admission owners. Observation failures remain
+instance-owned startup failures; cancellation joins startup and service resources
+before closing the runtime store. No maintenance loop, heartbeat audit, route,
+configuration, reason code or admission bypass is introduced. Startup logs
+separate listener binding, HTTP response availability, setup observation duration
+and lifecycle readiness; existing project refresh events retain refresh timing.
+An aggregate restart interval cannot attribute time to any one operation.
+`TestStartRunningServesWhileMaintenanceBlocked` covers HTTP/state availability,
+honest readiness, deferred dispatch, missing Hub authority and joined cancellation;
+existing setup-heartbeat, policy and lifecycle-failure tests retain their boundaries.
 
 GitHub dependency hydration consolidates native relations and current issue-body
 declarations into one blocker list (#2751). Native state wins for duplicate refs;
