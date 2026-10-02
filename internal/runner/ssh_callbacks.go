@@ -125,7 +125,7 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 		if strings.HasPrefix(method, "execution.") {
 			name := strings.TrimPrefix(method, "execution.")
 			switch name {
-			case "Validate", "Start", "Checkpoint", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding":
+			case "Validate", "Start", "Checkpoint", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			}
 			return nil, errors.New("unsupported SSH execution method")

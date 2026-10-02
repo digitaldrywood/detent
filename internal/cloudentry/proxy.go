@@ -273,6 +273,9 @@ func (s *Service) proxy(c echo.Context) error {
 			r.Out.ContentLength = int64(len(body))
 		},
 		ModifyResponse: func(response *http.Response) error {
+			if err := s.attachmentMCPResponse(c, body, response); err != nil {
+				return err
+			}
 			response.Header.Del("Set-Cookie")
 			response.Header.Set("Cache-Control", "no-store")
 			response.Header.Set("Content-Security-Policy", contentSecurity)

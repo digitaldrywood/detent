@@ -28,6 +28,7 @@ var ErrInvalid = errors.New("invalid attachment")
 var ErrTooLarge = errors.New("attachment exceeds 20 MiB")
 
 type Metadata struct {
+	Reference           string     `json:"reference,omitempty"`
 	ID                  string     `json:"id"`
 	ProjectID           string     `json:"project_id"`
 	Uploader            string     `json:"uploader"`

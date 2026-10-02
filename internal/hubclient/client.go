@@ -236,7 +236,10 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		httpClient = clientWithTimeout(httpClient, timeout)
 	}
 	var body io.Reader
-	if input != nil {
+	stream, streaming := input.(io.Reader)
+	if streaming {
+		body = stream
+	} else if input != nil {
 		encoded, err := json.Marshal(input)
 		if err != nil {
 			return fmt.Errorf("encode Hub request: %w", err)
@@ -262,7 +265,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	}
 	request.Header.Set("Authorization", token)
 	request.Header.Set("Accept", "application/json")
-	if input != nil {
+	if input != nil && !streaming {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := httpClient.Do(request)

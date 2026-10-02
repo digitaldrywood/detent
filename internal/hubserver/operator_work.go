@@ -40,6 +40,9 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 			definitions = append(definitions, definition)
 		}
 	}
+	if writable && e.service.hostedShared() {
+		definitions = append(definitions, operatortool.AttachmentCatalog()...)
+	}
 	return definitions, nil
 }
 
@@ -90,6 +93,16 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrAccessDenied
 	}
 	scope.project = tracker.ProjectID(selector.ProjectID)
+	if call.Name == operatortool.UploadAttachment {
+		if !e.service.hostedShared() {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		if _, _, err := operatortool.DecodeAttachmentArguments(call.Arguments); err != nil {
+			return operatortool.Result{}, err
+		}
+		outcome = "authorized"
+		return operatortool.EncodeResult(map[string]bool{"entry_upload": true})
+	}
 	var request operatortool.WorkArguments
 	arguments := call.Arguments
 	var fields map[string]json.RawMessage

@@ -324,6 +324,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, '', 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, 
 	if _, err := tx.ExecContext(ctx, "INSERT INTO queue_entries (issue_id, workflow_state_id, scope, state, rank, priority_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, workflowID, scope.project, issue.State, string(issue.WorkItemID), issue.Priority, formatHubTime(now), formatHubTime(now)); err != nil {
 		return tracker.NativeIssue{}, err
 	}
+	if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), "", issue.Body); err != nil {
+		return tracker.NativeIssue{}, err
+	}
 	if err := recordNativeChange(ctx, tx, scope, issue, string(issue.WorkItemID), issue.Revision, "issue.created", tracker.CollaborationData{Revision: issue.Revision}, now); err != nil {
 		return tracker.NativeIssue{}, err
 	}

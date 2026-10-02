@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -243,4 +244,21 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]bool{"exists": count == 1})
+}
+
+func bindCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, item, comment, body string) error {
+	for _, ref := range attachment.References(body, string(scope.organization), string(scope.project)) {
+		result, err := tx.ExecContext(ctx, `UPDATE attachments SET work_item_id=?,comment_id=nullif(?,'') WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL AND (work_item_id IS NULL OR (work_item_id=? AND coalesce(comment_id,'')=?))`, item, comment, scope.organization, scope.project, ref.ID, item, comment)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return nativeNotFound()
+		}
+	}
+	return nil
 }

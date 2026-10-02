@@ -181,12 +181,12 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 	}
 	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, "", upload.Metadata)
 	if err == nil && status == http.StatusCreated {
-		return c.JSONBlob(status, raw)
+		return attachmentUploadResponse(c, organization.ID, status, raw)
 	}
 	if err != nil || status >= http.StatusInternalServerError {
 		readStatus, recorded, readErr := s.attachmentCall(c, organization, http.MethodGet, "/"+upload.ID, nil)
 		if readErr == nil && readStatus == http.StatusOK {
-			return c.JSONBlob(http.StatusCreated, recorded)
+			return attachmentUploadResponse(c, organization.ID, http.StatusCreated, recorded)
 		}
 		if readErr != nil || readStatus != http.StatusNotFound {
 			return attachmentCallError(c, status, raw, err, false)
@@ -398,4 +398,14 @@ func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization
 		}
 		return s.attachments.Delete(ctx, key)
 	})
+}
+
+func attachmentUploadResponse(c echo.Context, organization string, status int, raw []byte) error {
+	var record attachment.Metadata
+	if err := json.Unmarshal(raw, &record); err != nil || record.Validate() != nil {
+		return attachmentError(c, http.StatusBadGateway, "tenant_unavailable", "Attachment metadata is invalid")
+	}
+	record.Reference = record.Markdown(organization)
+	record.AuthorizedPrincipal = ""
+	return c.JSON(status, record)
 }

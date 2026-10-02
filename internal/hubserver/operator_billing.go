@@ -183,7 +183,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	if hubFleetTool(call.Name) {
 		return hubFleetExecutor(e).Execute(ctx, call)
 	}
-	if call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
+	if call.Name == operatortool.UploadAttachment || call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
 		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}
 	defer func() {

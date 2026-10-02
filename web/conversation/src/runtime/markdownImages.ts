@@ -42,7 +42,7 @@ export function classifyMarkdownImageSource(
   if (source.length === 0 || source.startsWith("#") || source.startsWith("?")) {
     return { _tag: "Blocked" };
   }
-  if (DIRECT_IMAGE_SOURCE_PATTERN.test(source)) {
+  if (/^\/organizations\/org_[A-Za-z0-9_-]+\/api\/v2\/projects\/prj_[A-Za-z0-9_-]+\/attachments\/att_[a-f0-9]{32}$/.test(source) || DIRECT_IMAGE_SOURCE_PATTERN.test(source)) {
     return { _tag: "Direct", uri: source };
   }
 

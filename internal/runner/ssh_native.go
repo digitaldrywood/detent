@@ -153,3 +153,7 @@ func (e *sshNativeExecution) StartLanding(ctx context.Context, attempt int64, ge
 func (e *sshNativeExecution) ObserveLanding(ctx context.Context, landing NativeLanding) error {
 	return e.peer.Call(ctx, "execution.ObserveLanding", nil, landing)
 }
+
+func (e *sshNativeExecution) PublishValidationEvidence(ctx context.Context, files []ValidationEvidence) error {
+	return e.peer.Call(ctx, "execution.PublishValidationEvidence", nil, files)
+}
