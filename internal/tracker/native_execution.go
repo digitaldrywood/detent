@@ -39,10 +39,11 @@ type NativeAttempt struct {
 }
 
 type NativeRecovery struct {
-	Lease      NativeLease            `json:"lease"`
-	Issue      NativeIssue            `json:"issue"`
-	Discussion []NativeComment        `json:"discussion"`
-	History    []CollaborationEvent   `json:"history"`
-	Attempts   []NativeAttempt        `json:"attempts"`
-	Change     *NativeChangeReference `json:"change,omitempty"`
+	Lease        NativeLease            `json:"lease"`
+	Issue        NativeIssue            `json:"issue"`
+	Discussion   []NativeComment        `json:"discussion"`
+	History      []CollaborationEvent   `json:"history"`
+	Attempts     []NativeAttempt        `json:"attempts"`
+	Change       *NativeChangeReference `json:"change,omitempty"`
+	ChangeDetail *ChangeDetail          `json:"change_detail,omitempty"`
 }

@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -50,6 +51,21 @@ func (c *NativeClient) Change(ctx context.Context, item tracker.NativeWorkItemID
 	}
 	err = c.client.request(ctx, http.MethodGet, c.base()+path, nil, &result)
 	return result, err
+}
+
+func (c *NativeClient) currentChange(ctx context.Context, item tracker.NativeWorkItemID) (*tracker.ChangeDetail, error) {
+	changes, err := c.Changes(ctx, item)
+	if err != nil {
+		return nil, fmt.Errorf("list changes: %w", err)
+	}
+	if len(changes) == 0 {
+		return nil, nil
+	}
+	detail, err := c.Change(ctx, item, changes[len(changes)-1].ID)
+	if err != nil {
+		return nil, fmt.Errorf("read change: %w", err)
+	}
+	return &detail, nil
 }
 
 func (c *NativeClient) CreateChange(ctx context.Context, item tracker.NativeWorkItemID, request tracker.CreateChange) (tracker.ChangeRequest, error) {

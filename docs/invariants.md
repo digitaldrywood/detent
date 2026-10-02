@@ -961,6 +961,18 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Native Rework context (#143) uses the same scoped current Change reader as
+landing. Recovery carries Change detail, including discussion and formal review
+findings with immutable version/head, actor and provenance, alongside existing
+issue discussion, history and attempts. Historical references cannot select the
+current version; historical feedback cannot become current approval or rejection.
+Feedback bodies remain untrusted task content, and discussion is not formal
+approval. Missing scoped reads return through the existing hydration error owner
+before dispatch. `TestNativeRecoveryUsesPublishedVersion` and the Rework cases in
+`TestNativeRunnerOpensChangeAndLeavesDispatch` cover the context through the real
+Hub, scheduler, execution and provider prompt without a feedback store, recovery
+loop, gate, configuration switch or tracker lane writer.
+
 Externally published native versions (#98) resolve the reviewed current version
 before the existing workspace owner prepares a landing. The target retains its
 External PR reference. The runner verifies its authorized source, clean owned
