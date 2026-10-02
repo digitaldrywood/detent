@@ -19,5 +19,6 @@
     }
   },
   "spend": null,
-  "current": "v0.9.1"
+  "current": "v0.9.1",
+  "minimum_runner_version": "v0.9.1"
 }

@@ -61,7 +61,15 @@
           "project_id": "proj_parable",
           "expires_at": "2026-09-10T12:09:31Z"
         }
-      ]
+      ],
+      "claim_refusal_reason": "Too old to take work, needs v0.9.1",
+      "update": {
+        "runner_id": "rnr_macbook",
+        "revision": 1,
+        "status": "unavailable",
+        "desired": null,
+        "observation": null
+      }
     },
     {
       "id": "rnr_macmini",
@@ -84,7 +92,15 @@
       "home_dry_since": null,
       "isolation_tier": "sandbox",
       "availability": { "timezone": "", "windows": [], "hard_deadline": "" },
-      "leases": []
+      "leases": [],
+      "claim_refusal_reason": "Too old to take work, needs v0.9.1",
+      "update": {
+        "runner_id": "rnr_macmini",
+        "revision": 1,
+        "status": "unavailable",
+        "desired": null,
+        "observation": null
+      }
     }
   ],
   "editable": false,
@@ -162,5 +178,6 @@
       }
     ]
   },
-  "current": "v0.9.1"
+  "current": "v0.9.1",
+  "minimum_runner_version": "v0.9.1"
 }

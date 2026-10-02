@@ -23,7 +23,7 @@ func (f nativeFixture) worker(t *testing.T, name string) string {
 func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
+	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }, Version: "v1.2.3"}
 	f := newNativeFixture(t, openTestService(t, config), "", "claims")
 	descriptor := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
@@ -33,7 +33,7 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "block"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}), http.StatusOK)
 	worker := f.worker(t, "worker")
 	otherWorker := f.worker(t, "other-worker")
-	machine := map[string]any{"id": "native-machine", "hostname": "runner", "display_name": "Runner", "version": "test", "capacity": 1}
+	machine := map[string]any{"id": "native-machine", "hostname": "runner", "display_name": "Runner", "version": "v1.2.3", "capacity": 1}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, machine), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", otherWorker, machine), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, machine), http.StatusNotFound)
@@ -51,6 +51,12 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", otherWorker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusNotFound)
 	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "run-start"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: newNativeID("run"), AttemptID: newNativeID("attempt"), PolicyID: descriptor.ID}}
+	f.service.config.Version = "v1.2.4"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+	newClaim := request
+	newClaim.SessionID = "new-session"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, newClaim), http.StatusUpgradeRequired)
 	for range 3 {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 	}
@@ -70,10 +76,12 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
+	config.Version = "v1.2.4"
 	f.service = openTestService(t, config)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, worker, nil), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 	now = now.Add(91 * time.Second)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/native-machine/heartbeat", worker, map[string]any{"version": "v1.2.4", "capacity": 1}), http.StatusNoContent)
 	request.SessionID = "replacement-session"
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -91,6 +99,8 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	if len(history.Items) != 3 {
 		t.Fatalf("history after restart = %#v", history.Items)
 	}
+	f.service.config.Version = "v1.2.5"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, Reason: "completed"}), http.StatusNoContent)
 	var aliases, outbox int
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE github_node_id IS NOT NULL").Scan(&aliases); err != nil {
 		t.Fatal(err)
@@ -105,5 +115,63 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM "+table); err == nil {
 			t.Errorf("%s allowed ordinary deletion", table)
 		}
+	}
+}
+
+func TestNativeRunnerMinimumVersion(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, hub, runner, minimum string
+		refused                    bool
+	}{
+		{name: "below", hub: "v1.2.4", runner: "v1.2.3", minimum: "v1.2.4", refused: true},
+		{name: "equal", hub: "v1.2.4", runner: "v1.2.4", minimum: "v1.2.4"},
+		{name: "above", hub: "v1.2.4", runner: "v1.3.0", minimum: "v1.2.4"},
+		{name: "prerelease", hub: "v1.2.4", runner: "v1.2.4-rc.1", minimum: "v1.2.4", refused: true},
+		{name: "build metadata", hub: "v1.2.4", runner: "v1.2.4+local", minimum: "v1.2.4"},
+		{name: "unprefixed", hub: " v1.2.4 ", runner: "1.2.3", minimum: "v1.2.4", refused: true},
+		{name: "development runner", hub: "v1.2.4", runner: "dev", minimum: "v1.2.4"},
+		{name: "development hub", hub: "dev", runner: "v1.0.0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Version: test.hub}), "", "minimum")
+			descriptor := hubTestPolicy()
+			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			issue := f.create(t, "work")
+			worker := f.worker(t, "worker")
+			capabilities := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/capabilities", worker, nil)
+			requireNativeStatus(t, capabilities, http.StatusOK)
+			var published nativeCapabilitiesResponse
+			decodeHubResponse(t, capabilities, &published)
+			if published.MinimumRunnerVersion != test.minimum {
+				t.Fatalf("published minimum = %q, want %q", published.MinimumRunnerVersion, test.minimum)
+			}
+			machine := map[string]any{"id": "native-machine", "hostname": "runner", "version": test.runner, "capacity": 1}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, machine), http.StatusOK)
+			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: "native-machine", SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request)
+			wantStatus := http.StatusOK
+			if test.refused {
+				wantStatus = http.StatusUpgradeRequired
+			}
+			requireNativeStatus(t, response, wantStatus)
+			if test.refused {
+				var failure apiErrorResponse
+				decodeHubResponse(t, response, &failure)
+				if failure.Code != "unavailable" || failure.Message != "Too old to take work, needs "+test.minimum || failure.Message != runnerClaimRefusal(test.minimum, test.runner) {
+					t.Fatalf("claim refusal = %#v", failure)
+				}
+				var count int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if count != 0 {
+					t.Fatalf("refused runner acquired %d leases", count)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/native-machine/heartbeat", worker, map[string]any{"version": test.minimum, "capacity": 1}), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusOK)
+			}
+		})
 	}
 }
