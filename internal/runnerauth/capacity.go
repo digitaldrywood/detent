@@ -70,8 +70,8 @@ type CapacityView struct {
 	Limits             []CapacityLimit `json:"limits"`
 }
 
-func (r Runner) CapacityRequiresApplication(capacity int, now time.Time) bool {
-	return capacity > 0 && r.CapacityConfig != nil && !now.Before(r.CapacityConfig.ObservedAt) && now.Before(r.CapacityConfig.ObservedAt.Add(HeartbeatTimeout)) && !now.Before(r.LastHeartbeatAt) && now.Before(r.LastHeartbeatAt.Add(HeartbeatTimeout)) && (capacity != r.CapacityConfig.LocalLimit || capacity != r.CapacityConfig.ClientLimit)
+func (r Runner) CapacityRequiresApplication(capacity int) bool {
+	return capacity > 0 && r.CapacityConfig != nil && (capacity != r.CapacityConfig.LocalLimit || capacity != r.CapacityConfig.ClientLimit)
 }
 
 func (r Runner) CapacityView(backend string, now time.Time) CapacityView {

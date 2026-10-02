@@ -300,7 +300,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		if change.CapacityLimit != r.CapacityLimit {
 			change.CapacityRequest = nil
 		}
-		if (change.CapacityLimit != r.CapacityLimit || r.CapacityRequiresApplication(change.CapacityLimit, now)) && change.CapacityLimit > 0 && freshCapacityConfig(r, now) {
+		if (change.CapacityLimit != r.CapacityLimit || r.CapacityRequiresApplication(change.CapacityLimit)) && change.CapacityLimit > 0 && freshCapacityConfig(r, now) {
 			change.CapacityRequest = &runnerauth.CapacityRequest{ExpectedConfigRevision: r.CapacityConfig.Revision, Capacity: change.CapacityLimit}
 		}
 		if err := change.Validate(); err != nil {

@@ -47,3 +47,26 @@ func TestRunnerCapacityEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerCapacityApprovalClassification(t *testing.T) {
+	now := time.Now().UTC()
+	for _, test := range []struct {
+		name   string
+		change func(*Runner)
+		want   bool
+	}{
+		{"recorded mismatch", func(*Runner) {}, true},
+		{"heartbeat expires", func(r *Runner) { r.LastHeartbeatAt = now.Add(-HeartbeatTimeout) }, true},
+		{"observation expires", func(r *Runner) { r.CapacityConfig.ObservedAt = now.Add(-HeartbeatTimeout) }, true},
+		{"missing configuration", func(r *Runner) { r.CapacityConfig = nil }, false},
+		{"configuration applied", func(r *Runner) { r.CapacityConfig.LocalLimit, r.CapacityConfig.ClientLimit = 6, 6 }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := Runner{LastHeartbeatAt: now, CapacityConfig: &CapacityConfig{LocalLimit: 2, ClientLimit: 2, ObservedAt: now}}
+			test.change(&r)
+			if got := r.CapacityRequiresApplication(6); got != test.want {
+				t.Fatalf("material configuration change=%t, want %t", got, test.want)
+			}
+		})
+	}
+}

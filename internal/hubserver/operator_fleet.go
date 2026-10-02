@@ -340,7 +340,12 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		}
 		a.IssueID = r.RunnerID
 		a.Identifier = r.RunnerID
-		a.CurrentState = strconv.FormatInt(runner.Revision, 10) + ":" + runner.Health
+		a.CurrentState = strconv.FormatInt(runner.Revision, 10)
+		switch runner.ConnectionHealth {
+		case "revoked", "expired":
+			a.CurrentState += ":" + runner.ConnectionHealth
+		}
+
 		if name == operatortool.UpdateApply {
 			var change runnerUpdateChange
 			if r.RunnerID == "" || r.Release || r.FromRelease || operatortool.DecodeArguments(r.Change, &change) != nil || change.delivery("validate", e.service.config.now()).Validate() != nil {
@@ -363,7 +368,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 			if operatortool.DecodeArguments(r.Change, &change) != nil || change.ExpectedRevision != runner.Revision || change.effective(runner.Routing).Validate() != nil {
 				return a, errHubOperatorUnavailable
 			}
-			a.MaterialChange = operatortool.RoutingRequiresApproval(runner.Routing, change.effective(runner.Routing).Routing) || runner.CapacityRequiresApplication(change.CapacityLimit, e.service.config.now())
+			a.MaterialChange = operatortool.RoutingRequiresApproval(runner.Routing, change.effective(runner.Routing).Routing) || runner.CapacityRequiresApplication(change.CapacityLimit)
 		}
 	case operatortool.UpdateRunnerHost:
 		var change runnerauth.HostChange

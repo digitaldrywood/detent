@@ -691,6 +691,20 @@ credentials from the originating connection, including when another authorized
 browser approves. Hosted runner administration retains current all-project
 runner grants and transaction-time membership/credential checks. Browser previews
 containing fleet actions also require current runner grants, including for owners.
+Hosted fleet approvals (native #168) bind the selected runner, exact mutation
+arguments and identity, current routing revision and credential-backed
+revoked/expired state through the existing proposal and execution comparison.
+Online/offline heartbeat health and problem observations remain runtime evidence;
+they cannot invalidate a pending configuration approval. Material-change
+classification uses the recorded configuration mismatch, not heartbeat freshness.
+Execution retains material-change equality after exact browser confirmation;
+actual capacity application still requires fresh evidence. Current
+original-connection and approving-browser authority, project
+grants, CSRF/form binding, durable command receipts and transaction-time expected
+runner/configuration revisions retain their existing owners. The heartbeat,
+revoked-runner, original-session, cross-organization and durable-retry cases in
+`TestHostedMCPFleetControls` cover routing resume, capacity and identity revocation
+in both hosted deployment modes.
 Health and outbox reads retain dashboard deployment boundaries; AI debug projects
 its snapshot through current project grants. Missing runtime
 or approval services return opaque unavailable results; an unhosted hub bearer
@@ -1416,6 +1430,18 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Hosted fleet approval (native #168) removes volatile heartbeat health from the
+existing configuration approval fence and consolidates material classification
+around the recorded configuration mismatch. Actual capacity application retains
+its existing fresh-evidence requirement and approval retains material-change
+equality.
+The existing runner read still binds credential revocation/expiry, and the
+proposal, browser confirmation and command owners retain exact target/input,
+current authority, expected revisions and durable idempotency. This consolidates
+INV-1 enforcement without a new guard, approval bypass, retry/recovery loop,
+configuration key or fleet surface. `TestHostedMCPFleetControls` exercises
+heartbeat transitions and durable refusals through the existing browser owner.
 
 Hub migration collision repair (native #194) consolidates conversation origin
 under forward migration 65. Applied attachment migration 62 and runner observation

@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -28,7 +29,8 @@ const fleetProtocolMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-2
 // principal attribution, and repeat enrollment/credential effects.
 func TestHostedMCPFleetControls(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
-		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "routing", "host", "capacity", "capacity reapply", "capacity revoked grants", "update", "update revoked grants", "update stale", "ordinary", "revoked grants", "revoked original grants", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
+		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "revoke identity heartbeat", "revoke identity revoked runner", "routing", "routing heartbeat", "routing revoked runner", "host", "capacity", "capacity heartbeat", "capacity revoked runner", "capacity reapply", "capacity reapply heartbeat", "capacity revoked grants", "update", "update revoked grants", "update stale", "ordinary", "revoked grants", "revoked original grants", "revoked original session", "cross organization", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
+
 			t.Run(deployment+"/"+scenario, func(t *testing.T) {
 				var f hostedSecurityFixture
 				var shared hostedSharedFixture
@@ -143,6 +145,7 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					}
 					requireNativeStatus(t, redeemed, http.StatusCreated)
 				}
+
 				var updateEvidence *runnerauth.UpdateObservation
 				if strings.HasPrefix(scenario, "update") {
 					now := f.service.config.now()
@@ -154,16 +157,23 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					}
 					operatorSQL(t, f, "UPDATE runner_identities SET update_observation_json=?, reported_protocol_major=2 WHERE id=?", string(encoded), runnerID)
 				}
-				if scenario == "capacity" || scenario == "capacity reapply" || scenario == "capacity revoked grants" {
+				if strings.HasPrefix(scenario, "capacity") {
+
 					evidence := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.now()}
 					encoded, err := json.Marshal(evidence)
 					if err != nil {
 						t.Fatal(err)
 					}
 					operatorSQL(t, f, "UPDATE runner_identities SET capacity_configuration_json=? WHERE id=?", string(encoded), runnerID)
-					if scenario == "capacity reapply" {
+					if strings.HasPrefix(scenario, "capacity reapply") {
 						operatorSQL(t, f, "UPDATE runner_identities SET capacity_limit=6 WHERE id=?", runnerID)
 					}
+				}
+				if scenario == "routing heartbeat" {
+					operatorSQL(t, f, "UPDATE runner_identities SET state='disabled', capacity_limit=6 WHERE id=?", runnerID)
+				}
+				if strings.HasSuffix(scenario, "heartbeat") && scenario != "capacity reapply heartbeat" {
+					operatorSQL(t, f, "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(f.service.config.now().Add(-runnerauth.HeartbeatTimeout)), runnerID)
 				}
 				if scenario == "reads" {
 					if raw := call(operatortool.GetRunnerCapacity, map[string]any{"runner_id": runnerID}); len(raw) == 0 || !strings.Contains(string(raw), "runner_configuration_ceiling") {
@@ -194,7 +204,7 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					t.Fatal(err)
 				}
 				approver := user
-				if scenario == "different approver" || scenario == "revoked original grants" {
+				if scenario == "different approver" || scenario == "revoked original grants" || scenario == "revoked original session" || scenario == "cross organization" {
 					approver = f.user(t, "approver", "admin", "approver@example.test", "write", "")
 					f.grant(t, approver, true, true)
 				}
@@ -232,7 +242,11 @@ func TestHostedMCPFleetControls(t *testing.T) {
 				switch scenario {
 				case "ordinary":
 					args["change"].(map[string]any)["state"] = "active"
-				case "capacity reapply":
+				case "routing heartbeat":
+					args["change"].(map[string]any)["state"] = "active"
+					args["change"].(map[string]any)["capacity_limit"] = 6
+					args["change"].(map[string]any)["isolation_tier"] = "sandbox"
+				case "capacity reapply", "capacity reapply heartbeat":
 					args["change"].(map[string]any)["state"] = "active"
 					args["change"].(map[string]any)["capacity_limit"] = 6
 				case "enrollment":
@@ -241,13 +255,15 @@ func TestHostedMCPFleetControls(t *testing.T) {
 				case "revoke enrollment":
 					name = operatortool.RevokeRunnerEnrollment
 					args = map[string]any{"request_id": "fleet-effect", "enrollment_id": enrollment.ID}
-				case "revoke identity":
+				case "revoke identity", "revoke identity heartbeat", "revoke identity revoked runner":
 					name = operatortool.RevokeRunnerIdentity
 					args = map[string]any{"request_id": "fleet-effect", "runner_id": runnerID}
+
 				case "update", "update revoked grants", "update stale":
 					name = operatortool.UpdateApply
 					args = map[string]any{"request_id": "fleet-effect", "runner_id": runnerID, "change": map[string]any{"expected_revision": 1, "expected_build_revision": updateEvidence.Revision, "service": "detent", "version": "1.2.4", "release": true}}
-				case "capacity", "capacity revoked grants":
+				case "capacity", "capacity heartbeat", "capacity revoked runner", "capacity revoked grants":
+
 					name = operatortool.UpdateRunnerCapacity
 					args = map[string]any{"request_id": "fleet-effect", "runner_id": runnerID, "change": map[string]any{"expected_revision": 1, "expected_config_revision": strings.Repeat("a", 64), "capacity": 6, "backend": "codex"}}
 				case "host":
@@ -271,7 +287,49 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					if receipt.Status != "pending" {
 						t.Fatalf("preview=%s", raw)
 					}
+					if strings.HasSuffix(scenario, "heartbeat") {
+						cachedPage = request(approver, http.MethodGet, "/chat/approval?connection_id="+info.ID, nil)
+						before, err := readRunner(t.Context(), f.service.database.db, "org_security", runnerID, f.service.config.now())
+						if err != nil {
+							t.Fatal(err)
+						}
+						heartbeat := f.service.config.now()
+						wantBefore, wantAfter := "offline", "online"
+						if scenario == "capacity reapply heartbeat" {
+							heartbeat = heartbeat.Add(-runnerauth.HeartbeatTimeout)
+							wantBefore, wantAfter = "online", "offline"
+						}
+						operatorSQL(t, f, "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(heartbeat), runnerID)
+						after, err := readRunner(t.Context(), f.service.database.db, "org_security", runnerID, f.service.config.now())
+						if err != nil || before.ConnectionHealth != wantBefore || after.ConnectionHealth != wantAfter || before.Revision != after.Revision {
+							t.Fatalf("heartbeat transition: before=%+v after=%+v error=%v", before, after, err)
+						}
+						if name == operatortool.UpdateRunnerRouting {
+							change := args["change"].(map[string]any)
+							change["capacity_limit"] = 7
+							if raw := call(name, args); len(raw) != 0 {
+								t.Fatalf("changed pending arguments=%s", raw)
+							}
+							change["capacity_limit"] = 6
+						}
+					}
+					if strings.HasSuffix(scenario, "revoked runner") {
+						operatorSQL(t, f, "UPDATE api_tokens SET revoked_at=created_at WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", runnerID)
+					}
+					if scenario == "revoked original session" || scenario == "cross organization" {
+						cachedPage = request(approver, http.MethodGet, "/chat/approval?connection_id="+info.ID, nil)
+						sessionHash := apikey.HashToken(user.token)
+						if deployment == "shared" {
+							sessionHash = cloudassert.AuthorizationBinding("shared-"+user.identity.Subject, "org_security", user.identity.Hosted.SessionID)
+						}
+						if scenario == "revoked original session" {
+							operatorSQL(t, f, "UPDATE hosted_sessions SET revoked_at=created_at WHERE token_hash=?", sessionHash)
+						} else {
+							operatorSQL(t, f, "UPDATE hosted_sessions SET identity_json=json_set(identity_json,'$.organization_id','org_other') WHERE token_hash=?", sessionHash)
+						}
+					}
 					if scenario == "revoked grants" || scenario == "revoked original grants" || scenario == "capacity revoked grants" || scenario == "update revoked grants" {
+
 						cachedPage = request(approver, http.MethodGet, "/chat/approval?connection_id="+info.ID, nil)
 						operatorSQL(t, f, "UPDATE hosted_project_grants SET manage_runner=0 WHERE user_id=?", user.identity.Subject)
 					}
@@ -300,9 +358,22 @@ func TestHostedMCPFleetControls(t *testing.T) {
 						}
 						return
 					}
-					if scenario == "stale" || scenario == "update stale" {
+					if scenario == "stale" || scenario == "update stale" || strings.HasSuffix(scenario, "revoked runner") || scenario == "revoked original session" || scenario == "cross organization" {
+
 						if reply.Code != http.StatusConflict {
 							t.Fatalf("stale decision=%d %s", reply.Code, reply.Body.String())
+						}
+						var revision, capacity int
+						var state string
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT revision,state,capacity_limit FROM runner_identities WHERE id=?", runnerID).Scan(&revision, &state, &capacity); err != nil {
+							t.Fatal(err)
+						}
+						wantRevision := 1
+						if scenario == "stale" || scenario == "update stale" {
+							wantRevision++
+						}
+						if revision != wantRevision || state != "active" || capacity != 2 {
+							t.Fatalf("refused approval changed runner: revision=%d state=%s capacity=%d", revision, state, capacity)
 						}
 						return
 					}
@@ -326,6 +397,23 @@ func TestHostedMCPFleetControls(t *testing.T) {
 				again := call(name, args)
 				if !strings.Contains(string(again), `"status":"succeeded"`) {
 					t.Fatalf("retry=%s", again)
+				}
+				if strings.HasSuffix(scenario, "heartbeat") {
+					f.service.operatorChat = chatpkg.NewService(nil, nil, hostedOperatorExecutor{f.service}, chatpkg.WithClock(f.service.config.now))
+					if raw := call(name, args); !strings.Contains(string(raw), `"status":"succeeded"`) {
+						t.Fatalf("durable retry=%s", raw)
+					}
+					if name == operatortool.UpdateRunnerRouting {
+						args["change"].(map[string]any)["capacity_limit"] = 7
+						if raw := call(name, args); len(raw) != 0 {
+							t.Fatalf("changed durable retry arguments=%s", raw)
+						}
+						args["change"].(map[string]any)["capacity_limit"] = 6
+					}
+					operatorSQL(t, f, "UPDATE hosted_project_grants SET manage_runner=0 WHERE user_id=?", user.identity.Subject)
+					if raw := call(name, args); len(raw) != 0 {
+						t.Fatalf("revoked durable retry=%s", raw)
+					}
 				}
 				// Assert the application effect, not just the adapter receipt.
 				var effects int
@@ -358,11 +446,22 @@ func TestHostedMCPFleetControls(t *testing.T) {
 						t.Fatal(err)
 					}
 					expected := "disabled"
-					if scenario == "ordinary" || scenario == "capacity reapply" {
+					if scenario == "ordinary" || scenario == "routing heartbeat" || strings.HasPrefix(scenario, "capacity reapply") {
 						expected = "active"
 					}
 					if revision != 2 || state != expected {
 						t.Fatalf("runner revision/state=%d/%s", revision, state)
+					}
+					if scenario == "routing heartbeat" {
+						var display, settings, projects string
+						var capacity int
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT display_name,capacity_limit,routing_settings_json,(SELECT json_group_array(project_id) FROM token_grants WHERE token_id=r.token_id) FROM runner_identities r WHERE id=?", runnerID).Scan(&display, &capacity, &settings, &projects); err != nil {
+							t.Fatal(err)
+						}
+						var saved runnerSettings
+						if err := json.Unmarshal([]byte(settings), &saved); err != nil || display != "Renamed fixture" || capacity != 6 || saved.IsolationTier != "sandbox" || projects != `["`+string(f.project)+`"]` {
+							t.Fatalf("routing mutation: display=%s capacity=%d settings=%s projects=%s error=%v", display, capacity, settings, projects, err)
+						}
 					}
 					if scenario == "capacity reapply" {
 						var settings string
@@ -372,6 +471,16 @@ func TestHostedMCPFleetControls(t *testing.T) {
 						var saved runnerSettings
 						if err := json.Unmarshal([]byte(settings), &saved); err != nil || saved.CapacityRequest == nil || saved.CapacityRequest.Capacity != 6 || saved.CapacityRequest.ExpectedConfigRevision != strings.Repeat("a", 64) {
 							t.Fatalf("capacity request=%s error=%v", settings, err)
+						}
+					}
+					if scenario == "capacity reapply heartbeat" {
+						var settings string
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT routing_settings_json FROM runner_identities WHERE id=?", runnerID).Scan(&settings); err != nil {
+							t.Fatal(err)
+						}
+						var saved runnerSettings
+						if err := json.Unmarshal([]byte(settings), &saved); err != nil || saved.CapacityRequest != nil {
+							t.Fatalf("stale evidence produced a capacity request=%s error=%v", settings, err)
 						}
 					}
 				case operatortool.UpdateApply:

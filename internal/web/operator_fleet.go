@@ -280,7 +280,7 @@ func (s *Server) fleetActionProposal(ctx context.Context, name string, raw json.
 			if runner.RunnerID == r.RunnerID && runner.Revision == change.ExpectedRevision {
 				found = true
 				a.CurrentState = strconv.FormatInt(runner.Revision, 10)
-				a.MaterialChange = operatortool.RoutingRequiresApproval(runner.Routing, change.Routing) || runner.CapacityRequiresApplication(change.CapacityLimit, s.now())
+				a.MaterialChange = operatortool.RoutingRequiresApproval(runner.Routing, change.Routing) || runner.CapacityRequiresApplication(change.CapacityLimit)
 			}
 		}
 		if !found {
