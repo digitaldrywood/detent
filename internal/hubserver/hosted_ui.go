@@ -217,6 +217,12 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		return c.NoContent(http.StatusForbidden)
 	}
 	workspaceID := c.QueryParam("workspace")
+	workItemID := c.QueryParam("work_item")
+	if workItemID != "" {
+		if _, _, err := readNativeIssue(c.Request().Context(), s.database.db, initialScope, workItemID); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	if workspaceID != "" {
 		if _, err := s.readWorkspace(c.Request().Context(), initialScope, workspaceID); err != nil {
 			return s.nativeAPIError(c, err)
@@ -237,7 +243,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 			return nil
 		}
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: credential}
-		observation, err := s.readHostedEventObservation(c.Request().Context(), scope, workspaceID)
+		observation, err := s.readHostedEventObservation(c.Request().Context(), scope, workspaceID, workItemID)
 		if err != nil {
 			return nil
 		}

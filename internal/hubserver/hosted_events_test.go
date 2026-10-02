@@ -150,6 +150,72 @@ func TestHostedActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 	}
 }
 
+func TestHostedIssueEvents(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
+	item, unrelated := f.seedIssue(t, 1), f.seedIssue(t, 2)
+	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: "fixture", Scope: apiScopeAdmin}}
+	scanner := openHostedTestStream(t, f, user, "?work_item="+string(item))
+	kind, data := readHostedEvent(t, scanner)
+	previous, err := strconv.ParseInt(data, 10, 64)
+	if kind != "activity" || err != nil {
+		t.Fatalf("initial activity = %q %q: %v", kind, data, err)
+	}
+	for _, test := range []struct {
+		name    string
+		item    tracker.NativeWorkItemID
+		kind    string
+		changed bool
+	}{
+		{"unrelated completion", unrelated, "run.finished", false},
+		{"selected completion", item, "run.finished", true},
+		{"selected change", item, "change.version_published", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
+				return appendNativeHistory(t.Context(), tx, scope, string(test.item), test.kind, tracker.CollaborationData{}, now)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			kind, data := readHostedEvent(t, scanner)
+			next, err := strconv.ParseInt(data, 10, 64)
+			if kind != "activity" || err != nil || (next > previous) != test.changed {
+				t.Fatalf("activity=%q %q changed=%v err=%v", kind, data, test.changed, err)
+			}
+			previous = next
+		})
+	}
+	for _, query := range []string{"?work_item=invalid", "?work_item=wi_missing"} {
+		requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/"+string(f.project)+"/events"+query, nil), http.StatusNotFound)
+	}
+	rows, err := f.service.database.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN SELECT event_sequence FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+		if !strings.Contains(detail, "SEARCH issues USING INDEX") {
+			t.Fatalf("unbounded issue observation query: %s", detail)
+		}
+	}
+	if err := rows.Err(); err != nil || len(plan) == 0 {
+		t.Fatalf("query plan=%v err=%v", plan, err)
+	}
+	t.Logf("selected issue observation query plan: %v", plan)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ?", user.identity.Subject); err != nil {
+		t.Fatal(err)
+	}
+	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/"+string(f.project)+"/events?work_item="+string(item), nil), http.StatusForbidden)
+}
+
 type hostedStreamWriter struct {
 	*httptest.ResponseRecorder
 	output  *io.PipeWriter

@@ -153,7 +153,7 @@ export interface WorkHttp {
    * The hosted activity stream. It is a page route, not an API route, and it
    * emits `event: activity` with a bare decimal sequence as its data.
    */
-  readonly eventsUrl: (projectId: string, workspaceId?: string) => string;
+  readonly eventsUrl: (projectId: string, workspaceId?: string, workItemId?: string) => string;
   readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
@@ -530,8 +530,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
-    eventsUrl: (projectId, workspaceId) =>
-      url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId }),
+    eventsUrl: (projectId, workspaceId, workItemId) =>
+      url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId }),
     getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
     listWorkItems: (input) =>
       send(

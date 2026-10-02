@@ -1318,6 +1318,17 @@ must reject those bypasses too.
 **Change:** Edit INV-1 in this PR before changing the ownership boundary or its
 adapter exceptions; do not expand an exception to admit another lane owner.
 
+The issue page follows the existing hosted project event owner with a scoped
+`work_item` selector. Its invalidation counter is the existing `issues.event_sequence`
+projection, read by the native scope unique index after fresh project authority;
+unrelated work does not invalidate the selected issue. Run and Change history
+append through that same work-item sequence. Refreshes keep current issue data
+and serialize an event burst behind one in-flight read, preserving composers and
+selected surfaces. `TestHostedIssueEvents` and the issue live-status cases in
+`legacyProjectRoutes.test.tsx` cover selection isolation, completion, query bounds
+and retained edits. This does not change project-wide board observations or add
+polling, an event transport, a tracker writer, or configuration.
+
 ## INV-2 — Instance-owned infrastructure failures
 
 Isolated landing preparation (#170) retains existing repository, dirty landing
