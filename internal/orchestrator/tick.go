@@ -146,6 +146,10 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	timing.step("authorize_candidates")
 	fetched = o.filterAuthorizedTickIssues(ctx, state, fetched, &previous, now)
 	trackerCandidates := cloneIssues(fetched.candidates)
+	var trackerRetryIssues []connector.Issue
+	if o.scheduling != nil {
+		trackerRetryIssues = mergeIssueSlices(fetched.candidates, fetched.status)
+	}
 	if earlyDependencyUnblock && o.cfg.Authorization.Configured() {
 		earlyUnblocked, priorityDependencyIssue = o.earlyDependencyUnblock(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	}
@@ -329,7 +333,12 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	}
 	o.trackTickBlockedStatuses(ctx, state, fetched, transitions, previous, now, timing)
 	timing.step("release_missing_retries")
-	o.dispatchPlanner().releaseMissingDueRetries(state, fetched.candidates, dueRetriesByIssue(state, now), dispatchPlanHooks{
+	retryIssues := fetched.candidates
+	if o.scheduling != nil {
+		retryIssues = mergeIssueSlices(mergeIssueSlices(fetched.candidates, fetched.status), trackerRetryIssues)
+		retryIssues = overlayIssueStateSnapshots(retryIssues, state.tickTransitions.boardIssues)
+	}
+	o.dispatchPlanner().releaseInvalidDueRetries(state, retryIssues, dueRetriesByIssue(state, now), dispatchPlanHooks{
 		preserveMissingDueRetry: func(retry Retry) bool { return o.preserveMissingDueRetry(state, retry) },
 	})
 	if _, ok := o.connector.(connector.RESTRateLimitUsageReporter); ok {

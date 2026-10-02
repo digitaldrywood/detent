@@ -25,6 +25,7 @@ const dispatchCandidateLookahead = 8
 
 type dispatchPlanner struct {
 	nativeWorkflow       bool
+	boundedAdmission     bool
 	workerHostAvailable  func(string) bool
 	operatorRejectedHead func(connector.Issue) (bool, error)
 	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
@@ -101,7 +102,11 @@ func (p dispatchPlanner) plan(
 	clearBlockedUnblockerCounts(plannedCandidates, state.Blocked)
 	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState, p.cfg.DispatchPriorityByLabel, p.cfg.PrioritizeUnblockers)
 	dueRetries := dueRetriesByIssue(state, now)
-	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
+	retryIssues := plannedCandidates
+	if p.boundedAdmission {
+		retryIssues = mergeIssueSlices(plannedCandidates, hooks.rankingIssues)
+	}
+	p.releaseInvalidDueRetries(state, retryIssues, dueRetries, hooks)
 	dueRetries = dueRetriesByIssue(state, now)
 	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
 	knownWaits := make(map[string]bool, len(plannedCandidates))
@@ -620,7 +625,7 @@ func (p dispatchPlanner) trackBlockedCandidates(state *State, issues []connector
 	}
 }
 
-func (p dispatchPlanner) releaseMissingDueRetries(
+func (p dispatchPlanner) releaseInvalidDueRetries(
 	state *State,
 	issues []connector.Issue,
 	dueRetries map[string]Retry,
@@ -630,22 +635,26 @@ func (p dispatchPlanner) releaseMissingDueRetries(
 		return
 	}
 
-	byID := make(map[string]struct{}, len(issues))
+	byID := make(map[string]connector.Issue, len(issues))
 	for _, issue := range issues {
-		byID[issue.ID] = struct{}{}
+		byID[issue.ID] = issue
 	}
 
 	for issueID, retry := range dueRetries {
-		if _, ok := byID[issueID]; !ok {
-			if hooks.preserveMissingDueRetry != nil && hooks.preserveMissingDueRetry(retry) {
+		issue, present := byID[issueID]
+		if present {
+			if !p.boundedAdmission || !issue.Closed && !stateIn(issue.State, p.cfg.TerminalStates) &&
+				(strings.TrimSpace(issue.State) == "" || stateIn(issue.State, p.cfg.ActiveStates)) {
 				continue
 			}
-			if _, blocked := state.Blocked[issueID]; blocked {
-				p.releaseClaim(state, issueID)
-				continue
-			}
-			p.releaseIssue(state, issueID)
+		} else if p.boundedAdmission || hooks.preserveMissingDueRetry != nil && hooks.preserveMissingDueRetry(retry) {
+			continue
 		}
+		if _, blocked := state.Blocked[issueID]; blocked {
+			p.releaseClaim(state, issueID)
+			continue
+		}
+		p.releaseIssue(state, issueID)
 	}
 }
 
