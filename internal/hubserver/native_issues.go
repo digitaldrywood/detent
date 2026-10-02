@@ -41,14 +41,22 @@ func (s *Service) executeNativeIssueMutation(ctx context.Context, scope nativeSc
 }
 
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
+	return readNativeIssueProjection(ctx, query, scope, id, false)
+}
+
+func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID
 	var labels, assignees, actor, created, updated, externalID string
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
 	var provenance sql.NullString
 	var priority sql.NullInt64
+	bodyColumn := "i.body"
+	if compact {
+		bodyColumn = "''"
+	}
 	err := query.QueryRowContext(ctx, `SELECT i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
- i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
+ i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
  i.actor_json, i.provenance_json, i.native_created_at, i.native_updated_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -75,7 +83,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 			return issue, 0, err
 		}
 	}
-	issue.LinkedSource, err = readLinkedIssueSource(ctx, query, id)
+	issue.LinkedSource, err = readLinkedIssueSourceProjection(ctx, query, id, compact)
 	if err != nil {
 		return issue, 0, err
 	}

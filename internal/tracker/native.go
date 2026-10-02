@@ -332,6 +332,24 @@ type Page[T any] struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
+type NativeIssuePage struct {
+	Page[NativeIssue]
+	Work *NativeWorkSummary `json:"work,omitempty"`
+}
+
+type NativeWorkSummary struct {
+	Items     []NativeIssue    `json:"items"`
+	Lanes     []NativeWorkLane `json:"lanes"`
+	Truncated bool             `json:"truncated"`
+	AsOf      time.Time        `json:"as_of"`
+}
+
+type NativeWorkLane struct {
+	State   string `json:"state"`
+	Total   int    `json:"total"`
+	Running int    `json:"running"`
+}
+
 type NativeState struct {
 	OperatorOnly bool     `json:"operator_only,omitempty"`
 	Name         string   `json:"name"`

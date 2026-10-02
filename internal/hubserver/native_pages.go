@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -121,11 +122,11 @@ func parseNativeIssueIncludes(value string) (bool, error) {
 		return false, nil
 	}
 	for name := range strings.SplitSeq(value, ",") {
-		if strings.TrimSpace(name) != "workspace" {
-			return false, nativeInvalid("include supports workspace")
+		if name = strings.TrimSpace(name); name != "workspace" && name != "work" {
+			return false, nativeInvalid("include supports workspace,work")
 		}
 	}
-	return true, nil
+	return slices.ContainsFunc(strings.Split(value, ","), func(name string) bool { return strings.TrimSpace(name) == "workspace" }), nil
 }
 
 func (s *Service) listNativeIssues(c echo.Context) error {
@@ -142,24 +143,24 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.Page[tracker.NativeIssue], error) {
+func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items"
 
 	if err := validateNativeQuery(params, "state", "label", "assignee", "priority", "include", "archived", "q"); err != nil {
-		return tracker.Page[tracker.NativeIssue]{}, err
+		return tracker.NativeIssuePage{}, err
 	}
 	includeWorkspace, err := parseNativeIssueIncludes(params.Get("include"))
 	if err != nil {
-		return tracker.Page[tracker.NativeIssue]{}, err
+		return tracker.NativeIssuePage{}, err
 	}
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
-		return tracker.Page[tracker.NativeIssue]{}, err
+		return tracker.NativeIssuePage{}, err
 	}
 
 	query := `SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGER)`
-	args := []any{scope.organization, scope.project, cursor.After}
+WHERE i.organization_id = ? AND i.project_id = ? `
+	args := []any{scope.organization, scope.project}
 	switch params.Get("archived") {
 	case "", "false":
 		query += " AND i.archived = 0"
@@ -167,7 +168,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGE
 		query += " AND i.archived = 1"
 	case "all":
 	default:
-		return tracker.Page[tracker.NativeIssue]{}, nativeInvalid("archived must be true, false or all")
+		return tracker.NativeIssuePage{}, nativeInvalid("archived must be true, false or all")
 	}
 	if !includeWorkspace {
 		// Workspace items hold a worktree open for a person's surfaces, not
@@ -194,21 +195,39 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGE
 		query += " AND instr(lower(i.title || ' ' || i.body), lower(?)) > 0"
 		args = append(args, value)
 	}
-	query += " ORDER BY i.number LIMIT ?"
-	args = append(args, limit+1)
+
+	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
+	var work *tracker.NativeWorkSummary
+	if workIncluded {
+		work, err = readNativeWorkSummary(ctx, s.database.db, scope, query, args, limit, s.config.now())
+		if err != nil {
+			return tracker.NativeIssuePage{}, err
+		}
+	}
+	query += " AND i.number > CAST(? AS INTEGER) ORDER BY i.number LIMIT ?"
+	args = append(args, cursor.After, limit+1)
 	ids, err := nativePageIDs(ctx, s.database.db, query, args...)
 	if err != nil {
-		return tracker.Page[tracker.NativeIssue]{}, err
+		return tracker.NativeIssuePage{}, err
 	}
-	page := tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}
+	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
+	operational := map[string]tracker.NativeIssue{}
+	if work != nil {
+		for _, issue := range work.Items {
+			operational[string(issue.WorkItemID)] = issue
+		}
+	}
 	hasMore := len(ids) > limit
 	if hasMore {
 		ids = ids[:limit]
 	}
 	for _, id := range ids {
-		issue, _, err := readNativeIssue(ctx, s.database.db, scope, id)
-		if err != nil {
-			return tracker.Page[tracker.NativeIssue]{}, err
+		issue, loaded := operational[id]
+		if !loaded {
+			issue, _, err = readNativeIssueProjection(ctx, s.database.db, scope, id, workIncluded)
+			if err != nil {
+				return tracker.NativeIssuePage{}, err
+			}
 		}
 		page.Items = append(page.Items, s.nativeIssueResponse(issue))
 		cursor.After = strconv.Itoa(issue.Number)
@@ -216,9 +235,10 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGE
 	if hasMore {
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
-			return tracker.Page[tracker.NativeIssue]{}, err
+			return tracker.NativeIssuePage{}, err
 		}
 	}
+	page.Work = work
 	return page, nil
 }
 

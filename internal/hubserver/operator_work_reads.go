@@ -47,7 +47,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			params.Set("q", request.Query)
 		}
 		page, err := s.readIssues(ctx, scope, params)
-		return hubWorkResult(r, request, operatortool.NativeItemPage(request.ProjectID, page), err)
+		return hubWorkResult(r, request, operatortool.NativeItemPage(request.ProjectID, page.Page), err)
 	}
 	if name == operatortool.WorkConfig {
 		project, err := readNativeProject(ctx, s.database.db, scope)

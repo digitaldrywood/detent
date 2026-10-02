@@ -628,6 +628,21 @@ not full runner eligibility, and board counts or nil PRs cannot establish it.
 Historical decisions are recorded only when the existing scheduler evaluates
 them, with actor, item revision, source and server time; reads add no history.
 
+`GET /work-items?include=work` adds a compact `work` member to the existing
+inventory page. `work.lanes` contains state, total and observed running counts
+for the same authorized project and server filters, independent of the cursor.
+Running counts require a recorded running attempt with a current unreleased
+lease; In Progress membership is not evidence of a live worker.
+`work.as_of` is the server observation time. `work.items` selects at most the
+requested page limit of nonterminal items, ordered by live attempt, dispatchable
+state and descending issue number. `work.truncated` marks additional open items;
+state filters and the existing inventory cursor still navigate them.
+Both item selections omit issue bodies and linked-source snapshots in this
+projection; the existing item detail read retains full content. The ordinary
+inventory page keeps ascending issue-number ordering and its scoped opaque
+cursor. Clients retain bounded per-item observations with known, unchecked,
+unavailable and partial coverage rather than inferring worker state from lanes.
+
 Ordered events may include `runtime`: local attempt/generation attribution,
 observed backend/model/effort provenance, phase intervals, heartbeat, bounded
 instruction profile, landing receipt and existing REST accounting. Attribution

@@ -674,25 +674,31 @@ async function pagedWork(path = "/work") {
 async function settledPage(project = "proj_alpha", number = 1) {
   await waitFor(() => {
     expect(screen.getByTestId(`work-page-${project}`).textContent).toContain(`Page ${number}`);
-    expect(screen.getByTestId("work-stats").textContent).toContain("Current pages");
+    expect(screen.getByTestId("work-stats").textContent).toContain("Project scope");
   });
 }
 
 describe("the paged Work surface", () => {
-  it("reaches a later-page worker in both views with scoped search, coverage and navigation", async () => {
+  it("keeps a later-page worker visible in both views with scoped totals, coverage and navigation", async () => {
     const { router, requests, history } = await pagedWork();
     await settledPage();
-    expect(screen.queryByText("Observed later-page worker")).toBeNull();
-    expect(screen.getByTestId("stat-running").textContent).toBe("0observed running");
+    expect(screen.queryByText("Observed later-page worker")).not.toBeNull();
+    expect(screen.getByTestId("stat-running").textContent).toBe("1observed running");
     expect(screen.getByTestId("stat-coverage").textContent).toMatch(/unchecked.*1 unavailable.*1 partial/);
     expect(screen.getAllByTestId("issue-card").some((card) => card.title.includes("Worker observation: unavailable"))).toBe(true);
     expect(screen.getByText(/Search, sorting and multi-value filters apply to the loaded pages/)).not.toBeNull();
+    expect(screen.getByTestId("lane-count-Todo").textContent).toBe("8");
+    expect(screen.getByTestId("lane-count-In Progress").textContent).toBe("2");
+    expect(screen.getByTestId("lane-count-Done").textContent).toBe("131");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("131terminal inventory");
+    expect(screen.getByText("Queue item 133")).not.toBeNull();
+    expect(screen.getByText("Queue item 135")).not.toBeNull();
     const reads = () => requests.filter((request) => request.url.pathname.endsWith("/work-items"));
     const beforeSearch = reads().length;
     fireEvent.change(screen.getByTestId("work-search"), { target: { value: "later-page worker" } });
     await waitFor(() => expect(parseViewState(router.state.location.searchStr).q).toBe("later-page worker"));
     expect(reads()).toHaveLength(beforeSearch);
-    expect(screen.queryByText("Observed later-page worker")).toBeNull();
+    expect(screen.queryByText("Observed later-page worker")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
     await settledPage("proj_alpha", 2);
     expect(await screen.findByText("Observed later-page worker")).not.toBeNull();
@@ -706,16 +712,17 @@ describe("the paged Work surface", () => {
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "alpha: Previous page" }));
     await settledPage();
-    expect(screen.queryByText("Observed later-page worker")).toBeNull();
+    expect(screen.queryByText("Observed later-page worker")).not.toBeNull();
     expect(parseViewState(router.state.location.searchStr).q).toBe("later-page worker");
     await act(() => history.back());
     await settledPage("proj_alpha", 2);
     fireEvent.change(screen.getByTestId("work-search"), { target: { value: "" } });
-    await waitFor(() => expect(screen.getByTestId("stat-completed").textContent).toBe("1terminal items"));
+    await waitFor(() => expect(screen.getByTestId("stat-completed").textContent).toBe("131terminal inventory"));
     fireEvent.click(screen.getByRole("radio", { name: "Board" }));
     await screen.findByTestId("work-board");
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
-    expect(reads().every((request) => request.url.searchParams.get("limit") === "100")).toBe(true);
+    expect(reads().every((request) => request.url.searchParams.get("limit") === "100"
+      && request.url.searchParams.get("include") === "work")).toBe(true);
     fireEvent.click(screen.getByTestId("filters-trigger"));
     fireEvent.click(await screen.findByTestId("filter-state-In Progress"));
     await settledPage();
@@ -801,13 +808,15 @@ describe("the paged Work surface", () => {
     fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
     await settledPage("proj_alpha", 2);
     const before = fixture.requests.length;
+    await fixture.control({ openOverflow: true });
     act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "41" })));
     await waitFor(() => expect(fixture.requests.slice(before).some((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toBe(true));
     await settledPage("proj_alpha", 2);
     const refreshed = fixture.requests.slice(before);
     expect(refreshed.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items")).every((request) => request.url.searchParams.has("cursor"))).toBe(true);
-    expect(refreshed.filter((request) => request.url.pathname.endsWith("/attempts")).length).toBeLessThanOrEqual(24);
-    expect(refreshed.filter((request) => request.url.pathname.endsWith("/changes")).length).toBeLessThanOrEqual(24);
+    expect(refreshed.filter((request) => request.url.pathname.endsWith("/attempts"))).toHaveLength(24);
+    expect(refreshed.filter((request) => request.url.pathname.endsWith("/changes"))).toHaveLength(24);
+    expect(screen.getByTestId("stat-coverage").textContent).toContain("Open selection limited");
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
   });
 });

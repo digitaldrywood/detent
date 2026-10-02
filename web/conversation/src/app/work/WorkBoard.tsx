@@ -374,7 +374,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         loadedCount={board.items.length}
       />
 
-      <StatsRow stats={stats} truncated={board.truncated} loadedCount={board.items.length} loading={board.loading} />
+      <StatsRow stats={stats} totals={board.totals} truncated={board.truncated} loadedCount={board.items.length} loading={board.loading} />
 
       <WorkPagination pages={board.pages} loading={board.loading} onChange={(id, page) => {
         const pages = { ...view.pages };
@@ -414,6 +414,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   key={lane.name}
                   lane={lane}
                   items={items.filter((item) => item.state === lane.name)}
+                  total={board.totals?.lanes[lane.name] ?? (board.totals === null ? undefined : 0)}
                   showProject={projectId === null}
                   now={now}
                   onOpen={open}
