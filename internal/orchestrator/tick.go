@@ -857,10 +857,17 @@ func (o *Orchestrator) candidateFetchStatesForTick(state *State) []string {
 	if o.nativeWorkflow() && !stateIn(autoPromoteMergingState, states) {
 		states = append(states, normalizeState(autoPromoteMergingState))
 	}
-	if o.mergeWorkerLocalSlotsAvailable(state) {
-		return states
+	if !o.mergeWorkerLocalSlotsAvailable(state) {
+		states = statesWithoutState(states, autoPromoteMergingState)
 	}
-	return statesWithoutState(states, autoPromoteMergingState)
+	now := time.Now()
+	if o.now != nil {
+		now = o.now()
+	}
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && o.nativeWorkflow() && o.dispatchPlanner().githubRESTDependent(connector.Issue{State: autoPromoteMergingState}) {
+		states = statesWithoutState(states, autoPromoteMergingState)
+	}
+	return states
 }
 
 func markRefreshError(state *State, message string, at time.Time) {

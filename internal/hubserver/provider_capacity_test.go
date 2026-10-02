@@ -250,6 +250,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
 		{name: "merging first overrides urgent todo", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{1, 0, 2}, winner: 1},
 		{name: "home routing honors merging first", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, unavailable: "home", want: []int{1, 0, 2}, winner: 1},
+		{name: "partial home order keeps todo eligible", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging"}, unavailable: "home", want: []int{0, 1, 2}},
 		{name: "another project order", states: []string{"Merging", "Todo", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Rework", "Merging"}, want: []int{1, 2, 0}, winner: 1},
 		{name: "source lane order", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{2, 1, 0}, winner: 2},
 		{name: "numeric priority precedes source lane", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{0, 1, 2}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{0, 1, 2}},

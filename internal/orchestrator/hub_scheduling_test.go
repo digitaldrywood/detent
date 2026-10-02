@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/policy"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestHubSchedulingCycle(t *testing.T) {
-	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 2, 1, 28, 19, 0, time.UTC)
 	issue := connector.NewIssue()
 	issue.ID = "I_hub"
 	issue.Identifier = "acme/widgets#17"
@@ -32,25 +33,64 @@ func TestHubSchedulingCycle(t *testing.T) {
 		githubPause bool
 		wantRunning bool
 		wantDegrade bool
+		native      bool
+		restPause   bool
+		expired     bool
+		gitLanding  bool
+		mergeOnly   bool
 	}{
 		{name: "Hub dispatches without connector reads", githubPause: true, wantRunning: true},
 		{name: "Hub outage degrades without spending work budgets", fetchError: errors.Join(ErrSchedulingUnavailable, errors.New("Hub unavailable")), wantDegrade: true},
+		{name: "native REST-held 137 leaves one-candidate boundary for 138", native: true, restPause: true, wantRunning: true},
+		{name: "native merge-only REST wait makes zero claims", native: true, restPause: true, mergeOnly: true},
+		{name: "expired REST wait restores native merging", native: true, restPause: true, expired: true, mergeOnly: true, wantRunning: true},
+		{name: "native Git landing stays eligible during REST wait", native: true, restPause: true, gitLanding: true, mergeOnly: true, wantRunning: true},
+		{name: "non-native REST safety stays active", restPause: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			trackerBackend := &hubSchedulingConnector{}
 			scheduling := &hubSchedulingSource{issue: issue, fetchError: test.fetchError}
+			selected := issue
+			var backend connector.Connector = trackerBackend
+			if test.native {
+				backend = &nativeHubSchedulingConnector{trackerBackend}
+				merge := dispatchTestIssue("wi_137", "Merging")
+				merge.Fields["detent_hub_work_item_id"] = "137"
+				merge.Priority = new(1)
+				coding := cloneIssue(issue)
+				coding.ID, coding.Identifier = "wi_138", "native#138"
+				coding.Priority = new(2)
+				scheduling.issues = []connector.Issue{merge, coding}
+				selected = coding
+				if test.mergeOnly {
+					selected = merge
+				}
+			}
 			runner := &hubSchedulingRunner{started: make(chan struct{}, 1)}
 			cfg := normalizeConfig(Config{
 				PollInterval: 30 * time.Second, MaxConcurrentAgents: 1,
 				DispatchPriorityByState: []string{"Merging", "Rework", "Todo"}, DispatchPriorityByLabel: []string{"hotfix", "bug"}, PrioritizeUnblockers: true, TerminalStates: []string{"Done"},
 				Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets",
 			})
-			orch, err := New(cfg, Dependencies{Connector: trackerBackend, Scheduling: scheduling, Runner: runner, Now: func() time.Time { return now }})
+			if test.native {
+				cfg.Policy = policy.Descriptor{Gates: policy.Gates{GitHubPullRequest: !test.gitLanding}}
+			}
+			if test.mergeOnly {
+				cfg.ActiveStates = []string{"Merging"}
+			}
+			orch, err := New(cfg, Dependencies{Connector: backend, Scheduling: scheduling, Runner: runner, Now: func() time.Time { return now }})
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
 			state := newState(cfg)
+			if test.restPause {
+				resume := time.Date(2026, 10, 2, 1, 53, 59, 0, time.UTC)
+				if test.expired {
+					resume = now
+				}
+				state.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: resume}
+			}
 			if test.githubPause {
 				resetAt := now.Add(10 * time.Minute)
 				state.RateLimits = &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 0, Limit: 5000, Used: 5000, ResetAt: &resetAt}}
@@ -66,22 +106,30 @@ func TestHubSchedulingCycle(t *testing.T) {
 
 			orch.tick(t.Context(), &state, now)
 			request := scheduling.request
-			if !reflect.DeepEqual(request.DispatchPriorityByState, cfg.DispatchPriorityByState) || !reflect.DeepEqual(request.DispatchPriorityByLabel, cfg.DispatchPriorityByLabel) || !request.PrioritizeUnblockers || request.CandidateLimit != 9 || request.CandidateReady == nil {
+			if scheduling.fetches != 0 && (!reflect.DeepEqual(request.DispatchPriorityByState, cfg.DispatchPriorityByState) || !reflect.DeepEqual(request.DispatchPriorityByLabel, cfg.DispatchPriorityByLabel) || !request.PrioritizeUnblockers || request.CandidateLimit != 9 || request.CandidateReady == nil) {
 				t.Fatalf("scheduling request lost configured ranking/readiness: %+v", request)
 			}
-			if test.wantRunning && request.CandidateReady(t.Context(), issue) {
+			if test.native && test.mergeOnly && test.restPause && !test.expired && !test.gitLanding && scheduling.fetches != 0 {
+				t.Fatal("all states held still requested a native claim")
+			}
+			if test.wantRunning && request.CandidateReady(t.Context(), selected) {
 				t.Fatal("running work remained ready for a new native claim")
 			}
 
 			if candidates, ids := trackerBackend.candidateReads.Load(), trackerBackend.idReads.Load(); candidates != 0 || ids != 0 {
 				t.Fatalf("scheduling-time connector reads = candidates %d ids %d, want zero", candidates, ids)
 			}
-			_, running := state.Running[issue.ID]
+			_, running := state.Running[selected.ID]
 			if running != test.wantRunning {
 				t.Fatalf("running = %t, want %t", running, test.wantRunning)
 			}
 			if test.wantRunning && (scheduling.fetches != 1 || scheduling.adoptions != 1 || scheduling.releases != 0) {
 				t.Fatalf("Hub scheduling calls = fetch %d adopt %d release %d", scheduling.fetches, scheduling.adoptions, scheduling.releases)
+			}
+			if test.native && test.restPause && !test.expired && !test.gitLanding {
+				if stateIn("Merging", request.WorkflowStates) || scheduling.issues[0].State != "Merging" || *scheduling.issues[0].Priority != 1 {
+					t.Fatal("REST wait changed native head authority or left it eligible upstream")
+				}
 			}
 			if test.githubPause && state.PollInterval != cfg.PollInterval {
 				t.Fatalf("Hub poll interval = %s, want %s despite GitHub pause", state.PollInterval, cfg.PollInterval)
@@ -138,6 +186,7 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 }
 
 type hubSchedulingSource struct {
+	issues     []connector.Issue
 	request    SchedulingRequest
 	issue      connector.Issue
 	fetchError error
@@ -159,7 +208,23 @@ func (s *hubSchedulingSource) FetchCandidateIssues(_ context.Context, request Sc
 	if s.fetchError != nil {
 		return nil, s.fetchError
 	}
+	if s.issues != nil {
+		for _, issue := range s.issues {
+			if stateIn(issue.State, request.WorkflowStates) {
+				return []connector.Issue{issue}, nil
+			}
+		}
+		return nil, nil
+	}
 	return []connector.Issue{s.issue}, nil
+}
+
+type nativeHubSchedulingConnector struct {
+	*hubSchedulingConnector
+}
+
+func (c *nativeHubSchedulingConnector) WorkflowStates(context.Context) ([]connector.WorkflowState, error) {
+	return []connector.WorkflowState{{Name: "Todo"}, {Name: "Merging"}}, nil
 }
 
 func (s *hubSchedulingSource) AdoptClaim(_ context.Context, issue connector.Issue, now time.Time) (Claimed, error) {
@@ -206,9 +271,11 @@ func (c *hubSchedulingConnector) FetchIssueStatesByIDs(context.Context, []string
 
 func (c *hubSchedulingConnector) CombinedRefreshEnabled() bool { return true }
 
-func (c *hubSchedulingConnector) FetchRefreshIssues(context.Context, []string, []string, connector.IssueFilterHint) connector.RefreshIssueResult {
+func (c *hubSchedulingConnector) FetchRefreshIssues(_ context.Context, candidates []string, _ []string, _ connector.IssueFilterHint) connector.RefreshIssueResult {
 	c.reads.Add(1)
-	c.candidateReads.Add(1)
+	if candidates != nil {
+		c.candidateReads.Add(1)
+	}
 	return connector.RefreshIssueResult{}
 }
 
@@ -291,13 +358,15 @@ func TestHubRefillRetainsNewClaims(t *testing.T) {
 func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
-		name  string
-		state string
-		setup func(*State, connector.Issue)
-		want  bool
+		name     string
+		state    string
+		setup    func(*State, connector.Issue)
+		want     bool
+		native   bool
+		githubPR bool
 	}{
 		{name: "ready todo", state: "Todo", want: true},
-		{name: "merging state full", state: "Merging", setup: func(s *State, _ connector.Issue) {
+		{name: "merging state full", state: "Merging", native: true, setup: func(s *State, _ connector.Issue) {
 			s.Running["other"] = Running{Issue: dispatchTestIssue("other", "Merging")}
 		}},
 		{name: "future rework retry", state: "Rework", setup: func(s *State, issue connector.Issue) {
@@ -312,13 +381,35 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 		{name: "running work never preempted", state: "Merging", setup: func(s *State, issue connector.Issue) {
 			s.Running[issue.ID] = Running{Issue: issue, cancel: func() { t.Error("preview cancelled running work") }}
 		}},
+		{name: "REST-held native GitHub merging", state: "Merging", native: true, githubPR: true, setup: func(s *State, _ connector.Issue) {
+			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
+		}},
+		{name: "native coding ignores unrelated REST wait", state: "Todo", native: true, githubPR: true, want: true, setup: func(s *State, _ connector.Issue) {
+			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
+		}},
+		{name: "native Git landing ignores REST wait", state: "Merging", native: true, want: true, setup: func(s *State, _ connector.Issue) {
+			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
+		}},
+		{name: "native due coding retry ignores REST wait", state: "Rework", native: true, githubPR: true, want: true, setup: func(s *State, issue connector.Issue) {
+			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
+			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2}
+		}},
+		{name: "native due PR landing retry retains REST wait", state: "Merging", native: true, githubPR: true, setup: func(s *State, issue connector.Issue) {
+			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
+			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2}
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MaxConcurrentAgentsByState: map[string]int{"Merging": 1}, ActiveStates: []string{"Merging", "Rework", "Todo"}, TerminalStates: []string{"Done"}, Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets"})
 			issue := dispatchTestIssue("candidate", test.state)
 			issue.DependencySource = connector.BlockedRefSourceNative
 			source := &hubSchedulingSource{issue: issue}
-			o := Orchestrator{cfg: cfg, connector: &hubSchedulingConnector{}, scheduling: source, now: func() time.Time { return now }}
+			cfg.Policy.Gates.GitHubPullRequest = test.githubPR
+			var backend connector.Connector = &hubSchedulingConnector{}
+			if test.native {
+				backend = &nativeHubSchedulingConnector{&hubSchedulingConnector{}}
+			}
+			o := Orchestrator{cfg: cfg, connector: backend, scheduling: source, now: func() time.Time { return now }}
 			state := newState(cfg)
 			if test.setup != nil {
 				test.setup(&state, issue)
@@ -328,6 +419,9 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			beforeRunning := len(state.Running)
 			if _, err := o.fetchCandidateIssuesForTick(t.Context(), &state); err != nil {
 				t.Fatal(err)
+			}
+			if test.native && test.githubPR && test.state == "Merging" && stateIn("Merging", source.request.WorkflowStates) {
+				t.Fatal("REST-held native PR landing remained in upstream states")
 			}
 			if ready := source.request.CandidateReady(t.Context(), issue); ready != test.want {
 				t.Fatalf("ready = %t, want %t", ready, test.want)

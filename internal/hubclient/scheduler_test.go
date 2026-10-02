@@ -43,7 +43,24 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 		originalHeartbeat
 		CheckoutRepository *string `json:"checkout_repository"`
 	}
+	type originalClaim struct {
+		ProviderCandidates []tracker.NativeCapacityCandidate `json:"provider_candidates,omitempty"`
+		PolicyID           string                            `json:"policy_id"`
+		WorkItemID         tracker.NativeWorkItemID          `json:"work_item_id,omitempty"`
+		MachineID          tracker.MachineID                 `json:"machine_id"`
+		SessionID          string                            `json:"session_id"`
+		TTLSeconds         int64                             `json:"ttl_seconds"`
+		ProtocolMajor      int                               `json:"protocol_major"`
+		Capabilities       []string                          `json:"capabilities"`
+		WorkflowStates     []string                          `json:"workflow_states,omitempty"`
+		Authors            []string                          `json:"authors,omitempty"`
+		Assignees          []string                          `json:"assignees,omitempty"`
+		LabelInclude       []string                          `json:"label_include,omitempty"`
+		LabelExclude       []string                          `json:"label_exclude,omitempty"`
+	}
 	var supportsChecks, supportsCheckout, wrongIdentity atomic.Bool
+	var supportsRanking atomic.Bool
+	var claimCalls, previewCalls atomic.Int64
 	var mu sync.Mutex
 	var reports []struct {
 		repository *string
@@ -51,7 +68,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	}
 	var snapshot runnerauth.RoutingSnapshot
 	var machineID tracker.MachineID
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/api/v2/capabilities":
@@ -62,9 +79,40 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			if supportsChecks.Load() {
 				features = append(features, tracker.NativeLocalChecksCapability)
 			}
+			if supportsRanking.Load() {
+				features = append(features, tracker.NativeDispatchPriorityCapability)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": features})
 		case r.URL.Path == "/api/v2/organizations/org_test/projects/prj_test":
 			_ = json.NewEncoder(w).Encode(tracker.NativeProject{Profile: "native"})
+		case strings.HasSuffix(r.URL.Path, "/policy"):
+			_ = json.NewEncoder(w).Encode(policy.Approval{Policy: clientTestPolicy()})
+		case strings.HasSuffix(r.URL.Path, "/claims"), strings.HasSuffix(r.URL.Path, "/claims/preview"):
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			var err error
+			if supportsRanking.Load() {
+				var claim tracker.NativeClaim
+				err = decoder.Decode(&claim)
+				if !reflect.DeepEqual(claim.DispatchPriorityByState, []string{"Merging"}) || !reflect.DeepEqual(claim.DispatchPriorityByLabel, []string{"hotfix"}) || !claim.PrioritizeUnblockers {
+					t.Errorf("claim or preview lost ranking: %+v", claim)
+				}
+			} else {
+				err = decoder.Decode(new(originalClaim))
+			}
+			if err != nil {
+				t.Errorf("unsupported claim fields reached strict Hub decoder: %v", err)
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/preview") {
+				previewCalls.Add(1)
+				_ = json.NewEncoder(w).Encode(tracker.NativeCapacityPage{Items: []tracker.NativeIssue{{NativeReference: tracker.NativeReference{WorkItemID: "wi_ready"}, State: "Todo"}}})
+				return
+			}
+			claimCalls.Add(1)
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"no_claimable_work","message":"No work"}`))
 		case strings.HasSuffix(r.URL.Path, "/heartbeat"):
 			var current struct {
 				checkoutHeartbeat
@@ -106,10 +154,10 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
+	})
+	const hubURL = "https://hub.test"
 	path := filepath.Join(t.TempDir(), "private", "runner.json")
-	file, err := runnerauth.Initialize(path, server.URL)
+	file, err := runnerauth.Initialize(path, hubURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +172,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	if err := runnerauth.SaveRoutingCache(path, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	client, err := New(Config{URL: server.URL, IdentityFile: path, HTTPClient: server.Client()})
+	client, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: providerHandlerClient(handler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,6 +243,44 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			t.Fatalf("foreign routing identity accepted (diagnostics=%v): %v", supported, err)
 		}
 		wrongIdentity.Store(false)
+	}
+	for _, step := range []struct {
+		name      string
+		supported bool
+		preview   bool
+		states    []string
+		labels    []string
+		unblocker bool
+		wantWait  bool
+	}{
+		{name: "old Hub state ranking", states: []string{"Merging"}, wantWait: true},
+		{name: "old Hub label ranking", labels: []string{"hotfix"}, wantWait: true},
+		{name: "old Hub unblocker ranking", unblocker: true, preview: true, wantWait: true},
+		{name: "old Hub without ranking"},
+		{name: "compatible Hub claim", supported: true, states: []string{"Merging"}, labels: []string{"hotfix"}, unblocker: true},
+		{name: "compatible Hub preview", supported: true, preview: true, states: []string{"Merging"}, labels: []string{"hotfix"}, unblocker: true},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			supportsRanking.Store(step.supported)
+			beforeClaims, beforePreviews := claimCalls.Load(), previewCalls.Load()
+			request := orchestrator.SchedulingRequest{ProjectID: "native", Policy: clientTestPolicy(), WorkflowStates: []string{"Todo"}, DispatchPriorityByState: step.states, DispatchPriorityByLabel: step.labels, PrioritizeUnblockers: step.unblocker}
+			if step.preview {
+				request.CandidateReady = func(context.Context, connector.Issue) bool { return true }
+			}
+			candidates, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if errors.Is(err, orchestrator.ErrSchedulingUnavailable) != step.wantWait || !step.wantWait && err != nil || len(candidates) != 0 {
+				t.Fatalf("negotiation candidates=%v error=%v, want scheduling wait=%v", candidates, err, step.wantWait)
+			}
+			wantClaims, wantPreviews := int64(1), int64(0)
+			if step.wantWait {
+				wantClaims = 0
+			} else if step.preview {
+				wantPreviews = 1
+			}
+			if claimCalls.Load()-beforeClaims != wantClaims || previewCalls.Load()-beforePreviews != wantPreviews {
+				t.Fatalf("claim/preview calls = %d/%d, want %d/%d", claimCalls.Load()-beforeClaims, previewCalls.Load()-beforePreviews, wantClaims, wantPreviews)
+			}
+		})
 	}
 }
 

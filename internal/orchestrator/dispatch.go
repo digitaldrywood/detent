@@ -23,7 +23,9 @@ import (
 )
 
 func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
-	return newDispatchPlanner(o.cfg)
+	planner := newDispatchPlanner(o.cfg)
+	planner.nativeWorkflow = o.nativeWorkflow()
+	return planner
 }
 
 // liveDispatchPlanner shares recorded blocker evidence with recovery. The plain
@@ -627,7 +629,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, queuedRetry, now) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
 	}
-	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && o.dispatchPlanner().githubRESTDependent(issue) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
 	if !projectFailureBreakerAllowsDispatch(state, now) && !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {

@@ -128,6 +128,11 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 }
 
 func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector) ([]connector.Issue, error) {
+	if len(request.DispatchPriorityByState) != 0 || len(request.DispatchPriorityByLabel) != 0 || request.PrioritizeUnblockers {
+		if err := source.client.Negotiate(ctx, tracker.NativeDispatchPriorityCapability); err != nil {
+			return nil, schedulingError(err)
+		}
+	}
 	if err := s.ensureNativeMachine(ctx, source); err != nil {
 		return nil, schedulingError(err)
 	}
