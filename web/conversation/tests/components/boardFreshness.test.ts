@@ -42,6 +42,7 @@ describe("the board's connection chip", () => {
   it("reads Live, with nothing to press, while the app and the stream are both up", () => {
     const result = chip();
     expect(result.label).toBe("Live");
+    expect(result.detail).toBe(STAMP);
     expect(result.tone).toBe("dc-ok");
     expect(result.action).toBeNull();
     expect(result.tooltip).toBe(LIVE_TOOLTIP);

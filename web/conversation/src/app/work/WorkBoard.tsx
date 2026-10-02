@@ -38,7 +38,7 @@ import { StatsRow } from "./components/StatsRow.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { WorkList } from "./components/WorkList.tsx";
 import { WorkToolbar } from "./components/WorkToolbar.tsx";
-import { FreshnessChip, WorkTopBar } from "./components/WorkTopBar.tsx";
+import { WorkTopBar } from "./components/WorkTopBar.tsx";
 import { useShell } from "../App.tsx";
 import { boardConnectionChip } from "./lib/freshness.ts";
 
@@ -326,6 +326,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       title={scopeName}
       meta={boardScopeMeta(projectId, client.bootstrap.projects.length, items.length)}
       connection={chip}
+      showConnectionDetailOnMobile={chip.label === "Live"}
       actions={
         noProjects ? null : (
           <Button
@@ -368,17 +369,16 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
           priority: board.priorities,
         }}
         searchRef={searchRef}
-        freshness={<FreshnessChip chip={chip} testId="board-freshness" />}
       />
 
-      <StatsRow stats={stats} totals={board.totals} truncated={board.truncated} loadedCount={board.items.length} loading={board.loading} />
-
-      <div className="flex items-center gap-3 px-5 pb-3 text-muted-foreground text-xs">
-        <span>Search and filters cover the selected projects. Sorting applies to loaded results.</span>
-        {board.hasMore ? <Button size="xs" variant="outline" disabled={board.loading} onClick={board.loadMore}>
-          Load more matching work
-        </Button> : null}
-      </div>
+      <StatsRow
+        stats={stats}
+        totals={board.totals}
+        hasMore={board.hasMore}
+        loadedCount={board.items.length}
+        loading={board.loading}
+        onLoadMore={board.loadMore}
+      />
 
       {board.error === null ? null : (
         <div className="mx-5 mb-3 rounded-lg border border-error/32 bg-error-surface px-3 py-2 text-error-foreground text-sm">

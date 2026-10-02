@@ -84,7 +84,7 @@ export function boardConnectionChip(input: BoardChipInput): BoardChip {
   return {
     tone: "dc-ok",
     label: "Live",
-    detail: stamp.length > 0 ? `data current · ${stamp}` : "data current",
+    detail: stamp.length > 0 ? stamp : null,
     action: null,
     tooltip: LIVE_TOOLTIP,
   };

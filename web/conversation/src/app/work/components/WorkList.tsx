@@ -11,7 +11,7 @@ import {
 } from "../../../components/ui/table.tsx";
 import { cn } from "../../../lib/utils.ts";
 import { ageLabel, elapsedLabel, issueNumber, projectHue } from "../lib/format.ts";
-import { isLive, observationTitle, type WorkItemView } from "../lib/model.ts";
+import { isLive, type WorkItemView } from "../lib/model.ts";
 import { LaneMenu } from "./LaneMenu.tsx";
 import { Pill, priorityTone, statusPill } from "./IssueCard.tsx";
 
@@ -57,7 +57,7 @@ export function WorkList({
           {items.map((item) => {
             const status = statusPill(item);
             return (
-              <TableRow key={item.id} data-testid="work-list-row" data-work-item={item.id} title={observationTitle(item)}>
+              <TableRow key={item.id} data-testid="work-list-row" data-work-item={item.id}>
                 {showProject ? (
                   <TableCell className="text-muted-foreground">
                     <span className="inline-flex min-w-0 items-center gap-1.5">

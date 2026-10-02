@@ -74,6 +74,8 @@ describe("the board card", () => {
     );
     expect(screen.getByText("#3363")).not.toBeNull();
     expect(screen.getByTestId("issue-age").textContent).not.toBe("");
+    expect(screen.getByTestId("issue-card").getAttribute("title")).toBeNull();
+    expect(screen.getByTestId("issue-card").hasAttribute("data-live")).toBe(false);
   });
 
   it("shows the project dot only in the all-projects scope", () => {
@@ -450,29 +452,39 @@ describe("the list view", () => {
 });
 
 describe("the stats row", () => {
-  it("counts the issues on screen and nothing else", () => {
+  it("counts loaded work in four categories when scoped totals are absent", () => {
     const items = [
       item({ id: "a", state: "Todo", blockedBy: [] }),
       item({ id: "b", state: "In Progress", blockedBy: [], attempt: toAttemptView(ATTEMPTS) }),
       item({ id: "c", state: "Blocked" }),
       item({ id: "d", state: "Done", blockedBy: [] }),
     ];
-    const stats = boardStats(items, LANES);
-    render(<StatsRow stats={stats} truncated={false} loadedCount={4} loading={false} />);
-    expect(screen.getByTestId("stat-running").textContent).toContain("1");
-    expect(screen.getByTestId("stat-blocked").textContent).toContain("1");
-    expect(screen.getByTestId("stat-completed").textContent).toContain("1");
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("4 shown / 4 loaded items");
+    render(<StatsRow stats={boardStats(items, LANES)} hasMore={false} loadedCount={4} loading={false} onLoadMore={vi.fn()} />);
+    expect(screen.getByTestId("stat-running").textContent).toBe("1 running");
+    expect(screen.getByTestId("stat-ready").textContent).toBe("1 ready");
+    expect(screen.getByTestId("stat-waiting").textContent).toBe("1 open");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 done");
+    expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 
-  it("qualifies zero activity and preserves observation coverage on partial pages", () => {
-    const items = ["known", "unchecked", "unavailable", "partial"].map((observation, index) => item({
-      id: String(index), observations: { worker: observation, change: observation } as WorkItemView["observations"],
-    }));
-    render(<StatsRow stats={boardStats(items, LANES)} truncated loadedCount={100} loading={false} />);
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("matching results remain");
-    expect(screen.getByTestId("stat-running").textContent).toBe("0observed running");
-    expect(screen.getByTestId("stat-coverage").textContent).toContain("1 known · 1 unchecked · 1 unavailable · 1 partial");
+  it("keeps scoped counts while refreshing and offers continuation only for incomplete results", () => {
+    const totals = { lanes: {}, running: 0, ready: 9, waiting: 70, completed: 126, total: 205, asOf: "2026-10-02T17:17:00Z", truncated: true };
+    const onLoadMore = vi.fn();
+    const props = { stats: boardStats([], LANES), totals, hasMore: true, loadedCount: 145, loading: false, onLoadMore };
+    const mounted = render(<StatsRow {...props} />);
+    const counts = screen.getByTestId("work-stats");
+    expect(counts.textContent).toContain("0 running·9 ready·70 open·126 done");
+    const more = screen.getByRole("button", { name: "Load 60 more · 145 of 205" });
+    expect(counts.contains(more)).toBe(true);
+    fireEvent.click(more);
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+    mounted.rerender(<StatsRow {...props} loading />);
+    expect(counts.getAttribute("aria-busy")).toBe("true");
+    expect(screen.getByTestId("stat-ready").parentElement!.className).toContain("opacity-50");
+    expect(screen.getByTestId("stat-ready").textContent).toBe("9 ready");
+    expect((more as HTMLButtonElement).disabled).toBe(true);
+    mounted.rerender(<StatsRow {...props} hasMore={false} loadedCount={205} />);
+    expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 });
 
@@ -673,7 +685,7 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
 }
 
 async function settledWork() {
-  await waitFor(() => expect(screen.getByTestId("work-stats").textContent).toContain("Project scope · all filters"));
+  await waitFor(() => expect(screen.getByTestId("work-stats").getAttribute("aria-busy")).toBe("false"));
 }
 
 describe("the filter-first Work surface", () => {
@@ -681,23 +693,24 @@ describe("the filter-first Work surface", () => {
     const { router, requests } = await pagedWork();
     await settledWork();
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
-    expect(screen.getByTestId("stat-running").textContent).toBe("1observed running");
-    expect(screen.getByTestId("stat-coverage").textContent).toMatch(/unchecked.*1 unavailable.*1 partial/);
+    expect(screen.getAllByTestId("connection-chip")).toHaveLength(1);
+    expect(within(screen.getByTestId("work-toolbar")).queryByRole("status")).toBeNull();
+    expect(screen.getByTestId("stat-running").textContent).toBe("1 running");
     expect(screen.queryByRole("navigation", { name: "Work pages" })).toBeNull();
     expect(screen.queryByRole("button", { name: /First page|Previous|Next page/ })).toBeNull();
     expect(screen.getByTestId("lane-count-Todo").textContent).toBe("8");
     expect(screen.getByTestId("lane-count-In Progress").textContent).toBe("2");
     expect(screen.getByTestId("lane-count-Done").textContent).toBe("131");
-    expect(screen.getByTestId("stat-completed").textContent).toBe("131terminal inventory");
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("matching results remain");
-    fireEvent.click(screen.getByRole("button", { name: "Load more matching work" }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Load more matching work" })).toBeNull());
+    expect(screen.getByTestId("stat-completed").textContent).toBe("131 done");
+    expect(within(screen.getByTestId("work-stats")).getByRole("button", { name: /^Load \d+ more · \d+ of 141$/ })).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Load / }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Load / })).toBeNull());
     await settledWork();
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("141 loaded items / 141 matching");
     expect(router.state.location.searchStr).toBe("");
     const before = requests.length;
     fireEvent.click(screen.getByRole("radio", { name: "List" }));
     await screen.findByTestId("work-list");
+    expect(screen.getAllByTestId("work-list-row")).toHaveLength(141);
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
     expect(requests).toHaveLength(before);
@@ -715,7 +728,7 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.queryByText("Observed later-page worker")).toBeNull();
-    expect(screen.getByTestId("stat-loaded").textContent).toContain(q === "alpha#3421" ? "1 matching" : "2 matching");
+    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" ? "1 done" : "2 done");
     expect(parseViewState(fixture.router.state.location.searchStr).q).toBe(q);
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(q);
   });
@@ -726,15 +739,15 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.getByText("Older title needle b")).not.toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2terminal inventory");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 done");
     fireEvent.click(screen.getByTestId("filters-trigger"));
     for (const filter of ["label-choice-b", "assignee-operator-b", "priority-High"]) {
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-loaded").textContent).toContain("1 matching");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("1 done");
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-loaded").textContent).toContain("2 matching");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("2 done");
     }
     fireEvent.keyDown(document, { key: "Escape" });
     const reads = fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items"));
@@ -757,10 +770,10 @@ describe("the filter-first Work surface", () => {
     fireEvent.click(screen.getByTestId("filters-trigger"));
     fireEvent.click(await screen.findByTestId("filter-label-choice-a"));
     await settledWork();
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("1 matching");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 done");
     fireEvent.click(await screen.findByTestId("filter-label-choice-b"));
     await settledWork();
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("2 matching");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 done");
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/work-items"))!.url.searchParams.getAll("label"))
       .toEqual(["choice-a", "choice-b"]);
   });
@@ -801,11 +814,11 @@ describe("the filter-first Work surface", () => {
     await fixture.control({ openOverflow: true });
     fireEvent.click(screen.getByRole("button", { name: "Reload" }));
     await settledWork();
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("134 matching");
-    fireEvent.click(screen.getByRole("button", { name: "Load more matching work" }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Load more matching work" })).toBeNull());
+    expect(screen.getByRole("button", { name: /^Load \d+ more · \d+ of 134$/ })).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Load / }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Load / })).toBeNull());
     await settledWork();
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("134 loaded items / 134 matching");
+    expect(screen.getAllByTestId("work-list-row")).toHaveLength(134);
     expect(screen.getByText("Queue item 1")).not.toBeNull();
     expect(screen.getByText("Queue item 136")).not.toBeNull();
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
@@ -816,7 +829,7 @@ describe("the filter-first Work surface", () => {
     const fixture = await pagedWork('/work?view=list&q=older-label&pages=legacy-cursor');
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("2 matching");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 done");
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
       !request.url.searchParams.has("cursor"))).toBe(true);
   });
@@ -825,7 +838,7 @@ describe("the filter-first Work surface", () => {
     const fixture = await pagedWork();
     await settledWork();
     const deferred = fixture.deferPage();
-    fireEvent.click(screen.getByRole("button", { name: "Load more matching work" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Load / }));
     await deferred.waiting;
     const pending = fixture.requests.findLast((request) => request.url.searchParams.has("cursor"))!;
     if (change === "search") fireEvent.change(screen.getByTestId("work-search"), { target: { value: "older-label" } });
@@ -840,7 +853,6 @@ describe("the filter-first Work surface", () => {
     expect(newest.url.searchParams.has("cursor")).toBe(false);
     await act(async () => { deferred.release(); });
     if (change !== "multi-select") expect(screen.queryByText("Observed later-page worker")).toBeNull();
-    expect(screen.getByTestId("stat-loaded").textContent).not.toContain("141 loaded");
   });
 
   it("refuses revoked scope without retaining stale cards or counts", async () => {
@@ -851,7 +863,7 @@ describe("the filter-first Work surface", () => {
     expect(await screen.findByTestId("work-error")).not.toBeNull();
     expect(screen.queryByTestId("issue-card")).toBeNull();
     expect(screen.queryByTestId("work-list-row")).toBeNull();
-    expect(screen.getByTestId("stat-running").textContent).toBe("0observed running");
+    expect(screen.getByTestId("stat-running").textContent).toBe("0 running");
   });
 
   it("finishes a slow first read and retains usable work during continuous activity", async () => {
@@ -914,8 +926,8 @@ describe("the filter-first Work surface", () => {
     const fixture = await pagedWork();
     await settledWork();
     act(() => { for (const source of sources) source.dispatchEvent(new MessageEvent("activity", { data: "40" })); });
-    fireEvent.click(screen.getByRole("button", { name: "Load more matching work" }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Load more matching work" })).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: /^Load / }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Load / })).toBeNull());
     const before = fixture.requests.length;
     await fixture.control({ openOverflow: true });
     act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "41" })));

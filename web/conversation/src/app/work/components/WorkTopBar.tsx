@@ -29,9 +29,11 @@ const TONE_TEXT: Record<string, string> = {
 export function FreshnessChip({
   chip,
   testId = "connection-chip",
+  showDetailOnMobile = false,
 }: {
   chip: ConnectionChip;
   testId?: string;
+  showDetailOnMobile?: boolean;
 }): React.ReactElement {
   return (
     <Tooltip>
@@ -58,7 +60,9 @@ export function FreshnessChip({
         />
         {chip.label}
         {chip.detail === null ? null : (
-          <span className="hidden text-muted-foreground sm:inline">· {chip.detail}</span>
+          <span className={cn("text-muted-foreground", !showDetailOnMobile && "hidden sm:inline")}>
+            · {chip.detail}
+          </span>
         )}
       </TooltipTrigger>
       <TooltipPopup side="bottom" className="max-w-72 whitespace-normal leading-tight">
@@ -77,6 +81,7 @@ export interface WorkTopBarProps {
   /** Rendered before the identifier in the current segment, e.g. `#3363`. */
   readonly identifier?: string | null;
   readonly connection: ConnectionChip;
+  readonly showConnectionDetailOnMobile?: boolean;
   readonly actions?: React.ReactNode;
 }
 
@@ -120,7 +125,7 @@ export function WorkTopBar(props: WorkTopBarProps): React.ReactElement {
 
       <div className="flex shrink-0 items-center justify-end gap-1.5 @3xl/header-actions:gap-2">
         {props.actions}
-        <FreshnessChip chip={props.connection} />
+        <FreshnessChip chip={props.connection} showDetailOnMobile={props.showConnectionDetailOnMobile} />
         {props.connection.action == null ? null : (
           <Button variant="ghost" size="sm" onClick={props.connection.action.onClick}>
             {props.connection.action.label}

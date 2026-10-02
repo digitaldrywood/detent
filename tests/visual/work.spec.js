@@ -89,9 +89,12 @@ test.describe("the work board", () => {
     const card = page.getByRole("button", { name: "Review the invitation flow", exact: true });
     await expect(card).toBeVisible();
 
-    // The stats strip is derived from the cards, so it cannot disagree.
     await expect(page.getByTestId("work-stats")).toBeVisible();
-    await expect(page.getByTestId("stat-coverage")).toContainText("issues");
+    await expect(page.getByTestId("work-stats")).toHaveCount(1);
+    await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
+    await expect(page.getByTestId("work-stats")).toContainText(/\d+ running.*\d+ ready.*\d+ open.*\d+ done/);
+    await expect(page.getByTestId("work-stats").getByRole("button", { name: /^Load / })).toHaveCount(0);
+    await expect(page.getByTestId("stat-coverage")).toHaveCount(0);
 
     // The fixture seeds no running attempt and no pull request, so neither a
     // worker strip nor a PR chip is invented.
@@ -100,6 +103,36 @@ test.describe("the work board", () => {
 
     expect(errors).toEqual([]);
     await scan(page, "board");
+  });
+
+  test("keeps one toolbar and one counts row at desktop and phone widths", async ({ page }) => {
+    await openWork(page, `/work/p/${hub.fixture.project_id}`);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      const toolbar = page.getByTestId("work-toolbar");
+      const counts = page.getByTestId("work-stats");
+      await expect(toolbar).toHaveCount(1);
+      await expect(counts).toHaveCount(1);
+      await expect(counts).toHaveAttribute("aria-busy", "false");
+      const layout = await page.evaluate(() => {
+        const toolbar = document.querySelector('[data-testid="work-toolbar"]');
+        const counts = document.querySelector('[data-testid="work-stats"]');
+        const counters = [...counts.querySelectorAll('[data-testid^="stat-"]')];
+        return {
+          toolbarWrap: getComputedStyle(toolbar).flexWrap,
+          counterTops: counters.map((counter) => Math.round(counter.getBoundingClientRect().top)),
+          gap: Math.round(counts.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom),
+          next: counts.nextElementSibling?.textContent,
+          unchecked: document.querySelector('[data-testid="issue-card"]')?.getAttribute("title"),
+        };
+      });
+      expect(layout.toolbarWrap).toBe("nowrap");
+      expect(new Set(layout.counterTops).size).toBe(1);
+      expect(layout.gap).toBe(0);
+      expect(layout.next).not.toContain("Search and filters cover");
+      expect(layout.unchecked).toBeNull();
+      await expect(page.getByTestId("connection-chip")).toHaveCount(1);
+    }
   });
 
   // Michael's review of September 12: the toolbar read "1 project · ● Not
@@ -118,8 +151,10 @@ test.describe("the work board", () => {
     await expect(page.getByTestId("sidebar-connection")).toHaveCount(0);
     // The all-projects scope is the default route and used to subscribe to
     // nothing at all, which is the chip Michael was looking at.
-    const board = page.getByTestId("board-freshness");
-    await expect(board).toContainText("Live");
+    const board = page.getByTestId("connection-chip");
+    await expect(board).toHaveCount(1);
+    await expect(board).toContainText(/Live\s*·\s*\d{1,2}:\d{2}\s*[AP]M/);
+    await expect(page.getByTestId("work-toolbar").getByRole("status")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Reload", exact: true })).toHaveCount(0);
 
     await board.hover();
@@ -128,7 +163,7 @@ test.describe("the work board", () => {
     );
 
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
-    await expect(page.getByTestId("board-freshness")).toContainText("Live");
+    await expect(page.getByTestId("connection-chip")).toContainText("Live");
     await expect(page.getByRole("button", { name: "Reload", exact: true })).toHaveCount(0);
 
     expect(errors).toEqual([]);

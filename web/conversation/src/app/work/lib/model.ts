@@ -94,10 +94,6 @@ export interface ProjectView {
   readonly assignees: readonly string[];
 }
 
-export function observationTitle(item: WorkItemView): string {
-  return `Worker observation: ${item.observations?.worker ?? "unchecked"}; change observation: ${item.observations?.change ?? "unchecked"}`;
-}
-
 /** True when the card should wear the live treatment (A.11: never a queue). */
 export function isLive(item: WorkItemView, terminal = item.terminal): boolean {
   return !terminal && item.attempt !== null && item.attempt.running;

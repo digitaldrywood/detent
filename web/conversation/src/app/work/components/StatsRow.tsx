@@ -1,62 +1,53 @@
 import React from "react";
 
+import { Button } from "../../../components/ui/button.tsx";
+import { cn } from "../../../lib/utils.ts";
 import type { BoardStats, ScopedWorkStats } from "../lib/model.ts";
 
 export function StatsRow({
   stats,
-  truncated,
+  hasMore,
   loadedCount,
   loading,
+  onLoadMore,
   totals = null,
 }: {
   stats: BoardStats;
-  truncated: boolean;
+  hasMore: boolean;
   loadedCount: number;
   loading: boolean;
+  onLoadMore: () => void;
   totals?: ScopedWorkStats | null;
 }): React.ReactElement {
-  const counters: readonly { key: string; value: number; label: string }[] = totals === null ? [
-    { key: "running", value: stats.running, label: "observed running" },
-    { key: "ready", value: stats.ready, label: "dispatchable items" },
-    { key: "waiting", value: stats.waiting, label: "other open items" },
-    { key: "blocked", value: stats.blocked, label: "blocked items" },
-    { key: "completed", value: stats.completed, label: "terminal items" },
-  ] : [
-    { key: "running", value: totals.running, label: "observed running" },
-    { key: "ready", value: totals.ready, label: "items in dispatchable lanes" },
-    { key: "waiting", value: totals.waiting, label: "other open items" },
-    { key: "completed", value: totals.completed, label: "terminal inventory" },
+  const counters = [
+    { key: "running", value: totals?.running ?? stats.running, label: "running" },
+    { key: "ready", value: totals?.ready ?? stats.ready, label: "ready" },
+    { key: "waiting", value: totals?.waiting ?? stats.waiting + stats.blocked, label: "open" },
+    { key: "completed", value: totals?.completed ?? stats.completed, label: "done" },
   ];
+  const remaining = totals === null ? null : Math.max(0, totals.total - loadedCount);
   return (
     <div
       data-testid="work-stats"
-      className="flex flex-wrap items-center gap-x-5 gap-y-1 px-5 pb-3 text-muted-foreground text-xs"
+      aria-busy={loading}
+      className="flex shrink-0 items-center justify-between gap-2 overflow-x-auto px-3 pb-3 text-muted-foreground text-[10px] sm:px-5 sm:text-xs"
     >
-      <span>{loading ? "Refreshing…" : totals === null ? "Loaded results" : "Project scope · all filters"}</span>
-      {counters.map((counter) => (
-        <span key={counter.key} data-testid={`stat-${counter.key}`}>
-          <b className="mr-1 font-semibold text-foreground tabular-nums">{counter.value}</b>
-          {counter.label}
-        </span>
-      ))}
-      <span className="flex-1" />
-      <span className="font-mono text-[11px] tabular-nums" data-testid="stat-loaded">
-        {stats.total} shown / {loadedCount} loaded items{totals === null ? "" : ` / ${totals.total} matching`}{truncated ? " (matching results remain)" : ""}
-      </span>
-      <span className="w-full" data-testid="stat-coverage">
-        {totals === null ? null : <span className="mr-4" title={totals.asOf}>
-          {totals.total} scoped items · Worker count observed {new Date(totals.asOf).toLocaleTimeString()}
-          {truncated ? " · Partial result coverage; load more matching work" : " · All matching results loaded"}
-        </span>}
-        <span className="mr-2">Shown item observations:</span>
-        {(["worker", "change"] as const).map((kind) => {
-          const coverage = stats.observations[kind];
-          return <span key={kind} className="mr-4">
-            {kind === "worker" ? "Workers" : "Changes"}: {coverage.known} known · {coverage.unchecked} unchecked
-            {" · "}{coverage.unavailable} unavailable · {coverage.partial} partial
-          </span>;
-        })}
-      </span>
+      <div className={cn("flex shrink-0 items-center gap-1.5 whitespace-nowrap sm:gap-2", loading && "opacity-50")}>
+        {counters.map((counter, index) => (
+          <React.Fragment key={counter.key}>
+            {index === 0 ? null : <span aria-hidden>·</span>}
+            <span data-testid={`stat-${counter.key}`}>
+              <b className="font-semibold text-foreground tabular-nums">{counter.value}</b>{" "}
+              {counter.label}
+            </span>
+          </React.Fragment>
+        ))}
+      </div>
+      {hasMore ? (
+        <Button size="xs" variant="outline" className="shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs" disabled={loading} onClick={onLoadMore}>
+          {totals === null ? "Load more" : `Load ${remaining} more · ${loadedCount} of ${totals.total}`}
+        </Button>
+      ) : null}
     </div>
   );
 }
