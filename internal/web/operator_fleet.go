@@ -406,6 +406,9 @@ func (s *Server) executeFleetAction(ctx context.Context, a chatpkg.Action) (stri
 }
 
 func (s *Server) fleetMutationRequirement(name, projectID string) operatortool.Requirement {
+	if operatortool.IsLocalProjectTool(name) {
+		return operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: projectID}
+	}
 	if dashboardFleetTool(name) {
 		return dashboardFleetRequirement(name, projectID)
 	}

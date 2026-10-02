@@ -1366,9 +1366,6 @@ func (o *Orchestrator) BeginDrain() {
 		return
 	}
 	o.dispatchStartMu.Unlock()
-	if gate, ok := o.globalDispatchGate.(interface{ PauseDispatch() func() }); ok {
-		gate.PauseDispatch()
-	}
 	if o.globalDispatchGate != nil {
 		o.globalDispatchGate.MarkIdle(scheduler.ProjectCandidate{ID: o.projectID})
 	}

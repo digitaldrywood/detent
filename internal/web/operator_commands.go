@@ -82,6 +82,15 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 		}
 	}
 	definitions = append(definitions, e.server.dashboardProjectTools(ctx)...)
+	for _, d := range operatortool.LocalProjectCatalog() {
+		scope := apikey.ScopeAdmin
+		if d.Annotations.ReadOnly {
+			scope = apikey.ScopeRead
+		}
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope}); err == nil {
+			definitions = append(definitions, d)
+		}
+	}
 	admin, err := e.server.credentialExecutor().ListTools(ctx)
 	if err != nil {
 		return nil, err
@@ -96,6 +105,9 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 
 func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.server
+	if operatortool.IsLocalProjectTool(call.Name) {
+		return s.localProjectTool(ctx, call)
+	}
 	if definition, ok := operatortool.Lookup(call.Name); ok && definition.Meta.Toolset == "projects" {
 		return e.server.dashboardProjectRead(ctx, call)
 	}
@@ -379,6 +391,9 @@ func operatorActionArguments(raw json.RawMessage, allowGlobal bool) (string, jso
 }
 
 func (s *Server) operatorActionProposal(ctx context.Context, name string, arguments json.RawMessage) (chatpkg.Action, error) {
+	if operatortool.IsLocalProjectTool(name) {
+		return localProjectAction(name, arguments)
+	}
 	if dashboardFleetTool(name) {
 		return s.fleetActionProposal(ctx, name, arguments)
 	}
@@ -474,6 +489,14 @@ func (s *Server) operatorMutationReplay(ctx context.Context, m mutation.Metadata
 	}
 	if receipt.Outcome != "succeeded" && receipt.Outcome != "rejected" {
 		return operatortool.Result{}, true, mutation.ErrUncertain
+	}
+	if operatortool.IsLocalProjectTool(m.Action) {
+		result, err := operatorResult(struct {
+			Status      string          `json:"status"`
+			Receipt     json.RawMessage `json:"configuration_receipt"`
+			CompletedAt time.Time       `json:"completed_at"`
+		}{receipt.Outcome, receipt.ConfigurationJSON, receipt.CompletedAt})
+		return result, true, err
 	}
 	result, err := operatorResult(struct {
 		Revision      int64     `json:"revision,omitempty"`

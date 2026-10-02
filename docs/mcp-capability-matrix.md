@@ -7518,3 +7518,83 @@ Mark a release urgent and drain older runners without cancelling sessions
 - Confirmation: selected runner update and coordinated restart → operator
 
 Sources: [PUT /api/v2/organizations/:organization/runner-update/urgent](../internal/hubserver/runner_enrollment.go#L0)
+## local_projects.apply_local_project_policy
+
+Apply local project policy
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Native #94 consolidates configuration/policy/drain/handoff owners. Saved removal is distinct from runtime detach; Cloud routing and native Change/version/head authority remain separate. Parent parity remains pending.
+- Tool: `local_projects.apply_local_project_policy` — Bounded project_id; commands require request_id, expected_config_revision (64 lowercase hex), expected_policy_id. Policy requires policy_id and source_revision (40 or 64 lowercase hex); detach requires checkpoint (64 lowercase hex). No extra properties. → Redacted ManagedConfigView with authority, actual configuration revision, registered/runtime_registered, selected/effective policy provenance, pause/drain, unsettled work, saved/applied flags, constraint and observation time. Durable replay preserves the original receipt; a fresh read verifies reload.
+- Authority: role Current authenticated local operator credential or browser session; credential Read for provenance; admin for commands. Rechecked at execution and receipt replay.; project Exact selected local project under current organization and credential grants; ownership Connection selects authority; arguments cannot select organizations, credentials, remote paths or shell commands..
+- Application: project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; existing orchestrator Drain and native cutover receipt reader
+- Extraction: Existing MCP/API command, exact chat approval, current authorization and durable OperatorMutation receipts; no generic editor, SQLite proxy, auto-start or new loop.
+- Preconditions: Installed live configuration/validation/reload owner; missing or stopped service returns a safe explicit constraint.; Commands require exact configuration revision and effective policy identity. Policy requires paused, settled work and an exact approved target/source from the configured committed workflow.; Drain/detach require local intake, routines, backlog admission and retro schedules already migrated or disabled.; Detach requires paused/draining state, settled active/deferred work and exact authenticated mapped Cloud cutover checkpoint.
+- Coverage: TestManagedProjectConfiguration, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt, TestHostedProjectTools and TestBeginDrainStopsPendingDispatchTick.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / selected installed local configuration owner
+- Availability: hosted_dedicated / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Availability: hosted_shared / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Availability: credential_maintenance / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Confirmation: local policy, drain or detach command → operator
+
+Sources: [internal/operatortool/catalog.go:82](../internal/operatortool/catalog.go#L82)
+## local_projects.detach_local_project
+
+Detach local project
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Native #94 consolidates configuration/policy/drain/handoff owners. Saved removal is distinct from runtime detach; Cloud routing and native Change/version/head authority remain separate. Parent parity remains pending.
+- Tool: `local_projects.detach_local_project` — Bounded project_id; commands require request_id, expected_config_revision (64 lowercase hex), expected_policy_id. Policy requires policy_id and source_revision (40 or 64 lowercase hex); detach requires checkpoint (64 lowercase hex). No extra properties. → Redacted ManagedConfigView with authority, actual configuration revision, registered/runtime_registered, selected/effective policy provenance, pause/drain, unsettled work, saved/applied flags, constraint and observation time. Durable replay preserves the original receipt; a fresh read verifies reload.
+- Authority: role Current authenticated local operator credential or browser session; credential Read for provenance; admin for commands. Rechecked at execution and receipt replay.; project Exact selected local project under current organization and credential grants; ownership Connection selects authority; arguments cannot select organizations, credentials, remote paths or shell commands..
+- Application: project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; existing orchestrator Drain and native cutover receipt reader
+- Extraction: Existing MCP/API command, exact chat approval, current authorization and durable OperatorMutation receipts; no generic editor, SQLite proxy, auto-start or new loop.
+- Preconditions: Installed live configuration/validation/reload owner; missing or stopped service returns a safe explicit constraint.; Commands require exact configuration revision and effective policy identity. Policy requires paused, settled work and an exact approved target/source from the configured committed workflow.; Drain/detach require local intake, routines, backlog admission and retro schedules already migrated or disabled.; Detach requires paused/draining state, settled active/deferred work and exact authenticated mapped Cloud cutover checkpoint.
+- Coverage: TestManagedProjectConfiguration, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt, TestHostedProjectTools and TestBeginDrainStopsPendingDispatchTick.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / selected installed local configuration owner
+- Availability: hosted_dedicated / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Availability: hosted_shared / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Availability: credential_maintenance / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Confirmation: local policy, drain or detach command → operator
+
+Sources: [internal/operatortool/catalog.go:84](../internal/operatortool/catalog.go#L84)
+## local_projects.drain_local_project
+
+Drain local project
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Native #94 consolidates configuration/policy/drain/handoff owners. Saved removal is distinct from runtime detach; Cloud routing and native Change/version/head authority remain separate. Parent parity remains pending.
+- Tool: `local_projects.drain_local_project` — Bounded project_id; commands require request_id, expected_config_revision (64 lowercase hex), expected_policy_id. Policy requires policy_id and source_revision (40 or 64 lowercase hex); detach requires checkpoint (64 lowercase hex). No extra properties. → Redacted ManagedConfigView with authority, actual configuration revision, registered/runtime_registered, selected/effective policy provenance, pause/drain, unsettled work, saved/applied flags, constraint and observation time. Durable replay preserves the original receipt; a fresh read verifies reload.
+- Authority: role Current authenticated local operator credential or browser session; credential Read for provenance; admin for commands. Rechecked at execution and receipt replay.; project Exact selected local project under current organization and credential grants; ownership Connection selects authority; arguments cannot select organizations, credentials, remote paths or shell commands..
+- Application: project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; existing orchestrator Drain and native cutover receipt reader
+- Extraction: Existing MCP/API command, exact chat approval, current authorization and durable OperatorMutation receipts; no generic editor, SQLite proxy, auto-start or new loop.
+- Preconditions: Installed live configuration/validation/reload owner; missing or stopped service returns a safe explicit constraint.; Commands require exact configuration revision and effective policy identity. Policy requires paused, settled work and an exact approved target/source from the configured committed workflow.; Drain/detach require local intake, routines, backlog admission and retro schedules already migrated or disabled.; Detach requires paused/draining state, settled active/deferred work and exact authenticated mapped Cloud cutover checkpoint.
+- Coverage: TestManagedProjectConfiguration, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt, TestHostedProjectTools and TestBeginDrainStopsPendingDispatchTick.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / selected installed local configuration owner
+- Availability: hosted_dedicated / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Availability: hosted_shared / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Availability: credential_maintenance / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Confirmation: local policy, drain or detach command → operator
+
+Sources: [internal/operatortool/catalog.go:83](../internal/operatortool/catalog.go#L83)
+## local_projects.local_project_configuration
+
+Local project configuration
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3342.
+- Decision: Native #94 consolidates configuration/policy/drain/handoff owners. Saved removal is distinct from runtime detach; Cloud routing and native Change/version/head authority remain separate. Parent parity remains pending.
+- Tool: `local_projects.local_project_configuration` — Bounded project_id; commands require request_id, expected_config_revision (64 lowercase hex), expected_policy_id. Policy requires policy_id and source_revision (40 or 64 lowercase hex); detach requires checkpoint (64 lowercase hex). No extra properties. → Redacted ManagedConfigView with authority, actual configuration revision, registered/runtime_registered, selected/effective policy provenance, pause/drain, unsettled work, saved/applied flags, constraint and observation time. Durable replay preserves the original receipt; a fresh read verifies reload.
+- Authority: role Current authenticated local operator credential or browser session; credential Read for provenance; admin for commands. Rechecked at execution and receipt replay.; project Exact selected local project under current organization and credential grants; ownership Connection selects authority; arguments cannot select organizations, credentials, remote paths or shell commands..
+- Application: project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; existing orchestrator Drain and native cutover receipt reader
+- Extraction: Existing MCP/API command, exact chat approval, current authorization and durable OperatorMutation receipts; no generic editor, SQLite proxy, auto-start or new loop.
+- Preconditions: Installed live configuration/validation/reload owner; missing or stopped service returns a safe explicit constraint.; Commands require exact configuration revision and effective policy identity. Policy requires paused, settled work and an exact approved target/source from the configured committed workflow.; Drain/detach require local intake, routines, backlog admission and retro schedules already migrated or disabled.; Detach requires paused/draining state, settled active/deferred work and exact authenticated mapped Cloud cutover checkpoint.
+- Coverage: TestManagedProjectConfiguration, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt, TestHostedProjectTools and TestBeginDrainStopsPendingDispatchTick.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / selected installed local configuration owner
+- Availability: hosted_dedicated / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Availability: hosted_shared / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Availability: credential_maintenance / github,native / selected installed local configuration owner — unavailable: Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities.
+- Confirmation: provenance read → none
+
+Sources: [internal/operatortool/catalog.go:81](../internal/operatortool/catalog.go#L81)

@@ -52,6 +52,7 @@ var (
 )
 
 type Dependencies struct {
+	ProjectConfigOwner  *project.ConfigurationOwner
 	RunnerFleet         RunnerFleet
 	Hub                 *hub.Hub[telemetry.Snapshot]
 	Store               store.Store
@@ -172,6 +173,7 @@ type Config struct {
 }
 
 type Server struct {
+	projectConfigOwner  *project.ConfigurationOwner
 	boardIdentities     boardIdentityCache
 	runnerFleet         RunnerFleet
 	echo                *echo.Echo
@@ -308,6 +310,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	}
 
 	server := &Server{
+		projectConfigOwner:  deps.ProjectConfigOwner,
 		runnerFleet:         deps.RunnerFleet,
 		echo:                e,
 		hub:                 deps.Hub,
