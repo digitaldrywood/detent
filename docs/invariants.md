@@ -2595,6 +2595,16 @@ provenance and startup crash-loop rollback remain required.
 `TestServiceChoosesHubUpdateTarget`, `TestHubRunnerUpdateDefaultsAndOptOut` and
 `TestRunnerClientEnrollmentSchedulingAndRotationRecovery` cover target selection,
 persisted opt-outs and enrolled version reads.
+Hub claim admission (#185) publishes its semantic release version as the minimum
+runner version in native capabilities, fleet and update reports. The existing
+claim transaction refuses new leases for older reported releases with the same
+version-specific reason rendered by the fleet badge and returned to runner logs.
+Equal, newer and unversioned development builds remain eligible; a development
+Hub publishes no floor. Existing session retries, renewals, events and completion
+retain their current authority and are never revoked by the floor.
+`TestNativeRunnerMinimumVersion`, `TestNativeClaimsEventsAndRestartWithoutGitHub`
+and `TestAppUpdates` cover admission boundaries, continued sessions and the
+shared refusal reason.
 The shutdown drain uses the existing drain-budget timer rather than the five-second
 cleanup context (#2795); shorter parent deadlines emit an error with both budgets.
 `TestShutdownDrainBudget` covers delayed drain acknowledgment, and the live-session

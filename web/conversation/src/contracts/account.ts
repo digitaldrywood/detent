@@ -135,6 +135,7 @@ export type ClientBuild = typeof ClientBuild.Type;
 
 /** One enrolled runner, as the update report describes it. */
 export const RunnerUpdate = Schema.Struct({
+  claim_refusal_reason: Schema.optional(Schema.String),
   runner_id: Schema.String,
   display_name: Schema.String,
   /** The Detent build its host reported; empty until one heartbeats. */
@@ -151,6 +152,7 @@ export type RunnerUpdate = typeof RunnerUpdate.Type;
  * from — always "hub", the hub binary's own build, never a release feed.
  */
 export const UpdatesReport = Schema.Struct({
+  minimum_runner_version: Schema.optional(Schema.String),
   current: Schema.String,
   source: Schema.String,
   runners: Schema.Array(RunnerUpdate),
@@ -534,6 +536,7 @@ export type RunnerRouting = typeof RunnerRouting.Type;
  * why the host card draws two meters rather than one.
  */
 export const FleetRunner = Schema.Struct({
+  claim_refusal_reason: Schema.optional(Schema.String),
   id: Schema.String,
   display_name: Schema.String,
   hostname: Schema.String,
@@ -547,11 +550,6 @@ export const FleetRunner = Schema.Struct({
   state: Schema.String,
   os: Schema.String,
   architecture: Schema.String,
-  /**
-   * The Detent build this runner's host reported. Compared against the
-   * response's `current` to draw the update state the footer's pill points at.
-   * Optional so a hub that does not publish it yet still decodes.
-   */
   version: Schema.optional(Schema.String),
   host_capacity: Schema.Number,
   host_used: Schema.Number,
@@ -607,6 +605,7 @@ export const Spend = Schema.Struct({
 export type Spend = typeof Spend.Type;
 
 export const FleetResponse = Schema.Struct({
+  minimum_runner_version: Schema.optional(Schema.String),
   runners: Schema.Array(FleetRunner),
   editable: Schema.optional(Schema.Boolean),
   usage: FleetUsage,
