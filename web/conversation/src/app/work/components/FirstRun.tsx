@@ -340,7 +340,9 @@ export function FirstRunPanel({
         <EnrollRunnerDialog
           open={enrolling}
           onOpenChange={onEnrollOpenChange}
+          fleet={fleet}
           onEnrolled={() => void refreshFleet()}
+          onConnected={() => void refreshSetup()}
         />
       ) : null}
       {target === undefined ? null : (

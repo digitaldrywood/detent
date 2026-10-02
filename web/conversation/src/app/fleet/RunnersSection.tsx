@@ -369,6 +369,8 @@ export function RunnersSettings(): React.ReactElement {
         <EnrollRunnerDialog
           open={open}
           onOpenChange={setOpen}
+          fleet={fleet}
+          onConnected={(entry) => setEnrollments((current) => current.filter((old) => old.id !== entry.id))}
           onEnrolled={(entry) => {
             setEnrollments((current) => [entry, ...current.filter((old) => old.id !== entry.id)]);
             // A redeemed enrollment shows up as a runner, not as an
