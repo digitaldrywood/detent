@@ -210,6 +210,10 @@ func (s *Service) authorizeOperatorPreview(ctx context.Context, action chatpkg.A
 		_, _, err := (nativeOperatorExecutor{service: s}).workflowAuthority(ctx, action.Arguments)
 		return err
 	}
+	if action.Kind == chatpkg.ActionKind(operatortool.DeleteAttachment) {
+		_, _, _, err := (nativeOperatorExecutor{service: s}).attachmentAuthority(ctx, operatortool.DeleteAttachment, action.Arguments)
+		return err
+	}
 	if string(action.Kind) == operatortool.BillingCheckout || string(action.Kind) == operatortool.BillingPortal || string(action.Kind) == operatortool.CreditCheckout || string(action.Kind) == operatortool.CreditAutoFund {
 		_, err := s.operatorBillingCredential(ctx, "billing", true)
 		return err
