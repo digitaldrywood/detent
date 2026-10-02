@@ -90,6 +90,11 @@ func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []
 	if lookupEnv("OPENAI_API_KEY") != "" {
 		names = append(names, "OPENAI_API_KEY")
 	}
+	// Tenant Hubs encrypt project provider secrets with the operator's master
+	// keys; without them a hosted project cannot store a Sprites token.
+	if lookupEnv("DETENT_HUB_SECRET_KEYS") != "" {
+		names = append(names, "DETENT_HUB_SECRET_KEYS", "DETENT_HUB_SECRET_KEY_VERSION")
+	}
 	if tenantBilling := config.Allocation.Billing; tenantBilling != nil {
 		names = append(names, tenantBilling.APIKeyEnv, tenantBilling.WebhookSecretEnv)
 	}
