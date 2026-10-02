@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -176,6 +177,7 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 				"instruction_versions_are_recorder_snapshots_not_provider_read_bytes",
 				"instruction_snapshots_limited_to_workspace_regular_files_64_reads_64_sources_256KiB_each",
 				"native_actions_limited_to_32_and_8KiB_per_event_4_inferred_candidates_per_action",
+				"repeat_counts_limited_to_bounded_fingerprints",
 			},
 			Spans: make([]workflowmetrics.ActivitySpan, 0, 64),
 		}
@@ -256,6 +258,9 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 						}
 						persist()
 						return
+					}
+					if observation.update.Type == AgentUpdateToolStarted && len(profile.Spans) >= activitySpanLimit {
+						compactActivitySpans(&profile, open)
 					}
 					snapshotReads := observation.update.Type == AgentUpdateToolStarted && len(profile.Spans) < activitySpanLimit
 					if observation.update.Type == AgentUpdateToolCompleted {
@@ -339,8 +344,11 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 			return
 		}
 		if len(profile.Spans) >= activitySpanLimit {
-			profile.Dropped++
-			return
+			compactActivitySpans(profile, open)
+			if len(profile.Spans) >= activitySpanLimit {
+				profile.Dropped++
+				return
+			}
 		}
 		command := u.Command
 		if command == "" {
@@ -374,8 +382,7 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 		}
 		applyActivityActions(&span, repeats, sources, observation)
 		repeatKey := span.Head + "\x00" + span.Fingerprint
-		repeats[repeatKey]++
-		span.Repeat = repeats[repeatKey]
+		span.Repeat = activityRepeat(repeats, repeatKey)
 		open[key] = len(profile.Spans)
 		profile.Spans = append(profile.Spans, span)
 		return
@@ -387,9 +394,12 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 	}
 	if u.Type == AgentUpdateToolOutput && u.Tool != "tool_result" {
 		// A validation lock is a child interval, not the entire command.
-		if u.Delta == "validation_lock" && len(profile.Spans) < activitySpanLimit {
+		if u.Delta == "validation_lock" {
+			if len(profile.Spans) >= activitySpanLimit {
+				compactActivitySpans(profile, open)
+			}
 			waitKey := key + "/wait"
-			if _, exists := open[waitKey]; !exists {
+			if _, exists := open[waitKey]; !exists && len(profile.Spans) < activitySpanLimit {
 				open[waitKey] = len(profile.Spans)
 				profile.Spans = append(profile.Spans, workflowmetrics.ActivitySpan{ID: waitKey, ParentID: key, Kind: "waiting", Evidence: "validation_lock_marker", StartedAt: observation.at, Outcome: "running", Attribution: "observed", WaitReason: "validation_lock", Repeat: 1})
 			}
@@ -426,8 +436,7 @@ func applyActivityActions(span *workflowmetrics.ActivitySpan, repeats map[string
 		for i, action := range u.NativeActions {
 			record := activityAction(action, i, sources, observation)
 			repeatKey := "action\x00" + span.Head + "\x00" + record.Fingerprint
-			repeats[repeatKey]++
-			record.Repeat = repeats[repeatKey]
+			record.Repeat = activityRepeat(repeats, repeatKey)
 			span.Actions = append(span.Actions, record)
 			span.Sources = append(span.Sources, record.Sources...)
 			if len(record.Sources) > 0 {
@@ -451,6 +460,57 @@ func applyActivityActions(span *workflowmetrics.ActivitySpan, repeats map[string
 	if span.Kind == "waiting" {
 		span.WaitReason = span.Evidence
 	}
+}
+
+func activityRepeat(repeats map[string]int, key string) int {
+	if _, exists := repeats[key]; !exists && len(repeats) >= activitySpanLimit*(activityActionLimit+1) {
+		return 0
+	}
+	repeats[key]++
+	return repeats[key]
+}
+
+func compactActivitySpans(profile *workflowmetrics.ActivityProfile, open map[string]int) {
+	var through time.Time
+	closed := 0
+	for _, span := range profile.Spans {
+		if span.FinishedAt.IsZero() {
+			continue
+		}
+		if span.FinishedAt.After(through) {
+			through = span.FinishedAt
+		}
+		closed++
+		if closed == activitySpanLimit/4 {
+			break
+		}
+	}
+	if closed == 0 {
+		return
+	}
+	for _, index := range open {
+		if profile.Spans[index].StartedAt.Before(through) {
+			const note = "summarized_intervals_exclude_unfinished_spans"
+			if !slices.Contains(profile.CoverageNotes, note) {
+				profile.CoverageNotes = append(profile.CoverageNotes, note)
+			}
+			break
+		}
+	}
+	profile.SummarizeThrough(through)
+	kept := profile.Spans[:0]
+	for _, span := range profile.Spans {
+		if !span.FinishedAt.IsZero() && !span.FinishedAt.After(through) {
+			profile.DetailOmitted++
+			continue
+		}
+		if _, pending := open[span.ID]; pending {
+			open[span.ID] = len(kept)
+		}
+		kept = append(kept, span)
+	}
+	clear(profile.Spans[len(kept):])
+	profile.Spans = kept
 }
 
 func finishActivityWait(profile *workflowmetrics.ActivityProfile, open map[string]int, key string, at time.Time) {

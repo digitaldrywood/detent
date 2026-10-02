@@ -103,7 +103,12 @@ they do not append cumulative profiles to immutable history. Idle and unchanged
 observations perform no checkpoint writes. Genuine phase/identity/landing changes,
 lifecycle checkpoints and completion retain timestamped history, including the
 final activity profile. Agent completion joins the final profile checkpoint before
-finishing the native attempt. Lease renewal does not manufacture activity freshness.
+finishing the native attempt. Bounded recent activity detail and fixed-category
+whole-attempt timing totals share that checkpoint owner. Detail and projection
+omissions remain distinct from received-event loss; concurrency is counted once
+and unfinished historical intervals retain explicit partial coverage. Summary-only
+reads preserve recorded totals without expanding tool history. Lease renewal
+does not manufacture activity freshness.
 Candidate previews remain reads. Actual scheduling attempts retain changed decisions
 through the existing history owner, deduplicated by runner, source, revision,
 Change version/head and decision evidence; genuine fenced claims remain distinct.

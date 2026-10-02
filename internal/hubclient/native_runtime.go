@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -121,6 +122,20 @@ func runtimeEvidence(observation tracker.NativeRuntimeObservation) tracker.Nativ
 	if observation.Activity != nil {
 		profile := *observation.Activity
 		profile.AsOf = time.Time{}
+		if profile.Summary != nil {
+			summary := *profile.Summary
+			summary.Through = time.Time{}
+			if len(profile.Spans) == 0 {
+				summary.DetailFrom = time.Time{}
+			}
+			summary.Breakdown.ElapsedSeconds = 0
+			summary.Breakdown.UnknownSeconds = 0
+			summary.Breakdown.ByKind = maps.Clone(summary.Breakdown.ByKind)
+			if _, exists := summary.Breakdown.ByKind["unobserved"]; exists {
+				summary.Breakdown.ByKind["unobserved"] = 0
+			}
+			profile.Summary = &summary
+		}
 		observation.Activity = &profile
 	}
 	if observation.Landing != nil {

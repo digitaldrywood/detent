@@ -1,6 +1,8 @@
 package hubclient
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -83,11 +85,43 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	if activity := evidence.Attempt.Runtime.Activity; len(activity.Spans) != 1 || activity.Dropped != 31 || activity.Unpaired != 31 || activity.Spans[0].StartedAt != at || activity.Spans[0].CausalAttribution != "unknown_provider_origin" {
 		t.Fatalf("mutable activity=%+v", activity)
 	}
+	profile.Spans = nil
+	profile.AsOf = at.Add(1060 * time.Second)
+	for i := range 1060 {
+		span := workflowmetrics.ActivitySpan{ID: "recent-" + strconv.Itoa(i), Kind: "implementation", Outcome: "completed", StartedAt: at.Add(time.Duration(i) * time.Second), FinishedAt: at.Add(time.Duration(i+1) * time.Second)}
+		for range 32 {
+			span.Actions = append(span.Actions, workflowmetrics.ActivityAction{Type: "read", Kind: "context_read", CausalAttribution: "unknown_provider_origin", Attribution: "observed_read_request", SourceCoverage: "recorder_snapshot"})
+		}
+		profile.Spans = append(profile.Spans, span)
+	}
+	if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.FlushRuntime(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	evidence = assertProgress(34, 1)
+	activity := evidence.Attempt.Runtime.Activity
+	raw, err := json.Marshal(activity)
+	if err != nil || len(raw) > 128*1024 || activity.ProjectionOmitted == 0 || activity.Dropped != 31 || activity.Breakdown().ObservedSeconds != 1060 || activity.Spans[len(activity.Spans)-1].FinishedAt != profile.AsOf {
+		t.Fatalf("authenticated bounded whole-attempt activity: bytes=%d profile=%+v err=%v", len(raw), activity, err)
+	}
+	for range 128 {
+		profile.AsOf = profile.AsOf.Add(time.Second)
+		observation.HeartbeatAt = profile.AsOf
+		if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
+			t.Fatal(err)
+		}
+		if err := execution.FlushRuntime(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertProgress(34, 1)
 	observation.Phase = "validation"
 	if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
 		t.Fatal(err)
 	}
-	evidence = assertProgress(34, 2)
+	evidence = assertProgress(35, 2)
 	if len(evidence.Attempt.Runtime.Phases) != 2 || evidence.Attempt.Runtime.Phases[0].FinishedAt.IsZero() {
 		t.Fatalf("phase history=%+v", evidence.Attempt.Runtime.Phases)
 	}
@@ -101,7 +135,7 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	if err := execution.Finish(t.Context(), "failed"); err != nil {
 		t.Fatal(err)
 	}
-	evidence = assertProgress(35, 3)
+	evidence = assertProgress(36, 3)
 	if evidence.Attempt.Status != "failed" || evidence.Attempt.Runtime.Activity.Status != "completed" || evidence.Attempt.Runtime.Activity.Spans[0].Outcome != "completed" {
 		t.Fatalf("final activity=%+v", evidence.Attempt)
 	}

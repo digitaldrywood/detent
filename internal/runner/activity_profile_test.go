@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -578,6 +580,69 @@ func TestActivityObservationCapacity(t *testing.T) {
 		t.Fatalf("oversized actions retained: %+v", o.update)
 	}
 	applyActivityObservation(&p, map[string]int{}, map[string]int{}, nil, o)
+}
+
+func TestActivityRecorderRetainsWholeAttemptAndRecentWork(t *testing.T) {
+	workspacePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspacePath, "AGENTS.md"), []byte("Private policy\nRun go test ./fixture\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		probe := &activityCheckpointProbe{started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 4)}
+		close(probe.release)
+		r := &Runner{store: probe, projectID: "fixture", now: time.Now, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		recorder := r.startActivityProfile(t.Context(), RunRequest{Issue: connector.Issue{ID: "long-attempt"}, WorkAttemptID: 42, Generation: 2}, 43, workspacePath, config.Workflow{Prompt: "Run go test ./fixture"}, "implementation")
+		synctest.Wait()
+		for i := range 1060 {
+			tool, command := "Bash", "cat AGENTS.md"
+			if i >= 350 {
+				tool, command = "fileChange", "private patch"
+			}
+			if i >= 700 {
+				tool, command = "Bash", "go test ./fixture"
+			}
+			recorder.observe(AgentUpdate{Type: AgentUpdateToolStarted, ThreadID: "thread", TurnID: "turn", ItemID: strconv.Itoa(i), Tool: tool, Command: command}, time.Now(), "", time.Time{})
+			time.Sleep(time.Millisecond)
+			recorder.observe(AgentUpdate{Type: AgentUpdateToolCompleted, ThreadID: "thread", TurnID: "turn", ItemID: strconv.Itoa(i), Status: "completed"}, time.Now(), "", time.Time{})
+			time.Sleep(2 * time.Millisecond)
+			if i%32 == 31 {
+				synctest.Wait()
+			}
+		}
+		recorder.observe(AgentUpdate{Type: AgentUpdateTurnCompleted, Status: "completed"}, time.Now(), "", time.Time{})
+		recorder.finish()
+		if len(probe.profiles) != 2 {
+			t.Fatalf("whole attempt amplified checkpoint writes: %d", len(probe.profiles))
+		}
+		<-probe.profiles
+		var profile workflowmetrics.ActivityProfile
+		if err := json.Unmarshal([]byte((<-probe.profiles).MetadataJSON), &profile); err != nil {
+			t.Fatal(err)
+		}
+		if len(profile.Spans) > activitySpanLimit || profile.DetailOmitted == 0 || profile.Dropped != 0 || profile.Unpaired != 0 || profile.Status != "completed" {
+			t.Fatalf("long-attempt capture: detail=%d omitted=%d dropped=%d unpaired=%d status=%s", len(profile.Spans), profile.DetailOmitted, profile.Dropped, profile.Unpaired, profile.Status)
+		}
+		public := workflowmetrics.PublicActivityProfile(profile)
+		raw, err := json.Marshal(public)
+		if err != nil || len(raw) > 128*1024 || public.ProjectionOmitted == 0 || public.Dropped != 0 {
+			t.Fatalf("bounded projection: bytes=%d omitted=%d dropped=%d err=%v", len(raw), public.ProjectionOmitted, public.Dropped, err)
+		}
+		if public.Spans[len(public.Spans)-1].ID != activityHash("thread\x00turn\x001059") || len(public.Spans[len(public.Spans)-1].Sources) == 0 {
+			t.Fatal("recent instruction-attributed work was lost")
+		}
+		summary := (&tracker.NativeRuntimeObservation{Activity: &public}).WithoutActivitySpans().Activity
+		for _, p := range []workflowmetrics.ActivityProfile{profile, public, *summary} {
+			b := p.Breakdown()
+			if math.Abs(b.ObservedSeconds-1.06) > 1e-9 || math.Abs(b.UnknownSeconds-2.12) > 1e-9 || math.Abs(b.ByKind["context_read"]-.35) > 1e-9 || math.Abs(b.ByKind["implementation"]-.35) > 1e-9 || math.Abs(b.ByKind["local_validation"]-.36) > 1e-9 {
+				t.Fatalf("beginning/middle/end coverage: %+v", b)
+			}
+		}
+		for _, private := range []string{"Private policy", "private patch", "go test ./fixture", workspacePath} {
+			if strings.Contains(string(raw), private) {
+				t.Fatalf("private instruction/tool data survived: %q", private)
+			}
+		}
+	})
 }
 
 // Compare producer overhead with and without retained native metadata. Storage,

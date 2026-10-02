@@ -2,6 +2,8 @@ package workflowmetrics
 
 import (
 	"encoding/json"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,14 +44,19 @@ func TestActivityBreakdownPartitionsObservedWallTime(t *testing.T) {
 			if sum != 12 {
 				t.Fatalf("partition sums to %v", sum)
 			}
+			profile.SummarizeThrough(at.Add(6 * time.Second))
+			if !reflect.DeepEqual(profile.Breakdown(), b) {
+				t.Fatalf("compaction changed overlapping or nested timing: before=%+v after=%+v", b, profile.Breakdown())
+			}
 		})
 	}
 }
 
 func TestPublicActivityProfileBoundsAndRedaction(t *testing.T) {
-	p := ActivityProfile{Schema: 1, AttemptID: 168, Generation: 27, Status: "running", Stage: "implementation", Instance: "/private/instance", CoverageNotes: []string{"private instruction text"}, Dropped: 2, Unpaired: 3, ProviderThreadRef: "private thread"}
-	for range 1024 {
-		span := ActivitySpan{ID: "private shell command", ParentID: "private parent", Kind: "implementation", Evidence: "edit_tool", Attribution: "inferred_text_match", CausalAttribution: "private origin", Sources: []InstructionRef{{Name: "/private/instructions", Hash: "private contents", PathRef: "/private/path"}}}
+	at := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+	p := ActivityProfile{Schema: 1, AttemptID: 168, Generation: 27, Status: "running", Stage: "implementation", StartedAt: at, AsOf: at.Add(1024 * time.Second), Instance: "/private/instance", CoverageNotes: []string{"private instruction text"}, Dropped: 2, Unpaired: 3, ProviderThreadRef: "private thread"}
+	for i := range 1024 {
+		span := ActivitySpan{ID: "private shell command/" + strconv.Itoa(i), ParentID: "private parent", Kind: "implementation", Evidence: "edit_tool", Attribution: "inferred_text_match", CausalAttribution: "private origin", StartedAt: at.Add(time.Duration(i) * time.Second), FinishedAt: at.Add(time.Duration(i+1) * time.Second), Outcome: "completed", Sources: []InstructionRef{{Name: "/private/instructions", Hash: "private contents", PathRef: "/private/path"}}}
 		for range 32 {
 			span.Actions = append(span.Actions, ActivityAction{Type: "read", Fingerprint: strings.Repeat("a", 64), NameRef: "private name", PathRef: "/private/path", Evidence: "native_read", Kind: "context_read", CausalAttribution: "private cause"})
 		}
@@ -57,14 +64,17 @@ func TestPublicActivityProfileBoundsAndRedaction(t *testing.T) {
 	}
 	public := PublicActivityProfile(p)
 	raw, err := json.Marshal(public)
-	if err != nil || len(raw) > 128*1024 || len(public.Spans) == 0 || public.Dropped <= p.Dropped || public.Unpaired != 3 || public.Coverage != "partial" {
+	if err != nil || len(raw) > 128*1024 || len(public.Spans) == 0 || public.Dropped != p.Dropped || public.ProjectionOmitted != uint64(len(p.Spans)-len(public.Spans)) || public.Unpaired != 3 || public.Coverage != "partial" {
 		t.Fatalf("public profile: bytes=%d spans=%d dropped=%d err=%v", len(raw), len(public.Spans), public.Dropped, err)
 	}
 	if strings.Contains(string(raw), "private") {
 		t.Fatalf("private data survived public projection: %s", raw)
 	}
-	if p.Spans[0].ID != "private shell command" || p.Instance != "/private/instance" {
+	if p.Spans[0].ID != "private shell command/0" || p.Instance != "/private/instance" {
 		t.Fatal("projection changed the local recorder")
+	}
+	if public.Spans[len(public.Spans)-1].FinishedAt != p.AsOf || !reflect.DeepEqual(public.Breakdown(), p.Breakdown()) || public.Breakdown().ObservedSeconds != 1024 {
+		t.Fatalf("projection lost recent work or whole-attempt timing: %+v", public.Breakdown())
 	}
 	second, err := json.Marshal(PublicActivityProfile(public))
 	if err != nil || string(raw) != string(second) {
