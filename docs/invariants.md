@@ -115,6 +115,18 @@ Change version/head and decision evidence; genuine fenced claims remain distinct
 This consolidates the observation producers without a new telemetry owner or
 mechanism (INV-3).
 
+Native machine reports copy scheduler state under the scheduler mutex, perform
+capability negotiation, feature, checkout and heartbeat/registration requests
+unlocked, and commit observations and the per-project heartbeat time under the
+mutex again. A slow Hub call for one project therefore never serializes claims,
+policy checks or lease renewals for other leases. Renewal still installs only
+through the existing fencing-token comparison, and a stale pinned policy still
+drops the claim through the existing policy owner, so the unlocked window adds
+no guard, lease or recovery path. Concurrent reports may each reach the Hub;
+machine reports are idempotent observations. `TestBlockedMachineReportDoesNotSerializeLeaseRenewal`
+blocks a registration request and covers unrelated renewal, stale policy and
+superseded fencing tokens.
+
 The selected runtime read (#159) projects only the current immutable Change
 version and its review/check evidence through the existing summary authority.
 Indexed older-approval existence preserves stale review semantics without

@@ -44,20 +44,19 @@ func (s *Scheduler) Heartbeat(ctx context.Context) error {
 }
 
 func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConnector) error {
+	project := source.client.project
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	last := s.nativeHeartbeats[source.client.project]
+	last := s.nativeHeartbeats[project]
+	owner := s.updateOwner
+	s.mu.Unlock()
 	if !last.IsZero() && s.now().Before(last.Add(s.heartbeatInterval)) {
 		return nil
 	}
-	owner := s.updateOwner
-	s.mu.Unlock()
 	var update *runnerauth.UpdateObservation
 	var updateSupported bool
 	if owner != nil && s.client.runner != nil {
 		supported, err := source.client.HubFeature(ctx, tracker.NativeRunnerUpdateCapability)
 		if err != nil {
-			s.mu.Lock()
 			return err
 		}
 		updateSupported = supported
@@ -70,7 +69,6 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	if s.capacityConfiguration != nil && s.client.runner != nil {
 		supported, err := source.client.HubFeature(ctx, tracker.NativeRunnerCapacityCapability)
 		if err != nil {
-			s.mu.Lock()
 			return err
 		}
 		capacitySupported = supported
@@ -88,11 +86,6 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 		report = s.isolationReport(probeCtx)
 		cancel()
 	}
-	s.mu.Lock()
-	last = s.nativeHeartbeats[source.client.project]
-	if !last.IsZero() && s.now().Before(last.Add(s.heartbeatInterval)) {
-		return nil
-	}
 	if last.IsZero() {
 		var required []string
 		if s.providerReports != nil {
@@ -102,19 +95,49 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 			return err
 		}
 	}
-	s.machine.Update = update
-	s.machine.CapacityConfig = capacityConfig
-	if capacityConfig != nil {
-		s.machine.Capacity = min(capacityConfig.RuntimeLimit, capacityConfig.ClientLimit, capacityConfig.LocalLimit)
-	}
+	var reports []providercapacity.Report
 	if s.providerReports != nil {
-		reports, err := s.providerReports()
+		var err error
+		reports, err = s.providerReports()
 		if err != nil {
 			return errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 		}
 		if err := providercapacity.Validate(reports); err != nil {
 			return errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 		}
+	}
+	var localChecks *runnerauth.LocalChecks
+	var repository *string
+	for name, candidate := range s.nativeProjects {
+		if candidate != source {
+			continue
+		}
+		if checks, ok := s.localChecks[name]; ok && s.client.runner != nil {
+			localChecks = &checks
+		}
+		if s.checkoutRepository != nil {
+			supported, err := source.client.HubFeature(ctx, tracker.NativeCheckoutRepositoryCapability)
+			if err != nil {
+				return err
+			}
+			if supported {
+				checkout := s.checkoutRepository(name)
+				repository = &checkout
+			}
+		}
+		break
+	}
+	s.mu.Lock()
+	if current := s.nativeHeartbeats[project]; !current.IsZero() && s.now().Before(current.Add(s.heartbeatInterval)) {
+		s.mu.Unlock()
+		return nil
+	}
+	s.machine.Update = update
+	s.machine.CapacityConfig = capacityConfig
+	if capacityConfig != nil {
+		s.machine.Capacity = min(capacityConfig.RuntimeLimit, capacityConfig.ClientLimit, capacityConfig.LocalLimit)
+	}
+	if s.providerReports != nil {
 		s.machine.ProviderReports = reports
 	}
 	if s.isolationReport != nil {
@@ -122,31 +145,9 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	}
 	s.machine.Problems = problems
 	machine := s.machine
-	if s.client.runner != nil {
-		for name, candidate := range s.nativeProjects {
-			if candidate == source {
-				if checks, ok := s.localChecks[name]; ok {
-					machine.LocalChecks = &checks
-				}
-				break
-			}
-		}
-	}
-	if s.checkoutRepository != nil {
-		supported, err := source.client.HubFeature(ctx, tracker.NativeCheckoutRepositoryCapability)
-		if err != nil {
-			return err
-		}
-		if supported {
-			for name, candidate := range s.nativeProjects {
-				if candidate == source {
-					repository := s.checkoutRepository(name)
-					machine.CheckoutRepository = &repository
-					break
-				}
-			}
-		}
-	}
+	s.mu.Unlock()
+	machine.LocalChecks = localChecks
+	machine.CheckoutRepository = repository
 	if s.client.runner != nil && !last.IsZero() {
 		if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
 			return err
@@ -158,11 +159,10 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	}
 	if updateSupported {
 		if request := s.client.runner.updateRequest(); request != nil && (machine.Update == nil || machine.Update.Receipt == nil || machine.Update.Receipt.Request != *request) {
-			s.mu.Unlock()
-			applied := owner(ctx, request)
-			s.mu.Lock()
-			if applied != nil {
+			if applied := owner(ctx, request); applied != nil {
+				s.mu.Lock()
 				s.machine.Update = applied
+				s.mu.Unlock()
 				machine.Update = applied
 				if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
 					return err
@@ -170,18 +170,19 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 			}
 		}
 	}
+	var appliedCapacity *runnerauth.CapacityConfig
 	if capacitySupported {
 		if request := s.client.runner.capacityRequest(); request != nil {
-			s.mu.Unlock()
-			applied := s.capacityConfiguration(ctx, request)
-			s.mu.Lock()
-			if applied != nil {
-				s.machine.CapacityConfig = applied
-				s.machine.Capacity = min(applied.RuntimeLimit, applied.ClientLimit, applied.LocalLimit)
-			}
+			appliedCapacity = s.capacityConfiguration(ctx, request)
 		}
 	}
-	s.nativeHeartbeats[source.client.project] = s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if appliedCapacity != nil {
+		s.machine.CapacityConfig = appliedCapacity
+		s.machine.Capacity = min(appliedCapacity.RuntimeLimit, appliedCapacity.ClientLimit, appliedCapacity.LocalLimit)
+	}
+	s.nativeHeartbeats[project] = s.now()
 	return nil
 }
 
