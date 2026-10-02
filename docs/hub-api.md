@@ -270,6 +270,8 @@ another computer to simulate a shared host.
 | --- | --- |
 | `GET /api/v2/organizations/{org}/runners` | Instance administrator: fleet routing, host identity, platform, health, capacity and active-run eligibility. |
 | `GET /api/v2/organizations/{org}/runners/{runner}/routing` | That enrolled runner or instance administrator: public routing and active leases; no secrets. |
+| `GET /api/v2/organizations/{org}/runner-update/urgent` | Runner administrator: current urgent release request and revision (initially 0). |
+| `PUT /api/v2/organizations/{org}/runner-update/urgent` | Runner administrator: `expected_revision`, published semantic `version`, `confirm: true`, and `idempotency_key`. Marks that release urgent for every older enrolled runner. |
 | `PUT /api/v2/organizations/{org}/runners/{runner}/routing` | Instance administrator: `expected_revision`, `display_name`, `tags`, `state`, `capacity_limit`, `project_ids`. Replaces routing/access atomically; stale revisions return `409 revision_conflict`. Empty project access denies every project. |
 | `PUT /api/v2/organizations/{org}/machines/{machine}/routing` | Instance administrator: `expected_revision`, `display_name`, `capacity`. Capacity is shared by all bound runners. |
 | `POST /api/v2/organizations/{org}/projects/{project}/leases/{lease}/validate` | Owning runner: `fencing_token`. Revalidates authority, selectors and pinned policy within one transaction. The customer scheduler checks the returned binding against its private local identity before adopting or renewing work. |
@@ -279,6 +281,19 @@ including Runs, link to the same eligibility details. Runner detail includes act
 run policy, selectors, lease expiry and contextual authority exclusions. The configured
 Hub administrator connection can edit routing; an enrolled worker connection sees
 its own runner without edit controls. Dashboard mutation authentication still applies.
+
+An urgent release uses the existing `draining` state and enrolled update owner.
+All older runners stop accepting claims; active leases continue renewing and
+sessions finish before binary replacement and coordinated restart. The marker
+persists across Hub restarts and covers offline runners when they reconnect and
+older runners enrolled later. Matching post-start build evidence removes the
+urgency-derived drain; administrator-owned draining or disabled settings remain.
+The installed updater verifies the exact selected published artifact, signature
+and provenance. Automatic update opt-outs do not refuse this explicit operator
+request. An unsupported installation or failed verification retains the existing
+refusal receipt rather than claiming update success. MCP exposes
+`get_urgent_runner_update` and `mark_urgent_runner_update`; marking a release
+uses the existing material-action approval and all-project runner authority.
 
 | Change or exclusion | New dispatches | Active leases |
 | --- | --- | --- |

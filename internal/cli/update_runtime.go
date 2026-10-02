@@ -297,3 +297,14 @@ func runnerRunningBuild(info buildinfo.Info, version string) runnerauth.BuildEvi
 	}
 	return build
 }
+
+func enrolledUpdateOwner(runtimeCtx context.Context, scheduler *detentupdate.Scheduler, running runnerauth.BuildEvidence) func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
+	return func(ctx context.Context, request *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
+		if request != nil && request.Urgent {
+			copy := *request
+			go scheduler.EnrolledUpdate(runtimeCtx, running, &copy)
+			return scheduler.EnrolledUpdate(ctx, running, nil)
+		}
+		return scheduler.EnrolledUpdate(ctx, running, request)
+	}
+}

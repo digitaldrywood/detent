@@ -466,9 +466,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		SetUpdateOwner(func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation)
 	}); ok {
 		running := updateScheduler.RunningBuild()
-		reporter.SetUpdateOwner(func(ctx context.Context, request *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
-			return updateScheduler.EnrolledUpdate(ctx, running, request)
-		})
+		reporter.SetUpdateOwner(enrolledUpdateOwner(runCtx, updateScheduler, running))
 	}
 	kanbanWorkflow, err := bootKanbanWorkflow(runCtx, cfg)
 	if err != nil {

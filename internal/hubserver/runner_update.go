@@ -144,7 +144,13 @@ func storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, scope nativeS
 			matches := runner.UpdateRequest != nil && report.Receipt.Request == *runner.UpdateRequest
 			previous := runner.Update != nil && runner.Update.Receipt != nil && report.Receipt.Request == runner.Update.Receipt.Request
 			if !matches && !previous {
-				return nativeInvalid("Update receipt does not belong to this enrolled runner request")
+				accepted, err := runnerUpdateReceiptMatches(ctx, tx, scope, report.Receipt.Request)
+				if err != nil {
+					return err
+				}
+				if !accepted {
+					return nativeInvalid("Update receipt does not belong to this enrolled runner request")
+				}
 			}
 		}
 		report.ReceivedAt = now

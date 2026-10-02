@@ -38,6 +38,9 @@ type hubFleetRequest struct {
 }
 
 func hubFleetTool(name string) bool {
+	if name == operatortool.GetUrgentRunnerUpdate || name == operatortool.MarkUrgentRunnerUpdate {
+		return true
+	}
 	return slices.Contains([]string{operatortool.UpdateApply, operatortool.GetRunnerUpdate, operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.GetRunnerCapacity, operatortool.UpdateRunnerCapacity, operatortool.HostedFleet, operatortool.GitHubRequestCounts}, name)
 }
 func hubFleetRequirement(name string) operatortool.Requirement {
@@ -192,6 +195,8 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 			}{fleet, more, s.config.now()}
 		case operatortool.GetRunnerUpdate:
 			value, err = s.readRunnerUpdate(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID)
+		case operatortool.GetUrgentRunnerUpdate:
+			value, err = s.readUrgentRunnerUpdateCommand(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential})
 		case operatortool.GetRunnerCapacity:
 			value, err = s.readRunnerCapacity(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID, r.Backend)
 		case operatortool.GetRunnerRouting:
@@ -323,16 +328,34 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 	if operatortool.DecodeArguments(arguments, &r) != nil {
 		return chatpkg.Action{}, operatortool.ErrInvalidArguments
 	}
-	if _, err := currentHubOperator(ctx); err != nil {
+	credential, err := currentHubOperator(ctx)
+	if err != nil {
 		return chatpkg.Action{}, operatortool.ErrAccessDenied
 	}
-	ctx, err := operatortool.AuthorizeCurrent(ctx, hubFleetRequirement(name))
+	ctx, err = operatortool.AuthorizeCurrent(ctx, hubFleetRequirement(name))
 	if err != nil {
 		return chatpkg.Action{}, err
 	}
 	org := operatortool.ConnectionIdentity(ctx).OrganizationID
 	a := chatpkg.Action{Kind: chatpkg.ActionKind(name), ProjectID: r.ProjectID, Title: name, Description: string(arguments), ResourceURL: "/fleet"}
 	switch name {
+	case operatortool.MarkUrgentRunnerUpdate:
+		var change urgentRunnerUpdateChange
+		if operatortool.DecodeArguments(r.Change, &change) != nil {
+			return a, operatortool.ErrInvalidArguments
+		}
+		current, err := e.service.readUrgentRunnerUpdateCommand(ctx, nativeScope{organization: tracker.OrganizationID(org), credential: credential})
+		if err != nil {
+			return a, safeHubOperatorError(err)
+		}
+		urgent := current.(urgentRunnerUpdate)
+		if change.ExpectedRevision != urgent.Revision {
+			return a, errHubOperatorUnavailable
+		}
+		a.IssueID = "urgent_runner_update"
+		a.Identifier = "urgent_runner_update"
+		a.CurrentState = strconv.FormatInt(urgent.Revision, 10)
+		a.MaterialChange = true
 	case operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.RevokeRunnerIdentity:
 		runner, err := readRunner(ctx, e.service.database.db, tracker.OrganizationID(org), r.RunnerID, e.service.config.now())
 		if err != nil {
@@ -450,6 +473,14 @@ func (e hubFleetExecutor) executeCommand(ctx context.Context, a chatpkg.Action) 
 	}
 	s := e.service
 	switch string(a.Kind) {
+	case operatortool.MarkUrgentRunnerUpdate:
+		var change urgentRunnerUpdateChange
+		if operatortool.DecodeArguments(r.Change, &change) != nil {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		change.Confirm = true
+		change.IdempotencyKey = a.RequestID
+		return s.markUrgentRunnerUpdateCommand(ctx, scope, change)
 	case operatortool.CreateRunnerEnrollment:
 		return s.createRunnerEnrollmentCommand(ctx, scope, r.Enrollment)
 	case operatortool.RevokeRunnerEnrollment:
