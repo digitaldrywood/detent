@@ -1,0 +1,147 @@
+package update
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+)
+
+func TestSchedulerEnrolledUpdate(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		pending     bool
+		stale       bool
+		unavailable bool
+		restart     bool
+		applyError  error
+		want        string
+		calls       int
+	}{
+		{name: "applied before restart", want: "applied", calls: 1},
+		{name: "detached replacement remains pending", pending: true, want: "uncertain", calls: 1},
+		{name: "restart requested", restart: true, want: "restart_requested", calls: 1},
+		{name: "stale observed build", stale: true, want: "refused"},
+		{name: "missing restart owner", unavailable: true, want: "refused"},
+		{name: "private refusal redacted", applyError: errors.New("/private/credentials/token=secret"), want: "refused", calls: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "private_patched_source", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.2.4"}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, applyErr: test.applyError}
+			updater.applyStatus.ReplacementPending = test.pending
+			if test.applyError != nil {
+				updater.applyStatus.Action = ActionRefused
+			}
+			drains, restarts := 0, 0
+			config := SchedulerConfig{CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "scheduler.json"), Updater: updater, RunningBuild: running,
+				ReserveDrain: func(context.Context) (func(), error) { drains++; return func() {}, nil }, RequestRestart: func(string) bool { restarts++; return test.restart }, Now: func() time.Time { return now }}
+			if test.unavailable {
+				config.RequestRestart = nil
+			}
+			scheduler, err := NewScheduler(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observed := scheduler.EnrolledUpdate(t.Context(), running, nil)
+			if observed.Validate() != nil || observed.Running.Source != "private_patched_source" || observed.Running.VerifiedRelease {
+				t.Fatalf("initial evidence=%+v", observed)
+			}
+			request := runnerauth.UpdateRequest{RequestedAt: now, ID: "update-test", Service: "detent", ExpectedBuildRevision: observed.Revision, Version: "1.2.4", Release: true}
+			if test.stale {
+				request.ExpectedBuildRevision = strings.Repeat("e", 64)
+			}
+			observed = scheduler.EnrolledUpdate(t.Context(), running, &request)
+			if observed == nil || observed.Validate() != nil || observed.Receipt == nil || observed.Receipt.Status != test.want {
+				t.Fatalf("receipt=%+v", observed)
+			}
+			repeated := scheduler.EnrolledUpdate(t.Context(), running, &request)
+			if repeated.Receipt.Status != test.want || updater.applyCalls != test.calls || drains != test.calls {
+				t.Fatalf("repeat receipt=%+v calls/drains=%d/%d", repeated, updater.applyCalls, drains)
+			}
+			if test.calls == 1 && test.applyError == nil && restarts != 1 {
+				t.Fatalf("restart owner calls=%d", restarts)
+			}
+			raw, err := json.Marshal(observed)
+			if err != nil || strings.Contains(string(raw), "secret") || strings.Contains(string(raw), "/private") {
+				t.Fatalf("unsafe evidence=%s error=%v", raw, err)
+			}
+			resumed, err := NewScheduler(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumedRunning := running
+			if observed.Receipt.VerifiedTarget != nil {
+				resumedRunning = *observed.Receipt.VerifiedTarget
+			}
+			if observed.Receipt.Applied != nil {
+				resumedRunning = *observed.Receipt.Applied
+			}
+			after := resumed.EnrolledUpdate(t.Context(), resumedRunning, &request)
+			expected := test.want
+			if observed.Receipt.Applied != nil || observed.Receipt.VerifiedTarget != nil {
+				expected = "running"
+			}
+			if after.Receipt.Status != expected || after.Validate() != nil || updater.applyCalls != test.calls {
+				t.Fatalf("restart receipt=%+v calls=%d", after, updater.applyCalls)
+			}
+			if observed.Receipt.Applied != nil || observed.Receipt.VerifiedTarget != nil {
+				witnessed := resumed.EnrolledUpdate(t.Context(), resumedRunning, nil)
+				if witnessed.Receipt.Running == nil {
+					t.Fatal("post-start running receipt was not retained")
+				}
+				newer := resumedRunning
+				newer.Version = "1.2.5"
+				newer.SHA256 = strings.Repeat("f", 64)
+				drift := resumed.EnrolledUpdate(t.Context(), newer, nil)
+				fleet := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: "runner"}, Health: "online", ConnectionHealth: "online", LastHeartbeatAt: now, Update: drift, Routing: runnerauth.Routing{UpdateRequest: &request}}
+				fleet.Update.ReceivedAt = now
+				if fleet.UpdateView(now).Status != "drifted" {
+					t.Fatalf("later local update retained a pending remote request: %+v", fleet.UpdateView(now))
+				}
+				patched := resumedRunning
+				patched.Source = "private_patched_source"
+				patched.VerifiedRelease = false
+				if resumed.EnrolledUpdate(t.Context(), patched, nil).Receipt.Status == "running" {
+					t.Fatal("patched source claimed verified running release")
+				}
+			}
+		})
+	}
+}
+
+func TestSchedulerEnrolledInterruptedReceipt(t *testing.T) {
+	now := time.Now().UTC()
+	running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: now}
+	request := runnerauth.UpdateRequest{RequestedAt: now, ID: "interrupted", Service: "detent", ExpectedBuildRevision: strings.Repeat("a", 64), Version: "1.2.4", Release: true}
+	path := filepath.Join(t.TempDir(), "scheduler.json")
+	if err := saveSchedulerState(path, schedulerState{LastCheckAt: now, EnrolledReceipt: &runnerauth.UpdateReceipt{Request: request, Status: "draining", ObservedAt: now}}); err != nil {
+		t.Fatal(err)
+	}
+	updater := &schedulerUpdaterStub{}
+	config := SchedulerConfig{CheckInterval: time.Hour, StatePath: path, Updater: updater}
+	scheduler, err := NewScheduler(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := scheduler.EnrolledUpdate(t.Context(), running, &request)
+	if report.Receipt.Status != "uncertain" || updater.applyCalls != 0 {
+		t.Fatalf("interrupted receipt=%+v", report)
+	}
+	if err := os.WriteFile(path, []byte("invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	scheduler, err = NewScheduler(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheduler.EnrolledUpdate(t.Context(), running, nil).Supported {
+		t.Fatal("invalid receipt state advertised effect support")
+	}
+}

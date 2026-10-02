@@ -21,19 +21,19 @@ const runnerIdentitySelect = `SELECT r.id, r.organization_id, r.machine_id, r.to
 r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json, r.home_dry_since,
 m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at,
 (SELECT json_group_array(project_id) FROM (SELECT project_id FROM token_grants WHERE token_id = r.token_id ORDER BY project_id)),
-r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json
+r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id`
 
 func scanRunnerIdentity(row interface{ Scan(...any) error }, now time.Time) (runnerauth.Runner, []providercapacity.Report, error) {
 	var r runnerauth.Runner
 	var tags, operations, heartbeat, created, expires, token, settings string
-	var projects, problems, isolationRaw, capacityRaw, providerRaw string
+	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw string
 	var protocol int
 	var rejected bool
 	var revoked, dry sql.NullString
 	err := row.Scan(&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
 		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings, &dry,
-		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw)
+		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw)
 	if err != nil {
 		return r, nil, err
 	}
@@ -75,6 +75,9 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, now time.Time) (run
 		r.HomeDrySince = &since
 	}
 	r.HomeStatus = r.HomeWorkStatus(now)
+	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
+		return r, nil, err
+	}
 	var reports []providercapacity.Report
 	if err := json.Unmarshal([]byte(capacityRaw), &r.CapacityConfig); err != nil {
 		return r, nil, err
@@ -153,6 +156,7 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 }
 
 type runnerSettings struct {
+	UpdateRequest   *runnerauth.UpdateRequest   `json:"update_request,omitempty"`
 	CapacityRequest *runnerauth.CapacityRequest `json:"capacity_request,omitempty"`
 	HomeProjectIDs  []tracker.ProjectID         `json:"home_project_ids"`
 	IsolationTier   string                      `json:"isolation_tier"`
@@ -162,7 +166,7 @@ type runnerSettings struct {
 }
 
 func settingsFromRouting(r runnerauth.Routing) runnerSettings {
-	return runnerSettings{CapacityRequest: r.CapacityRequest, HomeProjectIDs: r.HomeProjectIDs, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability, Spillover: r.Spillover}
+	return runnerSettings{UpdateRequest: r.UpdateRequest, CapacityRequest: r.CapacityRequest, HomeProjectIDs: r.HomeProjectIDs, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability, Spillover: r.Spillover}
 }
 
 func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
@@ -170,6 +174,7 @@ func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
 	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
 		return err
 	}
+	routing.UpdateRequest = settings.UpdateRequest
 	routing.CapacityRequest = settings.CapacityRequest
 	routing.IsolationTier = settings.IsolationTier
 	routing.HostServices = settings.HostServices
@@ -232,6 +237,7 @@ type runnerRoutingRequest struct {
 // effective preserves optional settings exactly as the dashboard command does.
 func (request runnerRoutingRequest) effective(current runnerauth.Routing) runnerauth.RoutingChange {
 	change := request.RoutingChange
+	change.UpdateRequest = current.UpdateRequest
 	change.CapacityRequest = current.CapacityRequest
 	if request.IsolationTier == nil || *request.IsolationTier == "" {
 		change.IsolationTier = current.IsolationTier

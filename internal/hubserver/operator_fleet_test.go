@@ -28,7 +28,7 @@ const fleetProtocolMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-2
 // principal attribution, and repeat enrollment/credential effects.
 func TestHostedMCPFleetControls(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
-		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "routing", "host", "capacity", "capacity reapply", "capacity revoked grants", "ordinary", "revoked grants", "revoked original grants", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
+		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "routing", "host", "capacity", "capacity reapply", "capacity revoked grants", "update", "update revoked grants", "update stale", "ordinary", "revoked grants", "revoked original grants", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
 			t.Run(deployment+"/"+scenario, func(t *testing.T) {
 				var f hostedSecurityFixture
 				var shared hostedSharedFixture
@@ -143,6 +143,17 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					}
 					requireNativeStatus(t, redeemed, http.StatusCreated)
 				}
+				var updateEvidence *runnerauth.UpdateObservation
+				if strings.HasPrefix(scenario, "update") {
+					now := f.service.config.now()
+					updateEvidence = &runnerauth.UpdateObservation{Discovery: "available", Protocol: 1, Service: "detent", Supported: true, AvailableVersion: "1.2.4", AvailableObservedAt: now, ObservedAt: now, ReceivedAt: now, Running: runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}}
+					updateEvidence.Revision = updateEvidence.BuildRevision()
+					encoded, err := json.Marshal(updateEvidence)
+					if err != nil {
+						t.Fatal(err)
+					}
+					operatorSQL(t, f, "UPDATE runner_identities SET update_observation_json=?, reported_protocol_major=2 WHERE id=?", string(encoded), runnerID)
+				}
 				if scenario == "capacity" || scenario == "capacity reapply" || scenario == "capacity revoked grants" {
 					evidence := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.now()}
 					encoded, err := json.Marshal(evidence)
@@ -233,6 +244,9 @@ func TestHostedMCPFleetControls(t *testing.T) {
 				case "revoke identity":
 					name = operatortool.RevokeRunnerIdentity
 					args = map[string]any{"request_id": "fleet-effect", "runner_id": runnerID}
+				case "update", "update revoked grants", "update stale":
+					name = operatortool.UpdateApply
+					args = map[string]any{"request_id": "fleet-effect", "runner_id": runnerID, "change": map[string]any{"expected_revision": 1, "expected_build_revision": updateEvidence.Revision, "service": "detent", "version": "1.2.4", "release": true}}
 				case "capacity", "capacity revoked grants":
 					name = operatortool.UpdateRunnerCapacity
 					args = map[string]any{"request_id": "fleet-effect", "runner_id": runnerID, "change": map[string]any{"expected_revision": 1, "expected_config_revision": strings.Repeat("a", 64), "capacity": 6, "backend": "codex"}}
@@ -257,15 +271,15 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					if receipt.Status != "pending" {
 						t.Fatalf("preview=%s", raw)
 					}
-					if scenario == "revoked grants" || scenario == "revoked original grants" || scenario == "capacity revoked grants" {
+					if scenario == "revoked grants" || scenario == "revoked original grants" || scenario == "capacity revoked grants" || scenario == "update revoked grants" {
 						cachedPage = request(approver, http.MethodGet, "/chat/approval?connection_id="+info.ID, nil)
 						operatorSQL(t, f, "UPDATE hosted_project_grants SET manage_runner=0 WHERE user_id=?", user.identity.Subject)
 					}
-					if scenario == "stale" {
+					if scenario == "stale" || scenario == "update stale" {
 						operatorSQL(t, f, "UPDATE runner_identities SET revision=revision+1 WHERE id=?", runnerID)
 					}
 					reply := decision(receipt.ID, "confirm", "")
-					if scenario == "revoked grants" || scenario == "revoked original grants" || scenario == "capacity revoked grants" {
+					if scenario == "revoked grants" || scenario == "revoked original grants" || scenario == "capacity revoked grants" || scenario == "update revoked grants" {
 						want := http.StatusForbidden
 						if scenario == "revoked original grants" {
 							want = http.StatusConflict
@@ -286,7 +300,7 @@ func TestHostedMCPFleetControls(t *testing.T) {
 						}
 						return
 					}
-					if scenario == "stale" {
+					if scenario == "stale" || scenario == "update stale" {
 						if reply.Code != http.StatusConflict {
 							t.Fatalf("stale decision=%d %s", reply.Code, reply.Body.String())
 						}
@@ -360,6 +374,18 @@ func TestHostedMCPFleetControls(t *testing.T) {
 							t.Fatalf("capacity request=%s error=%v", settings, err)
 						}
 					}
+				case operatortool.UpdateApply:
+					var settings string
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT routing_settings_json FROM runner_identities WHERE id=?", runnerID).Scan(&settings); err != nil {
+						t.Fatal(err)
+					}
+					var saved runnerSettings
+					if err := json.Unmarshal([]byte(settings), &saved); err != nil || saved.UpdateRequest == nil || saved.UpdateRequest.Version != "1.2.4" || saved.UpdateRequest.Service != "detent" {
+						t.Fatalf("update delivery=%s error=%v", settings, err)
+					}
+					if !strings.Contains(string(raw), `"status":"requested"`) {
+						t.Fatalf("queue receipt=%s", raw)
+					}
 				case operatortool.UpdateRunnerCapacity:
 					var capacity runnerauth.CapacityView
 					if err := json.Unmarshal(raw, &struct {
@@ -431,9 +457,9 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 			if err := executor.OpenConnection(ctx); err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.GetRunnerRouting, operatortool.GetRunnerCapacity, operatortool.ListRunnerRouting, operatortool.GitHubRequestCounts} {
+			for _, name := range []string{operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.GetRunnerRouting, operatortool.GetRunnerCapacity, operatortool.GetRunnerUpdate, operatortool.ListRunnerRouting, operatortool.GitHubRequestCounts} {
 				args := map[string]any{}
-				if name == operatortool.GetRunnerRouting || name == operatortool.GetRunnerCapacity {
+				if name == operatortool.GetRunnerRouting || name == operatortool.GetRunnerCapacity || name == operatortool.GetRunnerUpdate {
 					args["runner_id"] = r.binding.RunnerID
 				}
 				raw, err := json.Marshal(args)

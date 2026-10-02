@@ -28,6 +28,7 @@ const (
 	ForgeAvailabilityClear   = "forge_availability_clear"
 	FailureBreakerCanary     = "failure_breaker_canary"
 	UpdateApply              = "update_apply"
+	GetRunnerUpdate          = "get_runner_update"
 	ProgressCredit           = "issue_progress_credit"
 	AcknowledgeWarnings      = "acknowledge_staleness_warnings"
 	RecoverAttempt           = "recover_work_attempt"
@@ -81,7 +82,9 @@ func FleetCatalog() []Definition {
 	add(TrackerAvailabilityClear, "Clear existing tracker availability conditions; requires operator approval.", "", "", false, true)
 	add(ForgeAvailabilityClear, "Clear existing forge availability conditions; requires operator approval.", `"host":`+boundedID, "", false, true)
 	add(FailureBreakerCanary, "Request the existing breaker canary; requires operator approval.", "", "", false, true)
-	add(UpdateApply, "Apply the pending instance update or configured release; requires operator approval.", `"release":{"type":"boolean"},"from_release":{"type":"boolean"}`, "", false, true)
+	update := `{"type":"object","required":["expected_revision","expected_build_revision","service","version"],"properties":{"expected_revision":{"type":"integer","minimum":1},"expected_build_revision":{"type":"string","pattern":"^[a-f0-9]{64}$","maxLength":64},"service":{"type":"string","minLength":6,"maxLength":6,"enum":["detent"]},"version":` + boundedID + `,"release":{"type":"boolean"},"from_release":{"type":"boolean"}},"additionalProperties":false}`
+	add(UpdateApply, "Apply through the installed updater and coordinated restart; Cloud requires runner_id and an observed change. Requires operator approval; acceptance is not running-build evidence.", `"release":{"type":"boolean"},"from_release":{"type":"boolean"},"runner_id":`+boundedID+`,"change":`+update, "", false, true)
+	add(GetRunnerUpdate, "Read enrolled runner update support, requested/applied state and observed running build provenance.", `"runner_id":`+boundedID, `"runner_id"`, true, false)
 	add(ProgressCredit, "Credit the exact issue through the dashboard command; requires operator approval.", `"reference":`+boundedID, `"project_id","reference"`, false, true)
 	add(AcknowledgeWarnings, "Acknowledge active staleness warnings for this project.", `"warning_ids":`+boundedList, `"project_id","warning_ids"`, false, false)
 	add(RecoverAttempt, "Perform an existing recovery action on an exact attempt; requires operator approval.", `"attempt_id":{"type":"integer","minimum":1},"action":{"type":"string","maxLength":256,"enum":["inspect","abandon","retry_fresh","retry_resume","cleanup_workspace"]},"reason":{"type":"string","maxLength":280}`, `"project_id","attempt_id","action"`, false, true)
@@ -141,6 +144,7 @@ func RoutingRequiresApproval(before, after runnerauth.Routing) bool {
 	before, after = before.Normalized(), after.Normalized()
 	before.DisplayName, before.Tags = after.DisplayName, after.Tags
 	before.CapacityRequest, after.CapacityRequest = nil, nil
+	before.UpdateRequest, after.UpdateRequest = nil, nil
 	return !reflect.DeepEqual(before, after)
 }
 

@@ -33,6 +33,8 @@ func (s *Service) registerRunnerRoutes(e *echo.Echo) {
 	e.GET(runnerBase+"/:runner/routing", s.getRunnerRouting, s.requireAPIScope(apiScopeWorker, apiScopeAdmin))
 	e.PUT(runnerBase+"/:runner/routing", s.updateRunnerRouting, admin)
 	e.GET(runnerBase+"/:runner/capacity", s.getRunnerCapacity, admin)
+	e.GET(runnerBase+"/:runner/update", s.getRunnerUpdate, admin)
+	e.POST(runnerBase+"/:runner/update/apply", s.applyRunnerUpdate, admin)
 	e.PUT(runnerBase+"/:runner/capacity", s.updateRunnerCapacity, admin)
 	e.PUT("/api/v2/organizations/:organization/machines/:machine/routing", s.updateRunnerHost, admin)
 	e.POST(nativeBase+"/leases/:lease/validate", s.validateRunnerLease, s.requireNativeScope(apiScopeWorker))
