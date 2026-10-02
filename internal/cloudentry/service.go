@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -46,11 +47,13 @@ type Config struct {
 	Allocation                *AllocationConfig
 	Billing                   *BillingConfig
 	ConfigPath                string
+	Attachments               *attachment.Config
 
-	now           func() time.Time
-	generateToken func() (string, error)
-	transport     func(Organization) (http.RoundTripper, error)
-	clientFS      fs.FS
+	now                 func() time.Time
+	generateToken       func() (string, error)
+	transport           func(Organization) (http.RoundTripper, error)
+	clientFS            fs.FS
+	attachmentTransport http.RoundTripper
 
 	tenantStartTimeout time.Duration
 	platformDeadline   time.Duration
@@ -87,16 +90,19 @@ func (c Config) validate() error {
 }
 
 type Service struct {
-	administration *operatoradmin.Executor
-	config         Config
-	registry       *Registry
-	auth           *authStore
-	echo           *echo.Echo
-	secure         bool
-	transports     sync.Map
-	mutationMu     sync.Mutex
-	verified       sessionVerifications
-	refreshes      refreshLocks
+	administration    *operatoradmin.Executor
+	config            Config
+	registry          *Registry
+	auth              *authStore
+	echo              *echo.Echo
+	secure            bool
+	transports        sync.Map
+	mutationMu        sync.Mutex
+	verified          sessionVerifications
+	refreshes         refreshLocks
+	attachments       attachment.Storage
+	attachmentMu      sync.RWMutex
+	attachmentSweepAt time.Time
 
 	stopAllocator context.CancelFunc
 	allocatorDone chan struct{}
@@ -121,6 +127,14 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.generateToken == nil {
 		cfg.generateToken = apikey.GenerateToken
 	}
+	var attachments attachment.Storage
+	if cfg.Attachments != nil {
+		var err error
+		attachments, err = attachment.NewStorage(ctx, *cfg.Attachments, cfg.attachmentTransport)
+		if err != nil {
+			return nil, fmt.Errorf("configure attachments: %w", err)
+		}
+	}
 	registry, err := OpenRegistry(ctx, filepath.Join(cfg.StateDir, "registry.db"))
 	if err != nil {
 		return nil, err
@@ -135,6 +149,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
 	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
+	service.attachments = attachments
 	if cfg.transport == nil {
 		service.config.transport = service.tenantTransport
 	}
@@ -223,6 +238,7 @@ func (s *Service) routes() {
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
 	e.GET("/invite", s.startInvitation)
+	s.registerAttachmentRoutes(e)
 	e.Any("/organizations/:organization", s.proxy)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)

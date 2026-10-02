@@ -17,6 +17,17 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Cloud issue attachments (native #175) retain the existing signed entry and
+tenant membership/project authorities. Only entry holds Spaces credentials or
+constructs organization-prefixed object keys; private startup probing and
+opaque unauthorized reads preserve tenant isolation. Attachment bytes join the
+existing collaboration allowance transaction. Orphans and deleted references
+use entry's existing maintenance cycle, and deprovisioning erases the tenant
+prefix. `TestAttachmentRoutesIsolation`, `TestAttachmentStorageProbe`,
+`TestCloudAttachmentQuota`, `TestCloudAttachmentRetention`,
+`TestCloudAttachmentReferenceDeletion`, `TestAttachmentOrphanSweepAndDeprovision`
+and `TestCloudAllocationGeneratesTenantConfiguration` cover these boundaries.
+
 Native failed coding and rework completion (#169) selects an allowed configured
 review destination under the existing leased completion owner before publishing
 `run.finished` or releasing the claim. It records the authentic failed or cancelled

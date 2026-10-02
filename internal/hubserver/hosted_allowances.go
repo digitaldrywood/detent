@@ -30,7 +30,8 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		(SELECT coalesce(sum(length(CAST(response_json AS BLOB))),0) FROM native_commands) +
 		(SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM native_attempts) +
 		(SELECT coalesce(sum(length(CAST(reference_json AS BLOB))),0) FROM artifact_references) +
-		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records)`,
+		(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
+		(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`,
 	}
 	for name, statement := range queries {
 		var count int64

@@ -1,0 +1,508 @@
+package cloudentry
+
+import (
+	"bytes"
+	"encoding/json"
+	"encoding/xml"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+)
+
+type spacesObject struct {
+	content []byte
+	created time.Time
+}
+type spacesFixture struct {
+	mu        sync.Mutex
+	objects   map[string]spacesObject
+	keys      []string
+	public    bool
+	versioned bool
+	transport http.RoundTripper
+}
+
+func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
+	t.Helper()
+	f := &spacesFixture{objects: map[string]spacesObject{}, public: public}
+	f.transport = handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		key := strings.TrimPrefix(r.URL.Path, "/private/")
+		if r.Header.Get("Authorization") == "" && !f.public {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, "/private/") && r.URL.Path != "/private" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
+			type item struct {
+				Key          string
+				LastModified string
+				Size         int
+			}
+			result := struct {
+				XMLName   xml.Name `xml:"ListBucketResult"`
+				Truncated bool     `xml:"IsTruncated"`
+				Items     []item   `xml:"Contents"`
+			}{}
+			var keys []string
+			for key := range f.objects {
+				if strings.HasPrefix(key, r.URL.Query().Get("prefix")) {
+					keys = append(keys, key)
+				}
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				object := f.objects[key]
+				result.Items = append(result.Items, item{Key: key, LastModified: object.created.UTC().Format(time.RFC3339), Size: len(object.content)})
+			}
+			if err := xml.NewEncoder(w).Encode(result); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		f.keys = append(f.keys, r.Method+" "+key)
+		switch r.Method {
+		case http.MethodPut:
+			if r.Header.Get("If-None-Match") != "*" {
+				t.Error("upload lacks conditional put")
+			}
+			if _, exists := f.objects[key]; exists {
+				w.WriteHeader(http.StatusPreconditionFailed)
+				return
+			}
+			content, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				w.WriteHeader(500)
+				return
+			}
+			f.objects[key] = spacesObject{content: content, created: time.Now()}
+			w.Header().Set("ETag", `"test"`)
+		case http.MethodGet:
+			object, ok := f.objects[key]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if _, err := w.Write(object.content); err != nil {
+				t.Error(err)
+			}
+		case http.MethodHead:
+			if _, ok := f.objects[key]; !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if f.versioned {
+				w.Header().Set("x-amz-version-id", "version-test")
+			}
+		case http.MethodDelete:
+			if f.versioned && r.URL.Query().Get("versionId") != "version-test" {
+				t.Error("versioned deletion left retained bytes")
+				w.WriteHeader(400)
+				return
+			}
+			delete(f.objects, key)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})}
+	return f
+}
+
+func (f *spacesFixture) config() attachment.Config {
+	return attachment.Config{Endpoint: "http://127.0.0.1", Region: "test", Bucket: "private", AccessKeyID: "test-key", SecretAccessKey: "test-secret"}
+}
+func (f *spacesFixture) requests() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.keys...)
+}
+
+func TestAttachmentStorageProbe(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		public    bool
+		versioned bool
+	}{{name: "private"}, {name: "public", public: true}, {name: "versioned private", versioned: true}} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newSpacesFixture(t, test.public)
+			store.versioned = test.versioned
+			_, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+			if (err != nil) != test.public {
+				t.Fatalf("public=%v error=%v", test.public, err)
+			}
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			if len(store.objects) != 0 {
+				t.Fatal("startup probe was not deleted")
+			}
+		})
+	}
+	f := newEntryFixture(t)
+	store := newSpacesFixture(t, true)
+	cfg := f.service.config
+	cfg.StateDir = t.TempDir()
+	settings := store.config()
+	cfg.Attachments = &settings
+	cfg.attachmentTransport = store.transport
+	if service, err := Open(t.Context(), cfg); err == nil {
+		if err := service.Close(); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("entry enabled a public bucket")
+	}
+}
+
+func attachmentProject(t *testing.T, browser *browser, org string) string {
+	t.Helper()
+	response, body := browser.get("/api/v2/organizations/" + org + "/projects")
+	var result []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(body), &result); err != nil || response.StatusCode != http.StatusOK || len(result) == 0 {
+		t.Fatalf("projects=%d %s", response.StatusCode, body)
+	}
+	return result[0].ID
+}
+
+func attachmentRequest(t *testing.T, b *browser, method, target string, body io.Reader, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(method, testPublicURL+target, body)
+	if method != http.MethodGet {
+		r.Header.Set("Origin", testPublicURL)
+	}
+	for key, value := range headers {
+		r.Header.Set(key, value)
+	}
+	base, _ := url.Parse(testPublicURL)
+	for _, cookie := range b.jar.Cookies(base) {
+		r.AddCookie(cookie)
+	}
+	recorder := httptest.NewRecorder()
+	b.entry.ServeHTTP(recorder, r)
+	return recorder
+}
+
+func TestAttachmentRoutesIsolation(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	store := newSpacesFixture(t, false)
+	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.attachments = storage
+	alice := newBrowser(t, f.service.Handler())
+	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	_, body := alice.get("/organizations/org_alpha/organization")
+	csrf := csrfFrom(t, body)
+	project := attachmentProject(t, alice, "org_alpha")
+	base := "/organizations/org_alpha/api/v2/projects/" + project + "/attachments"
+	content := strings.Repeat("attachment-data\n", 180000)
+	upload := attachmentRequest(t, alice, http.MethodPost, base, strings.NewReader(content), map[string]string{"Content-Type": "text/plain", "X-Attachment-Name": "orgs/org_beta/secret.txt", "X-CSRF-Token": csrf, "X-Detent-Organization": "org_beta"})
+	if upload.Code != http.StatusCreated {
+		t.Fatalf("upload=%d %s", upload.Code, upload.Body.String())
+	}
+	var record attachment.Metadata
+	if err := json.Unmarshal(upload.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.ProjectID != project || record.Name != "secret.txt" || record.Size <= cloudassert.MaxBodyBytes {
+		t.Fatalf("metadata=%+v", record)
+	}
+	key, err := attachment.Key("org_alpha", record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := attachmentRequest(t, alice, http.MethodGet, base+"/"+record.ID, nil, nil)
+	if read.Code != http.StatusOK || read.Body.String() != content {
+		t.Fatalf("read=%d", read.Code)
+	}
+	for name, want := range map[string]string{"Content-Security-Policy": "default-src 'none'; sandbox", "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300", "Cross-Origin-Resource-Policy": "same-origin"} {
+		if read.Header().Get(name) != want {
+			t.Fatalf("%s=%q", name, read.Header().Get(name))
+		}
+	}
+	if !strings.HasPrefix(read.Header().Get("Content-Disposition"), "attachment;") {
+		t.Fatal("download rendered inline")
+	}
+	anonymous := newBrowser(t, f.service.Handler())
+	for _, scope := range []string{"read", "write"} {
+		keyRequest, err := json.Marshal(map[string]any{"name": "attachment-key-" + scope, "scope": scope, "expires_days": 1, "project_ids": []string{project}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created := attachmentRequest(t, alice, http.MethodPost, "/api/v2/organizations/org_alpha/api-keys", bytes.NewReader(keyRequest), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
+		if created.Code != http.StatusCreated {
+			t.Fatalf("key=%d %s", created.Code, created.Body.String())
+		}
+		var token struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(created.Body.Bytes(), &token); err != nil {
+			t.Fatal(err)
+		}
+		headers := map[string]string{"Authorization": "Bearer " + token.Token, "Content-Type": "text/plain", "X-Attachment-Name": "token.txt"}
+		read := attachmentRequest(t, anonymous, http.MethodGet, base+"/"+record.ID, nil, headers)
+		if read.Code != http.StatusOK {
+			t.Fatalf("%s token read=%d %s", scope, read.Code, read.Body.String())
+		}
+		before := len(store.requests())
+		upload := attachmentRequest(t, anonymous, http.MethodPost, base, strings.NewReader("token data"), headers)
+		if scope == "read" {
+			if upload.Code != http.StatusNotFound || len(store.requests()) != before {
+				t.Fatalf("read token upload=%d touched storage=%v", upload.Code, len(store.requests()) != before)
+			}
+		} else if upload.Code != http.StatusCreated {
+			t.Fatalf("write token upload=%d %s", upload.Code, upload.Body.String())
+		}
+	}
+	for _, test := range []struct {
+		name, media string
+		content     []byte
+		status      int
+	}{
+		{name: "SVG", media: "image/svg+xml", content: []byte("<svg/>"), status: 400},
+		{name: "HTML", media: "text/plain", content: []byte("<html>hi</html>"), status: 400},
+		{name: "oversized", media: "text/plain", content: bytes.Repeat([]byte("a"), attachment.MaxBytes+1), status: 413},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := len(store.requests())
+			r := attachmentRequest(t, alice, http.MethodPost, base, bytes.NewReader(test.content), map[string]string{"Content-Type": test.media, "X-Attachment-Name": "file", "X-CSRF-Token": csrf})
+			if r.Code != test.status || len(store.requests()) != before {
+				t.Fatalf("upload=%d %s touched storage=%v", r.Code, r.Body.String(), len(store.requests()) != before)
+			}
+		})
+	}
+	alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
+	betaProject := attachmentProject(t, alice, "org_beta")
+	_, betaBody := alice.get("/organizations/org_beta/organization")
+	betaCSRF := csrfFrom(t, betaBody)
+	_, body = alice.get("/organizations/org_alpha/organization")
+	csrf = csrfFrom(t, body)
+	for _, test := range []struct {
+		name, method, path string
+		client             *browser
+		headers            map[string]string
+		want               int
+	}{
+		{name: "another org", method: http.MethodGet, path: "/organizations/org_beta/api/v2/projects/" + betaProject + "/attachments/" + record.ID, client: alice, want: 404},
+		{name: "another project", method: http.MethodGet, path: "/organizations/org_alpha/api/v2/projects/prj_other/attachments/" + record.ID, client: alice, want: 404},
+		{name: "another org project", method: http.MethodGet, path: "/organizations/org_alpha/api/v2/projects/" + betaProject + "/attachments/" + record.ID, client: alice, want: 404},
+		{name: "anonymous", method: http.MethodGet, path: base + "/" + record.ID, client: anonymous, want: 404},
+		{name: "anonymous write", method: http.MethodPost, path: base, client: anonymous, want: 404},
+		{name: "cross org write", method: http.MethodPost, path: base, client: alice, headers: map[string]string{"X-CSRF-Token": betaCSRF}, want: 404},
+		{name: "another project write", method: http.MethodPost, path: strings.Replace(base, project, betaProject, 1), client: alice, headers: map[string]string{"X-CSRF-Token": csrf}, want: 404},
+		{name: "metadata injection", method: http.MethodPost, path: "/api/v2/organizations/org_alpha/projects/" + project + "/attachment-metadata", client: alice, want: 404},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := len(store.requests())
+			r := attachmentRequest(t, test.client, test.method, test.path, strings.NewReader("hi"), test.headers)
+			if r.Code != test.want {
+				t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+			}
+			if len(store.requests()) != before {
+				t.Fatal("unauthorized request touched storage")
+			}
+		})
+	}
+	for _, request := range store.requests() {
+		if strings.Contains(request, "orgs/org_beta/") {
+			t.Fatalf("org alpha request touched org beta: %s", request)
+		}
+	}
+	store.mu.Lock()
+	if _, ok := store.objects[key]; !ok {
+		t.Error("authenticated org key missing")
+	}
+	store.mu.Unlock()
+	var audits int
+	if err := f.service.auth.store.db.QueryRow("SELECT count(*) FROM audit WHERE event IN ('attachment_uploaded','attachment_read') AND organization_id='org_alpha'").Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 5 {
+		t.Fatalf("audit entries=%d", audits)
+	}
+	deleted := attachmentRequest(t, alice, http.MethodDelete, base+"/"+record.ID, nil, map[string]string{"X-CSRF-Token": csrf})
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete=%d %s", deleted.Code, deleted.Body.String())
+	}
+	if read := attachmentRequest(t, alice, http.MethodGet, base+"/"+record.ID, nil, nil); read.Code != 404 {
+		t.Fatalf("deleted read=%d", read.Code)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, ok := store.objects[key]; ok {
+		t.Fatal("deleted object remains")
+	}
+}
+
+func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	store := newSpacesFixture(t, false)
+	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.attachments = storage
+	old := time.Now().Add(-attachment.OrphanTTL - time.Hour)
+	ids := []string{"att_00000000000000000000000000000001", "att_00000000000000000000000000000002", "att_00000000000000000000000000000003"}
+	keys := []string{}
+	for i, org := range []string{"org_alpha", "org_alpha", "org_beta"} {
+		key, err := attachment.Key(org, ids[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		stamp := old
+		if i == 1 {
+			stamp = time.Now()
+		}
+		store.mu.Lock()
+		store.objects[key] = spacesObject{content: []byte("orphan"), created: stamp}
+		store.mu.Unlock()
+		keys = append(keys, key)
+	}
+	organization, err := f.service.readyOrganization(t.Context(), "org_alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	_, oldExists := store.objects[keys[0]]
+	_, newExists := store.objects[keys[1]]
+	_, betaExists := store.objects[keys[2]]
+	store.mu.Unlock()
+	if oldExists || !newExists || !betaExists {
+		t.Fatalf("old=%v new=%v other org=%v", oldExists, newExists, betaExists)
+	}
+	f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
+	if _, err := f.service.registry.store.db.Exec("UPDATE organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.finishDeletion(t.Context(), "org_alpha"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, ok := store.objects[keys[1]]; ok {
+		t.Fatal("deprovisioning retained tenant objects")
+	}
+	if _, ok := store.objects[keys[2]]; !ok {
+		t.Fatal("deprovisioning deleted another tenant")
+	}
+}
+
+func TestAttachmentRoutesDisabled(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	r := attachmentRequest(t, newBrowser(t, f.service.Handler()), http.MethodPost, "/organizations/org_alpha/api/v2/projects/prj_any/attachments", bytes.NewReader(nil), nil)
+	if r.Code != 503 || !strings.Contains(r.Body.String(), "attachments_not_configured") {
+		t.Fatalf("response=%d %s", r.Code, r.Body.String())
+	}
+}
+
+type attachmentTenantTransport struct {
+	base      http.RoundTripper
+	intercept func(*http.Request) (*http.Response, error)
+}
+
+func (t attachmentTenantTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/attachment-metadata") {
+		return t.intercept(request)
+	}
+	return t.base.RoundTrip(request)
+}
+
+func TestAttachmentMetadataSettlement(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		quota  bool
+		status int
+	}{{name: "lost committed response", status: http.StatusCreated}, {name: "quota race", quota: true, status: http.StatusTooManyRequests}} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			store := newSpacesFixture(t, false)
+			storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.service.attachments = storage
+			baseTransport := f.service.config.transport
+			f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+				base, err := baseTransport(org)
+				if err != nil {
+					return nil, err
+				}
+				return attachmentTenantTransport{base: base, intercept: func(request *http.Request) (*http.Response, error) {
+					if test.quota {
+						recorder := httptest.NewRecorder()
+						recorder.Header().Set("Content-Type", "application/json")
+						recorder.WriteHeader(429)
+						if _, err := recorder.WriteString(`{"code":"allowance_exhausted","message":"quota race"}`); err != nil {
+							t.Fatal(err)
+						}
+						return recorder.Result(), nil
+					}
+					response, err := base.RoundTrip(request)
+					if err != nil {
+						return nil, err
+					}
+					if err := response.Body.Close(); err != nil {
+						return nil, err
+					}
+					return nil, errors.New("response lost after metadata commit")
+				}}, nil
+			}
+			alice := newBrowser(t, f.service.Handler())
+			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			_, body := alice.get("/organizations/org_alpha/organization")
+			csrf := csrfFrom(t, body)
+			project := attachmentProject(t, alice, "org_alpha")
+			path := "/organizations/org_alpha/api/v2/projects/" + project + "/attachments"
+			response := attachmentRequest(t, alice, http.MethodPost, path, strings.NewReader("settlement data"), map[string]string{"Content-Type": "text/plain", "X-Attachment-Name": "file.txt", "X-CSRF-Token": csrf})
+			if response.Code != test.status {
+				t.Fatalf("settlement=%d %s", response.Code, response.Body.String())
+			}
+			store.mu.Lock()
+			count := len(store.objects)
+			store.mu.Unlock()
+			if test.quota {
+				if count != 0 {
+					t.Fatal("quota race retained uploaded object")
+				}
+				return
+			}
+			if count != 1 {
+				t.Fatal("response loss deleted committed attachment")
+			}
+			var record attachment.Metadata
+			if err := json.Unmarshal(response.Body.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			read := attachmentRequest(t, alice, http.MethodGet, path+"/"+record.ID, nil, nil)
+			if read.Code != 200 || read.Body.String() != "settlement data" {
+				t.Fatalf("settled read=%d %s", read.Code, read.Body.String())
+			}
+		})
+	}
+}
