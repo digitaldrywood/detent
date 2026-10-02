@@ -110,14 +110,19 @@ authoritative. Workers never write tracker lane state.
 
 Native concurrent-base merge refusals (#160) retain Merging and the current
 immutable Change/version/head and review. The exact merge endpoint's typed
-base-out-of-date evidence reaches the existing forge continuation owner, never
-Blocked, source Rework or a new review request. Retry fetches current base truth
+`Base branch was modified` evidence reaches the existing forge continuation
+owner, never Blocked, source Rework or a new review request. Retry fetches current base truth
 and repeats the atomic reviewed-head merge under the current lease and policy;
 only an actual successful landing receipt can finish the item. Original HTTP
 status, method, repository/PR and reviewed-head/fetched-base evidence remain in
 attempt history. Actual head movement, closure, proven source conflict and
 current protection/review/check refusals retain their existing owners; typed
 quota and reset evidence retain capacity precedence.
+Strict `Head branch is out of date` protection (#161) follows the existing native
+protection refusal owner to Human Review or Blocked according to project policy,
+without a same-version forge wait. The legacy connector retains its existing
+head-refresh/rebase outcome for this message; managed project protections remain
+binding.
 `TestNativeLandingRunCompletion` drives the real Runner and LocalGit from the
 recorded PUT merge 405 JSON through durable Merging continuation to a successful
 same-version landing after a concurrent base advance, with no agent turn or
@@ -1171,7 +1176,10 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 Native base races (#160) consolidate merge refusal classification with the
 existing exact-endpoint `ErrPullRequestBaseOutOfDate` owner. The connector and
-native workspace share JSON `message` classification; unrelated methods,
+native workspace share endpoint and JSON `message` validation, with native
+continuation scoped to `Base branch was modified` (#161). Strict
+`Head branch is out of date` retains native protection refusal ownership and the
+legacy connector's existing rebase ownership. Unrelated methods,
 resources, noncanonical PR identities, malformed bodies and metadata cannot
 supply base-race authority. Native landing reuses the existing forge wait,
 restart recovery and merge continuation, preserving immutable review and

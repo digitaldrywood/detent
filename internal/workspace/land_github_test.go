@@ -66,6 +66,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "protected merge 403", method: "merge", failureMethod: "PUT", status: 403, message: "Protected branch update failed"},
 		{name: "required reviews", method: "merge", failureMethod: "PUT", status: 405, message: "Branch protection requires reviews"},
 		{name: "required checks", method: "merge", failureMethod: "PUT", status: 405, message: "Required status checks have not passed"},
+		{name: "strict head protection", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Head branch is out of date. Review and try the merge again.", wantRefusal: LandRefusalProtected},
+		{name: "merge queue protection", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull request must be merged using the merge queue.", wantRefusal: LandRefusalProtected},
+		{name: "base race wording in metadata retains protection", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, failureBody: `{"message":"Head branch is out of date.","documentation_url":"Base branch was modified"}`, wantRefusal: LandRefusalProtected},
+		{name: "malformed base race retains protection", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, failureBody: `{"message":"Base branch was modified"`, wantRefusal: LandRefusalProtected},
 		{name: "protected base 405", method: "merge", failureMethod: "PUT", status: 405, message: "Protected branch update failed"},
 		{name: "unspecified merge refusal", method: "merge", failureMethod: "PUT", status: 405, message: "Method Not Allowed"},
 		{name: "closed wording in metadata is not a head refusal", method: "merge", failureMethod: "PUT", status: 405, failureBody: `{"message":"Method Not Allowed","documentation_url":"Pull Request is closed"}`},
@@ -87,6 +91,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "create primary quota 403", method: "merge", failureMethod: "POST", status: 403, message: "API rate limit exceeded", rate: true},
 		{name: "merge primary quota 403", method: "merge", failureMethod: "PUT", status: 403, message: "API rate limit exceeded", rate: true},
 		{name: "primary quota wins over closed refusal text", method: "merge", failureMethod: "PUT", status: 403, message: "Pull Request is closed", rate: true},
+		{name: "primary quota wins over strict head protection", method: "squash", failureMethod: "PUT", status: 403, message: "Head branch is out of date", rate: true},
+		{name: "primary quota wins over base race", method: "squash", failureMethod: "PUT", status: 403, message: "Base branch was modified", rate: true},
 		{name: "read secondary quota 429", method: "merge", failureMethod: "GET", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
 		{name: "create secondary quota 429", method: "merge", failureMethod: "POST", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
 		{name: "merge secondary quota 429", method: "merge", failureMethod: "PUT", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
@@ -360,6 +366,7 @@ func TestGitHubLandingAPIEndpointOwnership(t *testing.T) {
 			}{
 				{http.StatusConflict, `{"message":"Head branch was modified"}`},
 				{http.StatusMethodNotAllowed, `{"message":"Base branch was modified. Review and try the merge again."}`},
+				{http.StatusMethodNotAllowed, `{"message":"Head branch is out of date. Review and try the merge again."}`},
 			} {
 				client, err := github.NewClient(github.ClientConfig{
 					TokenSource: github.StaticTokenSource(test.name),

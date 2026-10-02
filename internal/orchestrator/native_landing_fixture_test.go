@@ -45,7 +45,7 @@ func nativeLandingGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func newNativeLandingJourney(t *testing.T, issue connector.Issue) *nativeLandingJourney {
+func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string) *nativeLandingJourney {
 	t.Helper()
 	source := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "origin.git")
@@ -103,10 +103,10 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue) *nativeLanding
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			if puts.Add(1) == 1 {
+			if puts.Add(1) == 1 || !strings.HasPrefix(mergeMessage, "Base branch was modified") {
 				nativeLandingGit(t, source, "push", "origin", freshBase+":refs/heads/main")
 				w.WriteHeader(http.StatusMethodNotAllowed)
-				fmt.Fprint(w, `{"message":"Base branch was modified. Review and try the merge again."}`)
+				fmt.Fprintf(w, `{"message":%q}`, mergeMessage)
 				return
 			}
 			if fetched := nativeLandingGit(t, info.Path, "rev-parse", "refs/remotes/origin/main"); fetched != freshBase {
