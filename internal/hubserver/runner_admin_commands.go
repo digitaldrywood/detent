@@ -37,6 +37,7 @@ func (s *Service) runnerAdminTransaction(ctx context.Context, scope nativeScope,
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.notifications.notify(dispatchNotificationKey(scope.organization))
 	return value, nil
 }
 

@@ -54,6 +54,7 @@ type Service struct {
 	reconcileDone     chan struct{}
 	reconcileStopOnce sync.Once
 	pullRequests      *pullRequestCache
+	notifications     *notificationBroker
 	conversations     *conversationService
 	closeOnce         sync.Once
 	closeErr          error
@@ -111,6 +112,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	reconcileContext, reconcileCancel := context.WithCancel(context.Background())
 	service := &Service{
 		echo:             e,
+		notifications:    newNotificationBroker(),
 		hostedAuthLogger: hostedAuthLogger,
 		database:         database,
 		tracker:          workTracker,
@@ -335,9 +337,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	s.ready.Store(false)
-	if s.conversations != nil {
-		s.conversations.broker.closeAll()
-	}
+	s.notifications.closeAll()
 	var mcpErr error
 	if s.mcpHTTP != nil {
 		mcpErr = s.mcpHTTP.Shutdown(ctx)
@@ -367,6 +367,7 @@ func (s *Service) Close() error {
 	}
 	s.closeOnce.Do(func() {
 		s.ready.Store(false)
+		s.notifications.closeAll()
 		var mcpErr error
 		if s.mcpHTTP != nil {
 			mcpErr = s.mcpHTTP.Shutdown(context.Background())

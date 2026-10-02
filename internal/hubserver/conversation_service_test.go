@@ -14,7 +14,7 @@ import (
 )
 
 func TestConversationBrokerNotifiesSubscribersOnce(t *testing.T) {
-	broker := newConversationBroker()
+	broker := newNotificationBroker()
 	first, cancelFirst := broker.subscribe("conv_a")
 	defer cancelFirst()
 	other, cancelOther := broker.subscribe("conv_b")
@@ -40,7 +40,7 @@ func TestConversationBrokerNotifiesSubscribersOnce(t *testing.T) {
 }
 
 func TestConversationBrokerCancelAndClose(t *testing.T) {
-	broker := newConversationBroker()
+	broker := newNotificationBroker()
 	subscription, cancel := broker.subscribe("conv_a")
 	cancel()
 	select {
@@ -197,7 +197,7 @@ func TestConversationServiceWakesPendingWorkAfterRestart(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newConversationFixture(t)
 			now := time.Now().UTC().Truncate(time.Second)
-			service := &conversationService{server: f.service, store: f.store, broker: newConversationBroker(), logger: f.service.config.Logger}
+			service := &conversationService{server: f.service, store: f.store, broker: newNotificationBroker(), logger: f.service.config.Logger}
 			coordinator := &recordingWaker{unavailable: !test.coordinator}
 			controls := &recordingWaker{}
 			service.coordinator = coordinator

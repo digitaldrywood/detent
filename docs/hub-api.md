@@ -1142,6 +1142,26 @@ provider compatibility inside the claim transaction. Capacity removes ineligible
 choices from that order; it does not reprioritize work or select a fallback model.
 The negotiated feature is `provider_capacity_reservations`.
 
+Hubs advertising `native_dispatch_wait` also accept a preview `limit` of 1–100.
+Omitting it retains the 100-candidate page. The bound applies before issue
+hydration; a page can be empty with a nonzero `next` when current landing
+readiness excludes its ranked candidates. Follow `next` with the same filters.
+
+`GET .../claims/wait?after=<cursor>&wait=30` is an outbound, cancellable wait for
+the existing native candidate/claim owner. Enrolled runners need the `Claim`
+operation. `wait` is 1–30 seconds, defaulting to 30. The response is
+`{"cursor":"<opaque epoch and revision>"}`. An absent or older cursor returns
+immediately; an unchanged cursor waits for a postcommit change or the timeout.
+Changes in the authorized organization coalesce into a hint, including queue,
+dependency, policy, runner routing, capacity and lease-release changes. The
+hint has no claim authority. Reread through the existing scheduling refresh and
+claim transaction. Held requests hold no database resources. The runner keeps
+the cursor across reconnects, uses a dedicated 40-second request deadline,
+paces immediate responses to at most one per second and backs failed requests
+off from one to 30 seconds. Unchanged timeout cursors do not trigger refresh.
+Older Hubs retain the runner's existing timer refresh. Drain and shutdown cancel
+the wait. Existing progress/completion APIs and dashboard SSE remain unchanged.
+
 The claim response includes `provider_reservation`, pinned to the fenced lease.
 The client rechecks the local account and model immediately before `run.started`;
 Hub rechecks the shared pool while accepting the first ordered start. A changed

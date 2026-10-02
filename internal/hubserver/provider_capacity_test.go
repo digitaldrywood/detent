@@ -245,6 +245,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		order       []string
 		labels      []string
 		ranks       []string
+		created     []string
 		unavailable string
 		want        []int
 		winner      int
@@ -258,6 +259,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		{name: "numeric priority precedes source lane", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{0, 1, 2}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{0, 1, 2}},
 		{name: "configured labels precede source lanes", states: []string{"Todo", "Rework", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "Todo"}, labels: []string{"hotfix", "bug"}, want: []int{0, 1, 2}},
 		{name: "queue rank breaks equal policy ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{"c", "a", "b"}, want: []int{1, 2, 0}, winner: 1},
+		{name: "precise creation order breaks unranked ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{" ", "  ", "   "}, created: []string{"2026-10-02T12:00:00.000000002Z", "2026-10-02T12:00:00Z", "2026-10-02T12:00:00.000000001Z"}, want: []int{1, 2, 0}, winner: 1},
 		{name: "unblocker count precedes queue rank", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, unavailable: "unblocker", want: []int{1, 0}, winner: 1},
 		{name: "required review is retained", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "required review", want: []int{1, 2}, winner: 1},
 		{name: "unavailable merging provider falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
@@ -301,6 +303,11 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				}
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = ?, rank = ? WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", test.priorities[i], rank, issue.WorkItemID); err != nil {
 					t.Fatal(err)
+				}
+				if test.created != nil {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_created_at = ? WHERE native_id = ?", test.created[i], issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if test.labels != nil && i < len(test.labels) {
 					raw, err := marshalNative([]string{test.labels[i]})
@@ -366,6 +373,38 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			for i, index := range test.want {
 				if page.Items[i].WorkItemID != issues[index].WorkItemID {
 					t.Fatalf("preview[%d] = %s, want %s", i, page.Items[i].WorkItemID, issues[index].WorkItemID)
+				}
+			}
+			preview := tracker.NativeCapacityPreview{NativeClaim: claim, Limit: 1}
+			var paged []tracker.NativeWorkItemID
+			for count := 0; ; count++ {
+				if count > 4 {
+					t.Fatal("bounded preview did not terminate")
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", r.redemption.Credential, preview)
+				requireNativeStatus(t, response, http.StatusOK)
+				var bounded tracker.NativeCapacityPage
+				decodeHubResponse(t, response, &bounded)
+				if len(bounded.Items) > 1 {
+					t.Fatal("preview exceeded requested hydration budget")
+				}
+				for _, item := range bounded.Items {
+					paged = append(paged, item.WorkItemID)
+				}
+				if bounded.Next == 0 {
+					break
+				}
+				if bounded.Next == preview.After {
+					t.Fatal("preview repeated cursor")
+				}
+				preview.After = bounded.Next
+			}
+			if len(paged) != len(test.want) {
+				t.Fatalf("paged=%v want=%v", paged, test.want)
+			}
+			for index, want := range test.want {
+				if paged[index] != issues[want].WorkItemID {
+					t.Fatalf("paged=%v want=%v", paged, test.want)
 				}
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)

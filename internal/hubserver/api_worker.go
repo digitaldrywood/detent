@@ -8,14 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -40,6 +37,11 @@ type claimAPIRequest struct {
 }
 
 type claimCandidateQuery struct {
+	Limit                   int
+	After                   tracker.WorkItemID
+	WorkItemID              tracker.WorkItemID
+	OnlyIDs                 []tracker.WorkItemID
+	AvailableAt             time.Time
 	MinimumRunnerVersion    string
 	DispatchPriorityByState []string
 	DispatchPriorityByLabel []string
@@ -405,6 +407,17 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if err != nil {
 		return tracker.Lease{}, err
 	}
+	query.WorkItemID = request.WorkItemID
+	query.AvailableAt = now
+	if homeRestricted && homeID > 0 {
+		query.OnlyIDs = []tracker.WorkItemID{homeID}
+	}
+	if query.NativeScope != nil {
+		query.Limit = 100
+		if request.WorkItemID > 0 || len(query.ProviderCandidates) == 1 || homeRestricted && homeID > 0 {
+			query.Limit = 1
+		}
+	}
 	ids, err := claimCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude, claimableRepositories)
 	if err != nil {
 		return tracker.Lease{}, err
@@ -600,6 +613,9 @@ func claimWorkspaceExclusionArg(query claimCandidateQuery) int {
 }
 
 func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
+	if query.NativeScope != nil {
+		return nativeCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude)
+	}
 	scope := query.Scope
 	organization, project := "", ""
 	if query.NativeScope != nil {
@@ -671,7 +687,6 @@ ORDER BY
 	}
 	defer rows.Close()
 	var ids []tracker.WorkItemID
-	candidates := make(map[tracker.WorkItemID]dispatchpriority.Candidate)
 	for rows.Next() {
 		var id tracker.WorkItemID
 		var repositoryID tracker.RepositoryID
@@ -724,31 +739,10 @@ ORDER BY
 		if !setContainsAll(labels, labelIncludeFilter) || setsIntersect(labels, labelExcludeFilter) {
 			continue
 		}
-		if query.NativeScope != nil {
-			createdAt, err := parseTimeValue(created)
-			if err != nil {
-				return nil, fmt.Errorf("parse hub claim candidate creation: %w", err)
-			}
-			issue := connector.Issue{State: workflowState, CreatedAt: &createdAt, Identifier: projectID + "#" + strconv.Itoa(number), UnblockerCount: unblockerCount}
-			if priority.Valid {
-				value := int(priority.Int64) + 1
-				issue.Priority = &value
-			}
-			for label := range labels {
-				issue.Labels = append(issue.Labels, label)
-			}
-			candidates[id] = dispatchpriority.Candidate{Issue: issue, Rank: rank}
-		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate hub claim candidates: %w", err)
-	}
-	if query.NativeScope != nil {
-		ranker := dispatchpriority.New(query.DispatchPriorityByState, query.DispatchPriorityByLabel)
-		slices.SortStableFunc(ids, func(a, b tracker.WorkItemID) int {
-			return ranker.Compare(candidates[a], candidates[b], query.PrioritizeUnblockers)
-		})
 	}
 	return ids, nil
 }

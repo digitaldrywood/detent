@@ -30,14 +30,6 @@ func (d *database) runnerHomeSelection(ctx context.Context, tx *sql.Tx, query cl
 	probe.DispatchPriorityByState = nil
 	probe.DispatchPriorityByLabel = nil
 	probe.PrioritizeUnblockers = false
-	ids, err := claimCandidateIDs(ctx, tx, probe, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), nil, normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude), nil)
-	if err != nil {
-		return 0, false, err
-	}
-	positions := make(map[tracker.WorkItemID]int, len(ids))
-	for index, id := range ids {
-		positions[id] = index
-	}
 	var heads []tracker.WorkItemID
 	for _, project := range r.HomeProjectIDs {
 		if !slices.Contains(r.ProjectIDs, project) {
@@ -52,8 +44,10 @@ func (d *database) runnerHomeSelection(ctx context.Context, tx *sql.Tx, query cl
 		var states []string
 		if project == query.NativeScope.project {
 			projectQuery = query
+			projectQuery.WorkItemID = requestedItem
 			states = normalizedQueryStrings(query.WorkflowStates)
 		}
+		projectQuery.AvailableAt = now
 		projectIDs, err := claimCandidateIDs(ctx, tx, projectQuery, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), states, normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude), nil)
 		if err != nil {
 			return 0, false, err
@@ -101,9 +95,15 @@ func (d *database) runnerHomeSelection(ctx context.Context, tx *sql.Tx, query cl
 		}
 	}
 	var selected tracker.WorkItemID
-	for _, id := range heads {
-		if selected == 0 || positions[id] < positions[selected] {
-			selected = id
+	if len(heads) > 0 {
+		probe.OnlyIDs = heads
+		probe.Limit = 1
+		ids, err := claimCandidateIDs(ctx, tx, probe, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), nil, normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude), nil)
+		if err != nil {
+			return 0, false, err
+		}
+		if len(ids) > 0 {
+			selected = ids[0]
 		}
 	}
 	var dry any

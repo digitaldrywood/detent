@@ -17,6 +17,8 @@ const NativeProtocolMajor = 2
 
 const NativeDispatchPriorityCapability = "dispatch_priority"
 
+const NativeDispatchWaitCapability = "native_dispatch_wait"
+
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
 const NativeCheckoutRepositoryCapability = "runner_checkout_repository"
 const NativeRunnerUpdateCapability = "runner_installed_update"
@@ -412,6 +414,7 @@ type NativeCapacityCandidate struct {
 type NativeCapacityPreview struct {
 	NativeClaim
 	After WorkItemID `json:"after,omitempty"`
+	Limit int        `json:"limit,omitempty"`
 }
 
 type NativeCapacityPage struct {

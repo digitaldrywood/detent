@@ -83,11 +83,26 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	heartbeat := strings.HasSuffix(c.Path(), "/heartbeat")
+	var dispatchBefore string
+	if heartbeat {
+		dispatchBefore, err = runnerDispatchFingerprint(ctx, tx, nativeRequestScope(c), c.Param("machine"), now)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	value, err := operation(ctx, tx, now)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	heartbeat := strings.HasSuffix(c.Path(), "/heartbeat")
+	notify := !heartbeat && c.Request().Method != http.MethodGet && c.Path() != nativeBase+"/claims/preview" && !strings.HasSuffix(c.Path(), "/renew") && !strings.HasSuffix(c.Path(), "/validate")
+	if heartbeat {
+		after, err := runnerDispatchFingerprint(ctx, tx, nativeRequestScope(c), c.Param("machine"), now)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		notify = dispatchBefore != after
+	}
 	completion := c.Request().Method == http.MethodDelete
 	if s.database.hostedPlans != nil && (heartbeat || strings.HasSuffix(c.Path(), "/machines/register")) {
 		credential, ok := c.Get("hub_api_credential").(apiCredential)
@@ -110,6 +125,9 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	}
 	if err := tx.Commit(); err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	if notify {
+		s.notifications.notify(dispatchNotificationKey(tracker.OrganizationID(c.Param("organization"))))
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	if status == http.StatusNoContent {
