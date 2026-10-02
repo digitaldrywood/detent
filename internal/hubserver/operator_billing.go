@@ -68,7 +68,7 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		return nil, err
 	}
 	for _, definition := range projectDefinitions {
-		if definition.Meta.Toolset == "projects" {
+		if definition.Meta.Toolset == "projects" || definition.Meta.Toolset == "local_projects" {
 			definitions = append(definitions, definition)
 		}
 	}
@@ -150,6 +150,9 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	if operatortool.IsLocalProjectTool(call.Name) {
+		return hubProjectExecutor(e).Execute(ctx, call)
+	}
 	if _, err := operatortool.WorkspaceDefinition(call.Name); err == nil {
 		return (workspaceOperatorExecutor{server: e.service}).Execute(ctx, call)
 	}

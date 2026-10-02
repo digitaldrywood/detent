@@ -571,6 +571,16 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			Clock: isolatedDemoClock(cfg),
 		},
 	}, web.Dependencies{
+		ProjectConfigOwner: project.NewConfigurationOwner(cfg.Global, globalConfigState.get, manager, runtimeStore, func(ctx context.Context, selected globalconfig.Config, id, repository, checkpoint string) error {
+			if selected.Client.OrganizationID != cfg.Global.Client.OrganizationID || selected.Client.URL != cfg.Global.Client.URL || selected.Client.IdentityFile != cfg.Global.Client.IdentityFile || selected.Client.TokenEnvironment != cfg.Global.Client.TokenEnvironment {
+				return errors.New("selected cutover connection changed")
+			}
+			fleet, err := newHubRunnerFleet(selected)
+			if err != nil {
+				return err
+			}
+			return fleet.VerifyProjectCutover(ctx, id, repository, checkpoint)
+		}),
 		RunnerFleet:         fleetSource,
 		Hub:                 snapshotHub,
 		Store:               runtimeStore,

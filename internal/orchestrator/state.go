@@ -153,6 +153,20 @@ type StalenessWarning struct {
 	DeliveryError         string
 }
 
+func (s State) UnsettledWork() int {
+	ids := make(map[string]struct{}, len(s.Running)+len(s.Claimed)+len(s.deferredCompletions))
+	for id := range s.Running {
+		ids[id] = struct{}{}
+	}
+	for id := range s.Claimed {
+		ids[id] = struct{}{}
+	}
+	for id := range s.deferredCompletions {
+		ids[id] = struct{}{}
+	}
+	return len(ids)
+}
+
 type Running struct {
 	Compute                     *compute.Usage
 	TokenUSD                    float64

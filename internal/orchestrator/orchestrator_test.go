@@ -779,6 +779,7 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 	tracker.stateIssues = []connector.Issue{issue}
 	runner := newBlockingRunner()
 	var logs bytes.Buffer
+	global := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}))
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:         time.Hour,
@@ -792,9 +793,10 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 		TerminalStates:         []string{"Done", "Cancelled"},
 		ContinuationRetryDelay: time.Second,
 	}, orchestrator.Dependencies{
-		Connector: tracker,
-		Runner:    runner,
-		Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+		GlobalDispatchGate: global,
+		Connector:          tracker,
+		Runner:             runner,
+		Logger:             slog.New(slog.NewTextHandler(&logs, nil)),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -809,6 +811,13 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 	}
 
 	orch.BeginDrain()
+	slot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "unrelated", Weight: 1}, scheduler.SlotRequest{State: "Todo"}, time.Now())
+	if err != nil || !acquired {
+		t.Fatalf("selected drain stopped unrelated dispatch: acquired=%t decision=%+v error=%v", acquired, decision, err)
+	}
+	if err := global.Release(slot); err != nil {
+		t.Fatal(err)
+	}
 	close(tracker.release)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

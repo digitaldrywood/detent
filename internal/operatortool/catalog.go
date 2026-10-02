@@ -76,10 +76,26 @@ func definition(name string, description string, schema string) Definition {
 	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: toolset(name)}
 }
 
+func LocalProjectCatalog() []Definition {
+	result := []Definition{
+		definition(LocalProjectConfiguration, "Read the actual selected local configuration revision and effective workflow policy with redacted provenance. Cloud routing is a separate authority; a stopped owner is explicit.", localProjectSchema(LocalProjectConfiguration)),
+		definition("apply_local_project_policy", "Apply an already-approved exact policy from the configured committed workflow to a paused, settled local project through its configuration owner. Requires operator approval.", localProjectSchema("apply_local_project_policy")),
+		definition("drain_local_project", "Drain only the selected local project through its existing owner, finishing active work and retaining deferred completion authority. Requires operator approval.", localProjectSchema("drain_local_project")),
+		definition("detach_local_project", "Remove only the selected local registration after settled work and verified mapped Cloud cutover. Saved removal awaits the existing reload receipt. Requires operator approval; never starts a board.", localProjectSchema("detach_local_project")),
+	}
+	for i := range result {
+		result[i].Meta = ToolMetadata{Toolset: "local_projects"}
+		if result[i].Name != LocalProjectConfiguration {
+			result[i].Annotations = Annotations{Destructive: true, Idempotent: true, OpenWorld: true}
+		}
+	}
+	return result
+}
+
 // Registry is the canonical protocol registry; deployments filter by application availability.
 func Registry() []Definition {
 	definitions := append(Catalog(), WorkReadCatalog()...)
-	for _, catalog := range [][]Definition{CommandCatalog(), ProjectCatalog(), WorkspaceCatalog(), OperatorChatCatalog(), ChangeCatalog(), AdministrationCatalog()} {
+	for _, catalog := range [][]Definition{CommandCatalog(), ProjectCatalog(), LocalProjectCatalog(), WorkspaceCatalog(), OperatorChatCatalog(), ChangeCatalog(), AdministrationCatalog()} {
 		definitions = append(definitions, catalog...)
 	}
 	return definitions

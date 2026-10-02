@@ -1,5 +1,17 @@
 # API & MCP setup
 
+For a selected local board, discover the `local_projects` toolset on its
+authenticated `/mcp` connection. `local_project_configuration` reads the actual
+local revision and redacted selected/effective policy. Its admin commands apply
+an approved committed policy, drain current work or detach one settled migrated
+project. They use the existing operator command API and approval/receipt owner;
+see [managed local project configuration](mcp-capabilities.md#managed-local-project-configuration-native-94)
+for exact revision, policy and handoff requirements. Cloud routing and runner
+source association do not edit local board configuration. A stopped or missing
+owner requires its supported installed configuration service; these calls never
+start or enable a board. Verify `registered` and `runtime_registered` through a
+fresh read after a saved removal; a command retry returns its original receipt.
+
 Sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,
 choose Read, Write or Admin, select only the required projects, and choose an
