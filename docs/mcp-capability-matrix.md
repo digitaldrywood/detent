@@ -20,7 +20,7 @@ Change platform entitlement
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/cloud/platform/organizations/:organization/entitlements](../internal/cloudentry/service.go#L218), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:182](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L182), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:299](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L299), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:182](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L182), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:299](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L299), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:155](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L155), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:277](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L277), [web/conversation/src/app/entry/api.ts:257](../web/conversation/src/app/entry/api.ts#L257)
+Sources: [POST /api/cloud/platform/organizations/:organization/entitlements](../internal/cloudentry/service.go#L236), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:182](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L182), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:299](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L299), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:182](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L182), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:299](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L299), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:155](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L155), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:277](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L277), [web/conversation/src/app/entry/api.ts:257](../web/conversation/src/app/entry/api.ts#L257)
 ## cloudentry.chooser
 
 Chooser
@@ -40,7 +40,7 @@ Chooser
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: all calls → none
 
-Sources: [GET /api/cloud/organizations](../internal/cloudentry/service.go#L209), [GET /organizations](../internal/cloudentry/service.go#L201), [web/conversation/src/app/entry/api.ts:244](../web/conversation/src/app/entry/api.ts#L244), [web/conversation/src/app/entry/api.ts:247](../web/conversation/src/app/entry/api.ts#L247), [web/conversation/src/app/account/Organization.tsx:517](../web/conversation/src/app/account/Organization.tsx#L517), [web/conversation/src/app/entry/EntryScreens.tsx:180](../web/conversation/src/app/entry/EntryScreens.tsx#L180)
+Sources: [GET /api/cloud/organizations](../internal/cloudentry/service.go#L227), [GET /organizations](../internal/cloudentry/service.go#L219), [web/conversation/src/app/entry/api.ts:244](../web/conversation/src/app/entry/api.ts#L244), [web/conversation/src/app/entry/api.ts:247](../web/conversation/src/app/entry/api.ts#L247), [web/conversation/src/app/account/Organization.tsx:598](../web/conversation/src/app/account/Organization.tsx#L598), [web/conversation/src/app/entry/EntryScreens.tsx:180](../web/conversation/src/app/entry/EntryScreens.tsx#L180)
 ## cloudentry.complete_login
 
 Complete login
@@ -59,7 +59,7 @@ Complete login
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /auth/oidc/callback](../internal/cloudentry/service.go#L200)
+Sources: [GET /auth/oidc/callback](../internal/cloudentry/service.go#L218)
 ## cloudentry.create_organization
 
 Create organization
@@ -79,7 +79,7 @@ Create organization
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [GET /organizations/new](../internal/cloudentry/service.go#L202), [POST /organizations](../internal/cloudentry/service.go#L203), [internal/web/templates/hosted.templ:382](../internal/web/templates/hosted.templ#L382), [internal/web/templates/hosted.templ:417](../internal/web/templates/hosted.templ#L417), [internal/web/templates/hosted.templ:404](../internal/web/templates/hosted.templ#L404), [internal/web/templates/hosted.templ:389](../internal/web/templates/hosted.templ#L389), [internal/web/templates/hosted.templ:409](../internal/web/templates/hosted.templ#L409), [internal/web/templates/hosted.templ:372](../internal/web/templates/hosted.templ#L372), [internal/web/templates/hosted.templ:136](../internal/web/templates/hosted.templ#L136), [internal/web/templates/hosted.templ:352](../internal/web/templates/hosted.templ#L352), [internal/web/templates/hosted.templ:362](../internal/web/templates/hosted.templ#L362), [internal/web/templates/hosted.templ:382](../internal/web/templates/hosted.templ#L382), [internal/web/templates/hosted.templ:417](../internal/web/templates/hosted.templ#L417), [internal/web/templates/hosted.templ:404](../internal/web/templates/hosted.templ#L404), [web/conversation/src/app/entry/api.ts:249](../web/conversation/src/app/entry/api.ts#L249), [web/conversation/src/app/entry/api.ts:251](../web/conversation/src/app/entry/api.ts#L251), [web/conversation/src/app/entry/EntryScreens.tsx:245](../web/conversation/src/app/entry/EntryScreens.tsx#L245), [web/conversation/src/app/entry/EntryScreens.tsx:243](../web/conversation/src/app/entry/EntryScreens.tsx#L243)
+Sources: [GET /organizations/new](../internal/cloudentry/service.go#L220), [POST /organizations](../internal/cloudentry/service.go#L221), [internal/web/templates/hosted.templ:382](../internal/web/templates/hosted.templ#L382), [internal/web/templates/hosted.templ:417](../internal/web/templates/hosted.templ#L417), [internal/web/templates/hosted.templ:404](../internal/web/templates/hosted.templ#L404), [internal/web/templates/hosted.templ:389](../internal/web/templates/hosted.templ#L389), [internal/web/templates/hosted.templ:409](../internal/web/templates/hosted.templ#L409), [internal/web/templates/hosted.templ:372](../internal/web/templates/hosted.templ#L372), [internal/web/templates/hosted.templ:136](../internal/web/templates/hosted.templ#L136), [internal/web/templates/hosted.templ:352](../internal/web/templates/hosted.templ#L352), [internal/web/templates/hosted.templ:362](../internal/web/templates/hosted.templ#L362), [internal/web/templates/hosted.templ:382](../internal/web/templates/hosted.templ#L382), [internal/web/templates/hosted.templ:417](../internal/web/templates/hosted.templ#L417), [internal/web/templates/hosted.templ:404](../internal/web/templates/hosted.templ#L404), [web/conversation/src/app/entry/api.ts:249](../web/conversation/src/app/entry/api.ts#L249), [web/conversation/src/app/entry/api.ts:251](../web/conversation/src/app/entry/api.ts#L251), [web/conversation/src/app/entry/EntryScreens.tsx:245](../web/conversation/src/app/entry/EntryScreens.tsx#L245), [web/conversation/src/app/entry/EntryScreens.tsx:243](../web/conversation/src/app/entry/EntryScreens.tsx#L243)
 ## cloudentry.delete_organization
 
 Delete organization
@@ -99,7 +99,7 @@ Delete organization
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [GET /organizations/:organization/delete](../internal/cloudentry/service.go#L207), [POST /organizations/:organization/delete](../internal/cloudentry/service.go#L208)
+Sources: [GET /organizations/:organization/delete](../internal/cloudentry/service.go#L225), [POST /organizations/:organization/delete](../internal/cloudentry/service.go#L226)
 ## cloudentry.health
 
 Health
@@ -118,7 +118,7 @@ Health
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: transport liveness probe → not_applicable
 
-Sources: [GET /health](../internal/cloudentry/service.go#L197)
+Sources: [GET /health](../internal/cloudentry/service.go#L215)
 ## cloudentry.home
 
 Home
@@ -138,7 +138,7 @@ Home
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /](../internal/cloudentry/service.go#L198)
+Sources: [GET /](../internal/cloudentry/service.go#L216)
 ## cloudentry.logout
 
 Logout
@@ -159,7 +159,7 @@ Logout
 - Confirmation: end the current account/session access → operator
 - Confirmation: human selected YOLO on this exact connection → connection
 
-Sources: [POST /logout](../internal/cloudentry/service.go#L211), [POST /organizations/:organization/logout](../internal/cloudentry/service.go#L212)
+Sources: [POST /logout](../internal/cloudentry/service.go#L229), [POST /organizations/:organization/logout](../internal/cloudentry/service.go#L230)
 ## cloudentry.platform_allowlist_json
 
 Platform allowlist j s o n
@@ -178,7 +178,7 @@ Platform allowlist j s o n
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /api/cloud/platform/allowlist](../internal/cloudentry/service.go#L215), [web/conversation/src/app/entry/api.ts:253](../web/conversation/src/app/entry/api.ts#L253)
+Sources: [GET /api/cloud/platform/allowlist](../internal/cloudentry/service.go#L233), [web/conversation/src/app/entry/api.ts:253](../web/conversation/src/app/entry/api.ts#L253)
 ## cloudentry.platform_entitlements_json
 
 Platform entitlements j s o n
@@ -197,7 +197,7 @@ Platform entitlements j s o n
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /api/cloud/platform/organizations/:organization/entitlements](../internal/cloudentry/service.go#L217), [web/conversation/src/app/entry/api.ts:255](../web/conversation/src/app/entry/api.ts#L255)
+Sources: [GET /api/cloud/platform/organizations/:organization/entitlements](../internal/cloudentry/service.go#L235), [web/conversation/src/app/entry/api.ts:255](../web/conversation/src/app/entry/api.ts#L255)
 ## cloudentry.platform_health_json
 
 Platform health j s o n
@@ -216,7 +216,7 @@ Platform health j s o n
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /api/cloud/platform/health](../internal/cloudentry/service.go#L216), [web/conversation/src/app/entry/api.ts:254](../web/conversation/src/app/entry/api.ts#L254)
+Sources: [GET /api/cloud/platform/health](../internal/cloudentry/service.go#L234), [web/conversation/src/app/entry/api.ts:254](../web/conversation/src/app/entry/api.ts#L254)
 ## cloudentry.platform_organizations_json
 
 Platform organizations j s o n
@@ -235,7 +235,7 @@ Platform organizations j s o n
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /api/cloud/platform/organizations](../internal/cloudentry/service.go#L214), [web/conversation/src/app/entry/api.ts:252](../web/conversation/src/app/entry/api.ts#L252)
+Sources: [GET /api/cloud/platform/organizations](../internal/cloudentry/service.go#L232), [web/conversation/src/app/entry/api.ts:252](../web/conversation/src/app/entry/api.ts#L252)
 ## cloudentry.platform_page
 
 Platform page
@@ -254,7 +254,7 @@ Platform page
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /platform](../internal/cloudentry/service.go#L213)
+Sources: [GET /platform](../internal/cloudentry/service.go#L231)
 ## cloudentry.provisioning_page
 
 Provisioning page
@@ -274,7 +274,7 @@ Provisioning page
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read-only provisioning status → none
 
-Sources: [GET /api/cloud/organizations/:organization/provisioning](../internal/cloudentry/service.go#L206), [GET /organizations/:organization/provisioning](../internal/cloudentry/service.go#L204)
+Sources: [GET /api/cloud/organizations/:organization/provisioning](../internal/cloudentry/service.go#L224), [GET /organizations/:organization/provisioning](../internal/cloudentry/service.go#L222)
 ## cloudentry.proxy
 
 Proxy
@@ -293,7 +293,7 @@ Proxy
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [Any /api/v2/organizations/:organization/*](../internal/cloudentry/service.go#L225), [Any /organizations/:organization](../internal/cloudentry/service.go#L223), [Any /organizations/:organization/*](../internal/cloudentry/service.go#L224)
+Sources: [Any /api/v2/organizations/:organization/*](../internal/cloudentry/service.go#L244), [Any /organizations/:organization](../internal/cloudentry/service.go#L242), [Any /organizations/:organization/*](../internal/cloudentry/service.go#L243)
 ## cloudentry.resume_provisioning
 
 Resume provisioning
@@ -313,7 +313,7 @@ Resume provisioning
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material provisioning resume; connection YOLO suppresses confirmation only → operator
 
-Sources: [POST /organizations/:organization/provisioning/resume](../internal/cloudentry/service.go#L205)
+Sources: [POST /organizations/:organization/provisioning/resume](../internal/cloudentry/service.go#L223)
 ## cloudentry.session_json
 
 Session j s o n
@@ -333,7 +333,7 @@ Session j s o n
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/cloud/session](../internal/cloudentry/service.go#L210), [web/conversation/src/app/entry/api.ts:245](../web/conversation/src/app/entry/api.ts#L245)
+Sources: [GET /api/cloud/session](../internal/cloudentry/service.go#L228), [web/conversation/src/app/entry/api.ts:245](../web/conversation/src/app/entry/api.ts#L245)
 ## cloudentry.start_invitation
 
 Start invitation
@@ -352,7 +352,7 @@ Start invitation
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /invite](../internal/cloudentry/service.go#L222)
+Sources: [GET /invite](../internal/cloudentry/service.go#L240)
 ## cloudentry.start_login
 
 Start login
@@ -371,7 +371,7 @@ Start login
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /auth/oidc/start](../internal/cloudentry/service.go#L199)
+Sources: [GET /auth/oidc/start](../internal/cloudentry/service.go#L217)
 ## cloudentry.start_support
 
 Start support
@@ -391,7 +391,7 @@ Start support
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /support/start](../internal/cloudentry/service.go#L220)
+Sources: [POST /support/start](../internal/cloudentry/service.go#L238)
 ## cloudentry.static_assets
 
 Static assets
@@ -410,7 +410,7 @@ Static assets
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /static/*](../internal/cloudentry/service.go#L196)
+Sources: [GET /static/*](../internal/cloudentry/service.go#L214)
 ## cloudentry.stripe_webhook
 
 Stripe webhook
@@ -429,7 +429,7 @@ Stripe webhook
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /webhooks/stripe/:mode](../internal/cloudentry/service.go#L221)
+Sources: [POST /webhooks/stripe/:mode](../internal/cloudentry/service.go#L239)
 ## cloudentry.support_page
 
 Support page
@@ -449,14 +449,14 @@ Support page
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [GET /support](../internal/cloudentry/service.go#L219)
+Sources: [GET /support](../internal/cloudentry/service.go#L237)
 ## existing.board_state
 
 Existing board_state read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
 - Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
-- Tool: `existing_reads.board_state` — definition(BoardState, "Read live board items, lanes, priorities, blockers, and active run identity. Use this before answering board questions or proposing item actions.", limitedSchema) → board_state existing typed executor result with freshness
+- Tool: `board.board_state` — definition(BoardState, "Read live board items, lanes, priorities, blockers, and active run identity. Use this before answering board questions or proposing item actions.", limitedSchema) → board_state existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / board_state
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
@@ -475,7 +475,7 @@ Existing explain_item read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
 - Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
-- Tool: `existing_reads.explain_item` — definition(ExplainItem, "Explain an issue's current lane, latest transition reason, eligibility, active or latest attempt, sessions, pull request, required gate, freshness, and evidence from the versioned issue explanation read model.", `{"type":"object","required":["project_id","reference"],"properties":{"project_id":{"type":"string","minLength":1},"reference":{"type":"string","minLength":1}},"additionalProperties":false}`) → explain_item existing typed executor result with freshness
+- Tool: `board.explain_item` — definition(ExplainItem, "Explain an issue's current lane, latest transition reason, eligibility, active or latest attempt, sessions, pull request, required gate, freshness, and evidence from the versioned issue explanation read model.", `{"type":"object","required":["project_id","reference"],"properties":{"project_id":{"type":"string","minLength":1},"reference":{"type":"string","minLength":1}},"additionalProperties":false}`) → explain_item existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / explain_item
 - Extraction: None; retain existing definition, argument schema, executor and result schema. Native runtime parity (#92): local and Cloud adapters share the scoped native runtime application snapshot and shared explanation/receipt/activity projection. The optional `native_runtime_evidence` capability exposes recorded native/local attempt identity, heartbeat/phase freshness, current Change/routing/capacity authority, authentic transition actor, historical scheduler decision and exact-version landed/refusal receipts. Missing runtime/history/efficiency evidence is unavailable; attempt success and imported Done are not ships. Instruction spans are offset-paged with partial coverage and causality limits, never private contents/commands/paths. REST operation-header and attribution windows preserve timestamps and selected-client accounting limits. Reads recheck current grants and attempt ownership, perform no dispatch/forge calls, and retain the 256 KiB result bound.
@@ -494,7 +494,7 @@ Existing fleet_health read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
-- Tool: `existing_reads.fleet_health` — definition(FleetHealth, "Read live fleet health, capacity outages, failure breakers, rate limits, refresh state, and running counts.", `{"type":"object","properties":{},"additionalProperties":false}`) → fleet_health existing typed executor result with freshness
+- Tool: `fleet.fleet_health` — definition(FleetHealth, "Read live fleet health, capacity outages, failure breakers, rate limits, refresh state, and running counts.", `{"type":"object","properties":{},"additionalProperties":false}`) → fleet_health existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / fleet_health
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
@@ -513,7 +513,7 @@ Existing recent_activity read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
 - Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
-- Tool: `existing_reads.recent_activity` — definition(RecentActivity, "Read recent events and completed work retained in the current live telemetry snapshot, including merge timestamps. This is live-only activity, not the durable issue activity stream.", activitySchema) → recent_activity existing typed executor result with freshness
+- Tool: `telemetry.recent_activity` — definition(RecentActivity, "Read recent events and completed work retained in the current live telemetry snapshot, including merge timestamps. This is live-only activity, not the durable issue activity stream.", activitySchema) → recent_activity existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / recent_activity
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
@@ -532,7 +532,7 @@ Existing telemetry_usage read tool
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows.
-- Tool: `existing_reads.telemetry_usage` — definition(TelemetryUsage, "Read live token, spend, throughput, and per-project usage telemetry.", `{"type":"object","properties":{"project_id":{"type":"string"}},"additionalProperties":false}`) → telemetry_usage existing typed executor result with freshness
+- Tool: `telemetry.telemetry_usage` — definition(TelemetryUsage, "Read live token, spend, throughput, and per-project usage telemetry.", `{"type":"object","properties":{"project_id":{"type":"string"}},"additionalProperties":false}`) → telemetry_usage existing typed executor result with freshness
 - Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
 - Application: operatortool.Executor.Execute / telemetry_usage
 - Extraction: None; retain existing definition, argument schema, executor and result schema.
@@ -904,7 +904,7 @@ MCPSettings.tsx documentation links
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [web/conversation/src/app/settings/MCPSettings.tsx:125](../web/conversation/src/app/settings/MCPSettings.tsx#L125), [web/conversation/src/app/settings/MCPSettings.tsx:124](../web/conversation/src/app/settings/MCPSettings.tsx#L124), [web/conversation/src/app/settings/MCPSettings.tsx:106](../web/conversation/src/app/settings/MCPSettings.tsx#L106)
+Sources: [web/conversation/src/app/settings/MCPSettings.tsx:404](../web/conversation/src/app/settings/MCPSettings.tsx#L404), [web/conversation/src/app/settings/MCPSettings.tsx:403](../web/conversation/src/app/settings/MCPSettings.tsx#L403), [web/conversation/src/app/settings/MCPSettings.tsx:385](../web/conversation/src/app/settings/MCPSettings.tsx#L385)
 ## frontend.web_conversation_src_app_account_SpritesCard_tsx.navigation_results
 
 SpritesCard.tsx navigation results
@@ -922,7 +922,7 @@ SpritesCard.tsx navigation results
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [web/conversation/src/app/account/SpritesCard.tsx:43](../web/conversation/src/app/account/SpritesCard.tsx#L43)
+Sources: [web/conversation/src/app/account/SpritesCard.tsx:44](../web/conversation/src/app/account/SpritesCard.tsx#L44)
 ## frontend.web_conversation_src_app_account_api_ts.http_adapter
 
 api.ts http adapter
@@ -940,7 +940,7 @@ api.ts http adapter
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [web/conversation/src/app/account/api.ts:115](../web/conversation/src/app/account/api.ts#L115), [web/conversation/src/app/account/api.ts:101](../web/conversation/src/app/account/api.ts#L101)
+Sources: [web/conversation/src/app/account/api.ts:106](../web/conversation/src/app/account/api.ts#L106), [web/conversation/src/app/account/api.ts:120](../web/conversation/src/app/account/api.ts#L120)
 ## frontend.web_conversation_src_app_account_idempotency_ts.local_ui
 
 idempotency.ts local ui
@@ -1084,7 +1084,7 @@ RunnersSection.tsx navigation results
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [web/conversation/src/app/fleet/RunnersSection.tsx:266](../web/conversation/src/app/fleet/RunnersSection.tsx#L266), [web/conversation/src/app/fleet/RunnersSection.tsx:262](../web/conversation/src/app/fleet/RunnersSection.tsx#L262)
+Sources: [web/conversation/src/app/fleet/RunnersSection.tsx:244](../web/conversation/src/app/fleet/RunnersSection.tsx#L244)
 ## frontend.web_conversation_src_app_usage_adapter_ts.http_adapter
 
 adapter.ts http adapter
@@ -1120,7 +1120,7 @@ Request a governed pull-request action
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source
 - Confirmation: non-operator source authority → not_applicable
 
-Sources: [web/conversation/src/app/work/lib/workHttp.ts:653](../web/conversation/src/app/work/lib/workHttp.ts#L653)
+Sources: [web/conversation/src/app/work/lib/workHttp.ts:662](../web/conversation/src/app/work/lib/workHttp.ts#L662)
 ## frontend.web_conversation_src_app_work_lib_workHttp_ts.http_adapter
 
 workHttp.ts http adapter
@@ -1138,7 +1138,7 @@ workHttp.ts http adapter
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [web/conversation/src/app/work/lib/workHttp.ts:467](../web/conversation/src/app/work/lib/workHttp.ts#L467), [web/conversation/src/app/work/lib/workHttp.ts:505](../web/conversation/src/app/work/lib/workHttp.ts#L505), [web/conversation/src/app/work/lib/workHttp.ts:430](../web/conversation/src/app/work/lib/workHttp.ts#L430)
+Sources: [web/conversation/src/app/work/lib/workHttp.ts:460](../web/conversation/src/app/work/lib/workHttp.ts#L460), [web/conversation/src/app/work/lib/workHttp.ts:505](../web/conversation/src/app/work/lib/workHttp.ts#L505), [web/conversation/src/app/work/lib/workHttp.ts:428](../web/conversation/src/app/work/lib/workHttp.ts#L428)
 ## frontend.web_conversation_src_components_ChatMarkdown_tsx.navigation_results
 
 ChatMarkdown.tsx navigation results
@@ -1156,7 +1156,7 @@ ChatMarkdown.tsx navigation results
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [web/conversation/src/components/ChatMarkdown.tsx:2529](../web/conversation/src/components/ChatMarkdown.tsx#L2529), [web/conversation/src/components/ChatMarkdown.tsx:2077](../web/conversation/src/components/ChatMarkdown.tsx#L2077), [web/conversation/src/components/ChatMarkdown.tsx:2803](../web/conversation/src/components/ChatMarkdown.tsx#L2803)
+Sources: [web/conversation/src/components/ChatMarkdown.tsx:2539](../web/conversation/src/components/ChatMarkdown.tsx#L2539), [web/conversation/src/components/ChatMarkdown.tsx:2086](../web/conversation/src/components/ChatMarkdown.tsx#L2086), [web/conversation/src/components/ChatMarkdown.tsx:2816](../web/conversation/src/components/ChatMarkdown.tsx#L2816)
 ## frontend.web_conversation_src_components_Icons_tsx.local_ui
 
 Icons.tsx local ui
@@ -1318,7 +1318,7 @@ http.ts http adapter
 - Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [web/conversation/src/runtime/rpc/http.ts:275](../web/conversation/src/runtime/rpc/http.ts#L275), [web/conversation/src/runtime/rpc/http.ts:331](../web/conversation/src/runtime/rpc/http.ts#L331), [web/conversation/src/runtime/rpc/http.ts:248](../web/conversation/src/runtime/rpc/http.ts#L248)
+Sources: [web/conversation/src/runtime/rpc/http.ts:277](../web/conversation/src/runtime/rpc/http.ts#L277), [web/conversation/src/runtime/rpc/http.ts:333](../web/conversation/src/runtime/rpc/http.ts#L333), [web/conversation/src/runtime/rpc/http.ts:250](../web/conversation/src/runtime/rpc/http.ts#L250)
 ## frontend.web_conversation_src_runtime_rpc_sse_ts.http_adapter
 
 sse.ts http adapter
@@ -1392,7 +1392,7 @@ Accept hosted invitation
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v2/organizations/:organization/invitations/accept](../internal/hubserver/hosted_org_api.go#L49), [web/conversation/src/app/account/api.ts:204](../web/conversation/src/app/account/api.ts#L204)
+Sources: [POST /api/v2/organizations/:organization/invitations/accept](../internal/hubserver/hosted_org_api.go#L49), [web/conversation/src/app/account/api.ts:234](../web/conversation/src/app/account/api.ts#L234)
 ## hubserver.accept_hosted_shared_invitation
 
 Accept hosted shared invitation
@@ -1431,7 +1431,7 @@ Advance git hub import
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/imports/:import/advance](../internal/hubserver/integration.go#L155)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/imports/:import/advance](../internal/hubserver/integration.go#L179)
 ## hubserver.app_bootstrap_payload
 
 App bootstrap payload
@@ -1470,7 +1470,7 @@ App shell
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [Any /*](../internal/hubserver/app_ui.go#L67), [GET /login](../internal/hubserver/hosted_ui.go#L24)
+Sources: [Any /*](../internal/hubserver/app_ui.go#L68), [GET /login](../internal/hubserver/hosted_ui.go#L26)
 ## hubserver.app_updates
 
 App updates
@@ -1509,7 +1509,7 @@ Append native run event
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/events](../internal/hubserver/native_api.go#L146)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/events](../internal/hubserver/native_api.go#L152)
 ## hubserver.append_work_item_event
 
 Append work item event
@@ -1528,7 +1528,7 @@ Append work item event
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v1/work-items/:id/events](../internal/hubserver/api_http.go#L68)
+Sources: [POST /api/v1/work-items/:id/events](../internal/hubserver/api_http.go#L69)
 ## hubserver.approve_change_review_policy
 
 Approve change review policy
@@ -1568,7 +1568,7 @@ Approve project policy
 - Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [PUT /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L58), [PUT /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L111), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/policy](../internal/hubserver/onboarding.go#L29), [web/conversation/src/app/account/ProjectSettings.tsx:254](../web/conversation/src/app/account/ProjectSettings.tsx#L254), [web/conversation/src/app/account/api.ts:270](../web/conversation/src/app/account/api.ts#L270)
+Sources: [PUT /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L60), [PUT /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L113), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/policy](../internal/hubserver/onboarding.go#L29), [web/conversation/src/app/account/ProjectSettings.tsx:316](../web/conversation/src/app/account/ProjectSettings.tsx#L316), [web/conversation/src/app/account/api.ts:302](../web/conversation/src/app/account/api.ts#L302)
 ## hubserver.archive_native_issue
 
 Archive native issue
@@ -1589,7 +1589,7 @@ Archive native issue
 - Confirmation: ordinary non-destructive write → none
 - Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/archive](../internal/hubserver/native_api.go#L129), [web/conversation/src/app/work/lib/workHttp.ts:576](../web/conversation/src/app/work/lib/workHttp.ts#L576)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/archive](../internal/hubserver/native_api.go#L132), [web/conversation/src/app/work/lib/workHttp.ts:583](../web/conversation/src/app/work/lib/workHttp.ts#L583)
 ## hubserver.artifact_read_grant
 
 Artifact read grant
@@ -1727,7 +1727,7 @@ Bind artifact service
 - Confirmation: ordinary non-destructive edit → none
 - Confirmation: arguments remove data, alter access or create material external effects → operator
 
-Sources: [PUT /api/v2/organizations/:organization/projects/:project/artifact-services/:service](../internal/hubserver/artifacts.go#L19), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/artifact-services/:service](../internal/hubserver/onboarding.go#L30), [web/conversation/src/app/account/api.ts:399](../web/conversation/src/app/account/api.ts#L399)
+Sources: [PUT /api/v2/organizations/:organization/projects/:project/artifact-services/:service](../internal/hubserver/artifacts.go#L22), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/artifact-services/:service](../internal/hubserver/onboarding.go#L30), [web/conversation/src/app/account/api.ts:431](../web/conversation/src/app/account/api.ts#L431)
 ## hubserver.bind_native_repository
 
 Bind native repository
@@ -1747,7 +1747,7 @@ Bind native repository
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/integration/repository](../internal/hubserver/integration.go#L150), [POST /api/v2/organizations/:organization/projects/:project/onboarding/repository](../internal/hubserver/onboarding.go#L26), [web/conversation/src/app/account/api.ts:387](../web/conversation/src/app/account/api.ts#L387)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/integration/repository](../internal/hubserver/integration.go#L174), [POST /api/v2/organizations/:organization/projects/:project/onboarding/repository](../internal/hubserver/onboarding.go#L26), [web/conversation/src/app/account/api.ts:419](../web/conversation/src/app/account/api.ts#L419)
 ## hubserver.bind_workspace_worker
 
 Bind workspace worker
@@ -1766,7 +1766,7 @@ Bind workspace worker
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/bind](../internal/hubserver/native_api.go#L165)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/bind](../internal/hubserver/native_api.go#L171)
 ## hubserver.bootstrap_hosted_shared_owner
 
 Bootstrap hosted shared owner
@@ -1805,7 +1805,7 @@ Change hosted grant
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [PUT /api/v2/organizations/:organization/members/:member/grants](../internal/hubserver/hosted_org_api.go#L44), [POST /organization/grants](../internal/hubserver/hosted_ui.go#L46), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [web/conversation/src/app/account/api.ts:191](../web/conversation/src/app/account/api.ts#L191)
+Sources: [PUT /api/v2/organizations/:organization/members/:member/grants](../internal/hubserver/hosted_org_api.go#L44), [POST /organization/grants](../internal/hubserver/hosted_ui.go#L55), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [web/conversation/src/app/account/api.ts:221](../web/conversation/src/app/account/api.ts#L221)
 ## hubserver.change_hosted_role
 
 Change hosted role
@@ -1825,7 +1825,7 @@ Change hosted role
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [PUT /api/v2/organizations/:organization/members/:member/role](../internal/hubserver/hosted_org_api.go#L43), [POST /organization/members/:member/role](../internal/hubserver/hosted_ui.go#L45), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [web/conversation/src/app/account/api.ts:179](../web/conversation/src/app/account/api.ts#L179)
+Sources: [PUT /api/v2/organizations/:organization/members/:member/role](../internal/hubserver/hosted_org_api.go#L43), [POST /organization/members/:member/role](../internal/hubserver/hosted_ui.go#L54), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [web/conversation/src/app/account/api.ts:209](../web/conversation/src/app/account/api.ts#L209)
 ## hubserver.change_native_dependency
 
 Change native dependency
@@ -1845,7 +1845,7 @@ Change native dependency
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/dependencies](../internal/hubserver/native_api.go#L133), [web/conversation/src/app/work/lib/workHttp.ts:581](../web/conversation/src/app/work/lib/workHttp.ts#L581)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/dependencies](../internal/hubserver/native_api.go#L136), [web/conversation/src/app/work/lib/workHttp.ts:588](../web/conversation/src/app/work/lib/workHttp.ts#L588)
 ## hubserver.change_viewed_files
 
 Change viewed files
@@ -1885,7 +1885,7 @@ Change work item dependency
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/work-items/:id/dependencies](../internal/hubserver/api_http.go#L70)
+Sources: [POST /api/v1/work-items/:id/dependencies](../internal/hubserver/api_http.go#L71)
 ## hubserver.change_work_item_order
 
 Change work item order
@@ -1905,7 +1905,7 @@ Change work item order
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/work-items/:id/order](../internal/hubserver/api_http.go#L72)
+Sources: [POST /api/v1/work-items/:id/order](../internal/hubserver/api_http.go#L73)
 ## hubserver.change_work_item_priority
 
 Change work item priority
@@ -1925,7 +1925,7 @@ Change work item priority
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/work-items/:id/priority](../internal/hubserver/api_http.go#L71)
+Sources: [POST /api/v1/work-items/:id/priority](../internal/hubserver/api_http.go#L72)
 ## hubserver.change_work_item_workflow
 
 Change work item workflow
@@ -1946,7 +1946,7 @@ Change work item workflow
 - Confirmation: ordinary non-destructive write → none
 - Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v1/work-items/:id/workflow](../internal/hubserver/api_http.go#L69)
+Sources: [POST /api/v1/work-items/:id/workflow](../internal/hubserver/api_http.go#L70)
 ## hubserver.claim_native_issue
 
 Claim native issue
@@ -1965,7 +1965,7 @@ Claim native issue
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/claims](../internal/hubserver/native_api.go#L141)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/claims](../internal/hubserver/native_api.go#L146)
 ## hubserver.claim_work_item
 
 Claim work item
@@ -1984,7 +1984,7 @@ Claim work item
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v1/claims](../internal/hubserver/api_http.go#L65)
+Sources: [POST /api/v1/claims](../internal/hubserver/api_http.go#L66)
 ## hubserver.command_git_hub_batch
 
 Command git hub batch
@@ -2005,7 +2005,7 @@ Command git hub batch
 - Confirmation: dispatchable batch apply or existing batch retry → operator
 - Confirmation: discovery, more or non-dispatchable intake → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake](../internal/hubserver/onboarding.go#L21), [web/conversation/src/app/account/api.ts:279](../web/conversation/src/app/account/api.ts#L279)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake](../internal/hubserver/onboarding.go#L21), [web/conversation/src/app/account/api.ts:311](../web/conversation/src/app/account/api.ts#L311)
 ## hubserver.complete_hosted_login
 
 Complete hosted login
@@ -2024,7 +2024,7 @@ Complete hosted login
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /auth/oidc/callback](../internal/hubserver/hosted_ui.go#L26)
+Sources: [GET /auth/oidc/callback](../internal/hubserver/hosted_ui.go#L28)
 ## hubserver.create_api_token
 
 Create a p i token
@@ -2044,7 +2044,7 @@ Create a p i token
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v1/tokens](../internal/hubserver/api_http.go#L77)
+Sources: [POST /api/v1/tokens](../internal/hubserver/api_http.go#L78)
 ## hubserver.create_api_token_maintenance
 
 Create a p i token maintenance
@@ -2088,14 +2088,14 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Create conversation
 
-- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
-- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
+- Decision: Ordinary conversation adapter delivered by #3346 remains available, but current subject_work_item_id is absent from WorkspaceCatalog and the create input schema. Issue Q&A parity remains pending under the conversation adapter owner; canonical linked worker conversations are not subject chats. Parent native #26 remains the final acceptance owner.
 - Tool: `conversations_workspaces.create_conversation` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"title":{"type":"string","maxLength":800},"first_message":{"type":"object","properties":{"text":{"type":"string","maxLength":16000}},"required":["text"],"additionalProperties":false}},"required":[],"additionalProperties":false}},"required":["request_id","project_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential Current operator credential or hosted browser session with project write authority; worker and runner credentials are refused by operatorAuthority.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential Current operator credential or hosted browser session with project write authority; worker and runner credentials are refused by operatorAuthority.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership Current organization and selected project; private conversations are creator-owned. Subject work items resolve in the same project; subject chats cannot be linked/shared and never become issue comments without explicit comment approval..
+- Application: Service.commandCreateConversation; workspaceOperatorExecutor uses the shared command/read with current project and private audience authority.
 - Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireLinkAvailable(ctx, tx, *record); err != nil
-- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Coverage: TestWorkspaceOperatorConversation covers ordinary adapters; TestConversationSubjectOwnership covers subject API/ownership. Typed MCP subject schema/execution remains pending; schema below describes only the delivered ordinary variant.
 - Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
@@ -2103,7 +2103,7 @@ Create conversation
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations](../internal/hubserver/conversation_api.go#L38), [web/conversation/src/runtime/rpc/http.ts:425](../web/conversation/src/runtime/rpc/http.ts#L425)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations](../internal/hubserver/conversation_api.go#L38), [web/conversation/src/app/work/IssueAsk.tsx:168](../web/conversation/src/app/work/IssueAsk.tsx#L168), [web/conversation/src/app/work/IssueAsk.tsx:169](../web/conversation/src/app/work/IssueAsk.tsx#L169), [web/conversation/src/app/work/IssueAsk.tsx:171](../web/conversation/src/app/work/IssueAsk.tsx#L171), [web/conversation/src/app/work/IssueAsk.tsx:205](../web/conversation/src/app/work/IssueAsk.tsx#L205), [web/conversation/src/app/work/IssueAsk.tsx:309](../web/conversation/src/app/work/IssueAsk.tsx#L309), [web/conversation/src/app/work/IssueAsk.tsx:311](../web/conversation/src/app/work/IssueAsk.tsx#L311), [web/conversation/src/runtime/rpc/http.ts:428](../web/conversation/src/runtime/rpc/http.ts#L428)
 ## hubserver.create_hosted_organization
 
 Create hosted organization
@@ -2123,7 +2123,7 @@ Create hosted organization
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /organization/create](../internal/hubserver/hosted_ui.go#L41), [internal/web/templates/hosted.templ:159](../internal/web/templates/hosted.templ#L159), [internal/web/templates/hosted.templ:159](../internal/web/templates/hosted.templ#L159)
+Sources: [POST /organization/create](../internal/hubserver/hosted_ui.go#L50), [internal/web/templates/hosted.templ:159](../internal/web/templates/hosted.templ#L159), [internal/web/templates/hosted.templ:159](../internal/web/templates/hosted.templ#L159)
 ## hubserver.create_hosted_project
 
 Create hosted project
@@ -2143,7 +2143,7 @@ Create hosted project
 - Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [POST /projects](../internal/hubserver/hosted_ui.go#L48), [internal/web/templates/board.templ:183](../internal/web/templates/board.templ#L183), [internal/web/templates/board.templ:181](../internal/web/templates/board.templ#L181), [internal/web/templates/hosted.templ:204](../internal/web/templates/hosted.templ#L204), [internal/web/templates/hosted.templ:204](../internal/web/templates/hosted.templ#L204), [internal/web/templates/native_work.templ:13](../internal/web/templates/native_work.templ#L13), [web/conversation/src/app/account/api.ts:219](../web/conversation/src/app/account/api.ts#L219), [web/conversation/src/app/account/api.ts:221](../web/conversation/src/app/account/api.ts#L221)
+Sources: [POST /projects](../internal/hubserver/hosted_ui.go#L56), [internal/web/templates/board.templ:183](../internal/web/templates/board.templ#L183), [internal/web/templates/board.templ:181](../internal/web/templates/board.templ#L181), [internal/web/templates/hosted.templ:194](../internal/web/templates/hosted.templ#L194), [internal/web/templates/hosted.templ:194](../internal/web/templates/hosted.templ#L194), [internal/web/templates/native_work.templ:13](../internal/web/templates/native_work.templ#L13), [web/conversation/src/app/account/api.ts:249](../web/conversation/src/app/account/api.ts#L249), [web/conversation/src/app/account/api.ts:251](../web/conversation/src/app/account/api.ts#L251)
 ## hubserver.create_hosted_project_json
 
 Create hosted project j s o n
@@ -2163,7 +2163,7 @@ Create hosted project j s o n
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [POST /api/v2/organizations/:organization/projects](../internal/hubserver/native_api.go#L118), [web/conversation/src/app/account/Organization.tsx:123](../web/conversation/src/app/account/Organization.tsx#L123), [web/conversation/src/app/account/Organization.tsx:121](../web/conversation/src/app/account/Organization.tsx#L121), [web/conversation/src/app/projects/NewProject.tsx:148](../web/conversation/src/app/projects/NewProject.tsx#L148), [web/conversation/src/app/projects/NewProject.tsx:145](../web/conversation/src/app/projects/NewProject.tsx#L145)
+Sources: [POST /api/v2/organizations/:organization/projects](../internal/hubserver/native_api.go#L120), [web/conversation/src/app/account/Organization.tsx:181](../web/conversation/src/app/account/Organization.tsx#L181), [web/conversation/src/app/account/Organization.tsx:179](../web/conversation/src/app/account/Organization.tsx#L179), [web/conversation/src/app/projects/NewProject.tsx:148](../web/conversation/src/app/projects/NewProject.tsx#L148), [web/conversation/src/app/projects/NewProject.tsx:145](../web/conversation/src/app/projects/NewProject.tsx#L145)
 ## hubserver.create_native_comment
 
 Create native comment
@@ -2183,7 +2183,7 @@ Create native comment
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/comments](../internal/hubserver/native_api.go#L135), [web/conversation/src/app/work/components/ActivityFeed.tsx:114](../web/conversation/src/app/work/components/ActivityFeed.tsx#L114), [web/conversation/src/app/work/components/ActivityFeed.tsx:112](../web/conversation/src/app/work/components/ActivityFeed.tsx#L112), [web/conversation/src/app/work/lib/workHttp.ts:602](../web/conversation/src/app/work/lib/workHttp.ts#L602)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/comments](../internal/hubserver/native_api.go#L138), [web/conversation/src/app/work/lib/workHttp.ts:609](../web/conversation/src/app/work/lib/workHttp.ts#L609), [web/conversation/src/app/work/components/ActivityFeed.tsx:127](../web/conversation/src/app/work/components/ActivityFeed.tsx#L127), [web/conversation/src/app/work/components/ActivityFeed.tsx:130](../web/conversation/src/app/work/components/ActivityFeed.tsx#L130)
 ## hubserver.create_native_issue
 
 Create native issue
@@ -2203,7 +2203,7 @@ Create native issue
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items](../internal/hubserver/native_api.go#L126), [web/conversation/src/app/account/api.ts:313](../web/conversation/src/app/account/api.ts#L313), [web/conversation/src/app/components/HandoffForm.tsx:161](../web/conversation/src/app/components/HandoffForm.tsx#L161), [web/conversation/src/app/components/HandoffForm.tsx:158](../web/conversation/src/app/components/HandoffForm.tsx#L158), [web/conversation/src/app/work/NewIssue.tsx:137](../web/conversation/src/app/work/NewIssue.tsx#L137), [web/conversation/src/app/work/NewIssue.tsx:134](../web/conversation/src/app/work/NewIssue.tsx#L134)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items](../internal/hubserver/native_api.go#L128), [web/conversation/src/app/account/api.ts:345](../web/conversation/src/app/account/api.ts#L345), [web/conversation/src/app/components/HandoffForm.tsx:161](../web/conversation/src/app/components/HandoffForm.tsx#L161), [web/conversation/src/app/components/HandoffForm.tsx:158](../web/conversation/src/app/components/HandoffForm.tsx#L158), [web/conversation/src/app/work/NewIssue.tsx:140](../web/conversation/src/app/work/NewIssue.tsx#L140), [web/conversation/src/app/work/NewIssue.tsx:137](../web/conversation/src/app/work/NewIssue.tsx#L137)
 ## hubserver.create_native_organization
 
 Create native organization
@@ -2223,7 +2223,7 @@ Create native organization
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v2/organizations](../internal/hubserver/native_api.go#L116)
+Sources: [POST /api/v2/organizations](../internal/hubserver/native_api.go#L118)
 ## hubserver.create_native_project
 
 Create native project
@@ -2243,7 +2243,7 @@ Create native project
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects](../internal/hubserver/native_api.go#L120)
+Sources: [POST /api/v2/organizations/:organization/projects](../internal/hubserver/native_api.go#L122)
 ## hubserver.create_project_action
 
 Create project action
@@ -2263,7 +2263,7 @@ Create project action
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/actions](../internal/hubserver/native_api.go#L170), [web/conversation/src/app/work/lib/workHttp.ts:698](../web/conversation/src/app/work/lib/workHttp.ts#L698), [web/conversation/src/components/ProjectScriptsControl.tsx:303](../web/conversation/src/components/ProjectScriptsControl.tsx#L303)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/actions](../internal/hubserver/native_api.go#L176), [web/conversation/src/app/work/lib/workHttp.ts:707](../web/conversation/src/app/work/lib/workHttp.ts#L707), [web/conversation/src/components/ProjectScriptsControl.tsx:303](../web/conversation/src/components/ProjectScriptsControl.tsx#L303)
 ## hubserver.create_project_action_run
 
 Create project action run
@@ -2283,14 +2283,14 @@ Create project action run
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/actions/:action/runs](../internal/hubserver/native_api.go#L174), [web/conversation/src/app/work/lib/workHttp.ts:718](../web/conversation/src/app/work/lib/workHttp.ts#L718)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/actions/:action/runs](../internal/hubserver/native_api.go#L180), [web/conversation/src/app/work/lib/workHttp.ts:727](../web/conversation/src/app/work/lib/workHttp.ts#L727)
 ## hubserver.create_runner_enrollment
 
 Create runner enrollment
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
-- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.create_runner_enrollment` — Typed create_runner_enrollment schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO. Enrollment token is returned in the authorized command receipt, never the preview or audit.
+- Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Enrollment UI now lives in EnrollRunner; RunnerDetailSheet submissions edit routing and map to update_runner_routing, preserving material capacity/access/scheduling approval.
+- Tool: `fleet.create_runner_enrollment` — Typed create_runner_enrollment schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO. Enrollment token is returned in the authorized command receipt, never the preview or audit.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.createRunnerEnrollmentCommand
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -2303,7 +2303,7 @@ Create runner enrollment
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material action; YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v2/organizations/:organization/runner-enrollments](../internal/hubserver/runner_enrollment.go#L25), [web/conversation/src/app/account/api.ts:339](../web/conversation/src/app/account/api.ts#L339), [web/conversation/src/app/fleet/RunnersSection.tsx:166](../web/conversation/src/app/fleet/RunnersSection.tsx#L166), [web/conversation/src/app/fleet/RunnersSection.tsx:166](../web/conversation/src/app/fleet/RunnersSection.tsx#L166), [web/conversation/src/app/fleet/RunnersSection.tsx:166](../web/conversation/src/app/fleet/RunnersSection.tsx#L166)
+Sources: [POST /api/v2/organizations/:organization/runner-enrollments](../internal/hubserver/runner_enrollment.go#L25), [web/conversation/src/app/account/api.ts:371](../web/conversation/src/app/account/api.ts#L371)
 ## hubserver.create_workspace
 
 Create workspace
@@ -2323,7 +2323,7 @@ Create workspace
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces](../internal/hubserver/native_api.go#L157), [web/conversation/src/app/work/lib/workHttp.ts:676](../web/conversation/src/app/work/lib/workHttp.ts#L676)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces](../internal/hubserver/native_api.go#L163), [web/conversation/src/app/work/lib/workHttp.ts:685](../web/conversation/src/app/work/lib/workHttp.ts#L685)
 ## hubserver.cutover_project
 
 Cutover project
@@ -2344,7 +2344,7 @@ Cutover project
 - Confirmation: dry_run=true → none
 - Confirmation: live cutover/link-and-close → operator
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/integration/cutover](../internal/hubserver/integration.go#L151)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/integration/cutover](../internal/hubserver/integration.go#L175)
 ## hubserver.delete_conversation_attachment
 
 Delete conversation attachment
@@ -2364,7 +2364,7 @@ Delete conversation attachment
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/projects/:project/conversations/:conversation/attachments/:attachment](../internal/hubserver/conversation_api.go#L52), [web/conversation/src/runtime/rpc/http.ts:496](../web/conversation/src/runtime/rpc/http.ts#L496)
+Sources: [DELETE /api/v2/organizations/:organization/projects/:project/conversations/:conversation/attachments/:attachment](../internal/hubserver/conversation_api.go#L54), [web/conversation/src/runtime/rpc/http.ts:500](../web/conversation/src/runtime/rpc/http.ts#L500)
 ## hubserver.delete_project_action
 
 Delete project action
@@ -2384,7 +2384,7 @@ Delete project action
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/projects/:project/actions/:action](../internal/hubserver/native_api.go#L172), [web/conversation/src/app/work/lib/workHttp.ts:715](../web/conversation/src/app/work/lib/workHttp.ts#L715)
+Sources: [DELETE /api/v2/organizations/:organization/projects/:project/actions/:action](../internal/hubserver/native_api.go#L178), [web/conversation/src/app/work/lib/workHttp.ts:724](../web/conversation/src/app/work/lib/workHttp.ts#L724)
 ## hubserver.delete_workspace
 
 Delete workspace
@@ -2404,7 +2404,7 @@ Delete workspace
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: mutation of access, billing, deletion, cancellation or material external state → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/projects/:project/workspaces/:workspace](../internal/hubserver/native_api.go#L160), [web/conversation/src/app/work/lib/workHttp.ts:686](../web/conversation/src/app/work/lib/workHttp.ts#L686)
+Sources: [DELETE /api/v2/organizations/:organization/projects/:project/workspaces/:workspace](../internal/hubserver/native_api.go#L166), [web/conversation/src/app/work/lib/workHttp.ts:695](../web/conversation/src/app/work/lib/workHttp.ts#L695)
 ## hubserver.discuss_change
 
 Discuss change
@@ -2424,7 +2424,7 @@ Discuss change
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write; ephemeral read grants preserve existing read authority → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/changes/:change/discussion](../internal/hubserver/changes.go#L80), [web/conversation/src/app/work/lib/workHttp.ts:638](../web/conversation/src/app/work/lib/workHttp.ts#L638)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/changes/:change/discussion](../internal/hubserver/changes.go#L80), [web/conversation/src/app/work/lib/workHttp.ts:647](../web/conversation/src/app/work/lib/workHttp.ts#L647)
 ## hubserver.get_artifact_reference
 
 Read exact artifact receipt
@@ -2464,7 +2464,7 @@ Get attempt diff
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/attempts/:attempt/diff](../internal/hubserver/native_api.go#L151), [web/conversation/src/app/work/lib/workHttp.ts:616](../web/conversation/src/app/work/lib/workHttp.ts#L616)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/attempts/:attempt/diff](../internal/hubserver/native_api.go#L157), [web/conversation/src/app/work/lib/workHttp.ts:625](../web/conversation/src/app/work/lib/workHttp.ts#L625)
 ## hubserver.get_change
 
 Get change
@@ -2484,7 +2484,7 @@ Get change
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write; ephemeral read grants preserve existing read authority → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/changes/:change](../internal/hubserver/changes.go#L78), [web/conversation/src/app/work/lib/workHttp.ts:621](../web/conversation/src/app/work/lib/workHttp.ts#L621), [web/conversation/src/app/components/surfaces/DiffSurface.tsx:426](../web/conversation/src/app/components/surfaces/DiffSurface.tsx#L426), [web/conversation/src/app/work/ChangeRequestPage.tsx:384](../web/conversation/src/app/work/ChangeRequestPage.tsx#L384)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/changes/:change](../internal/hubserver/changes.go#L78), [web/conversation/src/app/work/lib/workHttp.ts:617](../web/conversation/src/app/work/lib/workHttp.ts#L617), [web/conversation/src/app/components/surfaces/DiffSurface.tsx:426](../web/conversation/src/app/components/surfaces/DiffSurface.tsx#L426), [web/conversation/src/app/work/ChangeRequestPage.tsx:376](../web/conversation/src/app/work/ChangeRequestPage.tsx#L376)
 ## hubserver.get_change_review_policy
 
 Get change review policy
@@ -2524,7 +2524,7 @@ Get conversation
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation](../internal/hubserver/conversation_api.go#L40), [web/conversation/src/runtime/rpc/http.ts:408](../web/conversation/src/runtime/rpc/http.ts#L408)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation](../internal/hubserver/conversation_api.go#L41), [web/conversation/src/runtime/rpc/http.ts:411](../web/conversation/src/runtime/rpc/http.ts#L411)
 ## hubserver.get_conversation_attachment
 
 Get conversation attachment
@@ -2544,7 +2544,7 @@ Get conversation attachment
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation/attachments/:attachment](../internal/hubserver/conversation_api.go#L51)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation/attachments/:attachment](../internal/hubserver/conversation_api.go#L53)
 ## hubserver.get_cutover_receipt
 
 Get cutover receipt
@@ -2564,7 +2564,7 @@ Get cutover receipt
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/integration/cutover](../internal/hubserver/integration.go#L152)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/integration/cutover](../internal/hubserver/integration.go#L176)
 ## hubserver.get_git_hub_batch
 
 Get git hub batch
@@ -2584,7 +2584,7 @@ Get git hub batch
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or setup navigation → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake](../internal/hubserver/onboarding.go#L20), [web/conversation/src/app/account/IssueIntake.tsx:65](../web/conversation/src/app/account/IssueIntake.tsx#L65), [web/conversation/src/app/account/api.ts:278](../web/conversation/src/app/account/api.ts#L278)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake](../internal/hubserver/onboarding.go#L20), [web/conversation/src/app/account/IssueIntake.tsx:65](../web/conversation/src/app/account/IssueIntake.tsx#L65), [web/conversation/src/app/account/api.ts:310](../web/conversation/src/app/account/api.ts#L310)
 ## hubserver.get_git_hub_import
 
 Get git hub import
@@ -2604,7 +2604,7 @@ Get git hub import
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/imports/:import](../internal/hubserver/integration.go#L154)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/imports/:import](../internal/hubserver/integration.go#L178)
 ## hubserver.get_native_attempt
 
 Read an owned native run
@@ -2624,7 +2624,7 @@ Read an owned native run
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/attempts/:attempt](../internal/hubserver/native_api.go#L139)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/attempts/:attempt](../internal/hubserver/native_api.go#L143)
 ## hubserver.get_native_issue
 
 Get native issue
@@ -2644,7 +2644,7 @@ Get native issue
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item](../internal/hubserver/native_api.go#L127), [web/conversation/src/app/work/lib/workHttp.ts:552](../web/conversation/src/app/work/lib/workHttp.ts#L552), [web/conversation/src/app/components/TimelineCards.tsx:153](../web/conversation/src/app/components/TimelineCards.tsx#L153), [web/conversation/src/app/work/IssuePage.tsx:989](../web/conversation/src/app/work/IssuePage.tsx#L989), [GET /api/v2/organizations/:organization/work-items/:item](../internal/hubserver/native_api.go#L128), [web/conversation/src/app/work/lib/workHttp.ts:564](../web/conversation/src/app/work/lib/workHttp.ts#L564)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item](../internal/hubserver/native_api.go#L130), [web/conversation/src/app/work/lib/workHttp.ts:555](../web/conversation/src/app/work/lib/workHttp.ts#L555), [web/conversation/src/app/components/TimelineCards.tsx:153](../web/conversation/src/app/components/TimelineCards.tsx#L153), [web/conversation/src/app/work/IssuePage.tsx:1053](../web/conversation/src/app/work/IssuePage.tsx#L1053), [GET /api/v2/organizations/:organization/work-items/:item](../internal/hubserver/native_api.go#L129), [web/conversation/src/app/work/lib/workHttp.ts:557](../web/conversation/src/app/work/lib/workHttp.ts#L557)
 ## hubserver.get_native_project
 
 Get native project
@@ -2664,7 +2664,7 @@ Get native project
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project](../internal/hubserver/native_api.go#L123), [web/conversation/src/app/work/lib/workHttp.ts:542](../web/conversation/src/app/work/lib/workHttp.ts#L542)
+Sources: [GET /api/v2/organizations/:organization/projects/:project](../internal/hubserver/native_api.go#L125), [web/conversation/src/app/work/lib/workHttp.ts:535](../web/conversation/src/app/work/lib/workHttp.ts#L535)
 ## hubserver.get_native_version
 
 Get native version
@@ -2684,7 +2684,7 @@ Get native version
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/comments/:comment/versions/:revision](../internal/hubserver/native_api.go#L140), [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/versions/:revision](../internal/hubserver/native_api.go#L139)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/comments/:comment/versions/:revision](../internal/hubserver/native_api.go#L145), [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/versions/:revision](../internal/hubserver/native_api.go#L144)
 ## hubserver.get_onboarding
 
 Get onboarding
@@ -2704,7 +2704,7 @@ Get onboarding
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/onboarding](../internal/hubserver/onboarding.go#L27), [web/conversation/src/app/account/api.ts:280](../web/conversation/src/app/account/api.ts#L280)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/onboarding](../internal/hubserver/onboarding.go#L27), [web/conversation/src/app/account/api.ts:312](../web/conversation/src/app/account/api.ts#L312)
 ## hubserver.get_project_action_run
 
 Get project action run
@@ -2724,7 +2724,7 @@ Get project action run
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:action/runs/:run](../internal/hubserver/native_api.go#L175), [web/conversation/src/app/work/lib/workHttp.ts:725](../web/conversation/src/app/work/lib/workHttp.ts#L725)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:action/runs/:run](../internal/hubserver/native_api.go#L181), [web/conversation/src/app/work/lib/workHttp.ts:734](../web/conversation/src/app/work/lib/workHttp.ts#L734)
 ## hubserver.get_project_action_run_output
 
 Get project action run output
@@ -2744,7 +2744,7 @@ Get project action run output
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:action/runs/:run/output](../internal/hubserver/native_api.go#L176)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:action/runs/:run/output](../internal/hubserver/native_api.go#L182)
 ## hubserver.get_project_integration
 
 Get project integration
@@ -2764,7 +2764,7 @@ Get project integration
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/integration](../internal/hubserver/integration.go#L148), [web/conversation/src/app/account/api.ts:235](../web/conversation/src/app/account/api.ts#L235)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/integration](../internal/hubserver/integration.go#L172), [web/conversation/src/app/account/api.ts:265](../web/conversation/src/app/account/api.ts#L265)
 ## hubserver.get_project_policy
 
 Get project policy
@@ -2784,7 +2784,7 @@ Get project policy
 - Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L57), [GET /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L110), [web/conversation/src/app/account/api.ts:257](../web/conversation/src/app/account/api.ts#L257)
+Sources: [GET /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L59), [GET /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L112), [web/conversation/src/app/account/api.ts:289](../web/conversation/src/app/account/api.ts#L289)
 ## hubserver.get_runner_identity
 
 Get runner identity
@@ -2810,7 +2810,7 @@ Get runner routing
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.get_runner_routing` — Typed get_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.get_runner_routing` — Typed get_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.readRunnerRouting
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -2843,7 +2843,7 @@ Get work item
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/work-items/:id](../internal/hubserver/api_http.go#L64)
+Sources: [GET /api/v1/work-items/:id](../internal/hubserver/api_http.go#L65)
 ## hubserver.get_work_item_diff
 
 Get work item diff
@@ -2863,19 +2863,19 @@ Get work item diff
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/diff](../internal/hubserver/native_api.go#L152), [web/conversation/src/app/work/lib/workHttp.ts:590](../web/conversation/src/app/work/lib/workHttp.ts#L590), [web/conversation/src/app/adapters/surfaces.ts:256](../web/conversation/src/app/adapters/surfaces.ts#L256), [web/conversation/src/app/adapters/surfaces.ts:287](../web/conversation/src/app/adapters/surfaces.ts#L287)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/diff](../internal/hubserver/native_api.go#L158), [web/conversation/src/app/work/lib/workHttp.ts:597](../web/conversation/src/app/work/lib/workHttp.ts#L597), [web/conversation/src/app/adapters/surfaces.ts:256](../web/conversation/src/app/adapters/surfaces.ts#L256), [web/conversation/src/app/adapters/surfaces.ts:287](../web/conversation/src/app/adapters/surfaces.ts#L287)
 ## hubserver.get_workspace
 
 Get workspace
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
-- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Decision: Implemented selected-workspace read through Service.readWorkspace under current organization/project/subject authority. EventSource now selects workspace_id through project events and refreshes that same resource; get_workspace accepts the exact workspace_id and returns current state/capabilities. MCP advertises a bounded read, not an SSE subscription or event history.
 - Tool: `conversations_workspaces.get_workspace` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"workspace_id":{"type":"string","minLength":1,"maxLength":256}},"required":["project_id","workspace_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Application: Service.readWorkspace shared with workspaceOperatorExecutor.readWorkspaceTool; hosted project events reauthorize and project only the selected workspace.
 - Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current handler authority checks: s.requireWorkspaces()
-- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions. TestHostedWorkspaceEvents covers selected-workspace SSE authority and current resource semantics.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
@@ -2883,7 +2883,7 @@ Get workspace
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace](../internal/hubserver/native_api.go#L159), [web/conversation/src/app/work/lib/workHttp.ts:674](../web/conversation/src/app/work/lib/workHttp.ts#L674)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace](../internal/hubserver/native_api.go#L165), [web/conversation/src/app/work/lib/workHttp.ts:683](../web/conversation/src/app/work/lib/workHttp.ts#L683), [web/conversation/src/app/adapters/workspaces.ts:298](../web/conversation/src/app/adapters/workspaces.ts#L298)
 ## hubserver.get_workspace_terminal_recording
 
 Get workspace terminal recording
@@ -2903,14 +2903,14 @@ Get workspace terminal recording
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/terminal-recordings/:recording](../internal/hubserver/native_api.go#L183)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/terminal-recordings/:recording](../internal/hubserver/native_api.go#L189)
 ## hubserver.github_request_counts
 
 Github request counts
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the current instance-admin request-count read under the same administration authority; ordinary operators cannot invoke it.
-- Tool: `runs_fleet.github_request_counts` — Typed github_request_counts schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.github_request_counts` — Typed github_request_counts schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role requireInstanceAdmin: unhosted instance admin; hosted owner/admin through requireHostedAdministration; credential staff session or dedicated private instance-admin credential; not an organization operator credential; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Config.GitHubRequestCounts / private instance administrator authority
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -2923,7 +2923,7 @@ Github request counts
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/github/requests](../internal/hubserver/integration.go#L144)
+Sources: [GET /api/v2/github/requests](../internal/hubserver/integration.go#L168)
 ## hubserver.github_webhook
 
 Github webhook
@@ -2942,7 +2942,7 @@ Github webhook
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v1/webhooks/github](../internal/hubserver/api_http.go#L80)
+Sources: [POST /api/v1/webhooks/github](../internal/hubserver/api_http.go#L81)
 ## hubserver.grant_native_token
 
 Grant native token
@@ -2962,7 +2962,7 @@ Grant native token
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v2/tokens/:id/grants](../internal/hubserver/native_api.go#L122)
+Sources: [POST /api/v2/tokens/:id/grants](../internal/hubserver/native_api.go#L124)
 ## hubserver.grant_native_token_maintenance
 
 Grant native token maintenance
@@ -2988,7 +2988,7 @@ Health
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
-- Tool: `work_reads.health` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
+- Tool: `fleet.health` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hub worker/operator/admin per registration; native-only credentials cannot call legacy v1; hosted sessions cannot call outside nativeBase; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.readInstanceHealth
 - Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
@@ -3001,7 +3001,7 @@ Health
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /health](../internal/hubserver/api_http.go#L62)
+Sources: [GET /health](../internal/hubserver/api_http.go#L63)
 ## hubserver.heartbeat_machine
 
 Heartbeat machine
@@ -3020,7 +3020,7 @@ Heartbeat machine
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v1/machines/:id/heartbeat](../internal/hubserver/api_http.go#L74)
+Sources: [POST /api/v1/machines/:id/heartbeat](../internal/hubserver/api_http.go#L75)
 ## hubserver.heartbeat_native_machine
 
 Heartbeat native machine
@@ -3039,7 +3039,7 @@ Heartbeat native machine
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/machines/:machine/heartbeat](../internal/hubserver/runner_enrollment.go#L37)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/machines/:machine/heartbeat](../internal/hubserver/runner_enrollment.go#L43)
 ## hubserver.heartbeat_workspace_worker
 
 Heartbeat workspace worker
@@ -3058,7 +3058,7 @@ Heartbeat workspace worker
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/heartbeat](../internal/hubserver/native_api.go#L166)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/heartbeat](../internal/hubserver/native_api.go#L172)
 ## hubserver.hosted_artifact_allowances
 
 Hosted artifact allowances
@@ -3077,14 +3077,14 @@ Hosted artifact allowances
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/artifact-allowances/:service](../internal/hubserver/hosted_ui.go#L53)
+Sources: [POST /api/v2/organizations/:organization/artifact-allowances/:service](../internal/hubserver/hosted_ui.go#L62)
 ## hubserver.hosted_billing
 
 Hosted billing
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.hosted_billing` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.hosted_billing` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBilling; s.database.hostedMetadata, s.hostedBillingOwner, s.hostedUsage
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -3097,14 +3097,14 @@ Hosted billing
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: authorized application read/export → none
 
-Sources: [GET /api/cloud/billing](../internal/hubserver/hosted_ui.go#L50), [internal/web/templates/hosted.templ:338](../internal/web/templates/hosted.templ#L338), [internal/web/templates/hosted_billing.templ:62](../internal/web/templates/hosted_billing.templ#L62)
+Sources: [GET /api/cloud/billing](../internal/hubserver/hosted_ui.go#L59), [internal/web/templates/hosted.templ:338](../internal/web/templates/hosted.templ#L338), [internal/web/templates/hosted_billing.templ:62](../internal/web/templates/hosted_billing.templ#L62)
 ## hubserver.hosted_billing_checkout
 
 Hosted billing checkout
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.hosted_billing_checkout` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.hosted_billing_checkout` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBillingCheckout; s.database.readHostedBilling, s.ensureHostedCustomer, s.hostedBillingDestination, s.hostedBillingFailure, s.hostedBillingOwner, s.hostedBillingReturn, s.prepareHostedCheckout, s.saveHostedCheckout
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -3117,14 +3117,14 @@ Hosted billing checkout
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material purchase, portal or budget change → operator
 
-Sources: [POST /api/v2/organizations/:organization/billing/checkout](../internal/hubserver/hosted_ui.go#L37), [POST /organization/billing/checkout](../internal/hubserver/hosted_ui.go#L34), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [web/conversation/src/app/account/api.ts:416](../web/conversation/src/app/account/api.ts#L416), [internal/web/templates/chat.templ:118](../internal/web/templates/chat.templ#L118)
+Sources: [POST /api/v2/organizations/:organization/billing/checkout](../internal/hubserver/hosted_ui.go#L44), [POST /organization/billing/checkout](../internal/hubserver/hosted_ui.go#L39), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [internal/web/templates/hosted_billing.templ:32](../internal/web/templates/hosted_billing.templ#L32), [web/conversation/src/app/account/api.ts:448](../web/conversation/src/app/account/api.ts#L448), [internal/web/templates/chat.templ:127](../internal/web/templates/chat.templ#L127)
 ## hubserver.hosted_credit_checkout
 
 Purchase hosted AI credits
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented for native #234 through the existing billing command and authority; strict full dashboard/MCP parity remains native parent #26 acceptance, not universal blocking CI.
-- Tool: `billing_usage.hosted_credit_checkout` — Bounded price identifier (1–256 bytes) and request_id (1–128 bytes); organization and confirmation mode come from current connection authority. → Bounded pending approval URL or truthful terminal action receipt with original checkout destination and purchase identity; at most 256 KiB; opaque unavailable errors.
+- Tool: `billing_usage.billing_usage.hosted_credit_checkout` — Bounded price identifier (1–256 bytes) and request_id (1–128 bytes); organization and confirmation mode come from current connection authority. → Bounded pending approval URL or truthful terminal action receipt with original checkout destination and purchase identity; at most 256 KiB; opaque unavailable errors.
 - Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedCreditCheckout and s.checkoutCredits; shared fresh billing owner authorization, configured pack, existing ai_credit_purchases and billing.CreditProvider.CreditCheckout
 - Extraction: HTTP and MCP call the same application command. MCP reuses the existing chat approval, material input binding, audit and retry owners; no handler proxy or alternate payment authority.
@@ -3144,7 +3144,7 @@ Configure hosted AI credit auto-funding
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented for native #234 through the existing billing command and authority; strict full dashboard/MCP parity remains native parent #26 acceptance, not universal blocking CI.
-- Tool: `billing_usage.hosted_credit_auto_fund` — Required enabled boolean, nonnegative threshold_cents integer, bounded price identifier (up to 256 bytes; configured pack required when enabled), and request_id (1–128 bytes); organization and confirmation mode come from current connection authority. → Bounded pending approval URL or truthful terminal action receipt with applied organization credit settings and resolution time; at most 256 KiB; opaque unavailable errors.
+- Tool: `billing_usage.billing_usage.hosted_credit_auto_fund` — Required enabled boolean, nonnegative threshold_cents integer, bounded price identifier (up to 256 bytes; configured pack required when enabled), and request_id (1–128 bytes); organization and confirmation mode come from current connection authority. → Bounded pending approval URL or truthful terminal action receipt with applied organization credit settings and resolution time; at most 256 KiB; opaque unavailable errors.
 - Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedCreditAutoFund and s.configureCreditFunding; shared fresh billing owner authorization, configured pack/threshold, current payment authority and existing native_commands receipts
 - Extraction: HTTP and MCP call the same application command. MCP reuses the existing chat approval, material input binding, audit and retry owners; no handler proxy or alternate payment authority.
@@ -3165,7 +3165,7 @@ Hosted billing export
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.billing_export` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.billing_export` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role hosted organization owner; no support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBillingExport; s.hostedBillingOwner, s.hostedBillingReport
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -3178,14 +3178,14 @@ Hosted billing export
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: authorized application read/export → none
 
-Sources: [GET /api/cloud/billing/subscription](../internal/hubserver/hosted_ui.go#L40), [internal/web/templates/hosted_billing.templ:61](../internal/web/templates/hosted_billing.templ#L61)
+Sources: [GET /api/cloud/billing/subscription](../internal/hubserver/hosted_ui.go#L49), [internal/web/templates/hosted_billing.templ:61](../internal/web/templates/hosted_billing.templ#L61)
 ## hubserver.hosted_billing_page
 
 Hosted billing page
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.hosted_billing_page` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.hosted_billing_page` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBillingJSON; s.config.now, s.database.db.QueryRowContext, s.database.hostedBillingBinding, s.hostedBillingOwner, s.hostedBillingReport, s.hostedPriceLabel
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -3198,14 +3198,14 @@ Hosted billing page
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: authorized application read/export → none
 
-Sources: [GET /api/v2/organizations/:organization/billing](../internal/hubserver/hosted_ui.go#L36), [GET /organization/billing](../internal/hubserver/hosted_ui.go#L33), [internal/web/templates/hosted.templ:175](../internal/web/templates/hosted.templ#L175), [internal/web/templates/hosted.templ:337](../internal/web/templates/hosted.templ#L337), [web/conversation/src/app/account/api.ts:414](../web/conversation/src/app/account/api.ts#L414)
+Sources: [GET /api/v2/organizations/:organization/billing](../internal/hubserver/hosted_ui.go#L43), [GET /organization/billing](../internal/hubserver/hosted_ui.go#L38), [internal/web/templates/hosted.templ:175](../internal/web/templates/hosted.templ#L175), [internal/web/templates/hosted.templ:337](../internal/web/templates/hosted.templ#L337), [web/conversation/src/app/account/api.ts:446](../web/conversation/src/app/account/api.ts#L446)
 ## hubserver.hosted_billing_portal
 
 Hosted billing portal
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.hosted_billing_portal` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.hosted_billing_portal` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role hosted organization owner only; reject support impersonation; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedBillingPortal; s.database.hostedBillingBinding, s.hostedBillingDestination, s.hostedBillingFailure, s.hostedBillingOwner, s.hostedBillingReturn, s.recordBillingAction
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -3218,7 +3218,7 @@ Hosted billing portal
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material purchase, portal or budget change → operator
 
-Sources: [POST /api/v2/organizations/:organization/billing/portal](../internal/hubserver/hosted_ui.go#L38), [POST /organization/billing/portal](../internal/hubserver/hosted_ui.go#L35), [internal/web/templates/hosted_billing.templ:43](../internal/web/templates/hosted_billing.templ#L43), [internal/web/templates/hosted_billing.templ:43](../internal/web/templates/hosted_billing.templ#L43), [web/conversation/src/app/account/api.ts:421](../web/conversation/src/app/account/api.ts#L421)
+Sources: [POST /api/v2/organizations/:organization/billing/portal](../internal/hubserver/hosted_ui.go#L45), [POST /organization/billing/portal](../internal/hubserver/hosted_ui.go#L40), [internal/web/templates/hosted_billing.templ:43](../internal/web/templates/hosted_billing.templ#L43), [internal/web/templates/hosted_billing.templ:43](../internal/web/templates/hosted_billing.templ#L43), [web/conversation/src/app/account/api.ts:459](../web/conversation/src/app/account/api.ts#L459)
 ## hubserver.hosted_events
 
 Hosted events
@@ -3245,7 +3245,7 @@ Hosted fleet
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.hosted_fleet` — Typed hosted_fleet schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.hosted_fleet` — Typed hosted_fleet schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.readHostedFleet
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -3278,7 +3278,7 @@ Hosted landing
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /](../internal/hubserver/hosted_ui.go#L23)
+Sources: [GET /](../internal/hubserver/hosted_ui.go#L25)
 ## hubserver.hosted_metadata
 
 Hosted metadata
@@ -3297,14 +3297,14 @@ Hosted metadata
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /api/cloud/metadata](../internal/hubserver/hosted_ui.go#L49)
+Sources: [GET /api/cloud/metadata](../internal/hubserver/hosted_ui.go#L58)
 ## hubserver.hosted_plan_page
 
 Hosted plan page
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.hosted_plan_page` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.hosted_plan_page` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedPlanJSON; s.config.now, s.database.hostedPlanUsage, s.hostedAdministrator, s.hostedCredential
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -3317,7 +3317,7 @@ Hosted plan page
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: authorized application read/export → none
 
-Sources: [GET /api/v2/organizations/:organization/plan](../internal/hubserver/hosted_org_api.go#L47), [GET /organization/plan](../internal/hubserver/hosted_ui.go#L32), [internal/web/templates/hosted.templ:178](../internal/web/templates/hosted.templ#L178), [internal/web/templates/hosted_billing.templ:60](../internal/web/templates/hosted_billing.templ#L60), [web/conversation/src/app/account/api.ts:413](../web/conversation/src/app/account/api.ts#L413)
+Sources: [GET /api/v2/organizations/:organization/plan](../internal/hubserver/hosted_org_api.go#L47), [GET /organization/plan](../internal/hubserver/hosted_ui.go#L37), [internal/web/templates/hosted.templ:178](../internal/web/templates/hosted.templ#L178), [internal/web/templates/hosted_billing.templ:60](../internal/web/templates/hosted_billing.templ#L60), [web/conversation/src/app/account/api.ts:445](../web/conversation/src/app/account/api.ts#L445)
 ## hubserver.hosted_plan_report
 
 Hosted plan report
@@ -3336,7 +3336,7 @@ Hosted plan report
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/entitlements](../internal/hubserver/hosted_ui.go#L51)
+Sources: [GET /api/v2/organizations/:organization/entitlements](../internal/hubserver/hosted_ui.go#L60)
 ## hubserver.hosted_shared_billing_binding
 
 Hosted shared billing binding
@@ -3412,7 +3412,7 @@ Hosted stripe webhook
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /webhooks/stripe](../internal/hubserver/hosted_ui.go#L39)
+Sources: [POST /webhooks/stripe](../internal/hubserver/hosted_ui.go#L48)
 ## hubserver.hosted_support_page
 
 Hosted support page
@@ -3432,14 +3432,14 @@ Hosted support page
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [GET /support](../internal/hubserver/hosted_ui.go#L30), [internal/web/templates/hosted.templ:125](../internal/web/templates/hosted.templ#L125)
+Sources: [GET /support](../internal/hubserver/hosted_ui.go#L32), [internal/web/templates/hosted.templ:125](../internal/web/templates/hosted.templ#L125)
 ## hubserver.hosted_usage_report
 
 Hosted usage report
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.hosted_usage_report` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.hosted_usage_report` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential Current authenticated hosted session, with application read/write checks; billing owner without support impersonation.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.hostedUsageReport; s.chatUsageRows, s.config.now, s.database.chatUsageSummary, s.hostedCredential, s.usageLimits, s.usagePrices, s.usageReadableProjects, s.usageRows, s.usageRunnerCapacity
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -3471,7 +3471,7 @@ Intake linked issue
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/source-intake](../internal/hubserver/native_api.go#L131)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/source-intake](../internal/hubserver/native_api.go#L134)
 ## hubserver.invite_hosted_member
 
 Invite hosted member
@@ -3530,7 +3530,7 @@ Link conversation
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/link](../internal/hubserver/conversation_api.go#L44), [web/conversation/src/runtime/rpc/http.ts:445](../web/conversation/src/runtime/rpc/http.ts#L445)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/link](../internal/hubserver/conversation_api.go#L46), [web/conversation/src/runtime/rpc/http.ts:449](../web/conversation/src/runtime/rpc/http.ts#L449)
 ## hubserver.list_changes
 
 List changes
@@ -3550,7 +3550,7 @@ List changes
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write; ephemeral read grants preserve existing read authority → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/changes](../internal/hubserver/changes.go#L76), [web/conversation/src/app/work/lib/workHttp.ts:619](../web/conversation/src/app/work/lib/workHttp.ts#L619), [web/conversation/src/app/work/ChangesPage.tsx:140](../web/conversation/src/app/work/ChangesPage.tsx#L140)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/changes](../internal/hubserver/changes.go#L76), [web/conversation/src/app/work/lib/workHttp.ts:615](../web/conversation/src/app/work/lib/workHttp.ts#L615), [web/conversation/src/app/work/ChangesPage.tsx:140](../web/conversation/src/app/work/ChangesPage.tsx#L140)
 ## hubserver.list_conversation_messages
 
 List conversation messages
@@ -3570,7 +3570,7 @@ List conversation messages
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation/messages](../internal/hubserver/conversation_api.go#L41), [web/conversation/src/runtime/rpc/http.ts:416](../web/conversation/src/runtime/rpc/http.ts#L416), [web/conversation/src/components/chat/MessagesTimeline.tsx:1542](../web/conversation/src/components/chat/MessagesTimeline.tsx#L1542), [web/conversation/src/components/chat/MessagesTimeline.tsx:3514](../web/conversation/src/components/chat/MessagesTimeline.tsx#L3514)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation/messages](../internal/hubserver/conversation_api.go#L43), [web/conversation/src/runtime/rpc/http.ts:419](../web/conversation/src/runtime/rpc/http.ts#L419), [web/conversation/src/components/chat/MessagesTimeline.tsx:1542](../web/conversation/src/components/chat/MessagesTimeline.tsx#L1542), [web/conversation/src/components/chat/MessagesTimeline.tsx:3514](../web/conversation/src/components/chat/MessagesTimeline.tsx#L3514)
 ## hubserver.list_git_hub_import_records
 
 List git hub import records
@@ -3590,7 +3590,7 @@ List git hub import records
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/imports/:import/records](../internal/hubserver/integration.go#L156)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/imports/:import/records](../internal/hubserver/integration.go#L180)
 ## hubserver.list_hosted_members
 
 List hosted members
@@ -3610,7 +3610,7 @@ List hosted members
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: all calls → none
 
-Sources: [GET /api/v2/organizations/:organization/members](../internal/hubserver/hosted_org_api.go#L37), [GET /organization](../internal/hubserver/hosted_ui.go#L31), [internal/web/templates/hosted.templ:54](../internal/web/templates/hosted.templ#L54), [internal/web/templates/hosted.templ:80](../internal/web/templates/hosted.templ#L80), [internal/web/templates/hosted.templ:113](../internal/web/templates/hosted.templ#L113), [internal/web/templates/hosted.templ:335](../internal/web/templates/hosted.templ#L335), [web/conversation/src/app/main.tsx:47](../web/conversation/src/app/main.tsx#L47), [web/conversation/src/app/account/api.ts:160](../web/conversation/src/app/account/api.ts#L160)
+Sources: [GET /api/v2/organizations/:organization/members](../internal/hubserver/hosted_org_api.go#L37), [GET /organization](../internal/hubserver/hosted_ui.go#L36), [internal/web/templates/hosted.templ:54](../internal/web/templates/hosted.templ#L54), [internal/web/templates/hosted.templ:80](../internal/web/templates/hosted.templ#L80), [internal/web/templates/hosted.templ:113](../internal/web/templates/hosted.templ#L113), [internal/web/templates/hosted.templ:335](../internal/web/templates/hosted.templ#L335), [web/conversation/src/app/main.tsx:47](../web/conversation/src/app/main.tsx#L47), [web/conversation/src/app/account/api.ts:177](../web/conversation/src/app/account/api.ts#L177)
 ## hubserver.list_hosted_projects
 
 List hosted projects
@@ -3630,19 +3630,19 @@ List hosted projects
 - Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects](../internal/hubserver/hosted_org_api.go#L45), [internal/web/templates/hosted.templ:182](../internal/web/templates/hosted.templ#L182), [internal/web/templates/hosted.templ:122](../internal/web/templates/hosted.templ#L122), [internal/web/templates/hosted.templ:199](../internal/web/templates/hosted.templ#L199)
+Sources: [GET /api/v2/organizations/:organization/projects](../internal/hubserver/hosted_org_api.go#L45), [internal/web/templates/hosted.templ:172](../internal/web/templates/hosted.templ#L172), [internal/web/templates/hosted.templ:119](../internal/web/templates/hosted.templ#L119), [internal/web/templates/hosted.templ:189](../internal/web/templates/hosted.templ#L189)
 ## hubserver.list_native_attempts
 
 List native attempts
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
 - Decision: Typed work_runs exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
-- Tool: `board.work_runs` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
+- Tool: `board.work_runs` — Delivered WorkReadCatalog work_runs: project_id, reference, optional cursor/offset/limit 1–200. Native operatorWorkReads forwards cursor/limit to readAttempts and rejects offset; snapshot-backed local history uses offset. Native/local attempt selectors belong to work_attempt_receipt/board_session_history, not work_runs. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.listNativeAttempts; s.config.now, s.database.db.QueryContext, s.nativePage
+- Application: Service.readAttempts, shared by listNativeAttempts and operatorWorkReads.ReadWork; credential/resource-bound native pagination retains exact work-item ownership.
 - Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Coverage: TestOperatorNativeWorkReads and existing native attempt-page regressions; WorkReadCatalog argument bounds.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
@@ -3650,7 +3650,7 @@ List native attempts
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/attempts](../internal/hubserver/native_api.go#L138), [web/conversation/src/app/work/lib/workHttp.ts:599](../web/conversation/src/app/work/lib/workHttp.ts#L599)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/attempts](../internal/hubserver/native_api.go#L142), [web/conversation/src/app/work/lib/workHttp.ts:595](../web/conversation/src/app/work/lib/workHttp.ts#L595)
 ## hubserver.list_native_comments
 
 List native comments
@@ -3670,7 +3670,7 @@ List native comments
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/comments](../internal/hubserver/native_api.go#L134), [web/conversation/src/app/work/lib/workHttp.ts:597](../web/conversation/src/app/work/lib/workHttp.ts#L597)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/comments](../internal/hubserver/native_api.go#L137), [web/conversation/src/app/work/lib/workHttp.ts:604](../web/conversation/src/app/work/lib/workHttp.ts#L604)
 ## hubserver.list_native_history
 
 List native history
@@ -3690,19 +3690,19 @@ List native history
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/history](../internal/hubserver/native_api.go#L137), [web/conversation/src/app/work/lib/workHttp.ts:592](../web/conversation/src/app/work/lib/workHttp.ts#L592), [web/conversation/src/app/work/lib/useWork.ts:369](../web/conversation/src/app/work/lib/useWork.ts#L369)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/history](../internal/hubserver/native_api.go#L140), [web/conversation/src/app/work/lib/workHttp.ts:599](../web/conversation/src/app/work/lib/workHttp.ts#L599), [web/conversation/src/app/work/lib/useWork.ts:493](../web/conversation/src/app/work/lib/useWork.ts#L493)
 ## hubserver.list_native_issues
 
 List native issues
 
-- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
-- Decision: Typed work_list exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes.
-- Tool: `board.work_list` — Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1–200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3340.
+- Decision: Search, state, label and native cursor paging are implemented by operatorWorkReads/readIssues, including query -> q. Browser/API archived, assignee, queue-priority and include=workspace/work variants are absent from the tool schema/executor; whole-operation parity remains pending under #3340. The frontend legacy include=coordinator option is refused by parseNativeIssueIncludes and is not an implemented application capability. No operator variant is excluded or adapter added by #239.
+- Tool: `board.work_list` — Delivered WorkReadCatalog work_list: project_id, optional query/state/label/cursor/offset/limit 1–200; query <= 256 bytes, cursor <= 4096. Native operatorWorkReads maps query to q and rejects offset. API archived/assignee/priority/include variants are absent from MCP arguments. → Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.listNativeIssues; s.nativePage
 - Extraction: Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.
+- Coverage: TestOperatorNativeWorkReads covers search/cursor execution; existing native issue include/filter regressions cover API behavior. Missing typed filter/include parity stays pending.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
@@ -3710,7 +3710,7 @@ List native issues
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items](../internal/hubserver/native_api.go#L125), [web/conversation/src/app/work/lib/workHttp.ts:544](../web/conversation/src/app/work/lib/workHttp.ts#L544)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items](../internal/hubserver/native_api.go#L127), [web/conversation/src/app/work/lib/workHttp.ts:537](../web/conversation/src/app/work/lib/workHttp.ts#L537)
 ## hubserver.list_native_labels
 
 List native labels
@@ -3730,7 +3730,7 @@ List native labels
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/labels](../internal/hubserver/native_api.go#L124), [web/conversation/src/app/work/lib/workHttp.ts:554](../web/conversation/src/app/work/lib/workHttp.ts#L554)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/labels](../internal/hubserver/native_api.go#L126), [web/conversation/src/app/work/lib/workHttp.ts:561](../web/conversation/src/app/work/lib/workHttp.ts#L561)
 ## hubserver.list_organization_conversations
 
 List organization conversations
@@ -3750,7 +3750,7 @@ List organization conversations
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/conversations](../internal/hubserver/conversation_api.go#L39), [web/conversation/src/runtime/rpc/http.ts:386](../web/conversation/src/runtime/rpc/http.ts#L386)
+Sources: [GET /api/v2/organizations/:organization/conversations](../internal/hubserver/conversation_api.go#L40), [web/conversation/src/runtime/rpc/http.ts:388](../web/conversation/src/runtime/rpc/http.ts#L388)
 ## hubserver.list_project_action_runs
 
 List project action runs
@@ -3770,7 +3770,7 @@ List project action runs
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:action/runs](../internal/hubserver/native_api.go#L173), [web/conversation/src/app/work/lib/workHttp.ts:731](../web/conversation/src/app/work/lib/workHttp.ts#L731)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/actions/:action/runs](../internal/hubserver/native_api.go#L179), [web/conversation/src/app/work/lib/workHttp.ts:740](../web/conversation/src/app/work/lib/workHttp.ts#L740)
 ## hubserver.list_project_actions
 
 List project actions
@@ -3790,19 +3790,19 @@ List project actions
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/actions](../internal/hubserver/native_api.go#L169), [web/conversation/src/app/work/lib/workHttp.ts:696](../web/conversation/src/app/work/lib/workHttp.ts#L696)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/actions](../internal/hubserver/native_api.go#L175), [web/conversation/src/app/work/lib/workHttp.ts:705](../web/conversation/src/app/work/lib/workHttp.ts#L705)
 ## hubserver.list_project_conversations
 
 List project conversations
 
-- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
-- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
+- Decision: Ordinary conversation adapter delivered by #3346 remains available, but current subject_work_item_id is absent from WorkspaceCatalog and the workspaceToolRequest/conversationListQuery executor. Issue Q&A parity remains pending under the conversation adapter owner; canonical linked worker conversations are not subject chats. Parent native #26 remains the final acceptance owner.
 - Tool: `conversations_workspaces.list_project_conversations` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"cursor":{"type":"string","maxLength":1024},"query":{"type":"string","maxLength":256},"settled":{"type":"boolean"},"limit":{"type":"integer","minimum":1,"maximum":200}},"required":["project_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
+- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership Current organization and selected project; private conversations are creator-owned. Subject work items resolve in the same project; subject chats cannot be linked/shared and never become issue comments without explicit comment approval..
+- Application: Service.readConversationsPage; workspaceOperatorExecutor uses the shared command/read with current project and private audience authority.
 - Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.
+- Coverage: TestWorkspaceOperatorConversation covers ordinary adapters; TestConversationSubjectOwnership covers subject API/ownership. Typed MCP subject schema/execution remains pending; schema below describes only the delivered ordinary variant.
 - Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
@@ -3810,14 +3810,14 @@ List project conversations
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations](../internal/hubserver/conversation_api.go#L38), [web/conversation/src/runtime/rpc/http.ts:397](../web/conversation/src/runtime/rpc/http.ts#L397)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations](../internal/hubserver/conversation_api.go#L39), [web/conversation/src/runtime/rpc/http.ts:399](../web/conversation/src/runtime/rpc/http.ts#L399)
 ## hubserver.list_runner_routing
 
 List runner routing
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.list_runner_routing` — Typed list_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.list_runner_routing` — Typed list_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.listRunnerRoutingData
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -3830,7 +3830,7 @@ List runner routing
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/runners](../internal/hubserver/runner_enrollment.go#L32), [web/conversation/src/app/account/api.ts:348](../web/conversation/src/app/account/api.ts#L348)
+Sources: [GET /api/v2/organizations/:organization/runners](../internal/hubserver/runner_enrollment.go#L32), [web/conversation/src/app/account/api.ts:380](../web/conversation/src/app/account/api.ts#L380)
 ## hubserver.list_work_item_pull_requests
 
 List work item pull requests
@@ -3850,7 +3850,7 @@ List work item pull requests
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/pull-requests](../internal/hubserver/native_api.go#L153), [web/conversation/src/app/work/lib/workHttp.ts:651](../web/conversation/src/app/work/lib/workHttp.ts#L651), [web/conversation/src/app/adapters/issuePullRequest.ts:75](../web/conversation/src/app/adapters/issuePullRequest.ts#L75), [web/conversation/src/components/Sidebar.tsx:1460](../web/conversation/src/components/Sidebar.tsx#L1460)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/pull-requests](../internal/hubserver/native_api.go#L159), [web/conversation/src/app/work/lib/workHttp.ts:660](../web/conversation/src/app/work/lib/workHttp.ts#L660), [web/conversation/src/app/adapters/issuePullRequest.ts:75](../web/conversation/src/app/adapters/issuePullRequest.ts#L75), [web/conversation/src/components/Sidebar.tsx:1460](../web/conversation/src/components/Sidebar.tsx#L1460)
 ## hubserver.list_work_item_references
 
 List work item references
@@ -3870,7 +3870,7 @@ List work item references
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/references](../internal/hubserver/conversation_api.go#L46)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/references](../internal/hubserver/conversation_api.go#L48)
 ## hubserver.list_work_items
 
 List work items
@@ -3890,7 +3890,7 @@ List work items
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/work-items](../internal/hubserver/api_http.go#L63)
+Sources: [GET /api/v1/work-items](../internal/hubserver/api_http.go#L64)
 ## hubserver.list_workspace_terminal_recordings
 
 List workspace terminal recordings
@@ -3910,7 +3910,7 @@ List workspace terminal recordings
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/terminal-recordings](../internal/hubserver/native_api.go#L182)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/terminal-recordings](../internal/hubserver/native_api.go#L188)
 ## hubserver.list_workspaces
 
 List workspaces
@@ -3930,7 +3930,7 @@ List workspaces
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces](../internal/hubserver/native_api.go#L158), [web/conversation/src/app/work/lib/workHttp.ts:665](../web/conversation/src/app/work/lib/workHttp.ts#L665), [web/conversation/src/app/adapters/workspaces.ts:289](../web/conversation/src/app/adapters/workspaces.ts#L289)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces](../internal/hubserver/native_api.go#L164), [web/conversation/src/app/work/lib/workHttp.ts:674](../web/conversation/src/app/work/lib/workHttp.ts#L674)
 ## hubserver.logout_hosted
 
 Logout hosted
@@ -3951,7 +3951,7 @@ Logout hosted
 - Confirmation: end the current account/session access → operator
 - Confirmation: human selected YOLO on this exact connection → connection
 
-Sources: [POST /logout](../internal/hubserver/hosted_ui.go#L28), [internal/web/templates/hosted.templ:13](../internal/web/templates/hosted.templ#L13), [internal/web/templates/hosted.templ:96](../internal/web/templates/hosted.templ#L96), [internal/web/templates/hosted.templ:13](../internal/web/templates/hosted.templ#L13), [internal/web/templates/hosted.templ:96](../internal/web/templates/hosted.templ#L96), [web/conversation/src/app/account/api.ts:216](../web/conversation/src/app/account/api.ts#L216), [web/conversation/src/app/entry/EntryScreens.tsx:98](../web/conversation/src/app/entry/EntryScreens.tsx#L98), [web/conversation/src/app/entry/EntryScreens.tsx:98](../web/conversation/src/app/entry/EntryScreens.tsx#L98)
+Sources: [POST /logout](../internal/hubserver/hosted_ui.go#L30), [internal/web/templates/hosted.templ:13](../internal/web/templates/hosted.templ#L13), [internal/web/templates/hosted.templ:96](../internal/web/templates/hosted.templ#L96), [internal/web/templates/hosted.templ:13](../internal/web/templates/hosted.templ#L13), [internal/web/templates/hosted.templ:96](../internal/web/templates/hosted.templ#L96), [web/conversation/src/app/account/api.ts:246](../web/conversation/src/app/account/api.ts#L246), [web/conversation/src/app/entry/EntryScreens.tsx:98](../web/conversation/src/app/entry/EntryScreens.tsx#L98), [web/conversation/src/app/entry/EntryScreens.tsx:98](../web/conversation/src/app/entry/EntryScreens.tsx#L98)
 ## hubserver.mcp_transport
 
 Authenticated MCP transport
@@ -3970,7 +3970,7 @@ Authenticated MCP transport
 - Availability: credential_maintenance / github,native / organization hub authority adapter; daemon telemetry/explainer absent until shared read services are supplied — unavailable: Not registered on the credential-maintenance listener.
 - Confirmation: transport authority establishment → connection
 
-Sources: [Any /api/v2/organizations/:organization/mcp](../internal/hubserver/operator_authority.go#L29), [Any /mcp](../internal/hubserver/operator_authority.go#L31)
+Sources: [Any /api/v2/organizations/:organization/mcp](../internal/hubserver/operator_authority.go#L30), [Any /mcp](../internal/hubserver/operator_authority.go#L32)
 ## hubserver.mint_workspace_relay_ticket
 
 Mint workspace relay ticket
@@ -3989,14 +3989,14 @@ Mint workspace relay ticket
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: transport authority establishment → connection
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/relay-tickets](../internal/hubserver/native_api.go#L162), [web/conversation/src/app/work/lib/workHttp.ts:689](../web/conversation/src/app/work/lib/workHttp.ts#L689)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/relay-tickets](../internal/hubserver/native_api.go#L168), [web/conversation/src/app/work/lib/workHttp.ts:698](../web/conversation/src/app/work/lib/workHttp.ts#L698)
 ## hubserver.native_capabilities
 
 Native capabilities
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
-- Tool: `work_reads.native_capabilities` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
+- Tool: `fleet.native_capabilities` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.readNativeCapabilities
 - Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
@@ -4009,7 +4009,7 @@ Native capabilities
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/capabilities](../internal/hubserver/native_api.go#L114)
+Sources: [GET /api/v2/capabilities](../internal/hubserver/native_api.go#L116)
 ## hubserver.native_organizations
 
 Native organizations
@@ -4029,7 +4029,7 @@ Native organizations
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: all calls → none
 
-Sources: [GET /api/v2/organizations](../internal/hubserver/native_api.go#L115), [web/conversation/src/app/account/Support.tsx:127](../web/conversation/src/app/account/Support.tsx#L127), [web/conversation/src/app/account/api.ts:199](../web/conversation/src/app/account/api.ts#L199)
+Sources: [GET /api/v2/organizations](../internal/hubserver/native_api.go#L117), [web/conversation/src/app/account/Support.tsx:127](../web/conversation/src/app/account/Support.tsx#L127), [web/conversation/src/app/account/api.ts:229](../web/conversation/src/app/account/api.ts#L229)
 ## hubserver.observe_project_policy
 
 Observe project policy
@@ -4048,7 +4048,7 @@ Observe project policy
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/policy/observed](../internal/hubserver/native_api.go#L113)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/policy/observed](../internal/hubserver/native_api.go#L115)
 ## hubserver.open_workspace_relay
 
 Open workspace relay
@@ -4067,7 +4067,7 @@ Open workspace relay
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: transport authority establishment → connection
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/relay](../internal/hubserver/native_api.go#L163)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/relay](../internal/hubserver/native_api.go#L169)
 ## hubserver.open_workspace_worker_relay
 
 Open workspace worker relay
@@ -4086,14 +4086,14 @@ Open workspace worker relay
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/relay](../internal/hubserver/native_api.go#L164)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/relay](../internal/hubserver/native_api.go#L170)
 ## hubserver.outbox_health
 
 Outbox health
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
-- Tool: `work_reads.outbox_health` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
+- Tool: `fleet.outbox_health` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential current legacy instance operator/admin credential; scoped native and runner credentials do not gain access; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.readOutboxHealthPage / OutboxHealth
 - Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
@@ -4106,7 +4106,7 @@ Outbox health
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/outbox/health](../internal/hubserver/api_http.go#L76)
+Sources: [GET /api/v1/outbox/health](../internal/hubserver/api_http.go#L77)
 ## hubserver.patch_conversation
 
 Patch conversation
@@ -4127,7 +4127,7 @@ Patch conversation
 - Confirmation: ordinary non-destructive edit → none
 - Confirmation: arguments remove data, alter access or create material external effects → operator
 
-Sources: [PATCH /api/v2/organizations/:organization/projects/:project/conversations/:conversation](../internal/hubserver/conversation_api.go#L45), [web/conversation/src/runtime/rpc/http.ts:459](../web/conversation/src/runtime/rpc/http.ts#L459), [web/conversation/src/runtime/rpc/http.ts:468](../web/conversation/src/runtime/rpc/http.ts#L468)
+Sources: [PATCH /api/v2/organizations/:organization/projects/:project/conversations/:conversation](../internal/hubserver/conversation_api.go#L47), [web/conversation/src/runtime/rpc/http.ts:463](../web/conversation/src/runtime/rpc/http.ts#L463), [web/conversation/src/runtime/rpc/http.ts:472](../web/conversation/src/runtime/rpc/http.ts#L472)
 ## hubserver.patch_project_action
 
 Patch project action
@@ -4148,7 +4148,7 @@ Patch project action
 - Confirmation: ordinary non-destructive edit → none
 - Confirmation: arguments remove data, alter access or create material external effects → operator
 
-Sources: [PATCH /api/v2/organizations/:organization/projects/:project/actions/:action](../internal/hubserver/native_api.go#L171), [web/conversation/src/app/work/lib/workHttp.ts:705](../web/conversation/src/app/work/lib/workHttp.ts#L705), [web/conversation/src/components/projectScriptEditor.tsx:272](../web/conversation/src/components/projectScriptEditor.tsx#L272), [web/conversation/src/components/projectScriptEditor.tsx:272](../web/conversation/src/components/projectScriptEditor.tsx#L272)
+Sources: [PATCH /api/v2/organizations/:organization/projects/:project/actions/:action](../internal/hubserver/native_api.go#L177), [web/conversation/src/app/work/lib/workHttp.ts:714](../web/conversation/src/app/work/lib/workHttp.ts#L714), [web/conversation/src/components/projectScriptEditor.tsx:272](../web/conversation/src/components/projectScriptEditor.tsx#L272), [web/conversation/src/components/projectScriptEditor.tsx:272](../web/conversation/src/components/projectScriptEditor.tsx#L272)
 ## hubserver.post_attempt_diff
 
 Post attempt diff
@@ -4167,13 +4167,13 @@ Post attempt diff
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/attempts/:attempt/diff](../internal/hubserver/native_api.go#L150)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/attempts/:attempt/diff](../internal/hubserver/native_api.go#L156)
 ## hubserver.post_conversation_command
 
 Post conversation command
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
-- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner.
+- Decision: Implemented by #3346; parent #3259 remains the full deployment/transport/tracker parity acceptance owner. Composer drag/drop stages attachments through their existing owners before posting; this form does not imply Cloud issue byte-read/delete/reference adapter delivery.
 - Tool: `conversations_workspaces.post_conversation_command` — {"type":"object","properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"conversation_id":{"type":"string","minLength":1,"maxLength":256},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["message","answer","interrupt","retry","continue","cancel"]},"text":{"type":"string","maxLength":16000},"attachments":{"type":"array","items":{"type":"string","minLength":1,"maxLength":256},"maxItems":10},"question_id":{"type":"string","minLength":1,"maxLength":256},"answers":{"type":"object","maxProperties":32,"additionalProperties":{"type":"array","items":{"type":"string","maxLength":4000},"maxItems":32}},"message_id":{"type":"string","minLength":1,"maxLength":256},"expected":{"type":"object","properties":{"attempt_id":{"type":"string","maxLength":256},"turn_id":{"type":"string","maxLength":256}},"required":[],"additionalProperties":false}},"required":["kind"],"additionalProperties":false}},"required":["request_id","project_id","conversation_id","input"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential Current operator credential or hosted browser session with project write authority; worker and runner credentials are refused by operatorAuthority.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
@@ -4187,7 +4187,7 @@ Post conversation command
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/commands](../internal/hubserver/conversation_api.go#L45), [web/conversation/src/app/App.tsx:1224](../web/conversation/src/app/App.tsx#L1224), [web/conversation/src/app/App.tsx:558](../web/conversation/src/app/App.tsx#L558), [web/conversation/src/app/App.tsx:1241](../web/conversation/src/app/App.tsx#L1241), [web/conversation/src/app/components/Composer.tsx:394](../web/conversation/src/app/components/Composer.tsx#L394), [web/conversation/src/app/components/Composer.tsx:640](../web/conversation/src/app/components/Composer.tsx#L640), [web/conversation/src/app/components/Composer.tsx:390](../web/conversation/src/app/components/Composer.tsx#L390), [web/conversation/src/app/components/Composer.tsx:396](../web/conversation/src/app/components/Composer.tsx#L396), [web/conversation/src/app/work/components/IssueComposer.tsx:66](../web/conversation/src/app/work/components/IssueComposer.tsx#L66), [web/conversation/src/components/GitActionsControl.tsx:410](../web/conversation/src/components/GitActionsControl.tsx#L410), [web/conversation/src/components/GitActionsControl.tsx:410](../web/conversation/src/components/GitActionsControl.tsx#L410), [web/conversation/src/components/chat/AssistantCitationChip.tsx:158](../web/conversation/src/components/chat/AssistantCitationChip.tsx#L158), [web/conversation/src/runtime/rpc/http.ts:436](../web/conversation/src/runtime/rpc/http.ts#L436)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/commands](../internal/hubserver/conversation_api.go#L45), [web/conversation/src/app/App.tsx:1245](../web/conversation/src/app/App.tsx#L1245), [web/conversation/src/app/App.tsx:577](../web/conversation/src/app/App.tsx#L577), [web/conversation/src/app/App.tsx:1262](../web/conversation/src/app/App.tsx#L1262), [web/conversation/src/app/components/Composer.tsx:400](../web/conversation/src/app/components/Composer.tsx#L400), [web/conversation/src/app/components/Composer.tsx:647](../web/conversation/src/app/components/Composer.tsx#L647), [web/conversation/src/app/components/Composer.tsx:402](../web/conversation/src/app/components/Composer.tsx#L402), [web/conversation/src/app/work/components/IssueComposer.tsx:73](../web/conversation/src/app/work/components/IssueComposer.tsx#L73), [web/conversation/src/components/GitActionsControl.tsx:410](../web/conversation/src/components/GitActionsControl.tsx#L410), [web/conversation/src/components/GitActionsControl.tsx:410](../web/conversation/src/components/GitActionsControl.tsx#L410), [web/conversation/src/components/chat/AssistantCitationChip.tsx:158](../web/conversation/src/components/chat/AssistantCitationChip.tsx#L158), [web/conversation/src/runtime/rpc/http.ts:440](../web/conversation/src/runtime/rpc/http.ts#L440), [web/conversation/src/app/components/Composer.tsx:395](../web/conversation/src/app/components/Composer.tsx#L395)
 ## hubserver.preview_provider_candidates
 
 Preview provider candidates
@@ -4206,7 +4206,7 @@ Preview provider candidates
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/claims/preview](../internal/hubserver/native_api.go#L142)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/claims/preview](../internal/hubserver/native_api.go#L147)
 ## hubserver.project_native_summary
 
 Project native summary
@@ -4226,7 +4226,7 @@ Project native summary
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/projection](../internal/hubserver/integration.go#L157)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/projection](../internal/hubserver/integration.go#L181)
 ## hubserver.project_secret_metadata
 
 Project secret metadata
@@ -4246,7 +4246,7 @@ Project secret metadata
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L80), [web/conversation/src/app/account/api.ts:229](../web/conversation/src/app/account/api.ts#L229)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L82), [web/conversation/src/app/account/api.ts:259](../web/conversation/src/app/account/api.ts#L259)
 ## hubserver.publish_change_version
 
 Publish change version
@@ -4304,7 +4304,7 @@ Register machine
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v1/machines/register](../internal/hubserver/api_http.go#L73)
+Sources: [POST /api/v1/machines/register](../internal/hubserver/api_http.go#L74)
 ## hubserver.register_native_machine
 
 Register native machine
@@ -4323,7 +4323,7 @@ Register native machine
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/machines/register](../internal/hubserver/native_api.go#L145)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/machines/register](../internal/hubserver/native_api.go#L151)
 ## hubserver.release_lease
 
 Release lease
@@ -4342,7 +4342,7 @@ Release lease
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v1/leases/:id/release](../internal/hubserver/api_http.go#L67)
+Sources: [POST /api/v1/leases/:id/release](../internal/hubserver/api_http.go#L68)
 ## hubserver.release_native_lease
 
 Release native lease
@@ -4361,7 +4361,7 @@ Release native lease
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/leases/:lease/release](../internal/hubserver/native_api.go#L144)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/leases/:lease/release](../internal/hubserver/native_api.go#L150)
 ## hubserver.remove_project_secret
 
 Remove project secret
@@ -4381,7 +4381,7 @@ Remove project secret
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L82), [web/conversation/src/app/account/api.ts:233](../web/conversation/src/app/account/api.ts#L233)
+Sources: [DELETE /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L84), [web/conversation/src/app/account/api.ts:263](../web/conversation/src/app/account/api.ts#L263)
 ## hubserver.renew_lease
 
 Renew lease
@@ -4400,7 +4400,7 @@ Renew lease
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v1/leases/:id/renew](../internal/hubserver/api_http.go#L66)
+Sources: [POST /api/v1/leases/:id/renew](../internal/hubserver/api_http.go#L67)
 ## hubserver.renew_native_lease
 
 Renew native lease
@@ -4419,7 +4419,7 @@ Renew native lease
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/leases/:lease/renew](../internal/hubserver/native_api.go#L143)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/leases/:lease/renew](../internal/hubserver/native_api.go#L149)
 ## hubserver.renew_runner_identity
 
 Renew runner identity
@@ -4476,7 +4476,7 @@ Report workspace action run
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/action-runs](../internal/hubserver/native_api.go#L168)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/action-runs](../internal/hubserver/native_api.go#L174)
 ## hubserver.repository_freshness
 
 Repository freshness
@@ -4496,7 +4496,7 @@ Repository freshness
 - Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v1/repositories/freshness](../internal/hubserver/api_http.go#L74)
+Sources: [GET /api/v1/repositories/freshness](../internal/hubserver/api_http.go#L76)
 ## hubserver.restore_native_issue
 
 Restore native issue
@@ -4516,7 +4516,7 @@ Restore native issue
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/restore](../internal/hubserver/native_api.go#L130)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/restore](../internal/hubserver/native_api.go#L133)
 ## hubserver.review_change
 
 Review change
@@ -4536,7 +4536,7 @@ Review change
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: approvals and changes requested can change workflow; policy approval changes project decisions → operator
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/changes/:change/versions/:version/reviews](../internal/hubserver/changes.go#L81), [web/conversation/src/app/work/lib/workHttp.ts:622](../web/conversation/src/app/work/lib/workHttp.ts#L622)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/changes/:change/versions/:version/reviews](../internal/hubserver/changes.go#L81), [web/conversation/src/app/work/lib/workHttp.ts:631](../web/conversation/src/app/work/lib/workHttp.ts#L631)
 ## hubserver.revoke_api_token
 
 Revoke a p i token
@@ -4556,7 +4556,7 @@ Revoke a p i token
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [DELETE /api/v1/tokens/:id](../internal/hubserver/api_http.go#L79)
+Sources: [DELETE /api/v1/tokens/:id](../internal/hubserver/api_http.go#L80)
 ## hubserver.revoke_api_token_maintenance
 
 Revoke a p i token maintenance
@@ -4595,7 +4595,7 @@ Revoke hosted invitation j s o n
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/members/invitations/:invitation](../internal/hubserver/hosted_org_api.go#L40), [web/conversation/src/app/account/api.ts:168](../web/conversation/src/app/account/api.ts#L168)
+Sources: [DELETE /api/v2/organizations/:organization/members/invitations/:invitation](../internal/hubserver/hosted_org_api.go#L40), [web/conversation/src/app/account/api.ts:191](../web/conversation/src/app/account/api.ts#L191)
 ## hubserver.revoke_hosted_member
 
 Revoke hosted member
@@ -4615,7 +4615,7 @@ Revoke hosted member
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/members/:member](../internal/hubserver/hosted_org_api.go#L42), [POST /organization/members/:member/revoke](../internal/hubserver/hosted_ui.go#L44), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [web/conversation/src/app/account/api.ts:175](../web/conversation/src/app/account/api.ts#L175)
+Sources: [DELETE /api/v2/organizations/:organization/members/:member](../internal/hubserver/hosted_org_api.go#L42), [POST /organization/members/:member/revoke](../internal/hubserver/hosted_ui.go#L53), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [web/conversation/src/app/account/api.ts:205](../web/conversation/src/app/account/api.ts#L205)
 ## hubserver.revoke_hosted_shared_sessions
 
 Revoke hosted shared sessions
@@ -4654,14 +4654,14 @@ Revoke project policy
 - Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: policy/access/destructive/budget/material external operation → operator
 
-Sources: [DELETE /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L59), [DELETE /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L112)
+Sources: [DELETE /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L61), [DELETE /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L114)
 ## hubserver.revoke_runner_enrollment
 
 Revoke runner enrollment
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.revoke_runner_enrollment` — Typed revoke_runner_enrollment schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.revoke_runner_enrollment` — Typed revoke_runner_enrollment schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.revokeRunnerEnrollmentCommand
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -4681,7 +4681,7 @@ Revoke runner identity
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.revoke_runner_identity` — Typed revoke_runner_identity schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.revoke_runner_identity` — Typed revoke_runner_identity schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.revokeRunnerIdentityCommand
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -4714,7 +4714,7 @@ Rotate a p i token
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v1/tokens/:id/rotate](../internal/hubserver/api_http.go#L78)
+Sources: [POST /api/v1/tokens/:id/rotate](../internal/hubserver/api_http.go#L79)
 ## hubserver.rotate_api_token_maintenance
 
 Rotate a p i token maintenance
@@ -4848,7 +4848,7 @@ Save onboarding
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [PUT /api/v2/organizations/:organization/projects/:project/onboarding](../internal/hubserver/onboarding.go#L28), [web/conversation/src/app/account/api.ts:295](../web/conversation/src/app/account/api.ts#L295)
+Sources: [PUT /api/v2/organizations/:organization/projects/:project/onboarding](../internal/hubserver/onboarding.go#L28), [web/conversation/src/app/account/api.ts:327](../web/conversation/src/app/account/api.ts#L327)
 ## hubserver.set_project_secret
 
 Set project secret
@@ -4868,7 +4868,7 @@ Set project secret
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [PUT /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L81), [web/conversation/src/app/account/SpritesCard.tsx:50](../web/conversation/src/app/account/SpritesCard.tsx#L50), [web/conversation/src/app/account/SpritesCard.tsx:50](../web/conversation/src/app/account/SpritesCard.tsx#L50), [web/conversation/src/app/account/api.ts:231](../web/conversation/src/app/account/api.ts#L231)
+Sources: [PUT /api/v2/organizations/:organization/projects/:project/secrets/:kind](../internal/hubserver/project_secrets.go#L83), [web/conversation/src/app/account/SpritesCard.tsx:51](../web/conversation/src/app/account/SpritesCard.tsx#L51), [web/conversation/src/app/account/SpritesCard.tsx:51](../web/conversation/src/app/account/SpritesCard.tsx#L51), [web/conversation/src/app/account/api.ts:261](../web/conversation/src/app/account/api.ts#L261)
 ## hubserver.start_git_hub_import
 
 Start git hub import
@@ -4889,7 +4889,7 @@ Start git hub import
 - Confirmation: initial import → none
 - Confirmation: restart discards prior import history → operator
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/imports](../internal/hubserver/integration.go#L153)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/imports](../internal/hubserver/integration.go#L177)
 ## hubserver.start_hosted_invitation
 
 Start hosted invitation
@@ -4908,7 +4908,7 @@ Start hosted invitation
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /invite](../internal/hubserver/hosted_ui.go#L27)
+Sources: [GET /invite](../internal/hubserver/hosted_ui.go#L29)
 ## hubserver.start_hosted_login
 
 Start hosted login
@@ -4927,7 +4927,7 @@ Start hosted login
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /auth/oidc/start](../internal/hubserver/hosted_ui.go#L25), [internal/web/templates/hosted.templ:30](../internal/web/templates/hosted.templ#L30), [internal/web/templates/hosted.templ:55](../internal/web/templates/hosted.templ#L55), [internal/web/templates/hosted.templ:115](../internal/web/templates/hosted.templ#L115)
+Sources: [GET /auth/oidc/start](../internal/hubserver/hosted_ui.go#L27), [internal/web/templates/hosted.templ:30](../internal/web/templates/hosted.templ#L30), [internal/web/templates/hosted.templ:55](../internal/web/templates/hosted.templ#L55), [internal/web/templates/hosted.templ:115](../internal/web/templates/hosted.templ#L115)
 ## hubserver.start_hosted_support
 
 Start hosted support
@@ -4947,7 +4947,7 @@ Start hosted support
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v2/organizations/:organization/support/start](../internal/hubserver/hosted_org_api.go#L50), [POST /support/start](../internal/hubserver/hosted_ui.go#L29), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [web/conversation/src/app/account/api.ts:214](../web/conversation/src/app/account/api.ts#L214), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97)
+Sources: [POST /api/v2/organizations/:organization/support/start](../internal/hubserver/hosted_org_api.go#L50), [POST /support/start](../internal/hubserver/hosted_ui.go#L31), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [web/conversation/src/app/account/api.ts:244](../web/conversation/src/app/account/api.ts#L244), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97)
 ## hubserver.static_assets
 
 Static assets
@@ -4966,7 +4966,7 @@ Static assets
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /static/*](../internal/hubserver/hosted_ui.go#L22)
+Sources: [GET /static/*](../internal/hubserver/hosted_ui.go#L24)
 ## hubserver.stream_conversation_events
 
 Stream conversation events
@@ -4986,7 +4986,7 @@ Stream conversation events
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation/events](../internal/hubserver/conversation_api.go#L42), [web/conversation/src/runtime/rpc/sse.ts:150](../web/conversation/src/runtime/rpc/sse.ts#L150)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/conversations/:conversation/events](../internal/hubserver/conversation_api.go#L44), [web/conversation/src/runtime/rpc/sse.ts:150](../web/conversation/src/runtime/rpc/sse.ts#L150)
 ## hubserver.submit_change_check
 
 Submit change check
@@ -5025,7 +5025,7 @@ Switch hosted organization
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/switch](../internal/hubserver/hosted_org_api.go#L48), [POST /organization/switch](../internal/hubserver/hosted_ui.go#L42), [internal/web/templates/hosted.templ:138](../internal/web/templates/hosted.templ#L138), [internal/web/templates/hosted.templ:138](../internal/web/templates/hosted.templ#L138), [web/conversation/src/app/account/api.ts:209](../web/conversation/src/app/account/api.ts#L209)
+Sources: [POST /api/v2/organizations/:organization/switch](../internal/hubserver/hosted_org_api.go#L48), [POST /organization/switch](../internal/hubserver/hosted_ui.go#L51), [internal/web/templates/hosted.templ:138](../internal/web/templates/hosted.templ#L138), [internal/web/templates/hosted.templ:138](../internal/web/templates/hosted.templ#L138), [web/conversation/src/app/account/api.ts:239](../web/conversation/src/app/account/api.ts#L239)
 ## hubserver.transition_native_issue
 
 Transition native issue
@@ -5046,7 +5046,7 @@ Transition native issue
 - Confirmation: ordinary non-destructive write → none
 - Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/workflow](../internal/hubserver/native_api.go#L132), [web/conversation/src/app/work/lib/workHttp.ts:566](../web/conversation/src/app/work/lib/workHttp.ts#L566)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/workflow](../internal/hubserver/native_api.go#L135), [web/conversation/src/app/work/lib/workHttp.ts:573](../web/conversation/src/app/work/lib/workHttp.ts#L573)
 ## hubserver.unbind_workspace_worker
 
 Unbind workspace worker
@@ -5065,7 +5065,7 @@ Unbind workspace worker
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/unbind](../internal/hubserver/native_api.go#L167)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/workspaces/:workspace/worker/unbind](../internal/hubserver/native_api.go#L173)
 ## hubserver.update_hosted_plan
 
 Update hosted plan
@@ -5084,7 +5084,7 @@ Update hosted plan
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/entitlements](../internal/hubserver/hosted_ui.go#L52)
+Sources: [POST /api/v2/organizations/:organization/entitlements](../internal/hubserver/hosted_ui.go#L61)
 ## hubserver.update_native_comment
 
 Update native comment
@@ -5104,7 +5104,7 @@ Update native comment
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [PATCH /api/v2/organizations/:organization/projects/:project/work-items/:item/comments/:comment](../internal/hubserver/native_api.go#L136)
+Sources: [PATCH /api/v2/organizations/:organization/projects/:project/work-items/:item/comments/:comment](../internal/hubserver/native_api.go#L139)
 ## hubserver.update_native_issue
 
 Update native issue
@@ -5125,7 +5125,7 @@ Update native issue
 - Confirmation: ordinary non-destructive write → none
 - Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
-Sources: [PATCH /api/v2/organizations/:organization/projects/:project/work-items/:item](../internal/hubserver/native_api.go#L128), [web/conversation/src/app/work/lib/workHttp.ts:556](../web/conversation/src/app/work/lib/workHttp.ts#L556)
+Sources: [PATCH /api/v2/organizations/:organization/projects/:project/work-items/:item](../internal/hubserver/native_api.go#L131), [web/conversation/src/app/work/lib/workHttp.ts:563](../web/conversation/src/app/work/lib/workHttp.ts#L563), [web/conversation/src/app/work/IssuePage.tsx:1065](../web/conversation/src/app/work/IssuePage.tsx#L1065), [web/conversation/src/app/work/IssuePage.tsx:1065](../web/conversation/src/app/work/IssuePage.tsx#L1065)
 ## hubserver.update_project_integration
 
 Update project integration
@@ -5146,14 +5146,14 @@ Update project integration
 - Confirmation: projection disabled and repository effects disabled → none
 - Confirmation: summary projection or repository effects enabled → operator
 
-Sources: [PUT /api/v2/organizations/:organization/projects/:project/integration](../internal/hubserver/integration.go#L149), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/integration](../internal/hubserver/onboarding.go#L25), [web/conversation/src/app/account/api.ts:272](../web/conversation/src/app/account/api.ts#L272)
+Sources: [PUT /api/v2/organizations/:organization/projects/:project/integration](../internal/hubserver/integration.go#L173), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/integration](../internal/hubserver/onboarding.go#L25), [web/conversation/src/app/account/api.ts:281](../web/conversation/src/app/account/api.ts#L281)
 ## hubserver.update_runner_host
 
 Update runner host
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.update_runner_host` — Typed update_runner_host schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.update_runner_host` — Typed update_runner_host schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.updateRunnerHostCommand
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -5167,14 +5167,14 @@ Update runner host
 - Confirmation: display name or descriptive tag edit → none
 - Confirmation: capacity, scheduling, isolation, services or access changes → operator
 
-Sources: [PUT /api/v2/organizations/:organization/machines/:machine/routing](../internal/hubserver/runner_enrollment.go#L35)
+Sources: [PUT /api/v2/organizations/:organization/machines/:machine/routing](../internal/hubserver/runner_enrollment.go#L41)
 ## hubserver.update_runner_routing
 
 Update runner routing
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.update_runner_routing` — Typed update_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.update_runner_routing` — Typed update_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Service.updateRunnerRoutingCommand / runnerRoutingRequest.effective
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -5188,7 +5188,7 @@ Update runner routing
 - Confirmation: display name or descriptive tag edit → none
 - Confirmation: capacity, scheduling, isolation, services or access changes → operator
 
-Sources: [PUT /api/v2/organizations/:organization/runners/:runner/routing](../internal/hubserver/runner_enrollment.go#L34), [web/conversation/src/app/account/api.ts:368](../web/conversation/src/app/account/api.ts#L368)
+Sources: [PUT /api/v2/organizations/:organization/runners/:runner/routing](../internal/hubserver/runner_enrollment.go#L34), [web/conversation/src/app/account/api.ts:400](../web/conversation/src/app/account/api.ts#L400), [web/conversation/src/app/fleet/RunnerDetailSheet.tsx:121](../web/conversation/src/app/fleet/RunnerDetailSheet.tsx#L121), [web/conversation/src/app/fleet/RunnerDetailSheet.tsx:121](../web/conversation/src/app/fleet/RunnerDetailSheet.tsx#L121), [web/conversation/src/app/fleet/RunnerDetailSheet.tsx:121](../web/conversation/src/app/fleet/RunnerDetailSheet.tsx#L121)
 ## hubserver.upload_conversation_attachment
 
 Upload conversation attachment
@@ -5208,7 +5208,7 @@ Upload conversation attachment
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/attachments](../internal/hubserver/conversation_api.go#L47), [web/conversation/src/runtime/rpc/http.ts:486](../web/conversation/src/runtime/rpc/http.ts#L486)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/attachments](../internal/hubserver/conversation_api.go#L49), [web/conversation/src/runtime/rpc/http.ts:490](../web/conversation/src/runtime/rpc/http.ts#L490)
 ## hubserver.validate_runner_lease
 
 Validate runner lease
@@ -5227,7 +5227,7 @@ Validate runner lease
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/leases/:lease/validate](../internal/hubserver/runner_enrollment.go#L36)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/leases/:lease/validate](../internal/hubserver/runner_enrollment.go#L42)
 ## hubserver.view_change_file
 
 View change file
@@ -5266,14 +5266,14 @@ Workspace for work item
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/workspace](../internal/hubserver/native_api.go#L161)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/workspace](../internal/hubserver/native_api.go#L167)
 ## web.ai_debug_prompt
 
 Ai debug prompt
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
-- Tool: `work_reads.ai_debug_prompt` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
+- Tool: `fleet.ai_debug_prompt` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project Current project read grant and ownership for project/issue scopes, with snapshot projection; fleet scope requires an unscoped current read credential.; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.aiDebugProjectionFromSnapshot / aidebug.Projection.Prompt
 - Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
@@ -5286,7 +5286,7 @@ Ai debug prompt
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/ai-debug](../internal/web/server.go#L549), [internal/web/templates/ai_debug.templ:9](../internal/web/templates/ai_debug.templ#L9), [internal/web/templates/ai_debug.templ:192](../internal/web/templates/ai_debug.templ#L192)
+Sources: [GET /api/v1/ai-debug](../internal/web/server.go#L552), [internal/web/templates/ai_debug.templ:9](../internal/web/templates/ai_debug.templ#L9), [internal/web/templates/ai_debug.templ:192](../internal/web/templates/ai_debug.templ#L192)
 ## web.analytics_dashboard
 
 Analytics dashboard
@@ -5306,7 +5306,7 @@ Analytics dashboard
 - Availability: credential_maintenance / github,native / analytics application reads — unavailable: Analytics store/dashboard or hosted native services are absent in credential maintenance; direct calls return safe unavailable.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /analytics](../internal/web/server.go#L470), [internal/web/templates/analytics.templ:78](../internal/web/templates/analytics.templ#L78), [internal/web/templates/analytics.templ:80](../internal/web/templates/analytics.templ#L80), [internal/web/templates/analytics.templ:79](../internal/web/templates/analytics.templ#L79)
+Sources: [GET /analytics](../internal/web/server.go#L473), [internal/web/templates/analytics.templ:78](../internal/web/templates/analytics.templ#L78), [internal/web/templates/analytics.templ:80](../internal/web/templates/analytics.templ#L80), [internal/web/templates/analytics.templ:79](../internal/web/templates/analytics.templ#L79)
 ## web.api_board_activity
 
 Api board activity
@@ -5326,7 +5326,7 @@ Api board activity
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/activity](../internal/web/server.go#L554), [internal/web/templates/activity.templ:131](../internal/web/templates/activity.templ#L131), [internal/web/templates/activity.templ:80](../internal/web/templates/activity.templ#L80), [internal/web/templates/activity.templ:47](../internal/web/templates/activity.templ#L47), [internal/web/templates/activity.templ:95](../internal/web/templates/activity.templ#L95), [internal/web/templates/activity.templ:276](../internal/web/templates/activity.templ#L276)
+Sources: [GET /api/v1/board/activity](../internal/web/server.go#L557), [internal/web/templates/activity.templ:131](../internal/web/templates/activity.templ#L131), [internal/web/templates/activity.templ:80](../internal/web/templates/activity.templ#L80), [internal/web/templates/activity.templ:47](../internal/web/templates/activity.templ#L47), [internal/web/templates/activity.templ:95](../internal/web/templates/activity.templ#L95), [internal/web/templates/activity.templ:276](../internal/web/templates/activity.templ#L276)
 ## web.api_board_activity_events
 
 Api board activity events
@@ -5346,7 +5346,7 @@ Api board activity events
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/activity/events](../internal/web/server.go#L555)
+Sources: [GET /api/v1/board/activity/events](../internal/web/server.go#L558)
 ## web.api_board_card
 
 Api board card
@@ -5366,7 +5366,7 @@ Api board card
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/card](../internal/web/server.go#L550), [internal/web/templates/sheet.templ:355](../internal/web/templates/sheet.templ#L355), [internal/web/templates/sheet.templ:357](../internal/web/templates/sheet.templ#L357)
+Sources: [GET /api/v1/board/card](../internal/web/server.go#L553), [internal/web/templates/sheet.templ:355](../internal/web/templates/sheet.templ#L355), [internal/web/templates/sheet.templ:357](../internal/web/templates/sheet.templ#L357)
 ## web.api_board_card_core
 
 Api board card core
@@ -5386,7 +5386,7 @@ Api board card core
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/card/core](../internal/web/server.go#L551), [internal/web/templates/sheet.templ:142](../internal/web/templates/sheet.templ#L142)
+Sources: [GET /api/v1/board/card/core](../internal/web/server.go#L554), [internal/web/templates/sheet.templ:142](../internal/web/templates/sheet.templ#L142)
 ## web.api_board_conversation
 
 Api board conversation
@@ -5406,7 +5406,7 @@ Api board conversation
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/conversation](../internal/web/server.go#L548), [internal/web/templates/comments.templ:86](../internal/web/templates/comments.templ#L86), [internal/web/templates/comments.templ:67](../internal/web/templates/comments.templ#L67), [internal/web/templates/comments.templ:18](../internal/web/templates/comments.templ#L18), [internal/web/templates/comments.templ:153](../internal/web/templates/comments.templ#L153), [internal/web/templates/comments.templ:177](../internal/web/templates/comments.templ#L177), [internal/web/templates/comments.templ:137](../internal/web/templates/comments.templ#L137)
+Sources: [GET /api/v1/board/conversation](../internal/web/server.go#L556), [internal/web/templates/comments.templ:86](../internal/web/templates/comments.templ#L86), [internal/web/templates/comments.templ:67](../internal/web/templates/comments.templ#L67), [internal/web/templates/comments.templ:18](../internal/web/templates/comments.templ#L18), [internal/web/templates/comments.templ:153](../internal/web/templates/comments.templ#L153), [internal/web/templates/comments.templ:177](../internal/web/templates/comments.templ#L177), [internal/web/templates/comments.templ:137](../internal/web/templates/comments.templ#L137)
 ## web.api_board_receipt
 
 Api board receipt
@@ -5426,7 +5426,7 @@ Api board receipt
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/receipt](../internal/web/server.go#L552), [internal/web/templates/sheet.templ:298](../internal/web/templates/sheet.templ#L298), [internal/web/templates/sheet.templ:327](../internal/web/templates/sheet.templ#L327)
+Sources: [GET /api/v1/board/receipt](../internal/web/server.go#L555), [internal/web/templates/sheet.templ:298](../internal/web/templates/sheet.templ#L298), [internal/web/templates/sheet.templ:327](../internal/web/templates/sheet.templ#L327)
 ## web.api_board_session
 
 Api board session
@@ -5446,7 +5446,7 @@ Api board session
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/session](../internal/web/server.go#L556), [internal/web/templates/activity.templ:148](../internal/web/templates/activity.templ#L148), [internal/web/templates/activity.templ:231](../internal/web/templates/activity.templ#L231), [internal/web/templates/activity.templ:206](../internal/web/templates/activity.templ#L206), [internal/web/templates/activity.templ:20](../internal/web/templates/activity.templ#L20)
+Sources: [GET /api/v1/board/session](../internal/web/server.go#L559), [internal/web/templates/activity.templ:148](../internal/web/templates/activity.templ#L148), [internal/web/templates/activity.templ:231](../internal/web/templates/activity.templ#L231), [internal/web/templates/activity.templ:206](../internal/web/templates/activity.templ#L206), [internal/web/templates/activity.templ:20](../internal/web/templates/activity.templ#L20)
 ## web.api_board_session_events
 
 Api board session events
@@ -5466,7 +5466,7 @@ Api board session events
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/session/events](../internal/web/server.go#L557)
+Sources: [GET /api/v1/board/session/events](../internal/web/server.go#L560)
 ## web.api_board_session_history
 
 Api board session history
@@ -5486,14 +5486,14 @@ Api board session history
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/board/session/history](../internal/web/server.go#L558)
+Sources: [GET /api/v1/board/session/history](../internal/web/server.go#L561)
 ## web.api_budget_override_clear
 
 Api budget override clear
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.api_budget_override_clear` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.api_budget_override_clear` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role local operator (dashboard authentication when configured); credential Current daemon credential read/write scope and project grant; browser login/private dashboard session for approval.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.apiBudgetOverrideClear; s.renderProjectBudgetPanel
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -5506,14 +5506,14 @@ Api budget override clear
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: ordinary reversible budget override clear → none
 
-Sources: [DELETE /api/v1/projects/:project_id/budget/override](../internal/web/server.go#L517)
+Sources: [DELETE /api/v1/projects/:project_id/budget/override](../internal/web/server.go#L525)
 ## web.api_budget_override_set
 
 Api budget override set
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.api_budget_override_set` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.api_budget_override_set` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role local operator (dashboard authentication when configured); credential Current daemon credential read/write scope and project grant; browser login/private dashboard session for approval.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.apiBudgetOverrideSet; s.registry.Get, s.renderProjectBudgetPanel
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -5526,14 +5526,14 @@ Api budget override set
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material purchase, portal or budget change → operator
 
-Sources: [POST /api/v1/projects/:project_id/budget/override](../internal/web/server.go#L521), [internal/web/templates/project.templ:158](../internal/web/templates/project.templ#L158), [internal/web/templates/project.templ:142](../internal/web/templates/project.templ#L142), [internal/web/templates/project.templ:142](../internal/web/templates/project.templ#L142)
+Sources: [POST /api/v1/projects/:project_id/budget/override](../internal/web/server.go#L524), [internal/web/templates/project.templ:158](../internal/web/templates/project.templ#L158), [internal/web/templates/project.templ:142](../internal/web/templates/project.templ#L142), [internal/web/templates/project.templ:142](../internal/web/templates/project.templ#L142)
 ## web.api_capacity_clear
 
 Api capacity clear
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.capacity_clear` — Typed capacity_clear schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.capacity_clear` — Typed capacity_clear schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.clearCapacity
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -5546,14 +5546,14 @@ Api capacity clear
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material action; YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v1/capacity/clear](../internal/web/server.go#L540), [internal/web/templates/dashboard.templ:337](../internal/web/templates/dashboard.templ#L337), [internal/web/templates/dashboard.templ:337](../internal/web/templates/dashboard.templ#L337)
+Sources: [POST /api/v1/capacity/clear](../internal/web/server.go#L543), [internal/web/templates/dashboard.templ:337](../internal/web/templates/dashboard.templ#L337), [internal/web/templates/dashboard.templ:337](../internal/web/templates/dashboard.templ#L337)
 ## web.api_chat_confirm
 
 Api chat confirm
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3337.
 - Decision: Human approval/rejection uses the existing dashboard chat preview and a portable authenticated form. MCP exposes action_result only; neither repeated calls nor annotations grant approval.
-- Tool: `conversations_workspaces.action_result` — action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments → bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result
+- Tool: `actions.action_result` — action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments → bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result
 - Authority: role operator with an existing authenticated dashboard login/private session; credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: chat.Service.Confirm/RejectConnectionAction and shared dashboard action commands; operatorApprovalDecision authenticates the human browser and exact stored preview.
 - Extraction: Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution. Fleet, billing and work actions share these same hosted approval routes; current runner grants apply to fleet previews, including owners. No sibling approval handler remains.
@@ -5566,14 +5566,14 @@ Api chat confirm
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: real operator confirms the pending material action → operator
 
-Sources: [POST /api/v1/chat/actions/:action_id/confirm](../internal/web/server.go#L556), [internal/web/templates/chat.templ:98](../internal/web/templates/chat.templ#L98), [POST /chat/approval](../internal/web/server.go#L513), [internal/web/templates/chat.templ:122](../internal/web/templates/chat.templ#L122), [internal/web/templates/chat.templ:122](../internal/web/templates/chat.templ#L122), [POST /chat/approval](../internal/hubserver/operator_authority.go#L36)
+Sources: [POST /api/v1/chat/actions/:action_id/confirm](../internal/web/server.go#L564), [internal/web/templates/chat.templ:86](../internal/web/templates/chat.templ#L86), [POST /chat/approval](../internal/web/server.go#L518), [internal/web/templates/chat.templ:131](../internal/web/templates/chat.templ#L131), [internal/web/templates/chat.templ:131](../internal/web/templates/chat.templ#L131), [POST /chat/approval](../internal/hubserver/operator_authority.go#L36)
 ## web.api_chat_message
 
 Api chat message
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
 - Decision: The configured daemon chat provider and connection history are exposed directly. Only read tools are offered to a nested provider turn; use named MCP command tools for operator actions and the existing browser approval surface. Browser cookie/session IDs and approval decisions are not tool arguments.
-- Tool: `conversations_workspaces.post_operator_chat` — {"project_id":"bounded authorized identifier","request_id":"1..128 bytes","message":"1..8192 bytes"} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
+- Tool: `conversations_workspaces.post_operator_chat` — {"type":"object","required":["project_id","request_id","message"],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","description":"Business idempotency key; reuse for the same operation across reconnects. Independent of JSON-RPC id.","minLength":1,"maxLength":128},"message":{"type":"string","minLength":1,"maxLength":8192}},"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role local operator (dashboard authentication when configured); credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
 - Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
@@ -5586,14 +5586,14 @@ Api chat message
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/chat/messages](../internal/web/server.go#L555), [internal/web/templates/chat.templ:35](../internal/web/templates/chat.templ#L35), [internal/web/templates/chat.templ:33](../internal/web/templates/chat.templ#L33)
+Sources: [POST /api/v1/chat/messages](../internal/web/server.go#L563), [internal/web/templates/chat.templ:36](../internal/web/templates/chat.templ#L36), [internal/web/templates/chat.templ:34](../internal/web/templates/chat.templ#L34)
 ## web.api_chat_panel
 
 Api chat panel
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
 - Decision: The configured daemon chat provider and connection history are exposed directly. Only read tools are offered to a nested provider turn; use named MCP command tools for operator actions and the existing browser approval surface. Browser cookie/session IDs and approval decisions are not tool arguments.
-- Tool: `conversations_workspaces.get_operator_chat` — {"limit":"optional integer 1..200"} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
+- Tool: `conversations_workspaces.get_operator_chat` — {"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":200}},"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.
 - Extraction: Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.
@@ -5606,14 +5606,14 @@ Api chat panel
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/chat](../internal/web/server.go#L554), [internal/web/templates/shell.templ:259](../internal/web/templates/shell.templ#L259)
+Sources: [GET /api/v1/chat](../internal/web/server.go#L562), [internal/web/templates/shell.templ:259](../internal/web/templates/shell.templ#L259)
 ## web.api_chat_reject
 
 Api chat reject
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3337.
 - Decision: Human approval/rejection uses the existing dashboard chat preview and a portable authenticated form. MCP exposes action_result only; neither repeated calls nor annotations grant approval.
-- Tool: `conversations_workspaces.action_result` — action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments → bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result
+- Tool: `actions.action_result` — action_id (1–256 bytes), within the current authenticated connection; no approval or mode arguments → bounded typed action receipt with exact preview, arguments, organization/project/resource/client, approval URL, status, creation/resolution freshness and result
 - Authority: role operator with an existing authenticated dashboard login/private session; credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: chat.Service.Confirm/RejectConnectionAction and shared dashboard action commands; operatorApprovalDecision authenticates the human browser and exact stored preview.
 - Extraction: Implemented in the existing chat session; no raw/fake HTTP proxy. Original connection authority and action/resource context are revalidated at execution.
@@ -5626,7 +5626,7 @@ Api chat reject
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/chat/actions/:action_id/reject](../internal/web/server.go#L562), [internal/web/templates/chat.templ:85](../internal/web/templates/chat.templ#L85)
+Sources: [POST /api/v1/chat/actions/:action_id/reject](../internal/web/server.go#L565), [internal/web/templates/chat.templ:85](../internal/web/templates/chat.templ#L85)
 ## web.api_create_work_item
 
 Api create work item
@@ -5646,7 +5646,7 @@ Api create work item
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/projects/:project_id/work-items](../internal/web/server.go#L519)
+Sources: [POST /api/v1/projects/:project_id/work-items](../internal/web/server.go#L522)
 ## web.api_demo_scenarios
 
 Api demo scenarios
@@ -5666,14 +5666,14 @@ Api demo scenarios
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or setup navigation → none
 
-Sources: [GET /api/v1/demo/scenarios](../internal/web/server.go#L510)
+Sources: [GET /api/v1/demo/scenarios](../internal/web/server.go#L514)
 ## web.api_failure_breaker_canary
 
 Api failure breaker canary
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.failure_breaker_canary` — Typed failure_breaker_canary schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.failure_breaker_canary` — Typed failure_breaker_canary schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.requestBreakerCanary
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -5686,14 +5686,14 @@ Api failure breaker canary
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material action; YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v1/failure-breaker/canary](../internal/web/server.go#L543), [internal/web/templates/dashboard.templ:227](../internal/web/templates/dashboard.templ#L227), [internal/web/templates/dashboard.templ:227](../internal/web/templates/dashboard.templ#L227)
+Sources: [POST /api/v1/failure-breaker/canary](../internal/web/server.go#L546), [internal/web/templates/dashboard.templ:227](../internal/web/templates/dashboard.templ#L227), [internal/web/templates/dashboard.templ:227](../internal/web/templates/dashboard.templ#L227)
 ## web.api_forge_availability_clear
 
 Api forge availability clear
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.forge_availability_clear` — Typed forge_availability_clear schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.forge_availability_clear` — Typed forge_availability_clear schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.clearForgeAvailability
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -5706,7 +5706,7 @@ Api forge availability clear
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material action; YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v1/forge/availability/clear](../internal/web/server.go#L542)
+Sources: [POST /api/v1/forge/availability/clear](../internal/web/server.go#L545)
 ## web.api_issue
 
 Api issue
@@ -5726,14 +5726,14 @@ Api issue
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/*](../internal/web/server.go#L571), [internal/web/templates/dashboard.templ:4245](../internal/web/templates/dashboard.templ#L4245)
+Sources: [GET /api/v1/*](../internal/web/server.go#L574), [internal/web/templates/dashboard.templ:4245](../internal/web/templates/dashboard.templ#L4245)
 ## web.api_issue_explanation
 
 Api issue explanation
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: The billing_usage.api_issue_explanation alias shares the existing authorized explanation executor. Original explain_item remains compatible; #3340 adds work/board context and #3345 implements this alias. Neither child completes parent #3259.
-- Tool: `billing_usage.api_issue_explanation` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.api_issue_explanation` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role local operator (dashboard authentication when configured); credential Current daemon credential with read scope and project grant; operatorAuthority binds the shared connection and rechecks current application authority.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: s.apiIssueExplanation; s.issueExplanation
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -5746,7 +5746,7 @@ Api issue explanation
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: authorized application read/export → none
 
-Sources: [GET /api/v1/projects/:project_id/issues/explanation](../internal/web/server.go#L524)
+Sources: [GET /api/v1/projects/:project_id/issues/explanation](../internal/web/server.go#L527)
 ## web.api_issue_park_acknowledgement
 
 Api issue park acknowledgement
@@ -5766,7 +5766,7 @@ Api issue park acknowledgement
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/projects/:project_id/issues/explanation](../internal/web/server.go#L525)
+Sources: [POST /api/v1/projects/:project_id/issues/explanation](../internal/web/server.go#L528)
 ## web.api_issue_priority
 
 Api issue priority
@@ -5786,14 +5786,14 @@ Api issue priority
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/projects/:project_id/issues/:issue_id/priority](../internal/web/server.go#L563)
+Sources: [POST /api/v1/projects/:project_id/issues/:issue_id/priority](../internal/web/server.go#L566)
 ## web.api_issue_progress_credit
 
 Api issue progress credit
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.issue_progress_credit` — Typed issue_progress_credit schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.issue_progress_credit` — Typed issue_progress_credit schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: Server.creditOperatorProgress
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -5806,7 +5806,7 @@ Api issue progress credit
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material action; YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v1/projects/:project_id/issues/progress-credit](../internal/web/server.go#L526)
+Sources: [POST /api/v1/projects/:project_id/issues/progress-credit](../internal/web/server.go#L529)
 ## web.api_kanban_comment
 
 Api kanban comment
@@ -5826,7 +5826,7 @@ Api kanban comment
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/kanban/comment](../internal/web/server.go#L567), [POST /api/v1/kanban/comment](../internal/web/server.go#L568), [internal/web/templates/sheet.templ:369](../internal/web/templates/sheet.templ#L369)
+Sources: [GET /api/v1/kanban/comment](../internal/web/server.go#L570), [POST /api/v1/kanban/comment](../internal/web/server.go#L571), [internal/web/templates/sheet.templ:369](../internal/web/templates/sheet.templ#L369)
 ## web.api_kanban_comment_delete
 
 Api kanban comment delete
@@ -5847,7 +5847,7 @@ Api kanban comment delete
 - Confirmation: ordinary non-destructive write → none
 - Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
-Sources: [DELETE /api/v1/kanban/comment](../internal/web/server.go#L570), [internal/web/templates/comments.templ:103](../internal/web/templates/comments.templ#L103), [internal/web/templates/comments.templ:103](../internal/web/templates/comments.templ#L103), [internal/web/templates/dashboard.templ:3190](../internal/web/templates/dashboard.templ#L3190), [internal/web/templates/dashboard.templ:3190](../internal/web/templates/dashboard.templ#L3190), [internal/web/templates/comments.templ:185](../internal/web/templates/comments.templ#L185), [internal/web/templates/comments.templ:185](../internal/web/templates/comments.templ#L185)
+Sources: [DELETE /api/v1/kanban/comment](../internal/web/server.go#L573), [internal/web/templates/comments.templ:103](../internal/web/templates/comments.templ#L103), [internal/web/templates/comments.templ:103](../internal/web/templates/comments.templ#L103), [internal/web/templates/dashboard.templ:3190](../internal/web/templates/dashboard.templ#L3190), [internal/web/templates/dashboard.templ:3190](../internal/web/templates/dashboard.templ#L3190), [internal/web/templates/comments.templ:185](../internal/web/templates/comments.templ#L185), [internal/web/templates/comments.templ:185](../internal/web/templates/comments.templ#L185)
 ## web.api_kanban_comment_edit
 
 Api kanban comment edit
@@ -5867,7 +5867,7 @@ Api kanban comment edit
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/kanban/comment/edit](../internal/web/server.go#L569), [internal/web/templates/comments.templ:203](../internal/web/templates/comments.templ#L203), [internal/web/templates/comments.templ:203](../internal/web/templates/comments.templ#L203)
+Sources: [POST /api/v1/kanban/comment/edit](../internal/web/server.go#L572), [internal/web/templates/comments.templ:203](../internal/web/templates/comments.templ#L203), [internal/web/templates/comments.templ:203](../internal/web/templates/comments.templ#L203)
 ## web.api_kanban_move
 
 Api kanban move
@@ -5888,7 +5888,7 @@ Api kanban move
 - Confirmation: ordinary non-destructive write → none
 - Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
-Sources: [GET /api/v1/kanban/move](../internal/web/server.go#L564), [POST /api/v1/kanban/move](../internal/web/server.go#L565), [internal/web/templates/board.templ:721](../internal/web/templates/board.templ#L721), [internal/web/templates/board.templ:721](../internal/web/templates/board.templ#L721), [internal/web/templates/dashboard.templ:3139](../internal/web/templates/dashboard.templ#L3139), [internal/web/templates/dashboard.templ:3139](../internal/web/templates/dashboard.templ#L3139), [internal/web/templates/sheet.templ:86](../internal/web/templates/sheet.templ#L86), [internal/web/templates/board.templ:647](../internal/web/templates/board.templ#L647)
+Sources: [GET /api/v1/kanban/move](../internal/web/server.go#L567), [POST /api/v1/kanban/move](../internal/web/server.go#L568), [internal/web/templates/board.templ:721](../internal/web/templates/board.templ#L721), [internal/web/templates/board.templ:721](../internal/web/templates/board.templ#L721), [internal/web/templates/dashboard.templ:3139](../internal/web/templates/dashboard.templ#L3139), [internal/web/templates/dashboard.templ:3139](../internal/web/templates/dashboard.templ#L3139), [internal/web/templates/sheet.templ:86](../internal/web/templates/sheet.templ#L86), [internal/web/templates/board.templ:647](../internal/web/templates/board.templ#L647)
 ## web.api_kanban_remove
 
 Api kanban remove
@@ -5909,7 +5909,7 @@ Api kanban remove
 - Confirmation: ordinary non-destructive write → none
 - Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v1/kanban/remove](../internal/web/server.go#L566), [internal/web/templates/sheet.templ:99](../internal/web/templates/sheet.templ#L99), [internal/web/templates/sheet.templ:99](../internal/web/templates/sheet.templ#L99)
+Sources: [POST /api/v1/kanban/remove](../internal/web/server.go#L569), [internal/web/templates/sheet.templ:99](../internal/web/templates/sheet.templ#L99), [internal/web/templates/sheet.templ:99](../internal/web/templates/sheet.templ#L99)
 ## web.api_keys_create
 
 Api keys create
@@ -5929,7 +5929,7 @@ Api keys create
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v1/keys](../internal/web/server.go#L534)
+Sources: [POST /api/v1/keys](../internal/web/server.go#L537)
 ## web.api_keys_list
 
 Api keys list
@@ -5949,7 +5949,7 @@ Api keys list
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: all calls → none
 
-Sources: [GET /api/v1/keys](../internal/web/server.go#L533), [internal/web/templates/api_keys.templ:161](../internal/web/templates/api_keys.templ#L161), [internal/web/templates/api_keys.templ:30](../internal/web/templates/api_keys.templ#L30), [internal/web/templates/api_keys.templ:46](../internal/web/templates/api_keys.templ#L46), [internal/web/templates/api_keys.templ:149](../internal/web/templates/api_keys.templ#L149), [internal/web/templates/api_keys.templ:111](../internal/web/templates/api_keys.templ#L111), [internal/web/templates/api_keys.templ:190](../internal/web/templates/api_keys.templ#L190), [internal/web/templates/api_keys.templ:260](../internal/web/templates/api_keys.templ#L260), [internal/web/templates/api_keys.templ:190](../internal/web/templates/api_keys.templ#L190), [internal/web/templates/api_keys.templ:260](../internal/web/templates/api_keys.templ#L260)
+Sources: [GET /api/v1/keys](../internal/web/server.go#L536), [internal/web/templates/api_keys.templ:161](../internal/web/templates/api_keys.templ#L161), [internal/web/templates/api_keys.templ:30](../internal/web/templates/api_keys.templ#L30), [internal/web/templates/api_keys.templ:46](../internal/web/templates/api_keys.templ#L46), [internal/web/templates/api_keys.templ:149](../internal/web/templates/api_keys.templ#L149), [internal/web/templates/api_keys.templ:111](../internal/web/templates/api_keys.templ#L111), [internal/web/templates/api_keys.templ:190](../internal/web/templates/api_keys.templ#L190), [internal/web/templates/api_keys.templ:260](../internal/web/templates/api_keys.templ#L260), [internal/web/templates/api_keys.templ:190](../internal/web/templates/api_keys.templ#L190), [internal/web/templates/api_keys.templ:260](../internal/web/templates/api_keys.templ#L260)
 ## web.api_keys_page
 
 Api keys page
@@ -5969,7 +5969,7 @@ Api keys page
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: all calls → none
 
-Sources: [GET /api-keys](../internal/web/server.go#L482)
+Sources: [GET /api-keys](../internal/web/server.go#L485)
 ## web.api_keys_revoke
 
 Api keys revoke
@@ -5989,7 +5989,7 @@ Api keys revoke
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [DELETE /api/v1/keys/:id](../internal/web/server.go#L537)
+Sources: [DELETE /api/v1/keys/:id](../internal/web/server.go#L540)
 ## web.api_keys_rotate
 
 Api keys rotate
@@ -6009,14 +6009,14 @@ Api keys rotate
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [GET /api/v1/keys/:id/rotate](../internal/web/server.go#L535), [POST /api/v1/keys/:id/rotate](../internal/web/server.go#L536)
+Sources: [GET /api/v1/keys/:id/rotate](../internal/web/server.go#L538), [POST /api/v1/keys/:id/rotate](../internal/web/server.go#L539)
 ## web.api_operations
 
 Api operations
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.operations_report` — Typed operations_report schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.operations_report` — Typed operations_report schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.readOperationsReport
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6029,7 +6029,7 @@ Api operations
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/operations](../internal/web/server.go#L510)
+Sources: [GET /api/v1/operations](../internal/web/server.go#L513)
 ## web.api_operator_tool
 
 Api operator tool
@@ -6048,7 +6048,7 @@ Api operator tool
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: transport authority establishment → connection
 
-Sources: [POST /api/v1/operator-tools/:tool_name](../internal/web/server.go#L517)
+Sources: [POST /api/v1/operator-tools/:tool_name](../internal/web/server.go#L520)
 ## web.api_operator_tools
 
 Authenticated daemon tool discovery
@@ -6067,7 +6067,7 @@ Authenticated daemon tool discovery
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: transport authority establishment → connection
 
-Sources: [GET /api/v1/operator-tools](../internal/web/server.go#L516)
+Sources: [GET /api/v1/operator-tools](../internal/web/server.go#L519)
 ## web.api_project
 
 Api project
@@ -6087,14 +6087,14 @@ Api project
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v1/projects/*](../internal/web/server.go#L527), [internal/web/templates/dashboard.templ:2398](../internal/web/templates/dashboard.templ#L2398)
+Sources: [GET /api/v1/projects/*](../internal/web/server.go#L535), [internal/web/templates/dashboard.templ:2398](../internal/web/templates/dashboard.templ#L2398)
 ## web.api_refresh
 
 Api refresh
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.refresh` — Typed refresh schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.refresh` — Typed refresh schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.requestOperatorRefresh
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6107,7 +6107,7 @@ Api refresh
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/refresh](../internal/web/server.go#L538)
+Sources: [POST /api/v1/refresh](../internal/web/server.go#L541)
 ## web.api_security_audit_disposition
 
 Api security audit disposition
@@ -6128,14 +6128,14 @@ Api security audit disposition
 - Confirmation: ordinary non-destructive write → none
 - Confirmation: material edit, deletion, archival, removal, terminal lane request or security disposition; explicit authorized YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v1/projects/:project_id/security-audits/dispositions](../internal/web/server.go#L520)
+Sources: [POST /api/v1/projects/:project_id/security-audits/dispositions](../internal/web/server.go#L523)
 ## web.api_staleness_warning_acknowledgement
 
 Api staleness warning acknowledgement
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.acknowledge_staleness_warnings` — Typed acknowledge_staleness_warnings schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.acknowledge_staleness_warnings` — Typed acknowledge_staleness_warnings schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: Server.acknowledgeOperatorWarnings
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6148,14 +6148,14 @@ Api staleness warning acknowledgement
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/projects/:project_id/staleness-warnings/:warning_id/acknowledge](../internal/web/server.go#L528), [internal/web/templates/board.templ:265](../internal/web/templates/board.templ#L265), [internal/web/templates/board.templ:263](../internal/web/templates/board.templ#L263)
+Sources: [POST /api/v1/projects/:project_id/staleness-warnings/:warning_id/acknowledge](../internal/web/server.go#L531), [internal/web/templates/board.templ:265](../internal/web/templates/board.templ#L265), [internal/web/templates/board.templ:263](../internal/web/templates/board.templ#L263)
 ## web.api_staleness_warnings_acknowledgement
 
 Api staleness warnings acknowledgement
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.acknowledge_staleness_warnings` — Typed acknowledge_staleness_warnings schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.acknowledge_staleness_warnings` — Typed acknowledge_staleness_warnings schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: Server.acknowledgeOperatorWarnings
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6168,7 +6168,7 @@ Api staleness warnings acknowledgement
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v1/projects/:project_id/staleness-warnings/acknowledge](../internal/web/server.go#L527)
+Sources: [POST /api/v1/projects/:project_id/staleness-warnings/acknowledge](../internal/web/server.go#L530)
 ## web.api_state
 
 Api state
@@ -6188,14 +6188,14 @@ Api state
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/state](../internal/web/server.go#L509), [internal/web/templates/dashboard.templ:2396](../internal/web/templates/dashboard.templ#L2396)
+Sources: [GET /api/v1/state](../internal/web/server.go#L512), [internal/web/templates/dashboard.templ:2396](../internal/web/templates/dashboard.templ#L2396)
 ## web.api_stop_run
 
 Api stop run
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.stop_run` — Typed stop_run schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `actions.stop_run` — Typed stop_run schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential read/write/admin (project scope where route supplies project); project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: Server.stopRun / RunStopper.StopRun; exact dashboard stop/reroute identity
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6208,7 +6208,7 @@ Api stop run
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material action; YOLO suppresses confirmation only → operator
 
-Sources: [GET /api/v1/projects/:project_id/runs/:attempt/stop](../internal/web/server.go#L530), [POST /api/v1/projects/:project_id/runs/:attempt/stop](../internal/web/server.go#L531), [internal/web/templates/stop_run.templ:42](../internal/web/templates/stop_run.templ#L42), [internal/web/templates/stop_run.templ:42](../internal/web/templates/stop_run.templ#L42), [internal/web/templates/activity.templ:175](../internal/web/templates/activity.templ#L175), [internal/web/templates/fleet.templ:199](../internal/web/templates/fleet.templ#L199)
+Sources: [GET /api/v1/projects/:project_id/runs/:attempt/stop](../internal/web/server.go#L533), [POST /api/v1/projects/:project_id/runs/:attempt/stop](../internal/web/server.go#L534), [internal/web/templates/stop_run.templ:42](../internal/web/templates/stop_run.templ#L42), [internal/web/templates/stop_run.templ:42](../internal/web/templates/stop_run.templ#L42), [internal/web/templates/activity.templ:175](../internal/web/templates/activity.templ#L175), [internal/web/templates/fleet.templ:199](../internal/web/templates/fleet.templ#L199)
 ## web.api_time_series
 
 Api time series
@@ -6228,14 +6228,14 @@ Api time series
 - Availability: credential_maintenance / github,native / analytics application reads — unavailable: Analytics store/dashboard or hosted native services are absent in credential maintenance; direct calls return safe unavailable.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/timeseries](../internal/web/server.go#L512), [internal/web/templates/dashboard.templ:2028](../internal/web/templates/dashboard.templ#L2028), [static/js/dashboard-charts.js:73](../static/js/dashboard-charts.js#L73)
+Sources: [GET /api/v1/timeseries](../internal/web/server.go#L515), [internal/web/templates/dashboard.templ:2028](../internal/web/templates/dashboard.templ#L2028), [static/js/dashboard-charts.js:73](../static/js/dashboard-charts.js#L73)
 ## web.api_tracker_availability_clear
 
 Api tracker availability clear
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.tracker_availability_clear` — Typed tracker_availability_clear schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.tracker_availability_clear` — Typed tracker_availability_clear schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.clearTrackerAvailability
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6248,14 +6248,14 @@ Api tracker availability clear
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material action; YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v1/tracker/availability/clear](../internal/web/server.go#L541)
+Sources: [POST /api/v1/tracker/availability/clear](../internal/web/server.go#L544)
 ## web.api_update_apply
 
 Api update apply
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.update_apply` — Typed update_apply schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.update_apply` — Typed update_apply schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.applyOperatorUpdate
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6268,14 +6268,14 @@ Api update apply
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material action; YOLO suppresses confirmation only → operator
 
-Sources: [POST /api/v1/update/apply](../internal/web/server.go#L539), [internal/web/templates/update_pending.templ:23](../internal/web/templates/update_pending.templ#L23), [internal/web/templates/update_pending.templ:23](../internal/web/templates/update_pending.templ#L23)
+Sources: [POST /api/v1/update/apply](../internal/web/server.go#L542), [internal/web/templates/update_pending.templ:23](../internal/web/templates/update_pending.templ#L23), [internal/web/templates/update_pending.templ:23](../internal/web/templates/update_pending.templ#L23)
 ## web.api_usage
 
 Api usage
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
 - Decision: Implemented through shared application billing/usage commands and the existing approval/audit/retry contract. This child does not complete parent #3259.
-- Tool: `billing_usage.api_usage` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
+- Tool: `billing_usage.billing_usage.api_usage` — Typed bounded arguments in internal/operatortool/billing.go; exact request_id for mutations; current organization/credential/YOLO come from connection authority, never arguments. → Typed application report/receipt with identifiers, destination URLs and generated_at or action creation/resolution freshness; results capped at 256 KiB, usage windows capped at 90 days and daemon rows at 200.
 - Authority: role local operator (dashboard authentication when configured); credential Current daemon credential read/write scope and project grant; browser login/private dashboard session for approval.; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.apiUsage; s.store.UsageReport
 - Extraction: Shared dashboard application command/read; typed MCP adapter reauthorizes the current principal and resource before reads, replay and execution. No handler proxy.
@@ -6288,7 +6288,7 @@ Api usage
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: authorized application read/export → none
 
-Sources: [GET /api/v1/usage](../internal/web/server.go#L547)
+Sources: [GET /api/v1/usage](../internal/web/server.go#L550)
 ## web.api_work_attempt_receipt
 
 Api work attempt receipt
@@ -6308,14 +6308,14 @@ Api work attempt receipt
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/projects/:project_id/work-attempts/:attempt_id](../internal/web/server.go#L523), [internal/web/templates/dashboard.templ:3907](../internal/web/templates/dashboard.templ#L3907)
+Sources: [GET /api/v1/projects/:project_id/work-attempts/:attempt_id](../internal/web/server.go#L526), [internal/web/templates/dashboard.templ:3907](../internal/web/templates/dashboard.templ#L3907)
 ## web.api_work_attempt_recovery
 
 Api work attempt recovery
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.recover_work_attempt` — Typed recover_work_attempt schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.recover_work_attempt` — Typed recover_work_attempt schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local operator (dashboard authentication when configured); credential project write or global write/admin; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
 - Application: WorkAttemptRecovery.WorkAttemptReceipt / RecoverWorkAttempt
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6329,7 +6329,7 @@ Api work attempt recovery
 - Confirmation: inspect exact attempt → none
 - Confirmation: any existing material recovery action → operator
 
-Sources: [POST /api/v1/projects/:project_id/work-attempts/:attempt_id/recovery](../internal/web/server.go#L529), [internal/web/templates/dashboard.templ:3909](../internal/web/templates/dashboard.templ#L3909), [internal/web/templates/dashboard.templ:3909](../internal/web/templates/dashboard.templ#L3909), [internal/web/templates/dashboard.templ:3910](../internal/web/templates/dashboard.templ#L3910)
+Sources: [POST /api/v1/projects/:project_id/work-attempts/:attempt_id/recovery](../internal/web/server.go#L532), [internal/web/templates/dashboard.templ:3909](../internal/web/templates/dashboard.templ#L3909), [internal/web/templates/dashboard.templ:3909](../internal/web/templates/dashboard.templ#L3909), [internal/web/templates/dashboard.templ:3910](../internal/web/templates/dashboard.templ#L3910)
 ## web.api_workflow_timeline
 
 Api workflow timeline
@@ -6349,7 +6349,7 @@ Api workflow timeline
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v1/workflow/timeline](../internal/web/server.go#L548)
+Sources: [GET /api/v1/workflow/timeline](../internal/web/server.go#L551)
 ## web.artifact_access
 
 Artifact access
@@ -6369,7 +6369,7 @@ Artifact access
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write; ephemeral read grants preserve existing read authority → none
 
-Sources: [POST /projects/:project_id/issues/:issue_ref/artifacts/:artifact/access](../internal/web/server.go#L479)
+Sources: [POST /projects/:project_id/issues/:issue_ref/artifacts/:artifact/access](../internal/web/server.go#L482)
 ## web.board
 
 Board
@@ -6389,7 +6389,7 @@ Board
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /](../internal/web/server.go#L463), [internal/web/templates/board.templ:1912](../internal/web/templates/board.templ#L1912), [internal/web/templates/board.templ:230](../internal/web/templates/board.templ#L230), [internal/web/templates/board.templ:1914](../internal/web/templates/board.templ#L1914), [internal/web/templates/board.templ:247](../internal/web/templates/board.templ#L247), [internal/web/templates/shell.templ:101](../internal/web/templates/shell.templ#L101), [internal/web/templates/shell.templ:192](../internal/web/templates/shell.templ#L192), [internal/web/templates/shell.templ:151](../internal/web/templates/shell.templ#L151)
+Sources: [GET /](../internal/web/server.go#L466), [internal/web/templates/board.templ:1912](../internal/web/templates/board.templ#L1912), [internal/web/templates/board.templ:230](../internal/web/templates/board.templ#L230), [internal/web/templates/board.templ:1914](../internal/web/templates/board.templ#L1914), [internal/web/templates/board.templ:247](../internal/web/templates/board.templ#L247), [internal/web/templates/shell.templ:101](../internal/web/templates/shell.templ#L101), [internal/web/templates/shell.templ:192](../internal/web/templates/shell.templ#L192), [internal/web/templates/shell.templ:151](../internal/web/templates/shell.templ#L151)
 ## web.board_live_session_page
 
 Board live session page
@@ -6409,7 +6409,7 @@ Board live session page
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /live-session](../internal/web/server.go#L464), [internal/web/templates/activity.templ:156](../internal/web/templates/activity.templ#L156), [internal/web/templates/activity.templ:186](../internal/web/templates/activity.templ#L186), [internal/web/templates/activity.templ:204](../internal/web/templates/activity.templ#L204)
+Sources: [GET /live-session](../internal/web/server.go#L467), [internal/web/templates/activity.templ:156](../internal/web/templates/activity.templ#L156), [internal/web/templates/activity.templ:186](../internal/web/templates/activity.templ#L186), [internal/web/templates/activity.templ:204](../internal/web/templates/activity.templ#L204)
 ## web.change_detail
 
 Change detail
@@ -6429,7 +6429,7 @@ Change detail
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write; ephemeral read grants preserve existing read authority → none
 
-Sources: [GET /projects/:project_id/issues/:issue_ref/changes/:change](../internal/web/server.go#L476), [internal/web/templates/change.templ:50](../internal/web/templates/change.templ#L50), [internal/web/templates/change_files.templ:13](../internal/web/templates/change_files.templ#L13), [internal/web/templates/change.templ:8](../internal/web/templates/change.templ#L8), [internal/web/templates/change.templ:22](../internal/web/templates/change.templ#L22), [internal/web/templates/change.templ:138](../internal/web/templates/change.templ#L138)
+Sources: [GET /projects/:project_id/issues/:issue_ref/changes/:change](../internal/web/server.go#L479), [internal/web/templates/change.templ:50](../internal/web/templates/change.templ#L50), [internal/web/templates/change_files.templ:13](../internal/web/templates/change_files.templ#L13), [internal/web/templates/change.templ:8](../internal/web/templates/change.templ#L8), [internal/web/templates/change.templ:22](../internal/web/templates/change.templ#L22), [internal/web/templates/change.templ:138](../internal/web/templates/change.templ#L138)
 ## web.change_review_action
 
 Change review action
@@ -6449,7 +6449,7 @@ Change review action
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: approvals and changes requested can change workflow; policy approval changes project decisions → operator
 
-Sources: [POST /projects/:project_id/issues/:issue_ref/changes/:change/versions/:version/review](../internal/web/server.go#L477), [internal/web/templates/change.templ:200](../internal/web/templates/change.templ#L200), [internal/web/templates/change_files.templ:30](../internal/web/templates/change_files.templ#L30), [internal/web/templates/change_files.templ:30](../internal/web/templates/change_files.templ#L30), [internal/web/templates/change_files.templ:67](../internal/web/templates/change_files.templ#L67), [internal/web/templates/change_files.templ:66](../internal/web/templates/change_files.templ#L66), [internal/web/templates/change_files.templ:65](../internal/web/templates/change_files.templ#L65), [internal/web/templates/change_files.templ:43](../internal/web/templates/change_files.templ#L43)
+Sources: [POST /projects/:project_id/issues/:issue_ref/changes/:change/versions/:version/review](../internal/web/server.go#L480), [internal/web/templates/change.templ:200](../internal/web/templates/change.templ#L200), [internal/web/templates/change_files.templ:30](../internal/web/templates/change_files.templ#L30), [internal/web/templates/change_files.templ:30](../internal/web/templates/change_files.templ#L30), [internal/web/templates/change_files.templ:67](../internal/web/templates/change_files.templ#L67), [internal/web/templates/change_files.templ:66](../internal/web/templates/change_files.templ#L66), [internal/web/templates/change_files.templ:65](../internal/web/templates/change_files.templ#L65), [internal/web/templates/change_files.templ:43](../internal/web/templates/change_files.templ#L43)
 ## web.chat_approval_stylesheet
 
 Chat approval stylesheet
@@ -6468,7 +6468,7 @@ Chat approval stylesheet
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: static asset → not_applicable
 
-Sources: [internal/web/templates/chat.templ:96](../internal/web/templates/chat.templ#L96)
+Sources: [internal/web/templates/chat.templ:97](../internal/web/templates/chat.templ#L97)
 ## web.complete_o_i_d_c
 
 Complete o i d c
@@ -6487,7 +6487,7 @@ Complete o i d c
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /auth/oidc/callback](../internal/web/server.go#L450)
+Sources: [GET /auth/oidc/callback](../internal/web/server.go#L453)
 ## web.consume_magic_link
 
 Consume magic link
@@ -6506,14 +6506,14 @@ Consume magic link
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /auth/magic-link](../internal/web/server.go#L446)
+Sources: [GET /auth/magic-link](../internal/web/server.go#L449)
 ## web.dashboard
 
 Dashboard
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.dashboard` — Typed dashboard schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.dashboard` — Typed dashboard schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.dashboard; s.dashboardFirstPaintData, s.demoDashboard, s.latestBoardSnapshot
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6526,14 +6526,14 @@ Dashboard
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /fleet](../internal/web/server.go#L465), [internal/web/templates/runner_fleet.templ:21](../internal/web/templates/runner_fleet.templ#L21), [internal/web/templates/runner_fleet.templ:145](../internal/web/templates/runner_fleet.templ#L145), [internal/web/templates/runner_fleet.templ:145](../internal/web/templates/runner_fleet.templ#L145), [web/conversation/src/app/account/api.ts:412](../web/conversation/src/app/account/api.ts#L412), [internal/web/templates/dashboard.templ:1757](../internal/web/templates/dashboard.templ#L1757), [internal/web/templates/dashboard.templ:2665](../internal/web/templates/dashboard.templ#L2665), [internal/web/templates/dashboard.templ:2513](../internal/web/templates/dashboard.templ#L2513), [internal/web/templates/dashboard.templ:2640](../internal/web/templates/dashboard.templ#L2640), [internal/web/templates/dashboard.templ:3083](../internal/web/templates/dashboard.templ#L3083), [internal/web/templates/dashboard.templ:89](../internal/web/templates/dashboard.templ#L89), [internal/web/templates/dashboard.templ:249](../internal/web/templates/dashboard.templ#L249), [internal/web/templates/dashboard.templ:2233](../internal/web/templates/dashboard.templ#L2233), [internal/web/templates/dashboard.templ:4251](../internal/web/templates/dashboard.templ#L4251), [internal/web/templates/dashboard.templ:4258](../internal/web/templates/dashboard.templ#L4258)
+Sources: [GET /fleet](../internal/web/server.go#L468), [internal/web/templates/runner_fleet.templ:21](../internal/web/templates/runner_fleet.templ#L21), [internal/web/templates/runner_fleet.templ:145](../internal/web/templates/runner_fleet.templ#L145), [internal/web/templates/runner_fleet.templ:145](../internal/web/templates/runner_fleet.templ#L145), [web/conversation/src/app/account/api.ts:444](../web/conversation/src/app/account/api.ts#L444), [internal/web/templates/dashboard.templ:1757](../internal/web/templates/dashboard.templ#L1757), [internal/web/templates/dashboard.templ:2665](../internal/web/templates/dashboard.templ#L2665), [internal/web/templates/dashboard.templ:2513](../internal/web/templates/dashboard.templ#L2513), [internal/web/templates/dashboard.templ:2640](../internal/web/templates/dashboard.templ#L2640), [internal/web/templates/dashboard.templ:3083](../internal/web/templates/dashboard.templ#L3083), [internal/web/templates/dashboard.templ:89](../internal/web/templates/dashboard.templ#L89), [internal/web/templates/dashboard.templ:249](../internal/web/templates/dashboard.templ#L249), [internal/web/templates/dashboard.templ:2233](../internal/web/templates/dashboard.templ#L2233), [internal/web/templates/dashboard.templ:4251](../internal/web/templates/dashboard.templ#L4251), [internal/web/templates/dashboard.templ:4258](../internal/web/templates/dashboard.templ#L4258)
 ## web.diagnostics_dashboard
 
 Diagnostics dashboard
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.diagnostics_dashboard` — Typed diagnostics_dashboard schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.diagnostics_dashboard` — Typed diagnostics_dashboard schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.diagnosticsDashboard; s.diagnosticsDashboardData, s.latestSnapshot
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6546,7 +6546,7 @@ Diagnostics dashboard
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /diagnostics](../internal/web/server.go#L469), [internal/web/templates/dashboard.templ:2228](../internal/web/templates/dashboard.templ#L2228)
+Sources: [GET /diagnostics](../internal/web/server.go#L472), [internal/web/templates/dashboard.templ:2228](../internal/web/templates/dashboard.templ#L2228)
 ## web.echo__wrap_handler(s_mcp_h_t_t_p)
 
 Echo. wrap handler(s.mcp h t t p)
@@ -6565,7 +6565,7 @@ Echo. wrap handler(s.mcp h t t p)
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [Any /mcp](../internal/web/server.go#L518)
+Sources: [Any /mcp](../internal/web/server.go#L521)
 ## web.events
 
 Events
@@ -6585,7 +6585,7 @@ Events
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /events](../internal/web/server.go#L485)
+Sources: [GET /events](../internal/web/server.go#L488)
 ## web.github_webhook
 
 Github webhook
@@ -6604,14 +6604,14 @@ Github webhook
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v1/webhooks/github](../internal/web/server.go#L544)
+Sources: [POST /api/v1/webhooks/github](../internal/web/server.go#L547)
 ## web.health
 
 Health
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the existing application read through current dashboard authority and deployment boundaries. Focused adapter coverage is recorded; parent #3259 remains pending.
-- Tool: `work_reads.health` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
+- Tool: `fleet.health` — Typed FleetCatalog schema: bounded identifiers and scope; outbox limit 1-200 and cursor up to 2048 bytes. AI debug project/issue scopes require authorized project_id; issue scope also requires reference. No authentication or YOLO arguments. → Typed application read envelope, observed_at and existing resource identifiers; 256 KiB result bound.
 - Authority: role local operator (dashboard authentication when configured); credential read; project Instance report requires an unscoped current read credential; project-scoped credentials cannot read unrelated instance data.; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.readInstanceHealth
 - Extraction: HTTP and MCP share typed application reads. MCP enforces current authority and existing deployment boundaries; AI debug projects snapshots through current project grants. No HTTP proxy or worker protocol adapter.
@@ -6624,14 +6624,14 @@ Health
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /health](../internal/web/server.go#L439)
+Sources: [GET /health](../internal/web/server.go#L442)
 ## web.health_dashboard
 
 Health dashboard
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.health_dashboard` — Typed health_dashboard schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.health_dashboard` — Typed health_dashboard schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.healthDashboard; s.demoHealthDashboard, s.healthDashboardData, s.latestSnapshot
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6644,7 +6644,7 @@ Health dashboard
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /health/ui](../internal/web/server.go#L468), [internal/web/templates/work.templ:70](../internal/web/templates/work.templ#L70), [internal/web/templates/health.templ:74](../internal/web/templates/health.templ#L74)
+Sources: [GET /health/ui](../internal/web/server.go#L471), [internal/web/templates/work.templ:70](../internal/web/templates/work.templ#L70), [internal/web/templates/health.templ:74](../internal/web/templates/health.templ#L74)
 ## web.intake_webhook
 
 Intake webhook
@@ -6663,7 +6663,7 @@ Intake webhook
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/v1/intake/:project_id/:source](../internal/web/server.go#L545)
+Sources: [POST /api/v1/intake/:project_id/:source](../internal/web/server.go#L548)
 ## web.issue_detail
 
 Issue detail
@@ -6683,7 +6683,7 @@ Issue detail
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /projects/:project_id/issues/:issue_ref](../internal/web/server.go#L475), [internal/web/templates/issue_detail.templ:11](../internal/web/templates/issue_detail.templ#L11), [internal/web/templates/native_work.templ:146](../internal/web/templates/native_work.templ#L146)
+Sources: [GET /projects/:project_id/issues/:issue_ref](../internal/web/server.go#L478), [internal/web/templates/issue_detail.templ:11](../internal/web/templates/issue_detail.templ#L11), [internal/web/templates/native_work.templ:146](../internal/web/templates/native_work.templ#L146)
 ## web.library
 
 Library
@@ -6703,7 +6703,7 @@ Library
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: The hub has no daemon artifact-library service; direct calls return opaque service unavailable. Native artifact references and access remain supported.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /library](../internal/web/server.go#L471), [internal/web/templates/library.templ:20](../internal/web/templates/library.templ#L20), [internal/web/templates/library.templ:58](../internal/web/templates/library.templ#L58), [internal/web/templates/library.templ:20](../internal/web/templates/library.templ#L20), [internal/web/templates/library.templ:127](../internal/web/templates/library.templ#L127), [internal/web/templates/library.templ:117](../internal/web/templates/library.templ#L117), [internal/web/templates/library.templ:122](../internal/web/templates/library.templ#L122)
+Sources: [GET /library](../internal/web/server.go#L474), [internal/web/templates/library.templ:20](../internal/web/templates/library.templ#L20), [internal/web/templates/library.templ:58](../internal/web/templates/library.templ#L58), [internal/web/templates/library.templ:20](../internal/web/templates/library.templ#L20), [internal/web/templates/library.templ:127](../internal/web/templates/library.templ#L127), [internal/web/templates/library.templ:117](../internal/web/templates/library.templ#L117), [internal/web/templates/library.templ:122](../internal/web/templates/library.templ#L122)
 ## web.login_page
 
 Login page
@@ -6722,7 +6722,7 @@ Login page
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /login](../internal/web/server.go#L442), [internal/web/templates/auth.templ:30](../internal/web/templates/auth.templ#L30), [internal/web/templates/auth.templ:33](../internal/web/templates/auth.templ#L33), [internal/web/templates/auth.templ:36](../internal/web/templates/auth.templ#L36)
+Sources: [GET /login](../internal/web/server.go#L445), [internal/web/templates/auth.templ:30](../internal/web/templates/auth.templ#L30), [internal/web/templates/auth.templ:33](../internal/web/templates/auth.templ#L33), [internal/web/templates/auth.templ:36](../internal/web/templates/auth.templ#L36)
 ## web.method_not_allowed
 
 Method not allowed
@@ -6741,7 +6741,7 @@ Method not allowed
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /api/v1/refresh](../internal/web/server.go#L546), [internal/web/templates/dashboard.templ:474](../internal/web/templates/dashboard.templ#L474), [internal/web/templates/dashboard.templ:2910](../internal/web/templates/dashboard.templ#L2910), [internal/web/templates/dashboard.templ:2910](../internal/web/templates/dashboard.templ#L2910), [internal/web/templates/dashboard.templ:474](../internal/web/templates/dashboard.templ#L474)
+Sources: [GET /api/v1/refresh](../internal/web/server.go#L549), [internal/web/templates/dashboard.templ:474](../internal/web/templates/dashboard.templ#L474), [internal/web/templates/dashboard.templ:2910](../internal/web/templates/dashboard.templ#L2910), [internal/web/templates/dashboard.templ:2910](../internal/web/templates/dashboard.templ#L2910), [internal/web/templates/dashboard.templ:474](../internal/web/templates/dashboard.templ#L474)
 ## web.native_issue_export
 
 Native issue export
@@ -6761,7 +6761,7 @@ Native issue export
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /projects/:project_id/issues/:issue_ref/export](../internal/web/server.go#L474)
+Sources: [GET /projects/:project_id/issues/:issue_ref/export](../internal/web/server.go#L477)
 ## web.native_issue_submit
 
 Native issue submit
@@ -6782,7 +6782,7 @@ Native issue submit
 - Confirmation: create/edit/comment/dependency ordinary request → none
 - Confirmation: terminal transition, destructive edit or material change action → operator
 
-Sources: [GET /projects/:project_id/issues/:issue_ref/edit](../internal/web/server.go#L473), [GET /projects/:project_id/issues/new](../internal/web/server.go#L472), [POST /projects/:project_id/issues/:issue_ref/edit](../internal/web/server.go#L506), [POST /projects/:project_id/issues/new](../internal/web/server.go#L505), [internal/web/templates/artifacts.templ:18](../internal/web/templates/artifacts.templ#L18), [internal/web/templates/artifacts.templ:18](../internal/web/templates/artifacts.templ#L18), [internal/web/templates/change.templ:16](../internal/web/templates/change.templ#L16), [internal/web/templates/change.templ:209](../internal/web/templates/change.templ#L209), [internal/web/templates/change.templ:98](../internal/web/templates/change.templ#L98), [internal/web/templates/native_work.templ:19](../internal/web/templates/native_work.templ#L19), [internal/web/templates/native_work.templ:168](../internal/web/templates/native_work.templ#L168), [internal/web/templates/native_work.templ:159](../internal/web/templates/native_work.templ#L159), [internal/web/templates/native_work.templ:114](../internal/web/templates/native_work.templ#L114), [internal/web/templates/native_work.templ:111](../internal/web/templates/native_work.templ#L111), [internal/web/templates/native_work.templ:21](../internal/web/templates/native_work.templ#L21), [internal/web/templates/native_work.templ:106](../internal/web/templates/native_work.templ#L106), [internal/web/templates/native_work.templ:86](../internal/web/templates/native_work.templ#L86), [internal/web/templates/native_work.templ:21](../internal/web/templates/native_work.templ#L21), [internal/web/templates/work.templ:85](../internal/web/templates/work.templ#L85), [internal/web/templates/native_work.templ:22](../internal/web/templates/native_work.templ#L22)
+Sources: [GET /projects/:project_id/issues/:issue_ref/edit](../internal/web/server.go#L476), [GET /projects/:project_id/issues/new](../internal/web/server.go#L475), [POST /projects/:project_id/issues/:issue_ref/edit](../internal/web/server.go#L509), [POST /projects/:project_id/issues/new](../internal/web/server.go#L508), [internal/web/templates/artifacts.templ:18](../internal/web/templates/artifacts.templ#L18), [internal/web/templates/artifacts.templ:18](../internal/web/templates/artifacts.templ#L18), [internal/web/templates/change.templ:16](../internal/web/templates/change.templ#L16), [internal/web/templates/change.templ:209](../internal/web/templates/change.templ#L209), [internal/web/templates/change.templ:98](../internal/web/templates/change.templ#L98), [internal/web/templates/native_work.templ:19](../internal/web/templates/native_work.templ#L19), [internal/web/templates/native_work.templ:168](../internal/web/templates/native_work.templ#L168), [internal/web/templates/native_work.templ:159](../internal/web/templates/native_work.templ#L159), [internal/web/templates/native_work.templ:114](../internal/web/templates/native_work.templ#L114), [internal/web/templates/native_work.templ:111](../internal/web/templates/native_work.templ#L111), [internal/web/templates/native_work.templ:21](../internal/web/templates/native_work.templ#L21), [internal/web/templates/native_work.templ:106](../internal/web/templates/native_work.templ#L106), [internal/web/templates/native_work.templ:86](../internal/web/templates/native_work.templ#L86), [internal/web/templates/native_work.templ:21](../internal/web/templates/native_work.templ#L21), [internal/web/templates/work.templ:85](../internal/web/templates/work.templ#L85), [internal/web/templates/native_work.templ:22](../internal/web/templates/native_work.templ#L22)
 ## web.native_run_detail
 
 Native run detail
@@ -6802,7 +6802,7 @@ Native run detail
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /projects/:project_id/issues/:issue_ref/runs/:attempt](../internal/web/server.go#L478), [internal/web/templates/change.templ:102](../internal/web/templates/change.templ#L102), [internal/web/templates/native_work.templ:126](../internal/web/templates/native_work.templ#L126)
+Sources: [GET /projects/:project_id/issues/:issue_ref/runs/:attempt](../internal/web/server.go#L481), [internal/web/templates/change.templ:102](../internal/web/templates/change.templ#L102), [internal/web/templates/native_work.templ:126](../internal/web/templates/native_work.templ#L126)
 ## web.onboarding
 
 Onboarding
@@ -6822,7 +6822,7 @@ Onboarding
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /onboarding](../internal/web/server.go#L453), [internal/web/templates/onboarding.templ:193](../internal/web/templates/onboarding.templ#L193), [internal/web/templates/onboarding.templ:211](../internal/web/templates/onboarding.templ#L211), [internal/web/templates/onboarding.templ:213](../internal/web/templates/onboarding.templ#L213)
+Sources: [GET /onboarding](../internal/web/server.go#L457), [internal/web/templates/onboarding.templ:193](../internal/web/templates/onboarding.templ#L193), [internal/web/templates/onboarding.templ:211](../internal/web/templates/onboarding.templ#L211), [internal/web/templates/onboarding.templ:213](../internal/web/templates/onboarding.templ#L213)
 ## web.onboarding_agent
 
 Onboarding agent
@@ -6842,7 +6842,7 @@ Onboarding agent
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/agent](../internal/web/server.go#L457), [POST /onboarding/agent](../internal/web/server.go#L489), [internal/web/templates/onboarding.templ:355](../internal/web/templates/onboarding.templ#L355), [internal/web/templates/onboarding.templ:355](../internal/web/templates/onboarding.templ#L355)
+Sources: [POST /onboarding/agent](../internal/web/server.go#L461), [POST /onboarding/agent](../internal/web/server.go#L493), [internal/web/templates/onboarding.templ:355](../internal/web/templates/onboarding.templ#L355), [internal/web/templates/onboarding.templ:355](../internal/web/templates/onboarding.templ#L355)
 ## web.onboarding_credentials
 
 Onboarding credentials
@@ -6862,7 +6862,7 @@ Onboarding credentials
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/credentials](../internal/web/server.go#L455), [POST /onboarding/credentials](../internal/web/server.go#L487), [internal/web/templates/onboarding.templ:286](../internal/web/templates/onboarding.templ#L286), [internal/web/templates/onboarding.templ:408](../internal/web/templates/onboarding.templ#L408), [internal/web/templates/onboarding.templ:286](../internal/web/templates/onboarding.templ#L286)
+Sources: [POST /onboarding/credentials](../internal/web/server.go#L459), [POST /onboarding/credentials](../internal/web/server.go#L491), [internal/web/templates/onboarding.templ:286](../internal/web/templates/onboarding.templ#L286), [internal/web/templates/onboarding.templ:408](../internal/web/templates/onboarding.templ#L408), [internal/web/templates/onboarding.templ:286](../internal/web/templates/onboarding.templ#L286)
 ## web.onboarding_project
 
 Onboarding project
@@ -6882,7 +6882,7 @@ Onboarding project
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/project](../internal/web/server.go#L456), [POST /onboarding/project](../internal/web/server.go#L488), [internal/web/templates/onboarding.templ:311](../internal/web/templates/onboarding.templ#L311), [internal/web/templates/onboarding.templ:311](../internal/web/templates/onboarding.templ#L311)
+Sources: [POST /onboarding/project](../internal/web/server.go#L460), [POST /onboarding/project](../internal/web/server.go#L492), [internal/web/templates/onboarding.templ:311](../internal/web/templates/onboarding.templ#L311), [internal/web/templates/onboarding.templ:311](../internal/web/templates/onboarding.templ#L311)
 ## web.onboarding_tracker
 
 Onboarding tracker
@@ -6902,7 +6902,7 @@ Onboarding tracker
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/tracker](../internal/web/server.go#L454), [POST /onboarding/tracker](../internal/web/server.go#L486), [internal/web/templates/onboarding.templ:261](../internal/web/templates/onboarding.templ#L261), [internal/web/templates/onboarding.templ:346](../internal/web/templates/onboarding.templ#L346), [internal/web/templates/onboarding.templ:261](../internal/web/templates/onboarding.templ#L261)
+Sources: [POST /onboarding/tracker](../internal/web/server.go#L458), [POST /onboarding/tracker](../internal/web/server.go#L490), [internal/web/templates/onboarding.templ:261](../internal/web/templates/onboarding.templ#L261), [internal/web/templates/onboarding.templ:346](../internal/web/templates/onboarding.templ#L346), [internal/web/templates/onboarding.templ:261](../internal/web/templates/onboarding.templ#L261)
 ## web.onboarding_write
 
 Onboarding write
@@ -6922,7 +6922,7 @@ Onboarding write
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [POST /onboarding/write](../internal/web/server.go#L458), [POST /onboarding/write](../internal/web/server.go#L490), [internal/web/templates/onboarding.templ:460](../internal/web/templates/onboarding.templ#L460), [internal/web/templates/onboarding.templ:481](../internal/web/templates/onboarding.templ#L481), [internal/web/templates/onboarding.templ:481](../internal/web/templates/onboarding.templ#L481), [internal/web/templates/onboarding.templ:460](../internal/web/templates/onboarding.templ#L460)
+Sources: [POST /onboarding/write](../internal/web/server.go#L462), [POST /onboarding/write](../internal/web/server.go#L494), [internal/web/templates/onboarding.templ:460](../internal/web/templates/onboarding.templ#L460), [internal/web/templates/onboarding.templ:481](../internal/web/templates/onboarding.templ#L481), [internal/web/templates/onboarding.templ:481](../internal/web/templates/onboarding.templ#L481), [internal/web/templates/onboarding.templ:460](../internal/web/templates/onboarding.templ#L460)
 ## web.open_api
 
 Open a p i
@@ -6941,14 +6941,14 @@ Open a p i
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /api/v1/openapi.yaml](../internal/web/server.go#L440)
+Sources: [GET /api/v1/openapi.yaml](../internal/web/server.go#L443)
 ## web.operations_page
 
 Operations page
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.operations_report` — Typed operations_report schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.operations_report` — Typed operations_report schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: Server.readOperationsReport
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -6961,14 +6961,14 @@ Operations page
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /operations](../internal/web/server.go#L484), [internal/web/templates/operations.templ:22](../internal/web/templates/operations.templ#L22), [internal/web/templates/operations.templ:113](../internal/web/templates/operations.templ#L113), [internal/web/templates/operations.templ:135](../internal/web/templates/operations.templ#L135), [internal/web/templates/operations.templ:124](../internal/web/templates/operations.templ#L124)
+Sources: [GET /operations](../internal/web/server.go#L487), [internal/web/templates/operations.templ:22](../internal/web/templates/operations.templ#L22), [internal/web/templates/operations.templ:113](../internal/web/templates/operations.templ#L113), [internal/web/templates/operations.templ:135](../internal/web/templates/operations.templ#L135), [internal/web/templates/operations.templ:124](../internal/web/templates/operations.templ#L124)
 ## web.operator_connection_setup
 
 Bind local/remote operator connection confirmation mode
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3337.
 - Decision: connection_info returns the current mode and portable dashboard setup URL. The human operator chooses YOLO for this connection through the existing chat affordance; model input cannot change it.
-- Tool: `connection_authority.connection_info` — empty typed object; identity, connection and mode are trusted transport/server state → connection_id, organization_id, originating client, current mode and authenticated dashboard setup URL
+- Tool: `connection.connection_info` — empty typed object; identity, connection and mode are trusted transport/server state → connection_id, organization_id, originating client, current mode and authenticated dashboard setup URL
 - Authority: role authenticated connection; dashboard login/private session for mode selection; credential global write/admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: chat.Service.AttachConnection/SetConnectionMode; operatorBrowserFormAuth; mcp HTTP session binding and DashboardReadClient.OpenConnection
 - Extraction: Authenticated transports bind connection identity and default confirmation mode. Only a same-origin authenticated dashboard form can select YOLO; mode never grants scope or workflow authority. Fleet, billing and work actions share these same hosted approval routes; current runner grants apply to fleet previews, including owners. No sibling approval handler remains.
@@ -6981,7 +6981,7 @@ Bind local/remote operator connection confirmation mode
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: operator selects connection mode through the authenticated dashboard form → connection
 
-Sources: [GET /chat/approval](../internal/web/server.go#L512), [POST /api/v1/operator-connections](../internal/web/server.go#L511), [internal/web/templates/chat.templ:106](../internal/web/templates/chat.templ#L106), [internal/web/templates/chat.templ:106](../internal/web/templates/chat.templ#L106), [GET /chat/approval](../internal/hubserver/operator_authority.go#L35)
+Sources: [GET /chat/approval](../internal/web/server.go#L517), [POST /api/v1/operator-connections](../internal/web/server.go#L516), [internal/web/templates/chat.templ:111](../internal/web/templates/chat.templ#L111), [internal/web/templates/chat.templ:111](../internal/web/templates/chat.templ#L111), [GET /chat/approval](../internal/hubserver/operator_authority.go#L35)
 ## web.project_dashboard
 
 Project dashboard
@@ -7001,7 +7001,7 @@ Project dashboard
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /projects/*](../internal/web/server.go#L479), [internal/web/templates/project.templ:33](../internal/web/templates/project.templ#L33), [internal/web/templates/project.templ:17](../internal/web/templates/project.templ#L17)
+Sources: [GET /projects/*](../internal/web/server.go#L483), [internal/web/templates/project.templ:33](../internal/web/templates/project.templ#L33), [internal/web/templates/project.templ:17](../internal/web/templates/project.templ#L17)
 ## web.redirect_to_board
 
 Redirect to board
@@ -7021,7 +7021,7 @@ Redirect to board
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /kanban](../internal/web/server.go#L467)
+Sources: [GET /kanban](../internal/web/server.go#L470)
 ## web.redirect_to_dashboard
 
 Redirect to dashboard
@@ -7041,7 +7041,7 @@ Redirect to dashboard
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or setup navigation → none
 
-Sources: [GET /onboarding](../internal/web/server.go#L485), [internal/web/templates/onboarding.templ:302](../internal/web/templates/onboarding.templ#L302)
+Sources: [GET /onboarding](../internal/web/server.go#L489), [internal/web/templates/onboarding.templ:302](../internal/web/templates/onboarding.templ#L302)
 ## web.redirect_to_onboarding
 
 Redirect to onboarding
@@ -7061,7 +7061,7 @@ Redirect to onboarding
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /](../internal/web/server.go#L452)
+Sources: [GET /](../internal/web/server.go#L456)
 ## web.reports
 
 Reports
@@ -7081,7 +7081,7 @@ Reports
 - Availability: credential_maintenance / github,native / analytics application reads — unavailable: Analytics store/dashboard or hosted native services are absent in credential maintenance; direct calls return safe unavailable.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /reports](../internal/web/server.go#L483), [internal/web/templates/reportsv2.templ:33](../internal/web/templates/reportsv2.templ#L33)
+Sources: [GET /reports](../internal/web/server.go#L486), [internal/web/templates/reportsv2.templ:33](../internal/web/templates/reportsv2.templ#L33)
 ## web.request_magic_link
 
 Request magic link
@@ -7100,14 +7100,14 @@ Request magic link
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [POST /login](../internal/web/server.go#L445), [internal/web/templates/auth.templ:48](../internal/web/templates/auth.templ#L48), [internal/web/templates/auth.templ:48](../internal/web/templates/auth.templ#L48)
+Sources: [POST /login](../internal/web/server.go#L448), [internal/web/templates/auth.templ:48](../internal/web/templates/auth.templ#L48), [internal/web/templates/auth.templ:48](../internal/web/templates/auth.templ#L48)
 ## web.runner_fleet_page
 
 Runner fleet page
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.runner_fleet` — Typed runner_fleet schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
+- Tool: `fleet.runner_fleet` — Typed runner_fleet schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Typed application snapshot/read envelope with observed_at and existing identifiers/URLs; max 256 KiB; bounded pagination where listing.
 - Authority: role local operator (dashboard authentication when configured); credential read; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: RunnerFleet.Fleet / ProjectEligibility
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -7120,7 +7120,7 @@ Runner fleet page
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /fleet/runners](../internal/web/server.go#L466), [internal/web/templates/fleet.templ:36](../internal/web/templates/fleet.templ#L36), [internal/web/templates/project.templ:21](../internal/web/templates/project.templ#L21), [internal/web/templates/runner_fleet.templ:24](../internal/web/templates/runner_fleet.templ#L24), [internal/web/templates/runner_fleet.templ:19](../internal/web/templates/runner_fleet.templ#L19), [internal/web/templates/runner_fleet.templ:26](../internal/web/templates/runner_fleet.templ#L26), [internal/web/templates/runner_fleet.templ:63](../internal/web/templates/runner_fleet.templ#L63), [internal/web/templates/runner_fleet.templ:117](../internal/web/templates/runner_fleet.templ#L117), [internal/web/templates/runner_fleet.templ:117](../internal/web/templates/runner_fleet.templ#L117)
+Sources: [GET /fleet/runners](../internal/web/server.go#L469), [internal/web/templates/fleet.templ:36](../internal/web/templates/fleet.templ#L36), [internal/web/templates/project.templ:21](../internal/web/templates/project.templ#L21), [internal/web/templates/runner_fleet.templ:24](../internal/web/templates/runner_fleet.templ#L24), [internal/web/templates/runner_fleet.templ:19](../internal/web/templates/runner_fleet.templ#L19), [internal/web/templates/runner_fleet.templ:26](../internal/web/templates/runner_fleet.templ#L26), [internal/web/templates/runner_fleet.templ:63](../internal/web/templates/runner_fleet.templ#L63), [internal/web/templates/runner_fleet.templ:117](../internal/web/templates/runner_fleet.templ#L117), [internal/web/templates/runner_fleet.templ:117](../internal/web/templates/runner_fleet.templ#L117)
 ## web.settings
 
 Settings
@@ -7140,7 +7140,7 @@ Settings
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /settings](../internal/web/server.go#L480), [internal/web/templates/settings.templ:66](../internal/web/templates/settings.templ#L66), [internal/web/templates/settings.templ:14](../internal/web/templates/settings.templ#L14)
+Sources: [GET /settings](../internal/web/server.go#L484), [internal/web/templates/settings.templ:66](../internal/web/templates/settings.templ#L66), [internal/web/templates/settings.templ:14](../internal/web/templates/settings.templ#L14)
 ## web.start_o_i_d_c
 
 Start o i d c
@@ -7159,7 +7159,7 @@ Start o i d c
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: connection authentication → connection
 
-Sources: [GET /auth/oidc/start](../internal/web/server.go#L449), [internal/web/templates/auth.templ:39](../internal/web/templates/auth.templ#L39)
+Sources: [GET /auth/oidc/start](../internal/web/server.go#L452), [internal/web/templates/auth.templ:39](../internal/web/templates/auth.templ#L39)
 ## web.static_assets
 
 Static assets
@@ -7178,14 +7178,14 @@ Static assets
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [GET /static/*](../internal/web/server.go#L438)
+Sources: [GET /static/*](../internal/web/server.go#L441)
 ## web.update_fleet_host
 
 Update fleet host
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.update_fleet_host` — Typed update_fleet_host schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.update_fleet_host` — Typed update_fleet_host schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: RunnerFleet.UpdateHost
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -7199,14 +7199,14 @@ Update fleet host
 - Confirmation: display name or descriptive tag edit → none
 - Confirmation: capacity, scheduling, isolation, services or access changes → operator
 
-Sources: [POST /fleet/hosts/:machine](../internal/web/server.go#L508)
+Sources: [POST /fleet/hosts/:machine](../internal/web/server.go#L511)
 ## web.update_fleet_runner
 
 Update fleet runner
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
-- Tool: `runs_fleet.update_fleet_runner` — Typed update_fleet_runner schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
+- Tool: `fleet.update_fleet_runner` — Typed update_fleet_runner schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority/YOLO arguments. → Exact action preview/outcome, originating connection, approval URL and durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation or YOLO.
 - Authority: role local administrator; credential admin; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: RunnerFleet.UpdateRunner
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
@@ -7220,7 +7220,7 @@ Update fleet runner
 - Confirmation: display name or descriptive tag edit → none
 - Confirmation: capacity, scheduling, isolation, services or access changes → operator
 
-Sources: [POST /fleet/runners/:runner](../internal/web/server.go#L507)
+Sources: [POST /fleet/runners/:runner](../internal/web/server.go#L510)
 ## workspace.file_read
 
 Read a workspace file through the existing relay file channel
@@ -7258,14 +7258,14 @@ Account administration transport and existing operator approval
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [Any /api/cloud/mcp](../internal/cloudentry/operator_administration.go#L31), [GET /chat/approval](../internal/cloudentry/operator_administration.go#L32), [POST /chat/approval](../internal/cloudentry/operator_administration.go#L33)
+Sources: [Any /api/cloud/mcp](../internal/cloudentry/operator_administration.go#L36), [GET /chat/approval](../internal/cloudentry/operator_administration.go#L37), [POST /chat/approval](../internal/cloudentry/operator_administration.go#L38)
 ## hubserver.get_runner_capacity
 
 Read effective enrolled runner capacity
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Native work item prj_6d4919bebd73446798e6cd807feda10e#90 extends the existing fleet capability owner. Report partial or unknown application instead of forging capacity evidence.
-- Tool: `runs_fleet.get_runner_capacity` — Typed FleetCatalog schema: exact runner, optional backend; mutation requires request_id, expected_revision, opaque expected_config_revision and capacity 1–10000. No authority, credential, path, model or command inputs. → Desired, applied and effective runner configuration ceiling, status, attributed binding limits and freshness. External provider producers remain unmanaged; unknown evidence is explicit. Claims retain project, pool, provider and plan admission.
+- Tool: `fleet.get_runner_capacity` — Typed FleetCatalog schema: exact runner, optional backend; mutation requires request_id, expected_revision, opaque expected_config_revision and capacity 1–10000. No authority, credential, path, model or command inputs. → Desired, applied and effective runner configuration ceiling, status, attributed binding limits and freshness. External provider producers remain unmanaged; unknown evidence is explicit. Claims retain project, pool, provider and plan admission.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership current organization and exact enrolled runner/machine; selected local config remains runner-owned.
 - Application: Service.readRunnerCapacity / runnerCapacityView
 - Extraction: HTTP, fleet UI capacity edits and MCP share runner administration and the existing heartbeat/configuration application owner. No new polling, raw editor or capacity policy. Native #90 consolidates historical reservation ceilings under matching fresh reports.
@@ -7285,7 +7285,7 @@ Apply enrolled runner capacity
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Native work item prj_6d4919bebd73446798e6cd807feda10e#90 extends the existing fleet capability owner. Report partial or unknown application instead of forging capacity evidence.
-- Tool: `runs_fleet.update_runner_capacity` — Typed FleetCatalog schema: exact runner, optional backend; mutation requires request_id, expected_revision, opaque expected_config_revision and capacity 1–10000. No authority, credential, path, model or command inputs. → Desired, applied and effective runner configuration ceiling, status, attributed binding limits and freshness. External provider producers remain unmanaged; unknown evidence is explicit. Claims retain project, pool, provider and plan admission.
+- Tool: `fleet.update_runner_capacity` — Typed FleetCatalog schema: exact runner, optional backend; mutation requires request_id, expected_revision, opaque expected_config_revision and capacity 1–10000. No authority, credential, path, model or command inputs. → Desired, applied and effective runner configuration ceiling, status, attributed binding limits and freshness. External provider producers remain unmanaged; unknown evidence is explicit. Claims retain project, pool, provider and plan admission.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership current organization and exact enrolled runner/machine; selected local config remains runner-owned.
 - Application: Service.updateRunnerCapacityCommand / CLI runnerCapacityOwner / existing global writer and reload
 - Extraction: HTTP, fleet UI capacity edits and MCP share runner administration and the existing heartbeat/configuration application owner. No new polling, raw editor or capacity policy. Native #90 consolidates historical reservation ceilings under matching fresh reports.
@@ -7298,7 +7298,7 @@ Apply enrolled runner capacity
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: capacity mutation → operator
 
-Sources: [PUT /api/v2/organizations/:organization/runners/:runner/capacity](../internal/hubserver/runner_enrollment.go#L36)
+Sources: [PUT /api/v2/organizations/:organization/runners/:runner/capacity](../internal/hubserver/runner_enrollment.go#L40)
 ## hubserver.get_work_item_conversation
 
 Get canonical work-item conversation
@@ -7318,7 +7318,7 @@ Get canonical work-item conversation
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/conversation](../internal/hubserver/conversation_api.go#L42), [web/conversation/src/app/work/lib/workHttp.ts:556](../web/conversation/src/app/work/lib/workHttp.ts#L556)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/conversation](../internal/hubserver/conversation_api.go#L42), [web/conversation/src/app/work/lib/workHttp.ts:559](../web/conversation/src/app/work/lib/workHttp.ts#L559)
 ## hubserver.hosted_api_key_list
 
 Hosted API key list
@@ -7338,7 +7338,7 @@ Hosted API key list
 - Availability: credential_maintenance / native / hosted organization key owner — unavailable: Hosted key routes require an organization-bound hosted account session; account entry and unhosted credentials cannot borrow that authority.
 - Confirmation: all calls → none
 
-Sources: [GET /api/v2/organizations/:organization/api-keys](../internal/hubserver/hosted_ui.go#L31), [web/conversation/src/app/account/api.ts:159](../web/conversation/src/app/account/api.ts#L159)
+Sources: [GET /api/v2/organizations/:organization/api-keys](../internal/hubserver/hosted_ui.go#L33), [web/conversation/src/app/account/api.ts:160](../web/conversation/src/app/account/api.ts#L160)
 ## hubserver.hosted_api_key_create
 
 Hosted API key create
@@ -7358,7 +7358,7 @@ Hosted API key create
 - Availability: credential_maintenance / native / hosted organization key owner — unavailable: Hosted key routes require an organization-bound hosted account session; account entry and unhosted credentials cannot borrow that authority.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v2/organizations/:organization/api-keys](../internal/hubserver/hosted_ui.go#L32), [web/conversation/src/app/account/api.ts:161](../web/conversation/src/app/account/api.ts#L161), [web/conversation/src/app/settings/APIKeysSettings.tsx:82](../web/conversation/src/app/settings/APIKeysSettings.tsx#L82), [web/conversation/src/app/settings/APIKeysSettings.tsx:82](../web/conversation/src/app/settings/APIKeysSettings.tsx#L82)
+Sources: [POST /api/v2/organizations/:organization/api-keys](../internal/hubserver/hosted_ui.go#L34), [web/conversation/src/app/account/api.ts:162](../web/conversation/src/app/account/api.ts#L162), [web/conversation/src/app/settings/APIKeysSettings.tsx:443](../web/conversation/src/app/settings/APIKeysSettings.tsx#L443), [web/conversation/src/app/settings/APIKeysSettings.tsx:443](../web/conversation/src/app/settings/APIKeysSettings.tsx#L443)
 ## hubserver.hosted_api_key_revoke
 
 Hosted API key revoke
@@ -7378,7 +7378,7 @@ Hosted API key revoke
 - Availability: credential_maintenance / native / hosted organization key owner — unavailable: Hosted key routes require an organization-bound hosted account session; account entry and unhosted credentials cannot borrow that authority.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/api-keys/:key](../internal/hubserver/hosted_ui.go#L33), [web/conversation/src/app/account/api.ts:162](../web/conversation/src/app/account/api.ts#L162)
+Sources: [DELETE /api/v2/organizations/:organization/api-keys/:key](../internal/hubserver/hosted_ui.go#L35), [web/conversation/src/app/account/api.ts:163](../web/conversation/src/app/account/api.ts#L163)
 ## hubserver.edit_hosted_invitation_json
 
 Edit pending invitation project grants
@@ -7418,7 +7418,7 @@ Read recorded native work-item runtime evidence
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/runtime](../internal/hubserver/native_api.go#L138)
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/runtime](../internal/hubserver/native_api.go#L141)
 ## hubserver.resend_hosted_invitation_json
 
 Resend a pending hosted invitation
@@ -7445,7 +7445,7 @@ Read enrolled runner installed update support and build evidence
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#93 exposes the existing installed runner updater. Missing/old owners are unavailable; only matching fresh post-start build evidence establishes running. Private patched source is not automatically an approved release.
-- Tool: `runs_fleet.get_runner_update` — Exact runner selector; apply requires request_id and change with expected_revision, expected_build_revision, service=detent, version and optional release/from_release. REST also requires confirm=true and idempotency_key. Tenant authority cannot target the shared Hub. → Requested, applied and fresh actually running build evidence, commit, checksum, platform, explicit private patched source, timestamps and support/refusal/progress. Queued acceptance is not application or running success. No raw error or local path disclosure.
+- Tool: `fleet.get_runner_update` — Exact runner selector; apply requires request_id and change with expected_revision, expected_build_revision, service=detent, version and optional release/from_release. REST also requires confirm=true and idempotency_key. Tenant authority cannot target the shared Hub. → Requested, applied and fresh actually running build evidence, commit, checksum, platform, explicit private patched source, timestamps and support/refusal/progress. Queued acceptance is not application or running success. No raw error or local path disclosure.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership current organization and exact enrolled runner/machine; selected local config remains runner-owned.
 - Application: Service.readRunnerUpdate / Runner.UpdateView
 - Extraction: MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.
@@ -7458,14 +7458,14 @@ Read enrolled runner installed update support and build evidence
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read → none
 
-Sources: [GET /api/v2/organizations/:organization/runners/:runner/update](../internal/hubserver/runner_enrollment.go#L0)
+Sources: [GET /api/v2/organizations/:organization/runners/:runner/update](../internal/hubserver/runner_enrollment.go#L36)
 ## hubserver.apply_runner_update
 
 Apply enrolled runner update through the installed owner
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#93 exposes the existing installed runner updater. Missing/old owners are unavailable; only matching fresh post-start build evidence establishes running. Private patched source is not automatically an approved release.
-- Tool: `runs_fleet.update_apply` — Exact runner selector; apply requires request_id and change with expected_revision, expected_build_revision, service=detent, version and optional release/from_release. REST also requires confirm=true and idempotency_key. Tenant authority cannot target the shared Hub. → Requested, applied and fresh actually running build evidence, commit, checksum, platform, explicit private patched source, timestamps and support/refusal/progress. Queued acceptance is not application or running success. No raw error or local path disclosure.
+- Tool: `fleet.update_apply` — Exact runner selector; apply requires request_id and change with expected_revision, expected_build_revision, service=detent, version and optional release/from_release. REST also requires confirm=true and idempotency_key. Tenant authority cannot target the shared Hub. → Requested, applied and fresh actually running build evidence, commit, checksum, platform, explicit private patched source, timestamps and support/refusal/progress. Queued acceptance is not application or running success. No raw error or local path disclosure.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership current organization and exact enrolled runner/machine; selected local config remains runner-owned.
 - Application: Service.applyRunnerUpdateCommand / Scheduler.EnrolledUpdate / installed drain/restart updater
 - Extraction: MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.
@@ -7478,14 +7478,14 @@ Apply enrolled runner update through the installed owner
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: selected runner update and coordinated restart → operator
 
-Sources: [POST /api/v2/organizations/:organization/runners/:runner/update/apply](../internal/hubserver/runner_enrollment.go#L0)
+Sources: [POST /api/v2/organizations/:organization/runners/:runner/update/apply](../internal/hubserver/runner_enrollment.go#L37)
 ## hubserver.get_urgent_runner_update
 
 Read the organization urgent runner release
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#186 extends the runner update application owned by this inventory child. Reuse the existing draining state and installed updater drain. Urgency never cancels sessions; active leases remain renewable and matching startup evidence removes only the derived drain.
-- Tool: `runs_fleet.get_urgent_runner_update` — No arguments. → Organization urgent release revision and typed request. Queued urgency is not applied or running evidence.
+- Tool: `fleet.get_urgent_runner_update` — No arguments. → Organization urgent release revision and typed request. Queued urgency is not applied or running evidence.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership Current organization and its urgent runner release; the existing runner routing and installed updater retain session, lease, artifact and restart ownership..
 - Application: Service.readUrgentRunnerUpdateCommand
 - Extraction: MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.
@@ -7498,14 +7498,14 @@ Read the organization urgent runner release
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read → none
 
-Sources: [GET /api/v2/organizations/:organization/runner-update/urgent](../internal/hubserver/runner_enrollment.go#L0)
+Sources: [GET /api/v2/organizations/:organization/runner-update/urgent](../internal/hubserver/runner_enrollment.go#L38)
 ## hubserver.mark_urgent_runner_update
 
 Mark a release urgent and drain older runners without cancelling sessions
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#186 extends the runner update application owned by this inventory child. Reuse the existing draining state and installed updater drain. Urgency never cancels sessions; active leases remain renewable and matching startup evidence removes only the derived drain.
-- Tool: `runs_fleet.mark_urgent_runner_update` — request_id and change containing expected_revision and published semantic version. API requires confirm=true and idempotency_key. → Organization urgent release revision and typed request. Queued urgency is not applied or running evidence.
+- Tool: `fleet.mark_urgent_runner_update` — request_id and change containing expected_revision and published semantic version. API requires confirm=true and idempotency_key. → Organization urgent release revision and typed request. Queued urgency is not applied or running evidence.
 - Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership Current organization and its urgent runner release; the existing runner routing and installed updater retain session, lease, artifact and restart ownership..
 - Application: Service.markUrgentRunnerUpdateCommand / existing routing delivery / installed enrolled drain updater
 - Extraction: MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.
@@ -7518,7 +7518,7 @@ Mark a release urgent and drain older runners without cancelling sessions
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: selected runner update and coordinated restart → operator
 
-Sources: [PUT /api/v2/organizations/:organization/runner-update/urgent](../internal/hubserver/runner_enrollment.go#L0)
+Sources: [PUT /api/v2/organizations/:organization/runner-update/urgent](../internal/hubserver/runner_enrollment.go#L39)
 ## local_projects.apply_local_project_policy
 
 Apply local project policy
@@ -7599,3 +7599,215 @@ Local project configuration
 - Confirmation: provenance read → none
 
 Sources: [internal/operatortool/catalog.go:81](../internal/operatortool/catalog.go#L81)
+## cloudentry.upload_attachment
+
+Upload a Cloud issue attachment
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
+- Decision: Implemented by native #177 only through shared Cloud entry. Every upload allocates a new ID; retries may create another attachment. API permits one multipart file or raw bytes up to 20 MiB, while MCP retains its smaller base64/request bounds. Embed reference in file_issue/add_comment/edit_item content for existing transactional binding. Metadata/read/delete/explicit-reference adapters and parent native #26 acceptance remain pending. Signed tenant attachment-metadata source sites are the underlying entry callback/read/command owners, not separate metadata-write or maintenance tools; their existing native worker/operator scopes and project checks remain.
+- Tool: `work.upload_attachment` — {"type":"object","required":["project_id","name","content_base64"],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"name":{"type":"string","minLength":1,"maxLength":256},"content_type":{"type":"string","maxLength":128},"content_base64":{"type":"string","minLength":1,"maxLength":60000}},"additionalProperties":false} → Attachment metadata, opaque ID and Markdown reference. Entry replaces the authorized Hub entry_upload marker with actual storage/metadata success; the marker alone is not stored-byte evidence.
+- Authority: role current organization member with project write authority; credential hosted browser with CSRF or current bearer project write credential; API workers retain native scope, while MCP operator connections refuse worker credentials; project current native project write grant; ownership undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys.
+- Application: cloudentry.uploadAttachment/storeAttachment and attachment.Prepare; hubserver.checkCloudAttachment/recordCloudAttachment; nativeOperatorExecutor authorizes upload_attachment and cloudentry.attachmentMCPResponse completes storage.
+- Extraction: Existing entry-owned adapter reuses upload preparation, signed authorization, allowance transaction, storage and audit. No business request_id or durable upload command receipt exists.
+- Preconditions: Shared entry storage configured and organization ready; absent services remain unavailable.; Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.; Type, content, name, dimensions, 20 MiB limit, collaboration allowance and entry audit/storage are validated.; Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner.
+- Coverage: TestAttachmentRoutesIsolation covers actual API/MCP PNG upload, foreign project refusal, comment binding and evidence publishing; TestCloudAttachmentQuota and TestCloudAttachmentRetention.
+- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / Cloud entry storage and signed tenant metadata — unavailable: No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes.
+- Availability: hosted_dedicated / native / Cloud entry storage and signed tenant metadata — unavailable: Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service.
+- Availability: hosted_shared / native / Cloud entry storage and signed tenant metadata
+- Availability: credential_maintenance / native / Cloud entry storage and signed tenant metadata — unavailable: No attachment application service on this listener.
+- Confirmation: ordinary upload under current write authority → none
+
+Sources: [POST base](../internal/cloudentry/attachments.go#L22), [POST /api/v2/organizations/:organization/projects/:project/attachment-metadata/check](../internal/hubserver/cloud_attachments.go#L48), [POST /api/v2/organizations/:organization/projects/:project/attachment-metadata](../internal/hubserver/cloud_attachments.go#L49), [web/conversation/src/app/account/api.ts:173](../web/conversation/src/app/account/api.ts#L173)
+## cloudentry.attachment_metadata
+
+Read Cloud issue attachment metadata
+
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
+- Decision: Required operator adapter remains pending. AttachmentCatalog advertises only upload_attachment; conversation attachment reads own a different resource and cannot stand in for Cloud issue metadata. Signed tenant attachment-metadata source sites are the underlying entry callback/read/command owners, not separate metadata-write or maintenance tools; their existing native worker/operator scopes and project checks remain.
+- Tool: `work.get_attachment_metadata` — Proposed project_id, attachment_id; bounded opaque IDs. → Proposed bounded metadata and referenced_by records without internal authority/object keys.
+- Authority: role current organization member with project read authority; credential authenticated hosted browser or current bearer project read credential; MCP uses current operator connection authority; project current native project read grant; attachment ID is resolved under the organization and selected project; ownership undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys.
+- Application: cloudentry.readAttachmentMetadata/attachmentMetadata and hubserver.getCloudAttachment; current tenant metadata and source references, audited by entry.
+- Extraction: Reuse the existing authorized metadata read through a bounded typed adapter; omit authorized_principal_id and storage keys.
+- Preconditions: Shared entry storage configured and organization ready; absent services remain unavailable.; Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.; Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner.
+- Coverage: Existing API: TestAttachmentRoutesIsolation and TestCloudAttachmentSavedReferences. No advertised MCP metadata tool/executor exists.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / Cloud entry storage and signed tenant metadata — unavailable: No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes.
+- Availability: hosted_dedicated / native / Cloud entry storage and signed tenant metadata — unavailable: Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service.
+- Availability: hosted_shared / native / Cloud entry storage and signed tenant metadata
+- Availability: credential_maintenance / native / Cloud entry storage and signed tenant metadata — unavailable: No attachment application service on this listener.
+- Confirmation: authorized metadata read → none
+
+Sources: [GET base + "/:attachment/metadata"](../internal/cloudentry/attachments.go#L24), [GET /api/v2/organizations/:organization/projects/:project/attachment-metadata/:attachment](../internal/hubserver/cloud_attachments.go#L50), [web/conversation/src/app/account/api.ts:169](../web/conversation/src/app/account/api.ts#L169)
+## cloudentry.read_attachment
+
+Read Cloud issue attachment bytes
+
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
+- Decision: Required operator adapter remains pending. No Cloud issue byte-read tool is advertised/executed. Browser image/download URLs perform authorized application reads and are not presentation-only exclusions.
+- Tool: `work.read_attachment` — Proposed project_id, attachment_id, offset >= 0, length 1–32768; no arbitrary URL/object key. → Proposed base64 byte chunk, total size and safe metadata under current project authority.
+- Authority: role current organization member with project read authority; credential authenticated hosted browser or current bearer project read credential; MCP uses current operator connection authority; project current native project read grant; attachment ID is resolved under the organization and selected project; ownership undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys.
+- Application: cloudentry.readAttachment/attachmentMetadata; audited entry storage.Open after signed tenant metadata authorization.
+- Extraction: Extract a bounded chunk read from existing entry storage/metadata ownership; conversation byte readers are a separate authority.
+- Preconditions: Shared entry storage configured and organization ready; absent services remain unavailable.; Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.; Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner.
+- Coverage: TestAttachmentRoutesIsolation covers API byte reads and foreign-project refusal; no MCP byte-read adapter coverage.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / Cloud entry storage and signed tenant metadata — unavailable: No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes.
+- Availability: hosted_dedicated / native / Cloud entry storage and signed tenant metadata — unavailable: Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service.
+- Availability: hosted_shared / native / Cloud entry storage and signed tenant metadata
+- Availability: credential_maintenance / native / Cloud entry storage and signed tenant metadata — unavailable: No attachment application service on this listener.
+- Confirmation: authorized byte read → none
+
+Sources: [GET base + "/:attachment"](../internal/cloudentry/attachments.go#L23), [web/conversation/src/app/work/components/WorkAttachment.tsx:44](../web/conversation/src/app/work/components/WorkAttachment.tsx#L44)
+## cloudentry.delete_attachment
+
+Delete a Cloud issue attachment
+
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
+- Decision: Required operator adapter remains pending. Public deletion is separate from internal object-deletion acknowledgment. API marks metadata before storage cleanup and may report deletion pending; no advertised delete_attachment tool, material approval or durable MCP retry receipt exists. Signed tenant attachment-metadata source sites are the underlying entry callback/read/command owners, not separate metadata-write or maintenance tools; their existing native worker/operator scopes and project checks remain.
+- Tool: `work.delete_attachment` — Proposed project_id, attachment_id, request_id; exact selected attachment identity in approval. → Proposed shared action preview/outcome and deletion receipt; pending storage cleanup stays explicit.
+- Authority: role current organization member with project write authority; credential hosted browser with CSRF or current bearer project write credential; API workers retain native scope, while MCP operator connections refuse worker credentials; project current native project write grant; ownership undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys.
+- Application: cloudentry.deleteAttachment/removeAttachment and hubserver.deleteCloudAttachment; entry deletes bytes then acknowledges metadata through the service-only callback.
+- Extraction: Reuse current deletion/storage/audit ownership with exact browser preview and a shared request_id receipt before claiming MCP delivery/idempotency.
+- Preconditions: Shared entry storage configured and organization ready; absent services remain unavailable.; Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.; Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner.
+- Coverage: TestAttachmentRoutesIsolation and TestCloudAttachmentReferenceDeletion cover HTTP behavior; MCP approval, execution and replay remain pending.
+- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / Cloud entry storage and signed tenant metadata — unavailable: No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes.
+- Availability: hosted_dedicated / native / Cloud entry storage and signed tenant metadata — unavailable: Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service.
+- Availability: hosted_shared / native / Cloud entry storage and signed tenant metadata
+- Availability: credential_maintenance / native / Cloud entry storage and signed tenant metadata — unavailable: No attachment application service on this listener.
+- Confirmation: attachment deletion with exact material preview; connection YOLO affects confirmation only → operator
+
+Sources: [DELETE base + "/:attachment"](../internal/cloudentry/attachments.go#L25), [DELETE /api/v2/organizations/:organization/projects/:project/attachment-metadata/:attachment](../internal/hubserver/cloud_attachments.go#L51)
+## cloudentry.reference_attachment
+
+Reference a Cloud issue attachment from work content
+
+- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3346.
+- Decision: Explicit public reference adapter remains pending. Native issue/comment content saves implement transactional binding, but do not advertise the separate referenceAttachment command. Preserve same-project item/comment ownership and copied-reference restrictions. Signed tenant attachment-metadata source sites are the underlying entry callback/read/command owners, not separate metadata-write or maintenance tools; their existing native worker/operator scopes and project checks remain.
+- Tool: `work.reference_attachment` — Proposed project_id, attachment_id, work_item_id, optional comment_id, request_id; bounded owned IDs. → Proposed bounded reference receipt with current item/comment identity; no bytes/storage keys.
+- Authority: role current organization member with project write authority; credential hosted browser with CSRF or current bearer project write credential; API workers retain native scope, while MCP operator connections refuse worker credentials; project current native project write grant; ownership undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys; referenced item and optional comment must be in the same project; copied references neither reassign bound uploads nor bypass saved-content authority.
+- Application: cloudentry.referenceAttachment and hubserver.referenceCloudAttachment; current item/comment reads and attachment_references insertion in the reauthorized tenant transaction.
+- Extraction: Reuse the existing reference transaction with bounded typed inputs and shared command receipts; saved content already uses bindCloudAttachmentReferences/syncCloudAttachmentReferences.
+- Preconditions: Shared entry storage configured and organization ready; absent services remain unavailable.; Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.; Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner.
+- Coverage: TestAttachmentRoutesIsolation and TestCloudAttachmentSavedReferences cover existing reference/content transactions; no standalone MCP reference adapter.
+- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / Cloud entry storage and signed tenant metadata — unavailable: No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes.
+- Availability: hosted_dedicated / native / Cloud entry storage and signed tenant metadata — unavailable: Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service.
+- Availability: hosted_shared / native / Cloud entry storage and signed tenant metadata
+- Availability: credential_maintenance / native / Cloud entry storage and signed tenant metadata — unavailable: No attachment application service on this listener.
+- Confirmation: ordinary reference under current write and item/comment authority → none
+
+Sources: [POST base + "/:attachment/reference"](../internal/cloudentry/attachments.go#L26), [POST /api/v2/organizations/:organization/projects/:project/attachment-metadata/:attachment/reference](../internal/hubserver/cloud_attachments.go#L52)
+## hubserver.expired_cloud_attachments
+
+Select expired Cloud attachment metadata
+
+- Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3346.
+- Decision: Explicit non-model boundary. hostedSharedEntry and the handler require service-kind claims for these internal callbacks. Retention selection, object-deletion acknowledgment and existence probes are not operator tools.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role authenticated Cloud entry service only; credential verified cloudassert.KindService signed request; browser, bearer operator and worker credentials cannot invoke internal callbacks; project signed entry service selects the organization-bound tenant; no operator project grant; ownership current shared organization tenant and entry-owned object prefix; internal metadata identity never grants public authority.
+- Application: hubserver.expiredCloudAttachments; entry sweepOrganizationAttachments selects existing retention work.
+- Extraction: None; service-to-tenant maintenance callback, not an operator application command.
+- Preconditions: Verified shared entry signature binds method/path/body and current tenant organization; public machine/browser claims are refused.
+- Coverage: TestAttachmentOrphanSweepAndDeprovision and TestCloudAttachmentRetention; hostedSharedEntry service-kind boundary.
+- Availability: self_hosted / native / Cloud entry storage and signed tenant metadata — unavailable: No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes.
+- Availability: hosted_dedicated / native / Cloud entry storage and signed tenant metadata — unavailable: Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service.
+- Availability: hosted_shared / native / Cloud entry storage and signed tenant metadata
+- Availability: credential_maintenance / native / Cloud entry storage and signed tenant metadata — unavailable: No attachment application service on this listener.
+- Confirmation: service-only callback → not_applicable
+
+Sources: [POST /internal/v1/attachments/expired](../internal/hubserver/cloud_attachments.go#L53)
+## hubserver.finish_cloud_attachment_deletion
+
+Acknowledge entry-owned object deletion
+
+- Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3346.
+- Decision: Explicit non-model boundary. hostedSharedEntry and the handler require service-kind claims for these internal callbacks. Retention selection, object-deletion acknowledgment and existence probes are not operator tools.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role authenticated Cloud entry service only; credential verified cloudassert.KindService signed request; browser, bearer operator and worker credentials cannot invoke internal callbacks; project signed entry service selects the organization-bound tenant; no operator project grant; ownership current shared organization tenant and entry-owned object prefix; internal metadata identity never grants public authority.
+- Application: hubserver.finishCloudAttachmentDeletion; entry removeAttachment acknowledges object deletion.
+- Extraction: None; service-to-tenant maintenance callback, not an operator application command.
+- Preconditions: Verified shared entry signature binds method/path/body and current tenant organization; public machine/browser claims are refused.
+- Coverage: TestAttachmentOrphanSweepAndDeprovision and TestCloudAttachmentRetention; hostedSharedEntry service-kind boundary.
+- Availability: self_hosted / native / Cloud entry storage and signed tenant metadata — unavailable: No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes.
+- Availability: hosted_dedicated / native / Cloud entry storage and signed tenant metadata — unavailable: Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service.
+- Availability: hosted_shared / native / Cloud entry storage and signed tenant metadata
+- Availability: credential_maintenance / native / Cloud entry storage and signed tenant metadata — unavailable: No attachment application service on this listener.
+- Confirmation: service-only callback → not_applicable
+
+Sources: [POST /internal/v1/attachments/deleted](../internal/hubserver/cloud_attachments.go#L54)
+## hubserver.cloud_attachment_exists
+
+Check metadata during entry orphan maintenance
+
+- Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3346.
+- Decision: Explicit non-model boundary. hostedSharedEntry and the handler require service-kind claims for these internal callbacks. Retention selection, object-deletion acknowledgment and existence probes are not operator tools.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role authenticated Cloud entry service only; credential verified cloudassert.KindService signed request; browser, bearer operator and worker credentials cannot invoke internal callbacks; project signed entry service selects the organization-bound tenant; no operator project grant; ownership current shared organization tenant and entry-owned object prefix; internal metadata identity never grants public authority.
+- Application: hubserver.cloudAttachmentExists; entry sweepOrganizationAttachments checks metadata before deleting orphan objects.
+- Extraction: None; service-to-tenant maintenance callback, not an operator application command.
+- Preconditions: Verified shared entry signature binds method/path/body and current tenant organization; public machine/browser claims are refused.
+- Coverage: TestAttachmentOrphanSweepAndDeprovision and TestCloudAttachmentRetention; hostedSharedEntry service-kind boundary.
+- Availability: self_hosted / native / Cloud entry storage and signed tenant metadata — unavailable: No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes.
+- Availability: hosted_dedicated / native / Cloud entry storage and signed tenant metadata — unavailable: Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service.
+- Availability: hosted_shared / native / Cloud entry storage and signed tenant metadata
+- Availability: credential_maintenance / native / Cloud entry storage and signed tenant metadata — unavailable: No attachment application service on this listener.
+- Confirmation: service-only callback → not_applicable
+
+Sources: [POST /internal/v1/attachments/exists](../internal/hubserver/cloud_attachments.go#L55)
+## hubserver.wait_native_candidates
+
+Wait for worker claim candidates
+
+- Audience: worker; status: **excluded**; owner: digitaldrywood/detent#3335.
+- Decision: Worker-only bounded claim wait registered with worker native scope; no operator claim, lease or read authority is added.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role authenticated worker/runner; credential worker scope; runner credential/lease where applicable; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
+- Application: Service.waitNativeCandidates; existing worker candidate wake/read owner.
+- Extraction: None for this protocol/authority boundary; no operator command extraction.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
+- Coverage: Existing native claim-wait application regressions and worker scope boundary.
+- Availability: self_hosted / native / hub application service
+- Availability: hosted_dedicated / native / hub application service
+- Availability: hosted_shared / native / hub application service
+- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: this non-operator source site → not_applicable
+
+Sources: [GET /api/v2/organizations/:organization/projects/:project/claims/wait](../internal/hubserver/native_api.go#L148)
+## frontend.web_conversation_src_app_fleet_EnrollRunner_tsx.navigation_results
+
+RunnersSection.tsx navigation results
+
+- Audience: local_ui; status: **excluded**; owner: digitaldrywood/detent#3335.
+- Decision: Exact link opens selected-project integration settings and the Sprites anchor. Navigation creates no enrollment/integration and grants no project access; meaningful commands retain their existing owners.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
+- Application: EnrollRunner.tsx; existing authorized project integration setup navigation.
+- Extraction: None for link presentation; producing application reads retain typed identifiers/URLs.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
+- Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
+- Availability: self_hosted / github,native / shared application read/command for this frontend source
+- Availability: hosted_dedicated / github,native / shared application read/command for this frontend source
+- Availability: hosted_shared / github,native / shared application read/command for this frontend source
+- Confirmation: read or ordinary non-destructive write → none
+
+Sources: [web/conversation/src/app/fleet/EnrollRunner.tsx:354](../web/conversation/src/app/fleet/EnrollRunner.tsx#L354)
+## frontend.web_conversation_src_app_work_IssuePage_tsx.page_adapter
+
+workHttp.ts http adapter
+
+- Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
+- Decision: Exact read(cursor) callback is frontend pagination plumbing. Concrete attempt/history/comment API requests retain separately inventoried operator decisions; this callback introduces no application command.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role authenticated operator; credential current connection authority; project resource project read/write grant where scoped; ownership current organization; resolve identifiers within the authorized project.
+- Application: IssuePage.allIssueRecords; cursor iteration over supplied listAttempts/listHistory/listComments readers.
+- Extraction: None; exact client/protocol sites do not own an operator application command.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution
+- Coverage: internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.
+- Availability: self_hosted / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
+- Availability: hosted_dedicated / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
+- Availability: hosted_shared / github,native / shared application read/command for this frontend source — unavailable: This source is a browser asset; no standalone MCP transport or tool service.
+- Confirmation: read or ordinary non-destructive write → none
+
+Sources: [web/conversation/src/app/work/IssuePage.tsx:121](../web/conversation/src/app/work/IssuePage.tsx#L121)

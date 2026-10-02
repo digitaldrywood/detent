@@ -3,10 +3,13 @@ package capability
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 // These regressions catch unreviewed dashboard additions, stale/duplicate decisions,
@@ -22,6 +25,31 @@ func TestDashboardCapabilityCoverage(t *testing.T) {
 	}
 	if err := Validate(matrix, candidates, false); err != nil {
 		t.Fatal(err)
+	}
+	for _, op := range matrix.Operations {
+		if op.Status != "implemented" || op.Audience != "operator" {
+			continue
+		}
+		definition, ok := operatortool.Lookup(op.Tool.Name)
+		if !ok {
+			t.Errorf("%s claims an implemented tool absent from the registry: %s", op.ID, op.Tool.Name)
+			continue
+		}
+		if op.Tool.Set != definition.Meta.Toolset {
+			t.Errorf("%s records toolset %s; %s advertises %s", op.ID, op.Tool.Set, definition.Name, definition.Meta.Toolset)
+		}
+		if json.Valid([]byte(op.Tool.Arguments)) {
+			var recorded, advertised any
+			if err := json.Unmarshal([]byte(op.Tool.Arguments), &recorded); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(definition.InputSchema, &advertised); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(recorded, advertised) {
+				t.Errorf("%s implemented schema differs from %s", op.ID, definition.Name)
+			}
+		}
 	}
 	if os.Getenv("DETENT_MCP_REQUIRE_PARITY") == "1" {
 		if err := Validate(matrix, candidates, true); err != nil {
@@ -57,6 +85,7 @@ func TestCapabilityDrift(t *testing.T) {
 		change             func(*Matrix)
 		want               string
 		parity             bool
+		replacement        bool
 	}{
 		{name: "new route on named Echo receiver", path: "internal/web/extra.go", source: `package web; import "github.com/labstack/echo/v4"; func extra(dashboard *echo.Echo) { dashboard.POST("/new", create) }`, want: "uncovered source"},
 		{name: "new grouped route", path: "internal/hubserver/extra.go", source: `package hubserver; import "github.com/labstack/echo/v4"; func extra(e *echo.Echo) { group := e.Group("/org"); group.DELETE("/new", remove) }`, want: "uncovered source"},
@@ -71,6 +100,14 @@ func TestCapabilityDrift(t *testing.T) {
 		{name: "new frontend request", path: "web/conversation/src/new.ts", source: "const add = () => fetch(`/new/${id}`, {method:'POST'});", want: "uncovered source"},
 		{name: "new browser route", path: "web/conversation/src/new.tsx", source: `<Route path="/new" element={<New />} />`, want: "uncovered source"},
 		{name: "request action argument", path: "web/conversation/src/api.ts", source: `export const existing = () => send(Result, "GET", "/existing", {action:"destroy"});`, want: "uncovered source"},
+		{name: "current selector and attachment replacements", path: "web/conversation/src/api.ts", source: `
+const list = () => send(ConversationListResponse, "GET", url("/conversations", {subject_work_item_id: input.subjectWorkItemId, cursor: input.cursor}));
+const create = () => send(CreateConversationResponse, "POST", "/conversations", {key: input.key, ...(input.subjectWorkItemId === undefined ? {} : {subject_work_item_id: input.subjectWorkItemId})});
+const work = () => send(WorkItemPage, "GET", url("/work-items", {q: input.q?.trim() || undefined, include: input.includeWork === true ? "work" : undefined}));
+const attempts = () => send(AttemptPage, "GET", url("/attempts", {limit, cursor}), undefined, signal);
+const workspace = new EventSource(http.eventsUrl(projectId, workspaceId), {withCredentials: true});
+const upload = () => send(WorkAttachment, "POST", project(projectId) + "/attachments", body);
+`, want: "uncovered source", replacement: true},
 		{name: "duplicate operation", change: func(m *Matrix) { m.Operations = append(m.Operations, m.Operations[0]) }, want: "duplicate or empty operation ID"},
 		{name: "duplicate site owner", change: func(m *Matrix) {
 			other := m.Operations[0]
@@ -129,6 +166,15 @@ func TestCapabilityDrift(t *testing.T) {
 				}
 			} else if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("want %q, got %v", tt.want, err)
+			}
+			if tt.replacement {
+				if len(actual) != 7 || strings.Count(err.Error(), "uncovered source ") != 6 || strings.Count(err.Error(), "orphan source ") != 1 {
+					t.Fatalf("current selectors must produce six new sites and one stale site: %v; candidates=%+v", err, actual)
+				}
+				current.Operations[0].Sources = actual
+				if err := Validate(current, actual, false); err != nil {
+					t.Fatalf("reconciled replacements: %v", err)
+				}
 			}
 		})
 	}
