@@ -18,11 +18,17 @@ A passing test does not authorize weakening a rule.
 ## INV-1 — Lane ownership
 
 Scheduled diagnostics for the migrated Detent repository call the existing
-Cloud `file_issue` and `add_comment` application owners using the selected
-project and current scoped API/MCP connection. New diagnostics enter only a
+Cloud `file_issue`, revisioned `edit_item` priority and `add_comment` application
+owners using the selected project and current scoped API/MCP connection. New diagnostics enter only a
 configured nondispatchable Backlog; imported open items and operator holds
 receive occurrences without lane writes. Scheduled success comments are
 validation evidence, never completion, landing, admission or review authority.
+Parsed source/test blockers of deployment or the scheduled validated release
+receive at least High priority under this repository's operator policy;
+priority changes preserve Urgent and do not admit work or remove holds.
+Unknown infrastructure evidence remains instance-owned intake without priority
+promotion or source-repair authority. This policy adds no local merge gate and
+does not change scheduled all-job validation or pinned release provenance.
 Other repositories keep their existing GitHub reporting policy. No tool,
 scope, project configuration key or alternate tracker owner is introduced.
 
@@ -3061,6 +3067,15 @@ Publication stops after a failed or ambiguous response; a retry reads durable
 bodies/comments before another write. `TestCloudReport`, `TestCloudTransport`
 and `TestCloudDestinationAuthority` cover imported provenance, response loss,
 replay, held items, current connection failure and destination isolation.
+For this repository's selected native reporting context, new parsed source/test
+diagnostics enter Backlog at High. Qualifying occurrences, including replays of
+existing imported evidence, promote unset or lower priority through `edit_item`
+with the observed expected revision and a stable occurrence-based request ID.
+High and Urgent remain unchanged. Conflicts stop publication through existing
+command semantics, without a reporter retry loop. These same regressions cover
+source priority, lost priority responses, replay identity, stale/missing
+revisions and infrastructure-only intake; other projects retain their defaults.
+Historical red evidence proves a pinned failure, not a current staging outage.
 The finalizer fixture covers native green evidence without GitHub closure and
 preserves scheduled tag/release publication. No capability parity changes or
 additional intake, recovery or reconciliation owner are introduced (INV-3).

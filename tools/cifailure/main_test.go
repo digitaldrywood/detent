@@ -113,12 +113,16 @@ func (f *fakeGH) command(_ context.Context, input string, args ...string) ([]byt
 		return nil, f.publishErr
 	}
 	var payload struct {
-		Title  string   `json:"title"`
-		Body   string   `json:"body"`
-		Labels []string `json:"labels"`
+		Title    string          `json:"title"`
+		Body     string          `json:"body"`
+		Labels   []string        `json:"labels"`
+		Priority json.RawMessage `json:"priority"`
 	}
 	if err := json.Unmarshal([]byte(input), &payload); err != nil {
 		return nil, err
+	}
+	if len(payload.Priority) != 0 {
+		return nil, errors.New("native priority policy changed GitHub reporting defaults")
 	}
 	if strings.HasSuffix(args[3], "/comments") {
 		var number int

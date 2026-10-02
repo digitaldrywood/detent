@@ -64,7 +64,7 @@ const openIssuesQuery = `query($owner:String!,$name:String!,$endCursor:String) {
 
 type issueDestination interface {
 	load(context.Context) error
-	file(context.Context, string, string, string, string, []string) error
+	file(context.Context, string, string, string, string, []string, bool) error
 	success(context.Context, func(string) string) error
 }
 
@@ -98,7 +98,7 @@ func (g *githubDestination) load(ctx context.Context) error {
 	return nil
 }
 
-func (g *githubDestination) file(ctx context.Context, fingerprint, summary, body, _ string, labels []string) error {
+func (g *githubDestination) file(ctx context.Context, fingerprint, summary, body, _ string, labels []string, _ bool) error {
 	return fileProblem(ctx, g.command, g.repository, g.issues, fingerprint, summary, body, labels)
 }
 
@@ -139,6 +139,7 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			problems = []problem{{Key: "scheduled-ci:" + repository + ":" + j.Name, Summary: "scheduled " + j.Name + " failure", Evidence: evidence}}
 		}
 		for _, p := range problems {
+			sourceFailure := !strings.HasPrefix(p.Key, "scheduled-ci:")
 			fingerprint := issueorigin.Fingerprint(p.Key)
 			if strings.HasPrefix(p.Key, "scheduled-ci:") {
 				fingerprint = legacyJobFingerprint(p.Key)
@@ -146,6 +147,9 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			disposition := "Let the next scheduled full validation confirm the repair; a green run closes scheduled repair issues."
 			if _, native := destination.(*cloudDestination); native {
 				disposition = "Let the next scheduled full validation confirm the repair. Scheduled evidence does not authorize admission, review approval or native completion."
+				if sourceFailure {
+					disposition += " This Detent repository's source blockers of deployment or the scheduled validated release require at least High priority, preserving Urgent. Priority does not authorize admission or remove operator holds. Use focused diagnostics; do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current head still fails."
+				}
 			}
 			body := fmt.Sprintf("Scheduled validation job **%s** (%s) failed on development commit %s.\n\nRun: %s\nJob: %s\nProblem: `%s`\n\n```text\n%s\n```\n\nDiagnose this problem using the linked logs. Runner setup, backend startup, network/download, and protocol failures belong to the CI instance. %s\n\n```detent-agent\nschema: 1\neffort: high\n```", j.Name, j.Conclusion, getenv("CI_DEVELOP_SHA"), runURL, j.URL, p.Key, p.Evidence, disposition)
 			if strings.HasPrefix(p.Key, "scheduled-ci:") {
@@ -159,7 +163,7 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 				}
 			}
 			body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: runURL, Fingerprint: fingerprint})
-			if err := destination.file(ctx, fingerprint, p.Summary, body, occurrenceKey(getenv, j, fingerprint), labels); err != nil {
+			if err := destination.file(ctx, fingerprint, p.Summary, body, occurrenceKey(getenv, j, fingerprint), labels, sourceFailure); err != nil {
 				return fmt.Errorf("report %s (%s): %w", j.Name, p.Key, err)
 			}
 		}
