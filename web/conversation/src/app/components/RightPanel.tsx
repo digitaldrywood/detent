@@ -164,7 +164,7 @@ export function useRightPanelWorkspace(input: {
   readonly title?: string;
 }): RightPanelWorkspace {
   const client = useClient();
-  const panel = useRightPanel(input.scopeKey);
+  const panel = useRightPanel(input.workItemId ?? input.scopeKey);
   const shouldUseSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
@@ -263,7 +263,9 @@ export function useRightPanelWorkspace(input: {
     project?.can_write === true && project.capabilities?.files === true;
   const filesReason = !workspacesEnabled
     ? "Workspace sessions are not enabled for this organization."
-    : "Files need write access and an authorized runner with workspace support.";
+    : project?.can_write !== true
+      ? "Files need write access to this project."
+      : "Files need write access and an authorized runner with workspace support.";
   const attempt = [...input.attempts].sort((a, b) => b.started_at.localeCompare(a.started_at))[0];
   const attemptId = attempt?.attempt_id ?? null;
   const filesOpen = panel.surfaces.some(
@@ -295,6 +297,13 @@ export function useRightPanelWorkspace(input: {
   const workspaceResource = workspace.workspace;
   const filesAvailable = filesLaunchable &&
     (workspaceResource === null || workspaceResource.capabilities?.files === true);
+  const filesError = workspace.error ?? (
+    !filesLaunchable
+      ? filesReason
+      : workspaceResource?.capabilities != null && workspaceResource.capabilities.files !== true
+        ? "This workspace's runner does not serve files."
+        : null
+  );
   const workspaceSession = React.useMemo(
     () => workspaceSessionFacts(workspaceResource),
     [workspaceResource],
@@ -440,7 +449,7 @@ export function useRightPanelWorkspace(input: {
       <FilesSurface
         state={workspace.state}
         reason={workspace.reason}
-        error={workspace.error}
+        error={filesError}
         loading={workspace.loading}
         session={workspaceSession}
         files={relay}
@@ -453,6 +462,7 @@ export function useRightPanelWorkspace(input: {
       <FileSurface
         path={activeSurface.relativePath}
         files={relay}
+        error={filesError}
         onOpenFile={addFile}
         projectName={input.projectName}
       />

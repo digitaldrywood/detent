@@ -437,6 +437,18 @@ them under sandbox policy or authorize any tenant's terminal activation.
 `TestAppBootstrapWorkspaceAvailability` cover persistence and truthful availability.
 No mechanism, control channel, configuration key or lane writer is introduced.
 
+Files selection (native #167) stays keyed to the native work item while its
+linked conversation becomes available. Navigating to another item restores that
+item's panel state before any surface can request its workspace. Workspace
+acquisition, event subscription and relay tickets share the current
+client/project/item/attempt/capability binding;
+changing that binding clears the previous workspace from the rendered surface
+before acquisition completes. Revoked availability and unavailable file channels
+use the existing Files explanation. `rightPanelWorkspace.test.tsx` follows the
+enabled picker through panel state, scoped workspace metadata, ticket minting,
+directory listing and a file read, and `workspaces.test.tsx` rejects stale attempt
+binding. Existing relay and filesystem authority is unchanged.
+
 Effective runner capacity (native #90) uses the existing runner administration,
 native command receipt, routing heartbeat, selected global configuration writer
 and runtime reload owners. UI routing capacity edits and MCP/API capacity requests
