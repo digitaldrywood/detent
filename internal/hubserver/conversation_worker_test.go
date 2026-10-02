@@ -426,6 +426,9 @@ func TestConversationWorkerBind(t *testing.T) {
 		decodeHubResponse(t, response, &bound)
 		f.record.ID = bound.ConversationID
 		record := f.load(t)
+		if record.Origin != conversationOriginWorker {
+			t.Fatalf("ordinary binding origin = %q, want worker", record.Origin)
+		}
 		if bound.Continuation || record.WorkItemID != string(f.issue.WorkItemID) || record.Visibility != conversation.VisibilityShared || record.Execution.Owner.AttemptID != f.attempt || record.Execution.Owner.RunID != f.run || len(bound.Pending) != 0 || len(f.messages(t)) != 0 {
 			t.Fatalf("ordinary binding = %#v, pending = %#v", record, bound.Pending)
 		}
@@ -467,6 +470,9 @@ func TestConversationWorkerBind(t *testing.T) {
 		t.Fatalf("expected/cursor = %#v/%d", bound.Pending[0].Expected, bound.Cursor)
 	}
 	record := f.load(t)
+	if record.Origin != conversationOriginUser {
+		t.Fatalf("linked user conversation origin = %q, want user", record.Origin)
+	}
 	if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Owner.AttemptID != f.attempt || record.Execution.Owner.LeaseID != string(f.lease.ID) || record.Execution.Owner.FencingToken != int64(f.lease.FencingToken) || record.Execution.Owner.RunID != f.run || record.Execution.Owner.MachineID != "conversation-machine" {
 		t.Fatalf("execution = %#v", record.Execution)
 	}

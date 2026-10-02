@@ -60,12 +60,18 @@ func conversationInvalidCursor() error {
 	return &nativeError{Code: "invalid_request", Message: "Cursor is not valid", status: http.StatusUnprocessableEntity}
 }
 
+const (
+	conversationOriginUser   = "user"
+	conversationOriginWorker = "worker"
+)
+
 type conversationRecord struct {
 	ID                string
 	OrganizationID    tracker.OrganizationID
 	ProjectID         tracker.ProjectID
 	OwnerPrincipalID  string
 	OwnerSubject      string
+	Origin            string
 	Title             string
 	Visibility        conversation.Visibility
 	Status            conversation.Status
@@ -165,7 +171,7 @@ func conversationParseNullTime(value sql.NullString) (*time.Time, error) {
 	return parsedTime(value.String)
 }
 
-const conversationColumns = `id, organization_id, project_id, owner_principal_id, owner_subject, title, visibility, status,
+const conversationColumns = `id, organization_id, project_id, owner_principal_id, owner_subject, origin, title, visibility, status,
  subject_work_item_id, work_item_id, linked_at, revision, provider_thread_id, provider_thread_runner_id, provider_thread_origin, execution_json, event_seq, preferences_json, created_at, updated_at, last_message_at, settled_at`
 
 // conversationMessageCount counts the conversation's whole history for the
@@ -188,7 +194,7 @@ func scanConversation(row conversationScanner) (conversationRecord, error) {
 	var subject, workItem, linkedAt, lastMessageAt, settledAt sql.NullString
 	var execution, preferences, created, updated string
 	if err := row.Scan(
-		&record.ID, &record.OrganizationID, &record.ProjectID, &record.OwnerPrincipalID, &record.OwnerSubject, &record.Title, &record.Visibility, &record.Status,
+		&record.ID, &record.OrganizationID, &record.ProjectID, &record.OwnerPrincipalID, &record.OwnerSubject, &record.Origin, &record.Title, &record.Visibility, &record.Status,
 		&subject, &workItem, &linkedAt, &record.Revision, &record.ProviderThreadID, &record.ProviderThreadRunnerID, &record.ProviderThreadOrigin, &execution, &record.EventSeq, &preferences, &created, &updated, &lastMessageAt, &settledAt,
 		&record.MessageCount,
 	); err != nil {
@@ -234,6 +240,12 @@ func validateConversationRecord(record *conversationRecord) error {
 	}
 	if strings.TrimSpace(record.OwnerPrincipalID) == "" {
 		return nativeInvalid("A conversation requires an owner principal")
+	}
+	if record.Origin == "" {
+		record.Origin = conversationOriginUser
+	}
+	if record.Origin != conversationOriginUser && record.Origin != conversationOriginWorker {
+		return nativeInvalid("Conversation origin is not valid")
 	}
 	if !record.Visibility.Valid() {
 		return nativeInvalid("Conversation visibility is not valid")
@@ -314,8 +326,8 @@ func (s *conversationStore) createConversation(ctx context.Context, tx *sql.Tx, 
 		return fmt.Errorf("encode conversation preferences: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO conversations (`+conversationColumns+`)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.OrganizationID, record.ProjectID, record.OwnerPrincipalID, record.OwnerSubject, record.Title, record.Visibility, record.Status,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.ID, record.OrganizationID, record.ProjectID, record.OwnerPrincipalID, record.OwnerSubject, record.Origin, record.Title, record.Visibility, record.Status,
 		nullString(record.SubjectWorkItemID), nullString(record.WorkItemID), conversationNullTime(record.LinkedAt), record.Revision, record.ProviderThreadID, record.ProviderThreadRunnerID, record.ProviderThreadOrigin, execution, record.EventSeq,
 		preferences, conversationTime(record.CreatedAt), conversationTime(record.UpdatedAt), conversationNullTime(record.LastMessageAt), conversationNullTime(record.SettledAt),
 	); err != nil {
@@ -429,10 +441,6 @@ func conversationTitleFilter(needle string) string {
 	return "%" + escaped + "%"
 }
 
-// listConversations returns the conversations visible to principal: the
-// principal's own private conversations and every shared conversation in
-// scope, most recent activity first. The returned cursor is empty on the
-// last page.
 func (s *conversationStore) listConversations(ctx context.Context, query nativeQueryer, filter conversationListQuery) ([]conversationRecord, string, error) {
 	limit := filter.Limit
 	if limit <= 0 {
@@ -442,7 +450,7 @@ func (s *conversationStore) listConversations(ctx context.Context, query nativeQ
 		limit = 200
 	}
 	var where strings.Builder
-	where.WriteString("organization_id = ? AND (visibility = 'shared' OR owner_principal_id = ?)")
+	where.WriteString("organization_id = ? AND origin = 'user' AND (visibility = 'shared' OR owner_principal_id = ?)")
 	args := []any{filter.Organization, filter.Principal}
 	if filter.Project != "" {
 		where.WriteString(" AND project_id = ?")

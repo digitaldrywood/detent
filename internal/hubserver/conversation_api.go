@@ -1085,6 +1085,7 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 			OrganizationID:    scope.organization,
 			ProjectID:         scope.project,
 			OwnerPrincipalID:  scope.credential.ID,
+			Origin:            conversationOriginUser,
 			Title:             title,
 			Visibility:        conversation.VisibilityPrivate,
 			Status:            conversation.StatusActive,
