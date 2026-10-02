@@ -24,11 +24,12 @@ import (
 // conversationAgentBackend is a live backend that consumes one control from
 // the turn's command queue, asks one question and streams a short turn.
 type conversationAgentBackend struct {
-	mu       sync.Mutex
-	requests []AgentTurnRequest
-	consumed []AgentControl
-	inputErr error
-	turnErr  error
+	mu            sync.Mutex
+	requests      []AgentTurnRequest
+	consumed      []AgentControl
+	inputErr      error
+	turnErr       error
+	beforeTurnErr error
 }
 
 func (*conversationAgentBackend) SupportsLiveControl() bool { return true }
@@ -37,6 +38,9 @@ func (b *conversationAgentBackend) RunTurn(_ context.Context, req AgentTurnReque
 	b.mu.Lock()
 	b.requests = append(b.requests, req)
 	b.mu.Unlock()
+	if b.beforeTurnErr != nil {
+		return AgentTurnResult{}, b.beforeTurnErr
+	}
 	if err := onUpdate(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"}); err != nil {
 		return AgentTurnResult{}, err
 	}
@@ -300,6 +304,30 @@ func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 	}
 	if execution.finish != "succeeded" {
 		t.Fatalf("execution finish = %q", execution.finish)
+	}
+}
+
+func TestConversationStartupRetainsBoundProviderIdentity(t *testing.T) {
+	t.Parallel()
+	for _, thread := range []string{"", "bound-thread"} {
+		t.Run(thread, func(t *testing.T) {
+			t.Parallel()
+			startupErr := errors.New("provider startup failed before updates")
+			agent := &conversationAgentBackend{beforeTurnErr: startupErr}
+			session := newFakeConversationSession()
+			session.resume = thread
+			execution := &conversationTestExecution{session: session}
+			r := newConversationRunner(t, agent)
+			r.workspace.(*retainedExecutionWorkspace).recoveryStates = []workspace.RecoveryState{{HeadSHA: "actual-head", WorkspaceFingerprint: "actual-digest"}}
+			result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+			want := "fresh_checkout"
+			if thread != "" {
+				want = "resume_session"
+			}
+			if !errors.Is(err, startupErr) || !execution.bound || len(agent.requests) != 1 || agent.requests[0].Resume.ThreadID != thread || execution.checkpoint == nil || execution.checkpoint.Resume != want || execution.checkpoint.HeadSHA != "actual-head" || execution.checkpoint.WorkspaceDigest != "actual-digest" || result.NativeChange != nil || result.TurnCount != 0 {
+				t.Fatalf("startup identity: error=%v requests=%d checkpoint=%+v turns=%d", err, len(agent.requests), execution.checkpoint, result.TurnCount)
+			}
+		})
 	}
 }
 

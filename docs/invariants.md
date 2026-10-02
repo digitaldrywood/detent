@@ -1850,8 +1850,9 @@ Code sessions without a PR or experimental automatic resume. Native recovery
 verifies policy, configured runtime identity, provider availability, host, head
 and workspace digest before continuing. A worktree does not establish a provider
 session. Checkpoints select continuation only after a real provider identity is
-returned or observed. The exact persisted attempt lookup can also identify a
-failed startup with no provider identity, turns or tokens; only its unchanged,
+returned or observed, including an established identity supplied by the existing
+authenticated conversation binding. The exact persisted attempt lookup can
+identify a failed startup with no provider identity, turns or tokens; only its unchanged,
 available clean local workspace with no external effects can use the existing
 fresh-session decision. Missing persisted records, actual provider activity,
 dirty work and unverifiable real sessions retain recovery-required ownership.
