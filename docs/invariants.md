@@ -401,6 +401,10 @@ their principal/catalog digest and bounded offset against current authority,
 then return all remaining tools without another cursor. The `2026-07-28` stateless
 protocol validates per-request metadata and mirrored HTTP headers; older handshakes retain their
 bound sessions. Discovery cursors and client metadata confer no authority.
+Project-resource tool discovery preserves member write capabilities using the existing role predicate,
+while organization administration retains its separate role requirements.
+Discovery has no selected project; actual calls always recheck current project
+grants, credential scope and revocation.
 Modern HTTP binds the existing application approval conversation to authenticated
 principal/organization/credential/session identity, independently of the POST's
 lifetime; browser approval retains the application resolver for current authority.

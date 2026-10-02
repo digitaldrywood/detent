@@ -92,7 +92,8 @@ func (s *Service) authorizeCatalog(ctx context.Context, requirement operatortool
 		}
 	}
 	if requirement.Scope != apikey.ScopeRead {
-		if credential.Hosted != nil && credential.HostedRole != "owner" && credential.HostedRole != "admin" || credential.Hosted == nil && requirement.Scope == apikey.ScopeAdmin && credential.Scope != apiScopeAdmin {
+		projectResource := requirement.ResourceKind == "work_item" || requirement.ResourceKind == "workspace" || requirement.ResourceKind == "project"
+		if credential.Hosted != nil && (!hostedRoleAllows(credential.HostedRole, requirement.Scope) || !projectResource && credential.HostedRole != "owner" && credential.HostedRole != "admin") || credential.Hosted == nil && requirement.Scope == apikey.ScopeAdmin && credential.Scope != apiScopeAdmin {
 			return ctx, operatortool.ErrAccessDenied
 		}
 	}

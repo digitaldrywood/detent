@@ -24,7 +24,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		return nil, err
 	}
 	writable := false
-	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err == nil {
+	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item"}); err == nil {
 		writable = true
 	}
 	definitions := []operatortool.Definition{}

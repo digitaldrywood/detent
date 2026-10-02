@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -44,17 +45,22 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 		for _, test := range []struct {
 			name    string
 			scope   apikey.Scope
+			role    string
 			runners bool
 		}{
-			{"browser", "", false},
-			{"read key", apikey.ScopeRead, false},
-			{"write key", apikey.ScopeWrite, false},
-			{"admin key", apikey.ScopeAdmin, false},
-			{"browser runner grants", "", true},
-			{"admin key runner grants", apikey.ScopeAdmin, true},
+			{"browser", "", "owner", false},
+			{"read key", apikey.ScopeRead, "owner", false},
+			{"write key", apikey.ScopeWrite, "owner", false},
+			{"admin key", apikey.ScopeAdmin, "owner", false},
+			{"browser runner grants", "", "owner", true},
+			{"admin key runner grants", apikey.ScopeAdmin, "owner", true},
+			{"member browser", "", "member", false},
+			{"member write key", apikey.ScopeWrite, "member", false},
+			{"member read key", apikey.ScopeRead, "member", false},
+			{"viewer browser", "", "viewer", false},
 		} {
 			t.Run(deployment+"/"+test.name, func(t *testing.T) {
-				f := newHostedKeyMCPFixture(t, deployment, "owner")
+				f := newHostedKeyMCPFixture(t, deployment, test.role)
 				ctx := f.ctx
 				credential, err := currentHubOperator(ctx)
 				if err != nil {
@@ -135,10 +141,28 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 							t.Fatal(err)
 						}
 						t.Logf("ListTools part=%s elapsed=%s provider_calls=%d resolutions=%d application_calls=%d tools=%d", part.name, time.Since(start), provider.calls, resolutions, application.calls, len(definitions))
-						if part.name == "combined" {
+						if part.name == "combined" || part.name == "combined with services" {
 							hasRunnerTool := slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == operatortool.UpdateRunnerCapacity })
 							if hasRunnerTool != test.runners {
 								t.Fatalf("runner tool visibility=%v, grants=%v", hasRunnerTool, test.runners)
+							}
+							projectTools := []string{operatortool.FileIssue, operatortool.EditItem, operatortool.CreateChange, "save_onboarding"}
+							if part.name == "combined with services" {
+								projectTools = append(projectTools, "create_workspace")
+							}
+							for _, name := range projectTools {
+								visible := slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == name })
+								writable := test.role != "viewer" && test.scope != apikey.ScopeRead
+								if visible != writable {
+									t.Fatalf("project tool %s visibility=%v, want %v", name, visible, writable)
+								}
+							}
+							if test.role != "owner" {
+								for _, name := range []string{operatortool.ApproveChangeReviewPolicy, operatortool.InvitationSend, "create_hosted_project"} {
+									if slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == name }) {
+										t.Fatalf("role %s discovered organization/admin tool %s", test.role, name)
+									}
+								}
 							}
 						}
 						if provider.calls != 0 || resolutions != 0 || application.calls != 0 {
@@ -156,6 +180,26 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 				}
 				if resolutions == 0 || test.scope != "" && provider.calls == 0 {
 					t.Fatalf("execution skipped current authority: provider=%d resolutions=%d", provider.calls, resolutions)
+				}
+				if test.role == "member" || test.role == "viewer" {
+					for index, scenario := range []string{"current project access", "removed project grant", "revoked principal"} {
+						if index == 1 {
+							operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", f.user.identity.Subject)
+						}
+						if index == 2 {
+							f.grant(t, f.user, true, false)
+							operatorSQL(t, f.hostedSecurityFixture, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), credential.ID)
+						}
+						arguments, err := json.Marshal(map[string]any{"project_id": string(f.project), "request_id": "catalog-parity-" + strconv.Itoa(index), "title": "Project member write", "description": "Current authority fixture", "state": "Todo"})
+						if err != nil {
+							t.Fatal(err)
+						}
+						_, err = (hostedOperatorExecutor{f.service}).Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: arguments})
+						denied := index > 0 || test.role == "viewer" || test.scope == apikey.ScopeRead
+						if denied && !errors.Is(err, operatortool.ErrAccessDenied) || !denied && err != nil {
+							t.Fatalf("%s write denied=%v, err=%v", scenario, denied, err)
+						}
+					}
 				}
 				ctx = operatortool.WithConnection(ctx, operatortool.Connection{Identity: operatortool.Identity{PrincipalID: "foreign", OrganizationID: "org_security", CredentialID: "foreign"}})
 				if _, err := (hostedOperatorExecutor{f.service}).ListTools(ctx); !errors.Is(err, operatortool.ErrAccessDenied) {
