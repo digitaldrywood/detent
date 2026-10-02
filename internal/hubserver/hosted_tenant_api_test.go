@@ -580,12 +580,12 @@ func TestScopeHostUsage(t *testing.T) {
 		runners []hostedFleetRunner
 		want    []int
 	}{
-		{name: "no visible work", runners: []hostedFleetRunner{{HostUsed: 3, machine: "m1"}}, want: []int{0}},
-		{name: "visible work on one runner", runners: []hostedFleetRunner{{HostUsed: 3, machine: "m1", Leases: []hostedFleetLease{lease}}}, want: []int{1}},
+		{name: "no visible work", runners: []hostedFleetRunner{{HostUsed: 3, MachineID: "m1"}}, want: []int{0}},
+		{name: "visible work on one runner", runners: []hostedFleetRunner{{HostUsed: 3, MachineID: "m1", Leases: []hostedFleetLease{lease}}}, want: []int{1}},
 		{name: "runners sharing a host add up", runners: []hostedFleetRunner{
-			{HostUsed: 4, machine: "m1", Leases: []hostedFleetLease{lease}},
-			{HostUsed: 4, machine: "m1", Leases: []hostedFleetLease{lease, lease}},
-			{HostUsed: 2, machine: "m2"},
+			{HostUsed: 4, MachineID: "m1", Leases: []hostedFleetLease{lease}},
+			{HostUsed: 4, MachineID: "m1", Leases: []hostedFleetLease{lease, lease}},
+			{HostUsed: 2, MachineID: "m2"},
 		}, want: []int{3, 3, 0}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -641,7 +641,7 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 		t.Run(test.account, func(t *testing.T) {
 			var fleet hostedFleetResponse
 			browserHostedDecode(t, f.api(t, test.account, http.MethodGet, organization+"/fleet", nil, http.StatusOK), &fleet)
-			if len(fleet.Runners) != 1 || fleet.Runners[0].HostUsed != test.used || len(fleet.Runners[0].Leases) != test.leases {
+			if len(fleet.Runners) != 1 || fleet.Runners[0].MachineID != string(binding.MachineID) || fleet.Runners[0].HostUsed != test.used || len(fleet.Runners[0].Leases) != test.leases {
 				t.Fatalf("fleet = %#v", fleet.Runners)
 			}
 		})

@@ -61,6 +61,63 @@ describe("runner rows", () => {
   });
 });
 
+describe("shared host capacity", () => {
+  const active = { ...FLEET.runners[0]!, machine_id: "machine_shared", state: "active", health: "online", claim_refusal_reason: "", provider_capacity: [], host_capacity: 8, host_used: 1, capacity_limit: 8, reported_capacity: 8 };
+  const lease = active.leases[0]!;
+
+  it("counts a shared eight-slot host once and retains each identity's work", () => {
+    renderSection({ ...FLEET, runners: [
+      { ...active, capacity_limit: 4, reported_capacity: 4, host_used: 3 },
+      { ...active, id: "runner_sibling", display_name: "Sibling", capacity_limit: 4, reported_capacity: 4, host_used: 3, leases: [
+        { ...lease, lease_id: "lease_second", work_item_id: "wi_second" },
+        { ...lease, lease_id: "lease_third", work_item_id: "wi_third" },
+      ] },
+    ] });
+    expect(screen.getByText("3 of 8 slots running work")).toBeTruthy();
+    const host = screen.getByTestId("runner-capacity");
+    expect(host.querySelectorAll("[data-slot-state]")).toHaveLength(8);
+    expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(3);
+    expect(host.querySelectorAll('[data-slot-state="free"]')).toHaveLength(5);
+    expect(host.querySelector('[title="#wi_second connections: custom alerts from segment membership"]')).toBeTruthy();
+    expect(screen.getAllByTestId("host-card")).toHaveLength(2);
+  });
+
+  it.each([
+    ["draining", { state: "draining" }, 0],
+    ["disabled", { state: "disabled" }, 0],
+    ["offline", { health: "offline" }, 0],
+    ["outside hours", { health: "outside_hours" }, 0],
+    ["needs attention", { health: "needs_attention" }, 0],
+    ["claim refused", { claim_refusal_reason: "Too old to take work" }, 0],
+    ["reported limit", { reported_capacity: 3 }, 2],
+    ["routing limit", { capacity_limit: 2 }, 1],
+  ])("preserves running work and limits free slots for %s", (_name, values, free) => {
+    renderSection({ ...FLEET, runners: [{ ...active, ...values }] });
+    const host = screen.getByTestId("runner-capacity");
+    expect(screen.getByText("1 of 8 slots running work")).toBeTruthy();
+    expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(1);
+    expect(host.querySelectorAll('[data-slot-state="free"]')).toHaveLength(free);
+    expect(host.querySelectorAll('[data-slot-state="unavailable"]')).toHaveLength(7 - free);
+  });
+
+  it("uses only an active sibling's remaining allowance while another drains", () => {
+    renderSection({ ...FLEET, runners: [
+      { ...active, state: "draining", host_used: 2 },
+      { ...active, id: "runner_sibling", host_used: 2, capacity_limit: 2, reported_capacity: 4, leases: [{ ...lease, lease_id: "lease_second" }] },
+    ] });
+    const host = screen.getByTestId("runner-capacity");
+    expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(2);
+    expect(host.querySelectorAll('[data-slot-state="free"]')).toHaveLength(1);
+    expect(host.querySelectorAll('[data-slot-state="unavailable"]')).toHaveLength(5);
+  });
+
+  it("keeps distinct machine identities separate despite identical names", () => {
+    renderSection({ ...FLEET, runners: [active, { ...active, id: "runner_other", machine_id: "machine_other" }] });
+    expect(screen.getAllByTestId("runner-capacity")).toHaveLength(2);
+    expect(screen.getByText("2 of 16 slots running work")).toBeTruthy();
+  });
+});
+
 describe("providers", () => {
   it("folds every runner's capacity onto one table row per provider", () => {
     renderSection();

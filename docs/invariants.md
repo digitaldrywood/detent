@@ -17,6 +17,14 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+The fleet capacity display (native #225) groups runner identities by the existing
+machine ledger identity. Each physical host contributes capacity once, and every
+visible lease remains running even when its runner drains. Free capacity respects
+current runner state, connection health, claim refusal, reported capacity and
+routing limits; sibling work never appears free. Scoped fleet usage remains
+scoped to the reader's existing project authority. `TestHostedFleetHostUsageScope`
+and the shared-host fleet component regressions preserve these boundaries.
+
 Sprite runner wake work (native #212) resolves current project-selected
 dispatchable states and reads one currently granted, active, stale runner
 hostname at a time. Each provider request uses the current project secret and

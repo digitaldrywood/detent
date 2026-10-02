@@ -115,9 +115,28 @@ const SLOT_TONES = {
 };
 
 function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[]; readonly onOpen: (runner: FleetRunner) => void }): React.ReactElement {
-  const used = runners.reduce((count, runner) => count + runner.leases.length, 0);
-  const total = runners.reduce((count, runner) => count + runner.host_capacity, 0);
-  const unavailable = runners.filter((runner) => runner.health === "needs_attention").reduce((count, runner) => count + runner.host_capacity, 0);
+  const machines = new Map<string, FleetRunner[]>();
+  for (const runner of runners) {
+    const group = machines.get(runner.machine_id) ?? [];
+    group.push(runner);
+    machines.set(runner.machine_id, group);
+  }
+  const hosts = [...machines.values()].map((group) => {
+    const runner = group[0]!;
+    const leases = [...new Map(group.flatMap((entry) => entry.leases.map((lease) => [lease.lease_id, lease] as const))).values()];
+    const used = Math.max(leases.length, ...group.map((entry) => entry.host_used));
+    const capacity = runner.host_capacity;
+    const available = group.reduce((count, entry) => {
+      if (entry.state !== "active" || entry.health !== "online" || entry.claim_refusal_reason) return count;
+      if (entry.provider_capacity.length > 0 && !entry.provider_capacity.some((provider) => provider.state !== "exhausted" && provider.used < provider.max_concurrent)) return count;
+      return count + Math.max(0, Math.min(entry.capacity_limit, entry.reported_capacity) - entry.leases.length);
+    }, 0);
+    const free = Math.min(Math.max(0, capacity - used), available);
+    return { runner, leases, used, capacity, free };
+  });
+  const used = hosts.reduce((count, host) => count + host.used, 0);
+  const total = hosts.reduce((count, host) => count + host.capacity, 0);
+  const unavailable = hosts.reduce((count, host) => count + Math.max(0, host.capacity - host.used - host.free), 0);
   return (
     <SettingsSection title="Capacity right now" variant="plain">
       <div className="space-y-5 rounded-xl border border-border/60 bg-card/40 p-4">
@@ -126,14 +145,14 @@ function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[
           {unavailable > 0 ? <p className="text-xs text-warning">{unavailable} slots can't take work</p> : null}
         </div>
         <div className="flex flex-wrap gap-x-8 gap-y-4">
-          {runners.map((runner) => (
-            <button key={runner.id} type="button" onClick={() => onOpen(runner)} aria-label={"Open " + runner.display_name} className="min-w-0 max-w-full space-y-2 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="runner-capacity">
-              <span className="block break-words text-xs text-muted-foreground">{runner.display_name}</span>
+          {hosts.map((host) => (
+            <button key={host.runner.machine_id} type="button" onClick={() => onOpen(host.runner)} aria-label={"Open " + host.runner.display_name} className="min-w-0 max-w-full space-y-2 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="runner-capacity">
+              <span className="block break-words text-xs text-muted-foreground">{host.runner.display_name}</span>
               <span className="flex flex-wrap gap-1.5">
-                {Array.from({ length: runner.host_capacity }, (_, index) => {
-                  const lease = runner.leases[index];
-                  const state = lease ? "running" : runner.health === "needs_attention" ? "unavailable" : "free";
-                  return <span key={index} data-slot-state={state} title={lease ? "#" + lease.work_item_id + " " + lease.title : state === "free" ? "Free slot" : "Can't take work"} className={cn("size-5 shrink-0 rounded-sm border", SLOT_TONES[state])} />;
+                {Array.from({ length: host.capacity }, (_, index) => {
+                  const lease = host.leases[index];
+                  const state = index < host.used ? "running" : index < host.used + host.free ? "free" : "unavailable";
+                  return <span key={index} data-slot-state={state} title={lease ? "#" + lease.work_item_id + " " + lease.title : state === "running" ? "Running work" : state === "free" ? "Free slot" : "Can't take work"} className={cn("size-5 shrink-0 rounded-sm border", SLOT_TONES[state])} />;
                 })}
               </span>
             </button>
