@@ -84,10 +84,11 @@ class FakeEventSource {
   }
 }
 
-function Probe(props: { requires?: readonly string[] }): React.ReactElement {
+function Probe(props: { requires?: readonly string[]; attemptId?: string }): React.ReactElement {
   const handle = useWorkspace({
     projectId: "proj_1",
     workItemId: "item_1",
+    attemptId: props.attemptId ?? null,
     requires: props.requires ?? ["files"],
   });
   return (
@@ -140,6 +141,25 @@ describe("useWorkspace", () => {
     // One GET, and no POST at all: a slot that already exists is not spent again.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/workspaces?work_item=item_1");
+  });
+
+  it("opens the selected attempt instead of reusing another attempt's workspace", async () => {
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return Promise.resolve(json(200, { workspaces: [workspace({ id: "ws_other", state: "ready", attempt_id: "attempt_old" })] }));
+      }
+      return Promise.resolve(json(201, workspace({ id: "ws_selected", attempt_id: "attempt_current" })));
+    });
+    mount(<Probe attemptId="attempt_current" />);
+    await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_selected"));
+    const post = fetchMock.mock.calls.find((call) => (call[1] as RequestInit).method === "POST");
+    expect(JSON.parse(String((post?.[1] as RequestInit).body))).toMatchObject({
+      work_item_id: "item_1",
+      attempt_id: "attempt_current",
+    });
+    expect(workspaceKey("proj_1", "item_1", ["files"], "attempt_current")).not.toBe(
+      workspaceKey("proj_1", "item_1", ["files"], "attempt_old"),
+    );
   });
 
   it("skips a closed workspace and opens a new one, carrying `requires`", async () => {

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 // conversationClientFS holds the built client under app/conversation. It is
@@ -277,12 +278,13 @@ type appBootstrapActor struct {
 }
 
 type appBootstrapProject struct {
-	ID               string                `json:"id"`
-	Name             string                `json:"name"`
-	Profile          string                `json:"profile"`
-	CanWrite         bool                  `json:"can_write"`
-	CanManageRunners bool                  `json:"can_manage_runners"`
-	States           []tracker.NativeState `json:"states"`
+	ID               string                        `json:"id"`
+	Name             string                        `json:"name"`
+	Profile          string                        `json:"profile"`
+	CanWrite         bool                          `json:"can_write"`
+	CanManageRunners bool                          `json:"can_manage_runners"`
+	States           []tracker.NativeState         `json:"states"`
+	Capabilities     workspacesession.Capabilities `json:"capabilities"`
 }
 
 type appBootstrapSupport struct {
@@ -307,10 +309,11 @@ type appBootstrapCapabilities struct {
 
 type appBootstrapFeature struct {
 	Conversation bool `json:"conversation"`
+	Workspaces   bool `json:"workspaces"`
 }
 
 func (s *Service) appBootstrapFeature() appBootstrapFeature {
-	return appBootstrapFeature{Conversation: s.conversations != nil}
+	return appBootstrapFeature{Conversation: s.conversations != nil, Workspaces: s.workspaces != nil}
 }
 
 // appBootstrapChoice is one option of a turn preference picker. Default
@@ -582,7 +585,65 @@ WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("list project grants: %w", err)
 	}
+	for index := range projects {
+		project := &projects[index]
+		project.Capabilities, err = s.hostedWorkspaceCapabilities(ctx, credential, *project)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return projects, nil
+}
+
+func (s *Service) hostedWorkspaceCapabilities(ctx context.Context, credential apiCredential, project appBootstrapProject) (workspacesession.Capabilities, error) {
+	result := workspacesession.Capabilities{}
+	if s.workspaces == nil || !project.CanWrite || credential.Hosted == nil || credential.HostedRole == "viewer" {
+		return result, nil
+	}
+	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r
+JOIN token_grants g ON g.token_id = r.token_id AND g.organization_id = r.organization_id
+WHERE r.organization_id = ? AND g.project_id = ?`, s.config.Hosted.OrganizationID, project.ID)
+	if err != nil {
+		return result, fmt.Errorf("list workspace runners: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return result, errors.Join(err, rows.Close())
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return result, err
+	}
+	now := s.config.now()
+	for _, id := range ids {
+		runner, err := readRunner(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, now)
+		if err != nil {
+			return result, err
+		}
+		if runner.Health != "online" || runner.State != "active" || !slices.Contains(runner.Operations, "claim") {
+			continue
+		}
+		capabilities, isolation, fresh, err := runnerWorkspaceCapabilities(ctx, s.database.db, id, now)
+		if err != nil {
+			return result, err
+		}
+		if !fresh {
+			continue
+		}
+		files := capabilities.Satisfies([]string{workspacesession.CapabilityFiles, workspacesession.CapabilityExec})
+		result.Files = result.Files || files
+		result.Exec = result.Exec || files
+		terminal := files && capabilities.Terminal && project.CanManageRunners && s.workspaces.config.Terminal.Enabled &&
+			terminalIsolationAllowed([]string{workspacesession.CapabilityTerminal}, s.workspaces.config.Terminal.Isolation, isolation)
+		if s.workspaces.config.Terminal.Isolation == workspacesession.IsolationUser && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+			terminal = false
+		}
+		result.Terminal = result.Terminal || terminal
+	}
+	return result, nil
 }
 
 // hostedOrganizationChoices lists the directory destinations the signed-in
