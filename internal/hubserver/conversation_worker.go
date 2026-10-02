@@ -690,8 +690,16 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 SELECT 1 FROM native_commands WHERE organization_id = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ')
 ) OR EXISTS (
 SELECT 1 FROM conversation_messages WHERE conversation_id = ? AND role = 'user' AND kind = 'continue'
-AND (delivery IN ('saved', 'queued', 'sending') OR (attempt_id = ? AND ?))
-)`, scope.organization, operation, operation, operation, record.ID, previous.Owner.AttemptID, previous.Status != conversation.ExecutionCompleted).Scan(&response.Continuation); err != nil {
+AND delivery IN ('saved', 'queued', 'sending')
+) OR EXISTS (
+SELECT 1 FROM conversation_events WHERE conversation_id = ? AND type = 'message.updated'
+AND json_extract(body_json, '$.role') = 'user' AND json_extract(body_json, '$.kind') = 'continue'
+AND COALESCE(json_extract(body_json, '$.attempt_id'), '') <> ''
+AND seq > COALESCE((
+SELECT MAX(seq) FROM conversation_events WHERE conversation_id = ? AND type = 'execution.updated'
+AND json_extract(body_json, '$.status') = 'completed'
+), 0)
+)`, scope.organization, operation, operation, operation, record.ID, record.ID, record.ID).Scan(&response.Continuation); err != nil {
 			return err
 		}
 		if !previous.Status.Terminal() && previous.Owner.AttemptID != "" && previous.Owner.AttemptID != request.AttemptID {

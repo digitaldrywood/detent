@@ -321,9 +321,22 @@ func TestConversationWorkerBind(t *testing.T) {
 				t.Fatal("ordinary observation took completion ownership")
 			}
 			originalAttempt := f.attempt
+			operator, _ := conversationOperatorToken(t, f.nativeFixture, "continue-operator")
+			for _, status := range []conversation.ExecutionStatus{conversation.ExecutionStarting, conversation.ExecutionRunning} {
+				if status == conversation.ExecutionRunning {
+					requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "turn_id": "ordinary-turn"}), http.StatusAccepted)
+				}
+				activeContinue := conversation.Command{Key: "continue-active-" + string(status), Kind: conversation.CommandContinue, Expected: conversation.Expected{AttemptID: originalAttempt}}
+				failure := requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", operator, activeContinue), http.StatusConflict, "stale_execution")
+				if failure.Message != "An attempt is still running" {
+					t.Fatalf("active Continue refusal = %q", failure.Message)
+				}
+				if got := f.load(t).Execution; got.Status != status || got.Owner.AttemptID != originalAttempt || len(f.messages(t)) != 0 {
+					t.Fatalf("active Continue changed execution or queued a control: %+v", got)
+				}
+			}
 			requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
 			f.release(t)
-			operator, _ := conversationOperatorToken(t, f.nativeFixture, "continue-operator")
 			command := conversation.Command{Key: "continue-lease-lost", Kind: conversation.CommandContinue, Text: "Continue implementation", Expected: conversation.Expected{AttemptID: originalAttempt}}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", operator, command)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -364,6 +377,35 @@ func TestConversationWorkerBind(t *testing.T) {
 				t.Fatalf("replacement lost continuation ownership or replayed control: %+v", bound)
 			}
 			requireConversationDelivery(t, f, message, command.Key, wantDelivery)
+			replacementAttempt := f.attempt
+			f.release(t)
+			record = f.load(t)
+			if record.Execution.Status != conversation.ExecutionInterrupted || record.Execution.Error != conversationLeaseLostError || record.Execution.Owner.AttemptID != replacementAttempt {
+				t.Fatalf("second lease loss settlement = %+v", record.Execution)
+			}
+			f.claim(t)
+			response = f.bind(t, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &bound)
+			if !bound.Continuation || len(bound.Pending) != 0 {
+				t.Fatalf("second replacement lost continuation ownership or replayed control: %+v", bound)
+			}
+			requireConversationDelivery(t, f, message, command.Key, wantDelivery)
+			if got := f.messages(t)[message.ID].AttemptID; got != interruptedAttempt {
+				t.Fatalf("replacement rewrote Continue's original attempt: %s", got)
+			}
+			requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+			f.release(t)
+			for range 2 {
+				f.claim(t)
+				response = f.bind(t, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &bound)
+				if bound.Continuation || len(bound.Pending) != 0 {
+					t.Fatalf("completed Continue reclaimed ordinary completion: %+v", bound)
+				}
+				f.release(t)
+			}
 		})
 	}
 	t.Run("ordinary issue", func(t *testing.T) {

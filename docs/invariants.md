@@ -407,9 +407,12 @@ duplicate refusal, actual selected-turn delivery and preserved comments.
 Ordinary observational binding preserves the Code/Rework native completion owner
 (#165). The fenced bind response derives continuation intent from existing native
 link receipts and explicit Continue messages, preserving initial interactive work
-and lease-lost continuation ownership even after the prior attempt's Continue
-settles as interrupted or unknown; replacement binding does not replay that
-control. Registered-runner turn-event POSTs reuse
+and lease-lost continuation ownership across consecutive replacement attempts even
+after the original Continue settles as interrupted or unknown. Existing ordered
+control events retain that intent until successful execution completion; replacement
+binding neither replays the control nor rewrites its original attempt identity.
+Matching-attempt Continue remains refused while execution is active.
+Registered-runner turn-event POSTs reuse
 `events` authorization and the unchanged scoped, runner/lease/fence/attempt owner
 checks. `TestNativeRunnerOpensChangeAndLeavesDispatch` exercises successful binding,
 host finalization, authenticated transcript events and exact-head version publication;
