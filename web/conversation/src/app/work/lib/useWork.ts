@@ -99,6 +99,7 @@ interface Loaded {
   readonly project: NativeProject;
   readonly issues: readonly NativeIssue[];
   readonly nextCursor?: string;
+  readonly pageCount: number;
 }
 
 async function loadProject(
@@ -127,6 +128,7 @@ async function loadProject(
     issues: [...(page.work?.items ?? []), ...page.items],
     work: page.work,
     nextCursor: page.next_cursor,
+    pageCount: 1,
   };
 }
 
@@ -153,6 +155,8 @@ export function useBoard(
   const client = useClient();
   const http = useWorkHttp();
   const runnerNames = useRunnerNames();
+  const latestRunnerNames = React.useRef(runnerNames);
+  latestRunnerNames.current = runnerNames;
   const projects: readonly BootstrapProject[] = client.bootstrap.projects;
   const [state, setState] = React.useState<BoardState & { requestKey: string; requestHttp: WorkHttp }>({
     requestKey: "",
@@ -174,8 +178,14 @@ export function useBoard(
     live: false,
   });
   const [nonce, setNonce] = React.useState(0);
+  const activeRead = React.useRef<AbortController | null>(null);
+  const refreshPending = React.useRef(false);
   const [continuation, setContinuation] = React.useState<{ key: string; cursors: Record<string, string> }>({ key: "", cursors: {} });
   const reload = React.useCallback(() => {
+    if (activeRead.current !== null) {
+      refreshPending.current = true;
+      return;
+    }
     setContinuation({ key: "", cursors: {} });
     setNonce((value) => value + 1);
   }, []);
@@ -192,10 +202,10 @@ export function useBoard(
   const facetScope = JSON.stringify([scope, view.archived === true]);
   const knownFacets = React.useRef<{ scope: string; http: WorkHttp; facets: Pick<ProjectView, "labels" | "assignees" | "priorities"> }>({ scope: "", http, facets: { labels: [], assignees: [], priorities: [] } });
   const filterKey = JSON.stringify([scope, view.q.trim(), view.state, view.label, view.assignee, view.priority, view.archived === true]);
-  const selectionKey = JSON.stringify([filterKey, nonce]);
+  const selectionKey = filterKey;
   const cursors = continuation.key === selectionKey ? continuation.cursors : {};
-  const requestKey = JSON.stringify([selectionKey, cursors]);
-  const loadedSelection = React.useRef<{ key: string; http: WorkHttp; entries: Loaded[]; cursors: Record<string, string> }>({ key: "", http, entries: [], cursors: {} });
+  const requestKey = JSON.stringify([selectionKey, nonce, cursors]);
+  const loadedSelection = React.useRef<{ key: string; nonce: number; http: WorkHttp; entries: Loaded[]; cursors: Record<string, string> }>({ key: "", nonce: -1, http, entries: [], cursors: {} });
   const loadMore = React.useCallback(() => {
     if (state.loading || loadedSelection.current.key !== selectionKey || loadedSelection.current.http !== http) return;
     const next = { ...loadedSelection.current.cursors };
@@ -209,7 +219,9 @@ export function useBoard(
     let cancelled = false;
     const controller = new AbortController();
     const signal = controller.signal;
+    activeRead.current = controller;
     if (scope.length === 0) {
+      activeRead.current = null;
       setState((current) => ({ ...current, requestKey, requestHttp: http, hasMore: false, loading: false, error: null,
         totals: null, project: null, items: [], lanes: [], labels: [], assignees: [], priorities: [], truncated: false, enriched: 0, asOf: null }));
       return;
@@ -223,12 +235,20 @@ export function useBoard(
     void (async () => {
       try {
         const cached = loadedSelection.current.key === selectionKey && loadedSelection.current.http === http ? loadedSelection.current : null;
+        const refreshing = cached !== null && cached.nonce !== nonce;
         const loaded = await pooled(scope, ENRICH_CONCURRENCY, async (id) => {
           signal.throwIfAborted();
           const prior = cached?.entries.find((entry) => entry.project.project_id === id);
-          if (prior !== undefined && cached?.cursors[id] === cursors[id]) return prior;
-          const entry = await loadProject(http, id, view, signal, cursors[id]);
-          return { ...entry, issues: [...new Map([...(prior?.issues ?? []), ...entry.issues]
+          if (!refreshing && prior !== undefined && cached?.cursors[id] === cursors[id]) return prior;
+          let entry = await loadProject(http, id, view, signal, refreshing ? undefined : cursors[id]);
+          const issues = refreshing ? [...entry.issues] : [...(prior?.issues ?? []), ...entry.issues];
+          let pageCount = refreshing ? 1 : (prior?.pageCount ?? 0) + 1;
+          while (refreshing && pageCount < (prior?.pageCount ?? 1) && entry.nextCursor !== undefined) {
+            entry = await loadProject(http, id, view, signal, entry.nextCursor);
+            issues.push(...entry.issues);
+            pageCount++;
+          }
+          return { ...entry, pageCount, issues: [...new Map(issues
             .map((issue) => [issue.work_item_id, issue])).values()] };
         });
         if (cancelled) return;
@@ -321,7 +341,7 @@ export function useBoard(
           const extra = extras.get(issue.work_item_id);
           return toWorkItemView(issue, names.get(issue.project_id) ?? issue.project_id, {
             ...(extra === undefined ? {} : { attempts: extra.attempts, change: extra.change, observations: extra.observations }),
-            runnerNames,
+            runnerNames: latestRunnerNames.current,
           });
         });
         const currentFacets = toProjectView(loaded[0]!.project, issues);
@@ -338,7 +358,7 @@ export function useBoard(
         // are carried across untouched. Publishing `live: false` here — which
         // this used to do — dropped the chip to "Not streaming" on every
         // reload, including the reload the stream itself had just asked for.
-        loadedSelection.current = { key: selectionKey, http, entries: loaded, cursors };
+        loadedSelection.current = { key: selectionKey, nonce, http, entries: loaded, cursors };
         setState((current) => ({
           requestKey,
           requestHttp: http,
@@ -380,14 +400,26 @@ export function useBoard(
           asOf: null,
           error: cause instanceof Error ? cause.message : String(cause),
         }));
+      } finally {
+        if (!cancelled && activeRead.current === controller) {
+          activeRead.current = null;
+          if (refreshPending.current) {
+            refreshPending.current = false;
+            reload();
+          }
+        }
       }
     })();
 
     return () => {
       cancelled = true;
       controller.abort();
+      if (activeRead.current === controller) {
+        activeRead.current = null;
+        refreshPending.current = false;
+      }
     };
-  }, [http, projects, nonce, requestKey, runnerNames]);
+  }, [http, projects, nonce, requestKey, reload]);
 
   // The hosted activity stream. It carries one integer for the whole project
   // and no event id, so it cannot say what changed and cannot be resumed: the
