@@ -323,16 +323,29 @@ func (e *artifactExecutionProbe) FinalizeArtifacts(context.Context, string) erro
 
 func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 	t.Parallel()
-	for _, failed := range []bool{false, true} {
-		t.Run(strconv.FormatBool(failed), func(t *testing.T) {
-			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{HeadSHA: "head"}}}}
+	for _, test := range []struct {
+		name        string
+		state       workspace.RecoveryState
+		recoveryErr error
+		failed      bool
+		finalized   bool
+		after       bool
+	}{
+		{name: "clean", state: workspace.RecoveryState{HeadSHA: "head"}, finalized: true, after: true},
+		{name: "failed capture", state: workspace.RecoveryState{HeadSHA: "head"}, failed: true, finalized: true},
+		{name: "unpushed finalized head", state: workspace.RecoveryState{HeadSHA: "head", UnpushedCommits: 1}, finalized: true},
+		{name: "dirty source cannot freeze artifacts", state: workspace.RecoveryState{HeadSHA: "head", TrackedPaths: []string{"source.go"}}},
+		{name: "unavailable recovery cannot freeze artifacts", recoveryErr: errors.New("recovery unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{test.state}, recoveryErr: test.recoveryErr}}
 			execution := &artifactExecutionProbe{}
-			if failed {
+			if test.failed {
 				execution.failure = errors.New("upload unavailable")
 			}
 			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
 			err := r.afterExecution(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{})
-			if !execution.finalized || backend.afterRun == failed || (err != nil) != failed {
+			if execution.finalized != test.finalized || backend.afterRun != test.after || (err != nil) != test.failed {
 				t.Fatal("cleanup preceded durable finalization", err, backend.afterRun)
 			}
 		})

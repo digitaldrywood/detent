@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type sseFrame struct {
@@ -245,4 +250,109 @@ func TestConversationStreamClosesOnRevocationAndShutdown(t *testing.T) {
 		f.service.conversations.broker.closeAll()
 		requireClosed(t, stream.nextEvent(t), "server_shutdown")
 	})
+}
+
+func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		account string
+		mutate  func(*testing.T, *browserHostedFixture, nativeScope)
+		refresh bool
+		want    string
+	}{
+		{
+			name: "expired session cookie", account: "owner", refresh: true, want: conversationClosedServerError,
+		},
+		{
+			name: "expired provider session", account: "owner", want: conversationClosedServerError,
+			mutate: func(_ *testing.T, f *browserHostedFixture, scope nativeScope) {
+				f.provider.mu.Lock()
+				defer f.provider.mu.Unlock()
+				identity := f.provider.sessions[scope.credential.Hosted.SessionID]
+				identity.ExpiresAt = time.Now().Add(-time.Second)
+				f.provider.sessions[identity.SessionID] = identity
+			},
+		},
+		{
+			name: "membership removed", account: "owner", want: conversationClosedAccessRevoked,
+			mutate: func(_ *testing.T, f *browserHostedFixture, scope nativeScope) {
+				f.provider.mu.Lock()
+				defer f.provider.mu.Unlock()
+				delete(f.provider.members, scope.credential.HostedMembership)
+			},
+		},
+		{
+			name: "project grant removed", account: "owner", want: conversationClosedAccessRevoked,
+			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id = ? AND project_id = ?", scope.credential.Hosted.Subject, scope.project); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "conversation made private", account: "viewer", want: conversationClosedAccessRevoked,
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET visibility = 'private' WHERE id = ?", f.conversation); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, browserPreviewConfig)
+			f.seedConversation(t)
+			request := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation+"/events", nil)
+			request.AddCookie(f.cookies[tt.account])
+			c := echo.New().NewContext(request, httptest.NewRecorder())
+			credential, _, err := f.service.hostedCredential(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: credential}
+			if _, err := f.service.reauthorizeConversationStream(c, &scope, f.conversation); err != nil {
+				t.Fatalf("initial authorization: %v", err)
+			}
+			refreshHandler := f.sessionRefreshHandler(t, f.service.Handler())
+			if tt.refresh {
+				expire := httptest.NewRequest(http.MethodPost, f.server.URL+"/__preview/session/expire", nil)
+				expire.AddCookie(f.cookies[tt.account])
+				response := httptest.NewRecorder()
+				refreshHandler.ServeHTTP(response, expire)
+				if response.Code != http.StatusNoContent {
+					t.Fatalf("expire session: %d %s", response.Code, response.Body)
+				}
+			} else {
+				tt.mutate(t, f, scope)
+			}
+			_, err = f.service.reauthorizeConversationStream(c, &scope, f.conversation)
+			if err == nil {
+				t.Fatal("reauthorization succeeded after expiry or access removal")
+			}
+			if tt.want == conversationClosedServerError && !errors.Is(err, auth.ErrInvalidSession) {
+				t.Fatalf("reauthorization error = %v, want invalid session", err)
+			}
+			for _, failure := range []error{err, fmt.Errorf("reauthorize: %w", err)} {
+				if got := conversationStreamCloseReason(failure); got != tt.want {
+					t.Fatalf("close reason for %v = %q, want %q", failure, got, tt.want)
+				}
+			}
+			if tt.refresh {
+				reconnect := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation, nil)
+				reconnect.AddCookie(f.cookies[tt.account])
+				response := httptest.NewRecorder()
+				refreshHandler.ServeHTTP(response, reconnect)
+				if response.Code != http.StatusOK {
+					t.Fatalf("reconnect: %d %s", response.Code, response.Body)
+				}
+				fresh := response.Result().Cookies()
+				if len(fresh) != 1 || fresh[0].Name != hostedCookie || fresh[0].Value == f.cookies[tt.account].Value {
+					t.Fatalf("reconnect did not refresh the session cookie: %d cookies", len(fresh))
+				}
+				c = echo.New().NewContext(reconnect, httptest.NewRecorder())
+				if _, err := f.service.reauthorizeConversationStream(c, &scope, f.conversation); err != nil {
+					t.Fatalf("reauthorization after reconnect: %v", err)
+				}
+			}
+		})
+	}
 }

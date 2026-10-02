@@ -733,6 +733,60 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 	}
 }
 
+func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Handler) http.Handler {
+	t.Helper()
+	var mu sync.Mutex
+	refreshed := make(map[string]*http.Cookie)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(hostedCookie)
+		if r.Method == http.MethodPost && r.URL.Path == "/__preview/session/expire" {
+			if err != nil {
+				http.Error(w, "session cookie required", http.StatusUnauthorized)
+				return
+			}
+			session, err := f.service.hostedSessions.Authenticate(r.Context(), cookie.Value)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			identity := auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}
+			token, fresh, err := f.service.hostedSessions.CreateIdentitySession(r.Context(), identity)
+			if err != nil {
+				t.Error(err)
+				http.Error(w, "session refresh failed", http.StatusInternalServerError)
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if _, err := f.service.database.db.ExecContext(r.Context(), "UPDATE hosted_sessions SET expires_at = ? WHERE token_hash = ?", formatHubTime(time.Now().Add(-time.Second)), apikey.HashToken(cookie.Value)); err != nil {
+				t.Error(err)
+				http.Error(w, "session expiry failed", http.StatusInternalServerError)
+				return
+			}
+			refreshed[cookie.Value] = &http.Cookie{Name: hostedCookie, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: fresh.ExpiresAt}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if err == nil {
+			mu.Lock()
+			fresh := refreshed[cookie.Value]
+			mu.Unlock()
+			if fresh != nil {
+				cookies := r.Cookies()
+				r.Header.Del("Cookie")
+				for _, current := range cookies {
+					if current.Name == hostedCookie {
+						current = fresh
+					}
+					r.AddCookie(current)
+				}
+				http.SetCookie(w, fresh)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func TestHostedBrowserPreviewSeed(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
@@ -766,6 +820,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 		t.Skip("set DETENT_HOSTED_BROWSER_PREVIEW=1 to run the isolated browser preview")
 	}
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	f.server.Config.Handler = f.sessionRefreshHandler(t, f.server.Config.Handler)
 	if os.Getenv("DETENT_HOSTED_BROWSER_SPRITES") != "" {
 		f.service.config.SecretKeys = secretTestKeys(t, "1", "1")
 		f.service.config.SpritesHTTPClient = &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {

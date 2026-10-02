@@ -658,25 +658,19 @@ panel's Files tile stays disabled with its reason.
 | `relay.memory` | byte size | `256MB` | The hub process's whole relay budget. Beyond it new streams fail with `relay_busy`. Accepts a bare byte count or a `KB`/`MB`/`GB` suffix. |
 | `files.deny` | list of globs | empty | Extra denylist patterns, applied on top of the fixed list every surface already refuses. Matched against the whole worktree-relative path and each of its segments, so `secrets` denies `secrets/prod/key.txt`. An unparseable glob fails the file at startup, because a pattern that never matches is a hole in the filter. |
 | `terminal.enabled` | bool | `false` | Whether a terminal may be requested at all. An owner turns it on. |
-| `terminal.isolation` | `container` or `user` | `container` | The level a terminal runs at. `user` is the runner account's own authority handed to a person and is allowed only when an organization sets it explicitly. |
+| `terminal.isolation` | `sandbox`, `container` or `user` | `sandbox` | Required terminal confinement. `user` exposes the runner account and requires explicit organization policy plus owner/admin authority. |
 | `terminal.record` | bool | `true` | Whether terminal streams are recorded. |
 
 The terminal keys are live (`decisions.md` §18.3). Three things about them are
 worth saying out loud.
 
-`terminal.enabled` defaults **off**: a terminal is the runner account's shell
-handed to a person, and section 18.3 is explicit that stripping environment
-variables does not confine one. An owner turns it on for the organization.
-
-`terminal.isolation` defaults to `container`, which is the level the setting
-recommends and the one a member with `write` and the `runners` grant may use.
-**No runner in this build can provide it.** There is no container runtime hook
-anywhere in the repository, so a runner reports `user` and a workspace asking
-for a terminal on an organization that requires `container` is claimed and then
-refused at the channel — which is what section 18.3 says such a runner must do
-rather than hand back a plain PTY under the recommended name. An organization
-that wants a working terminal today therefore sets `isolation: user`
-explicitly, and section 18.3 then allows it to owners and admins only.
+`terminal.enabled` defaults **off**. Enabling Files does not enable Terminal.
+An owner must separately authorize the selected organization's terminal policy.
+`terminal.isolation` defaults to `sandbox`. Registration, bind and heartbeat
+report the terminal launcher's measured isolation, independently of the provider
+worker's sandbox. The Hub excludes incompatible runners before terminal launch;
+an unavailable sandbox is never replaced with a user shell. Container-required
+policy remains unavailable because no terminal container runtime is implemented.
 
 `terminal.record` defaults on and cannot distinguish "absent" from "false" in
 Go, so the key is a pointer in the configuration reader and the hub defaults a
@@ -685,6 +679,45 @@ stored by the hub itself, capped at 1 MiB with a `truncated` flag, and read back
 through the two `terminal-recordings` endpoints in section 1.2 — never through
 the issue's own read rule, because a recording can carry what the runner
 account can see.
+
+### Terminal isolation and runtime acceptance
+
+Darwin's confined PTY uses `/usr/bin/sandbox-exec` with a deny-default Seatbelt
+profile. Only the assigned canonical worktree is writable; read access to system
+binaries and libraries permits shell children. The shell receives a clean
+environment, with home and temporary paths inside the worktree. Host credential
+directories, other checkouts, network connections and host IPC services are not
+granted. Nested mounts and a worktree containing the runner home are refused.
+Session/process-group changes and `posix_spawn` are denied; fork/exec children
+are supported, while programs requiring spawn attributes or process-group job
+control are unavailable. Sysctl access is limited to public hardware/OS facts,
+excluding host process arguments and environment. Existing input, output,
+resize, close, cancellation and group teardown remain with the PTY/relay owners.
+Shell exit also tears down surviving children.
+
+A real PTY probe must demonstrate allowed worktree writes, forbidden sibling and
+symlink reads/writes and child inheritance before the runner advertises sandbox.
+Each launch also confirms sandbox application before reporting `opened`. The
+constructor and launcher refuse unavailable enforcement using existing unsupported
+capability/frame semantics. Linux and other platforms have no confined launcher
+in this implementation; Unix user terminals remain available only under their
+existing explicit user policy. A macOS host that forbids nested sandboxing reports
+user-only support; neither platform PTY support nor a skipped regression grants
+sandbox capability. The native #162 worker observed host sandbox refusal with
+exit status 71 (`sandbox_apply: Operation not permitted`), not production support.
+
+After the reviewed source is integrated and deployed by the existing release
+owner, the operator separately authorizes scoped enablement for the selected
+tenant/project. That owner must then use supported workspace API reads and Chrome
+to select a completed attempt, open Terminal, and run a benign `pwd`. Record the
+real workspace/session, attempt, assigned registered runner, canonical worktree,
+reported isolation and deployed source head. Verify input/output, resize and close;
+record refusal evidence for another project/person, missing runners/write grants,
+an actively edited attempt, revoked current authority and stale lease/fencing
+identity. Keep the disabled-policy and incompatible-isolation explanations
+visible. No live enablement, real-workspace shell or browser/API acceptance was
+performed by the source worker. This is pending post-integration acceptance owned
+by the release/operator workflow, with no new tracker or control channel.
 
 Example, added to the hosted configuration described in
 [hosted identity](../hosted-identity.md):

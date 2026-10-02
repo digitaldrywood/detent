@@ -200,7 +200,7 @@ func conversationStreamCloseReason(err error) string {
 	switch {
 	case errors.As(err, &native):
 		return conversationClosedAccessRevoked
-	case errors.Is(err, sql.ErrNoRows), errors.Is(err, auth.ErrInvalidSession), errors.Is(err, auth.ErrHostedIdentity):
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, auth.ErrHostedIdentity):
 		return conversationClosedAccessRevoked
 	default:
 		return conversationClosedServerError

@@ -2400,7 +2400,7 @@
         }
       ],
       "application": "operatortool.Executor.Execute / explain_item",
-      "extraction": "None; retain existing definition, argument schema, executor and result schema.",
+      "extraction": "None; retain existing definition, argument schema, executor and result schema. Native runtime parity (#92): local and Cloud adapters share the scoped native runtime application snapshot and shared explanation/receipt/activity projection. The optional `native_runtime_evidence` capability exposes recorded native/local attempt identity, heartbeat/phase freshness, current Change/routing/capacity authority, authentic transition actor, historical scheduler decision and exact-version landed/refusal receipts. Missing runtime/history/efficiency evidence is unavailable; attempt success and imported Done are not ships. Instruction spans are offset-paged with partial coverage and causality limits, never private contents/commands/paths. REST operation-header and attribution windows preserve timestamps and selected-client accounting limits. Reads recheck current grants and attempt ownership, perform no dispatch/forge calls, and retain the 256 KiB result bound.",
       "tool": {
         "set": "existing_reads",
         "name": "explain_item",
@@ -2415,7 +2415,7 @@
       },
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go",
+      "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go Native coverage: `TestOperatorNativeWorkReads`, `TestApprovalMovesToLandingLane`, `TestNativeRecoveryAfterReassignmentAndRestart`, `TestNativeRuntimeMigrationPreservesHistory`, `TestNativeExecutionLandsReviewedVersion`, `TestNativeRunnerOpensChangeAndLeavesDispatch`, `TestWorkReadArguments`, `TestWorkReadDirectAuthorityAndSafeFailure`, `TestPublicActivityProfileBoundsAndRedaction`; native local adapter coverage in `internal/web/operator_work_reads_test.go`.",
       "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
     },
     {
@@ -5205,9 +5205,9 @@
         {
           "source": "web/conversation/src/app/work/lib/workHttp.ts",
           "kind": "request",
-          "definition": "doFetch(target,{ method, credentials: \"same-origin\", headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), })",
+          "definition": "doFetch(target,{ method, credentials: \"same-origin\", headers, ...(signal === undefined ? {} : { signal }), ...(body === undefined ? {} : { body: JSON.stringify(body) }), })",
           "occurrence": 1,
-          "line": 461
+          "line": 467
         },
         {
           "source": "web/conversation/src/app/work/lib/workHttp.ts",
@@ -9512,9 +9512,9 @@
         {
           "source": "internal/hubserver/conversation_api.go",
           "kind": "route",
-          "definition": "e.POST(nativeBase+\"/conversations\", s.createConversation, scope) [route=\"/api/v2/organizations/:organization/projects/:project/conversations\"]",
+          "definition": "e.POST(nativeBase+\"/conversations\", s.createConversation, scope, s.operatorAuthority) [route=\"/api/v2/organizations/:organization/projects/:project/conversations\"]",
           "occurrence": 1,
-          "line": 37,
+          "line": 38,
           "method": "POST",
           "path": "nativeBase + \"/conversations\"",
           "handler": "s.createConversation",
@@ -9561,7 +9561,7 @@
       ],
       "authority": {
         "role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes",
-        "credential_scope": "worker or operator (native project); exact registration middleware retained in source",
+        "credential_scope": "Current operator credential or hosted browser session with project write authority; worker and runner credentials are refused by operatorAuthority.",
         "project_grant": "native project read grant; writes need write grant; runner/terminal access additionally needs runner grant",
         "ownership": "resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain"
       },
@@ -11398,9 +11398,9 @@
         {
           "source": "web/conversation/src/app/work/lib/workHttp.ts",
           "kind": "request",
-          "definition": "send(ChangeDetail,\"GET\",url(`${itemBase(projectId, itemId)}/changes/${encodeURIComponent(changeId)}`))",
+          "definition": "send(ChangeDetail,\"GET\",url(`${itemBase(projectId, itemId)}/changes/${encodeURIComponent(changeId)}`),undefined,signal)",
           "occurrence": 1,
-          "line": 610
+          "line": 621
         },
         {
           "source": "web/conversation/src/app/components/surfaces/DiffSurface.tsx",
@@ -12217,9 +12217,9 @@
         {
           "source": "web/conversation/src/app/work/lib/workHttp.ts",
           "kind": "request",
-          "definition": "send(NativeProject,\"GET\",url(projectBase(projectId)))",
+          "definition": "send(NativeProject,\"GET\",url(projectBase(projectId)),undefined,signal)",
           "occurrence": 1,
-          "line": 535
+          "line": 542
         }
       ],
       "availability": [
@@ -16155,23 +16155,23 @@
         {
           "source": "web/conversation/src/app/account/Organization.tsx",
           "kind": "attribute",
-          "definition": "onSubmit={(event) => { event.preventDefault(); const value = email.trim(); if (value.length === 0) return; onInvite({ email: value, role }); }}",
+          "definition": "onSubmit={async (event) => { event.preventDefault(); const value = email.trim(); if (pending || value.length === 0) return; setInvitedEmail(null); if (await onInvite({ email: value, role, grants })) { setEmail(\"\"); setRole(\"member\"); setGrants([]); setInvitedEmail(value); } }}",
           "occurrence": 1,
-          "line": 337
+          "line": 366
         },
         {
           "source": "web/conversation/src/app/account/Organization.tsx",
           "kind": "form",
-          "definition": "<form className=\"flex flex-col gap-2 py-3 sm:flex-row sm:items-end\" onSubmit={(event) => { event.preventDefault(); const value = email.trim(); if (value.length === 0) return; onInvite({ email: value, role }); }} >",
+          "definition": "<form className=\"flex flex-col gap-2 py-3\" onSubmit={async (event) => { event.preventDefault(); const value = email.trim(); if (pending || value.length === 0) return; setInvitedEmail(null); if (await onInvite({ email: value, role, grants })) { setEmail(\"\"); setRole(\"member\"); setGrants([]); setInvitedEmail(value); } }} >",
           "occurrence": 1,
-          "line": 335
+          "line": 364
         },
         {
           "source": "web/conversation/src/app/account/api.ts",
           "kind": "request",
-          "definition": "send(Schema.Unknown,\"POST\",`${base}/members/invitations`,{ email: input.email, role: input.role, idempotency_key: input.key, })",
+          "definition": "send(Schema.Unknown,\"POST\",`${base}/members/invitations`,{ email: input.email, role: input.role, grants: input.grants ?? [], idempotency_key: input.key, })",
           "occurrence": 1,
-          "line": 162
+          "line": 170
         }
       ],
       "availability": [
@@ -16213,7 +16213,7 @@
       "authority": {
         "role": "hosted owner/admin; owner-only restrictions for owner membership/role changes; invitation acceptance bound to invited identity",
         "credential_scope": "hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation",
-        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "project_grant": "Inviter's current project access bounds every invitation grant; replacement also authorizes omitted grants as revocations.",
         "ownership": "current organization/account; no cross-organization resource lookup"
       },
       "preconditions": [
@@ -16227,12 +16227,12 @@
           "class": "operator"
         }
       ],
-      "application": "Shared application adapters in web.credentialCommands, hubserver.hubAdministration and cloudentry.entryAdministration; existing API-key service, hosted member/owner/grant commands, provider invitation ID commands and provisioning intents.",
-      "extraction": "Implemented typed administration application commands shared with dashboard handlers; no raw handler/HTTP proxy, tracker lane writer or transport-owned persistence.",
+      "application": "s.inviteHostedMemberFor; s.validateHostedInvitationGrants; hosted invitation command receipt and provider issuance",
+      "extraction": "Existing invitation_send delegates to inviteHostedMemberFor with no grants. Extend the typed application input and exact approval preview for explicit invitation grants before claiming full parity.",
       "tool": {
         "set": "organization",
         "name": "invitation_send",
-        "arguments": "Per-operation bounded JSON schema from AdministrationCatalog: identifiers 1\u2013256 bytes, name 1\u2013120, role/scope enums, at most 64 project IDs, limit 1\u2013200 and offset 0\u2013100000. Mutations require a request_id of 1\u2013128 bytes. No identity, authentication, confirmation or YOLO input.",
+        "arguments": "Proposed bounded email, role and explicit project grants (project_id, write, runner), plus request_id. The current AdministrationCatalog accepts email and role only; grants are unsupported, not silently dropped.",
         "result": "Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.",
         "annotations": {
           "readOnly": false,
@@ -16242,9 +16242,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3344",
-      "status": "implemented",
-      "coverage": "TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior.",
-      "decision": "Implemented by #3344. Current connection, role, scope, project grants and resource ownership are rechecked on direct calls, approval and result/retry delivery. Existing owner/last-owner rules remain in the shared command. Parent #3259 remains open."
+      "status": "pending",
+      "coverage": "TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior. Browser/API invitation grants: TestHostedInvitationGrants. MCP grant-bearing invitation execution remains unimplemented.",
+      "decision": "Email/role invitation_send is delivered by #3344, but the browser now supports explicit project grants absent from the MCP schema and executor. This row remains pending for that variant; current role, project access, ownership, exact approval and provider refusal boundaries remain."
     },
     {
       "id": "hubserver.land_change",
@@ -16434,9 +16434,9 @@
         {
           "source": "web/conversation/src/app/work/lib/workHttp.ts",
           "kind": "request",
-          "definition": "send(ChangeRequestList,\"GET\",url(`${itemBase(projectId, itemId)}/changes`))",
+          "definition": "send(ChangeRequestList,\"GET\",url(`${itemBase(projectId, itemId)}/changes`),undefined,signal)",
           "occurrence": 1,
-          "line": 608
+          "line": 619
         },
         {
           "source": "web/conversation/src/app/work/ChangesPage.tsx",
@@ -16975,9 +16975,9 @@
         {
           "source": "web/conversation/src/app/work/lib/workHttp.ts",
           "kind": "request",
-          "definition": "send(AttemptPage,\"GET\",url(`${itemBase(projectId, itemId)}/attempts`, { limit }))",
+          "definition": "send(AttemptPage,\"GET\",url(`${itemBase(projectId, itemId)}/attempts`, { limit }),undefined,signal)",
           "occurrence": 1,
-          "line": 588
+          "line": 599
         }
       ],
       "availability": [
@@ -17255,9 +17255,9 @@
         {
           "source": "web/conversation/src/app/work/lib/workHttp.ts",
           "kind": "request",
-          "definition": "send(WorkItemPage,\"GET\",url(`${projectBase(input.projectId)}/work-items`, { state: input.state, archived: input.archived === true ? \"true\" : undefined, label: input.label, assignee: input.assignee, priority: input.priority, cursor: input.cursor, limit: input.limit, include: input.includeCoordinator === true ? \"coordinator\" : undefined, }))",
+          "definition": "send(WorkItemPage,\"GET\",url(`${projectBase(input.projectId)}/work-items`, { state: input.state, archived: input.archived === true ? \"true\" : undefined, label: input.label, assignee: input.assignee, priority: input.priority, cursor: input.cursor, limit: input.limit, include: input.includeCoordinator === true ? \"coordinator\" : undefined, }),undefined,input.signal)",
           "occurrence": 1,
-          "line": 537
+          "line": 544
         }
       ],
       "availability": [
@@ -19467,9 +19467,9 @@
         {
           "source": "internal/hubserver/conversation_api.go",
           "kind": "route",
-          "definition": "e.POST(nativeBase+\"/conversations/:conversation/commands\", s.postConversationCommand, scope) [route=\"/api/v2/organizations/:organization/projects/:project/conversations/:conversation/commands\"]",
+          "definition": "e.POST(nativeBase+\"/conversations/:conversation/commands\", s.postConversationCommand, scope, s.operatorAuthority) [route=\"/api/v2/organizations/:organization/projects/:project/conversations/:conversation/commands\"]",
           "occurrence": 1,
-          "line": 43,
+          "line": 45,
           "method": "POST",
           "path": "nativeBase + \"/conversations/:conversation/commands\"",
           "handler": "s.postConversationCommand",
@@ -19593,7 +19593,7 @@
       ],
       "authority": {
         "role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes",
-        "credential_scope": "worker or operator (native project); exact registration middleware retained in source",
+        "credential_scope": "Current operator credential or hosted browser session with project write authority; worker and runner credentials are refused by operatorAuthority.",
         "project_grant": "native project read grant; writes need write grant; runner/terminal access additionally needs runner grant",
         "ownership": "resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain"
       },
@@ -23846,9 +23846,9 @@
         {
           "source": "web/conversation/src/app/account/api.ts",
           "kind": "request",
-          "definition": "send(ProjectIntegration,\"PUT\",`${project(input.projectId)}/integration`,{ expected_revision: input.revision, intake: input.intake, projection: input.projection, repository_enabled: input.repositoryEnabled, idempotency_key: input.key, })",
+          "definition": "send(ProjectIntegration,\"PUT\",`${project(input.projectId)}/integration`,{ expected_revision: input.revision, intake: input.intake, projection: input.projection, repository_enabled: input.repositoryEnabled, ...(input.states !== undefined ? { states: input.states } : {}), idempotency_key: input.key, })",
           "occurrence": 1,
-          "line": 250
+          "line": 272
         }
       ],
       "availability": [
@@ -25295,7 +25295,7 @@
         }
       ],
       "application": "s.apiBoardReceipt; s.boardCardDashboardData, s.store.EfficiencyReceipt",
-      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads. Native runtime parity (#92): local and Cloud adapters share the scoped native runtime application snapshot and shared explanation/receipt/activity projection. The optional `native_runtime_evidence` capability exposes recorded native/local attempt identity, heartbeat/phase freshness, current Change/routing/capacity authority, authentic transition actor, historical scheduler decision and exact-version landed/refusal receipts. Missing runtime/history/efficiency evidence is unavailable; attempt success and imported Done are not ships. Instruction spans are offset-paged with partial coverage and causality limits, never private contents/commands/paths. REST operation-header and attribution windows preserve timestamps and selected-client accounting limits. Reads recheck current grants and attempt ownership, perform no dispatch/forge calls, and retain the 256 KiB result bound.",
       "tool": {
         "set": "board",
         "name": "board_receipt",
@@ -25310,7 +25310,7 @@
       },
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures. Native coverage: `TestOperatorNativeWorkReads`, `TestApprovalMovesToLandingLane`, `TestNativeRecoveryAfterReassignmentAndRestart`, `TestNativeRuntimeMigrationPreservesHistory`, `TestNativeExecutionLandsReviewedVersion`, `TestNativeRunnerOpensChangeAndLeavesDispatch`, `TestWorkReadArguments`, `TestWorkReadDirectAuthorityAndSafeFailure`, `TestPublicActivityProfileBoundsAndRedaction`; native local adapter coverage in `internal/web/operator_work_reads_test.go`.",
       "decision": "Typed board_receipt exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
@@ -25413,7 +25413,7 @@
         }
       ],
       "application": "s.apiBoardSession; s.demoDashboardData, s.latestSnapshot",
-      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads. Native runtime parity (#92): local and Cloud adapters share the scoped native runtime application snapshot and shared explanation/receipt/activity projection. The optional `native_runtime_evidence` capability exposes recorded native/local attempt identity, heartbeat/phase freshness, current Change/routing/capacity authority, authentic transition actor, historical scheduler decision and exact-version landed/refusal receipts. Missing runtime/history/efficiency evidence is unavailable; attempt success and imported Done are not ships. Instruction spans are offset-paged with partial coverage and causality limits, never private contents/commands/paths. REST operation-header and attribution windows preserve timestamps and selected-client accounting limits. Reads recheck current grants and attempt ownership, perform no dispatch/forge calls, and retain the 256 KiB result bound.",
       "tool": {
         "set": "board",
         "name": "board_session",
@@ -25428,7 +25428,7 @@
       },
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures. Native coverage: `TestOperatorNativeWorkReads`, `TestApprovalMovesToLandingLane`, `TestNativeRecoveryAfterReassignmentAndRestart`, `TestNativeRuntimeMigrationPreservesHistory`, `TestNativeExecutionLandsReviewedVersion`, `TestNativeRunnerOpensChangeAndLeavesDispatch`, `TestWorkReadArguments`, `TestWorkReadDirectAuthorityAndSafeFailure`, `TestPublicActivityProfileBoundsAndRedaction`; native local adapter coverage in `internal/web/operator_work_reads_test.go`.",
       "decision": "Typed board_session exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
@@ -25593,7 +25593,7 @@
         }
       ],
       "application": "s.apiBoardSessionHistory; s.history.Page, s.latestSnapshot",
-      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads. Native runtime parity (#92): local and Cloud adapters share the scoped native runtime application snapshot and shared explanation/receipt/activity projection. The optional `native_runtime_evidence` capability exposes recorded native/local attempt identity, heartbeat/phase freshness, current Change/routing/capacity authority, authentic transition actor, historical scheduler decision and exact-version landed/refusal receipts. Missing runtime/history/efficiency evidence is unavailable; attempt success and imported Done are not ships. Instruction spans are offset-paged with partial coverage and causality limits, never private contents/commands/paths. REST operation-header and attribution windows preserve timestamps and selected-client accounting limits. Reads recheck current grants and attempt ownership, perform no dispatch/forge calls, and retain the 256 KiB result bound.",
       "tool": {
         "set": "board",
         "name": "board_session_history",
@@ -25608,7 +25608,7 @@
       },
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures. Native coverage: `TestOperatorNativeWorkReads`, `TestApprovalMovesToLandingLane`, `TestNativeRecoveryAfterReassignmentAndRestart`, `TestNativeRuntimeMigrationPreservesHistory`, `TestNativeExecutionLandsReviewedVersion`, `TestNativeRunnerOpensChangeAndLeavesDispatch`, `TestWorkReadArguments`, `TestWorkReadDirectAuthorityAndSafeFailure`, `TestPublicActivityProfileBoundsAndRedaction`; native local adapter coverage in `internal/web/operator_work_reads_test.go`.",
       "decision": "Typed board_session_history exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
@@ -26828,7 +26828,7 @@
         {
           "source": "internal/web/server.go",
           "kind": "route",
-          "definition": "s.echo.GET(\"/api/v1/projects/:project_id/issues/explanation\", s.apiIssueExplanation, apiReadAuth, apiReadScope) [route=\"/api/v1/projects/:project_id/issues/explanation\"]",
+          "definition": "s.echo.GET(\"/api/v1/projects/:project_id/issues/explanation\", s.apiIssueExplanation, apiReadAuth, apiReadScope, s.operatorAuthority) [route=\"/api/v1/projects/:project_id/issues/explanation\"]",
           "occurrence": 1,
           "line": 524,
           "method": "GET",
@@ -26876,7 +26876,7 @@
       ],
       "authority": {
         "role": "local operator (dashboard authentication when configured)",
-        "credential_scope": "Current daemon credential read/write scope and project grant; browser login/private dashboard session for approval.",
+        "credential_scope": "Current daemon credential with read scope and project grant; operatorAuthority binds the shared connection and rechecks current application authority.",
         "project_grant": "native project read grant; writes need write grant; runner/terminal access additionally needs runner grant",
         "ownership": "resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain"
       },
@@ -29733,7 +29733,7 @@
         }
       ],
       "application": "s.apiWorkAttemptReceipt; s.recovery.WorkAttemptReceipt",
-      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads.",
+      "extraction": "Shared dashboardWorkReads/operatorWorkReads adapters reuse current project authority, identity resolution and native readIssues/readComments/readHistory/readVersion/readAttempts. Native HTTP handlers call those same extracted reads. Native runtime parity (#92): local and Cloud adapters share the scoped native runtime application snapshot and shared explanation/receipt/activity projection. The optional `native_runtime_evidence` capability exposes recorded native/local attempt identity, heartbeat/phase freshness, current Change/routing/capacity authority, authentic transition actor, historical scheduler decision and exact-version landed/refusal receipts. Missing runtime/history/efficiency evidence is unavailable; attempt success and imported Done are not ships. Instruction spans are offset-paged with partial coverage and causality limits, never private contents/commands/paths. REST operation-header and attribution windows preserve timestamps and selected-client accounting limits. Reads recheck current grants and attempt ownership, perform no dispatch/forge calls, and retain the 256 KiB result bound.",
       "tool": {
         "set": "board",
         "name": "work_attempt_receipt",
@@ -29748,7 +29748,7 @@
       },
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
-      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
+      "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures. Native coverage: `TestOperatorNativeWorkReads`, `TestApprovalMovesToLandingLane`, `TestNativeRecoveryAfterReassignmentAndRestart`, `TestNativeRuntimeMigrationPreservesHistory`, `TestNativeExecutionLandsReviewedVersion`, `TestNativeRunnerOpensChangeAndLeavesDispatch`, `TestWorkReadArguments`, `TestWorkReadDirectAuthorityAndSafeFailure`, `TestPublicActivityProfileBoundsAndRedaction`; native local adapter coverage in `internal/web/operator_work_reads_test.go`.",
       "decision": "Typed work_attempt_receipt exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes."
     },
     {
@@ -35485,6 +35485,286 @@
       "status": "implemented",
       "coverage": "TestHostedCredentialMCP, TestHostedCredentialMCPAuthorityChanges, TestHostedAPIKeyCurrentAuthority and TestHostedAPIKeyManagement: dedicated/shared HTTP and stdio execution, exact browser approval, role/grant/expiry/ownership restrictions, bearer denial and redacted connection-bound delivery.",
       "decision": "Native #95 repairs the historical #63 hosted adapter by reusing existing owners. Rotate/grant stay unavailable; account entry requires reconnecting to the organization destination. Native #48 retains project-access semantics and #47 retains settings presentation. Native #26 remains open for final parity acceptance."
+    },
+    {
+      "id": "hubserver.edit_hosted_invitation_json",
+      "summary": "Edit pending invitation project grants",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_org_api.go",
+          "kind": "route",
+          "definition": "e.PUT(hostedOrganizationBase+\"/members/invitations/:invitation\", s.editHostedInvitationJSON, session) [route=\"/api/v2/organizations/:organization/members/invitations/:invitation\"]",
+          "occurrence": 1,
+          "line": 38,
+          "method": "PUT",
+          "path": "hostedOrganizationBase + \"/members/invitations/:invitation\"",
+          "handler": "s.editHostedInvitationJSON",
+          "resolved_path": "/api/v2/organizations/:organization/members/invitations/:invitation"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(null,\"PUT\",`${base}/members/invitations/${encodeURIComponent(input.invitation)}`,{ grants: input.grants, idempotency_key: input.key, })",
+          "occurrence": 1,
+          "line": 177
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "HTTP application is available; typed MCP invitation_edit execution is not implemented."
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "HTTP application is available; typed MCP invitation_edit execution is not implemented."
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "Current hosted organization owner/admin; support impersonation is refused.",
+        "credential_scope": "hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation",
+        "project_grant": "Inviter's current project access bounds every invitation grant; replacement also authorizes omitted grants as revocations.",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {
+          "when": "access-changing or sensitive administration",
+          "class": "operator"
+        }
+      ],
+      "application": "s.editHostedInvitationFor; s.validateHostedInvitationGrants",
+      "extraction": "Expose the existing application command through a bounded typed administration adapter with current authority, exact preview, browser approval and the shared audit/retry contract; no HTTP proxy.",
+      "tool": {
+        "set": "organization",
+        "name": "invitation_edit",
+        "arguments": "Proposed invitation_id and request_id, plus explicit project grants (project_id, write, runner).",
+        "result": "Proposed bounded application command receipt identifying the pending invitation; opaque unavailable/refused errors without provider diagnostics or credentials.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": true,
+          "idempotent": false,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3344",
+      "status": "pending",
+      "coverage": "Existing HTTP behavior: TestHostedInvitationGrants. No typed MCP catalog/adapter or execution coverage exists for this operation.",
+      "decision": "Browser/API edit is available through the existing hosted application owner; AdministrationCatalog and hubAdministration expose no invitation_edit tool. Operator parity remains pending; do not treat member_grant or invitation_send as this command."
+    },
+    {
+      "id": "hubserver.get_native_runtime",
+      "summary": "Read recorded native work-item runtime evidence",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/native_api.go",
+          "kind": "route",
+          "definition": "e.GET(nativeBase+\"/work-items/:item/runtime\", s.getNativeRuntime, read) [route=\"/api/v2/organizations/:organization/projects/:project/work-items/:item/runtime\"]",
+          "occurrence": 1,
+          "line": 138,
+          "method": "GET",
+          "path": "nativeBase + \"/work-items/:item/runtime\"",
+          "handler": "s.getNativeRuntime",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/work-items/:item/runtime"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "Current organization member/viewer or native credential with project read authority",
+        "credential_scope": "Current native read scope or hosted session; current project read grant and exact work-item/attempt ownership.",
+        "project_grant": "native project read grant; writes need write grant; runner/terminal access additionally needs runner grant",
+        "ownership": "resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {
+          "when": "read or ordinary non-destructive write",
+          "class": "none"
+        }
+      ],
+      "application": "s.readNativeRuntime; operatorWorkReads.ReadWork; operatortool.NativeRuntimeResult",
+      "extraction": "HTTP runtime and MCP board_receipt share readNativeRuntime. Related board_session, board_session_history and work_attempt_receipt reads reuse the same evidence with their existing selectors and bounds.",
+      "tool": {
+        "set": "board",
+        "name": "board_receipt",
+        "arguments": "Bounded project_id and reference; optional native_attempt_id or positive local attempt_id, never both. Organization, principal and current read scope/grants are connection authority.",
+        "result": "Bounded NativeRuntimeEvidence in the existing WorkReadResult envelope with observed_at, recorded/snapshot provenance, freshness and explicit unavailable evidence; no private bodies, commands, paths or credentials.",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3340",
+      "status": "implemented",
+      "coverage": "TestOperatorNativeWorkReads; TestNativeRuntimeReadHistoryCost; TestNativeRuntimeReadSharedCapacityCost; existing native attempt ownership regressions.",
+      "decision": "Implemented board_receipt shares the native HTTP runtime read, checking organization/project/work-item and selected attempt ownership. Efficiency receipts and missing historical/runtime facts remain explicitly unavailable; imported Done is not landing evidence. Activity history is exposed only when recorded and authorized."
+    },
+    {
+      "id": "hubserver.resend_hosted_invitation_json",
+      "summary": "Resend a pending hosted invitation",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_org_api.go",
+          "kind": "route",
+          "definition": "e.POST(hostedOrganizationBase+\"/members/invitations/:invitation/resend\", s.resendHostedInvitationJSON, session) [route=\"/api/v2/organizations/:organization/members/invitations/:invitation/resend\"]",
+          "occurrence": 1,
+          "line": 40,
+          "method": "POST",
+          "path": "hostedOrganizationBase + \"/members/invitations/:invitation/resend\"",
+          "handler": "s.resendHostedInvitationJSON",
+          "resolved_path": "/api/v2/organizations/:organization/members/invitations/:invitation/resend"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(null,\"POST\",`${base}/members/invitations/${encodeURIComponent(input.invitation)}/resend`,{ idempotency_key: input.key })",
+          "occurrence": 1,
+          "line": 189
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "HTTP application is available; typed MCP invitation_resend execution is not implemented."
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "HTTP application is available; typed MCP invitation_resend execution is not implemented."
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "Current hosted organization owner/admin; support impersonation is refused.",
+        "credential_scope": "hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation",
+        "project_grant": "Organization owner/admin; pending invitation remains bound to the current organization.",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {
+          "when": "access-changing or sensitive administration",
+          "class": "operator"
+        }
+      ],
+      "application": "s.resendHostedInvitationFor; existing provider invitation resend",
+      "extraction": "Expose the existing application command through a bounded typed administration adapter with current authority, exact preview, browser approval and the shared audit/retry contract; no HTTP proxy.",
+      "tool": {
+        "set": "organization",
+        "name": "invitation_resend",
+        "arguments": "Proposed invitation_id and request_id.",
+        "result": "Proposed bounded application command receipt identifying the pending invitation; opaque unavailable/refused errors without provider diagnostics or credentials.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": false,
+          "idempotent": false,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3344",
+      "status": "pending",
+      "coverage": "Existing HTTP behavior: TestHostedInvitationLifecycle. No typed MCP catalog/adapter or execution coverage exists for this operation.",
+      "decision": "Browser/API resend is available through the existing hosted application owner; AdministrationCatalog and hubAdministration expose no invitation_resend tool. Operator parity remains pending; do not treat member_grant or invitation_send as this command."
     }
   ]
 }

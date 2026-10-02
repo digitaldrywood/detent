@@ -1068,7 +1068,12 @@ func (o *Orchestrator) applyValidatorStage(
 	if decision.Reason != AutoPromoteReasonValidatorMissing {
 		return decision, true
 	}
-	validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
+	var current bool
+	issue, current = o.refreshValidatorContext(ctx, issue)
+	if !current {
+		return decision, false
+	}
+	validation, shouldComment, ok := o.validatorStageResultForInput(ctx, issue)
 	if !ok {
 		o.startValidatorStage(ctx, state, issue, now)
 		return decision, false
@@ -2595,9 +2600,15 @@ func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueI
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
+	var current bool
+	issue, current = o.refreshValidatorContext(ctx, issue)
+	if !current {
+		return
+	}
+
 	// An active run owns this head until it finishes. Avoid hydrating the PR
 	// again on every tick while that run is in progress.
-	if key := validatorStageIdentityForIssue(issue).Key; key != "" {
+	if key := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate).Key; key != "" {
 		o.validatorMu.Lock()
 		_, running := o.validatorRuns[key]
 		o.validatorMu.Unlock()
@@ -2612,7 +2623,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			return
 		}
 	}
-	identity := validatorStageIdentityForIssue(issue)
+	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
 	if identity.Key == "" {
 		if o.logger != nil {
 			o.logger.Error(
@@ -2649,7 +2660,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		return
 	}
-	if _, _, ok := o.validatorStageResult(ctx, issue); ok {
+	if _, _, ok := o.validatorStageResultForInput(ctx, issue); ok {
 		return
 	}
 	capacityScope, capacityProbeKey, capacityPaused := o.validatorCapacityDispatch(state, issue, now)
@@ -2852,7 +2863,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
 			if current, ok := o.hydrateValidatorStagePullRequest(ctx, issue); ok {
-				if validatorStageIdentityForIssue(current).Key != identity.Key {
+				if validatorStageIdentityForIssue(current, o.cfg.AutoPromote.Gate).Key != identity.Key {
 					// The reviewed diff no longer describes the PR. Let the next
 					// tick validate its current identity instead of storing a verdict.
 					o.validatorMu.Lock()
@@ -2871,6 +2882,14 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 				return
 			}
 		}
+		currentIssue, currentContext := o.refreshValidatorContext(ctx, issue)
+		if !currentContext || validatorStageIdentityForIssue(currentIssue, o.cfg.AutoPromote.Gate).Key != identity.Key {
+			o.validatorMu.Lock()
+			o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
+			delete(o.validatorRuns, identity.Key)
+			o.validatorMu.Unlock()
+			return
+		}
 		o.recordValidatorVerdict(ctx, issue, identity, result, completedAt)
 
 		o.validatorMu.Lock()
@@ -2883,7 +2902,17 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 }
 
 func (o *Orchestrator) validatorStageResult(ctx context.Context, issue connector.Issue) (gate.ValidatorResult, bool, bool) {
-	identity := validatorStageIdentityForIssue(issue)
+	current, ok := o.refreshValidatorContext(ctx, issue)
+	if !ok {
+		return gate.ValidatorResult{}, false, false
+	}
+	return o.validatorStageResultForInput(ctx, current)
+}
+
+// validatorStageResultForInput consumes the current task snapshot supplied by
+// refreshValidatorContext; routing, dispatch and reporting share this lookup.
+func (o *Orchestrator) validatorStageResultForInput(ctx context.Context, issue connector.Issue) (gate.ValidatorResult, bool, bool) {
+	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
 	if identity.Key == "" {
 		return gate.ValidatorResult{}, false, false
 	}
@@ -2907,7 +2936,7 @@ func (o *Orchestrator) validatorStageResult(ctx context.Context, issue connector
 }
 
 func (o *Orchestrator) markValidatorResultCommented(ctx context.Context, issue connector.Issue) {
-	identity := validatorStageIdentityForIssue(issue)
+	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
 	if identity.Key == "" {
 		return
 	}
@@ -2933,7 +2962,7 @@ func (o *Orchestrator) commentValidatorResult(ctx context.Context, issue connect
 	if repository == "" || number <= 0 {
 		return
 	}
-	if err := commenter.CreatePullRequestComment(ctx, repository, number, validatorResultComment(result)); err != nil && o.logger != nil {
+	if err := commenter.CreatePullRequestComment(ctx, repository, number, validatorResultComment(result, runpkg.ValidationContextDigest(issue, o.cfg.AutoPromote.Gate))); err != nil && o.logger != nil {
 		o.logger.Warn(
 			"validator result comment failed",
 			"issue_id", strings.TrimSpace(issue.ID),
@@ -2944,7 +2973,7 @@ func (o *Orchestrator) commentValidatorResult(ctx context.Context, issue connect
 	}
 }
 
-func validatorResultComment(result gate.ValidatorResult) string {
+func validatorResultComment(result gate.ValidatorResult, contextDigests ...string) string {
 	var b strings.Builder
 	b.WriteString("Validator verdict: ")
 	b.WriteString(strings.TrimSpace(result.Verdict))
@@ -2953,6 +2982,9 @@ func validatorResultComment(result gate.ValidatorResult) string {
 		fmt.Fprintf(&b, "\n- base SHA: %s\n- head SHA: %s\n- diff SHA-256: %s", result.BaseSHA, result.HeadSHA, result.DiffDigest)
 		b.WriteString("\n- reviewed files: ")
 		b.WriteString(strings.Join(result.DiffFiles, ", "))
+	}
+	if len(contextDigests) > 0 {
+		fmt.Fprintf(&b, "\n- task context SHA-256: %s", contextDigests[0])
 	}
 	if result.Score > 0 {
 		b.WriteString("\n- score: ")
@@ -3000,15 +3032,21 @@ func pullRequestNumber(issue connector.Issue) int {
 }
 
 type validatorStageIdentity struct {
-	Key        string
-	IssueID    string
-	HeadSHA    string
-	BaseSHA    string
-	Repository string
-	PRNumber   int
+	ContextDigest string
+	Key           string
+	IssueID       string
+	HeadSHA       string
+	BaseSHA       string
+	Repository    string
+	PRNumber      int
 }
 
-func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentity {
+func validatorStageIdentityForIssue(issue connector.Issue, policies ...gate.Config) validatorStageIdentity {
+	var policy gate.Config
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	digest := runpkg.ValidationContextDigest(issue, policy)
 	issueID := strings.TrimSpace(issue.ID)
 	if issueID == "" {
 		return validatorStageIdentity{}
@@ -3029,12 +3067,13 @@ func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentit
 		}
 	}
 	return validatorStageIdentity{
-		Key:        fmt.Sprintf("%s:%s:%d:%s:%s", issueID, repository, pullRequestNumber(issue), baseSHA, headSHA),
-		IssueID:    issueID,
-		HeadSHA:    headSHA,
-		BaseSHA:    baseSHA,
-		Repository: repository,
-		PRNumber:   pullRequestNumber(issue),
+		Key:           fmt.Sprintf("%s:%s:%d:%s:%s:%s", issueID, repository, pullRequestNumber(issue), baseSHA, headSHA, digest),
+		ContextDigest: digest,
+		IssueID:       issueID,
+		HeadSHA:       headSHA,
+		BaseSHA:       baseSHA,
+		Repository:    repository,
+		PRNumber:      pullRequestNumber(issue),
 	}
 }
 
@@ -3068,9 +3107,11 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		return validatorStageResult{}, false
 	}
 	verdict, err := o.validatorMemo.ValidatorVerdict(ctx, store.ValidatorVerdictKey{
-		ProjectID: o.workflowMetricsProjectID(),
-		IssueID:   identity.IssueID,
-		HeadSHA:   identity.HeadSHA,
+		ProjectID:     o.workflowMetricsProjectID(),
+		IssueID:       identity.IssueID,
+		HeadSHA:       identity.HeadSHA,
+		ContextDigest: identity.ContextDigest,
+		Repository:    identity.Repository, BaseSHA: identity.BaseSHA, PRNumber: int64(identity.PRNumber),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -3087,7 +3128,7 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		}
 		return validatorStageResult{}, false
 	}
-	if verdict.Repository == "" || verdict.Repository != identity.Repository || verdict.PRNumber == nil || *verdict.PRNumber != int64(identity.PRNumber) || verdict.BaseSHA == "" || verdict.BaseSHA != identity.BaseSHA || verdict.HeadSHA != identity.HeadSHA || (verdict.Submitted && verdict.DiffDigest == "") {
+	if verdict.ContextDigest == "" || verdict.ContextDigest != identity.ContextDigest || verdict.Repository == "" || verdict.Repository != identity.Repository || verdict.PRNumber == nil || *verdict.PRNumber != int64(identity.PRNumber) || verdict.BaseSHA == "" || verdict.BaseSHA != identity.BaseSHA || verdict.HeadSHA != identity.HeadSHA || (verdict.Submitted && verdict.DiffDigest == "") {
 		return validatorStageResult{}, false
 	}
 	validatorConfig := gate.Effective(o.cfg.AutoPromote.Gate).Validator
@@ -3159,6 +3200,7 @@ func (o *Orchestrator) recordValidatorStageOutcome(
 		ProjectID:       o.workflowMetricsProjectID(),
 		IssueID:         identity.IssueID,
 		HeadSHA:         identity.HeadSHA,
+		ContextDigest:   identity.ContextDigest,
 		Identifier:      issue.Identifier,
 		IssueURL:        issue.URL,
 		PRNumber:        &prNumber,
@@ -3212,9 +3254,11 @@ func (o *Orchestrator) markValidatorVerdictCommented(ctx context.Context, identi
 		return
 	}
 	if err := o.validatorMemo.MarkValidatorVerdictCommented(ctx, store.ValidatorVerdictKey{
-		ProjectID: o.workflowMetricsProjectID(),
-		IssueID:   identity.IssueID,
-		HeadSHA:   identity.HeadSHA,
+		ProjectID:     o.workflowMetricsProjectID(),
+		IssueID:       identity.IssueID,
+		HeadSHA:       identity.HeadSHA,
+		ContextDigest: identity.ContextDigest,
+		Repository:    identity.Repository, BaseSHA: identity.BaseSHA, PRNumber: int64(identity.PRNumber),
 	}, o.clockNow().UTC()); err != nil && !errors.Is(err, store.ErrNotFound) && o.logger != nil {
 		o.logger.Warn(
 			"validator verdict comment marker failed",
