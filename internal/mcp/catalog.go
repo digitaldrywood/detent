@@ -10,8 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-const catalogPageSize = 5
-
 type catalogPage struct {
 	Tools      []operatortool.Definition `json:"tools"`
 	NextCursor string                    `json:"nextCursor,omitempty"`
@@ -22,8 +20,6 @@ type catalogCursor struct {
 	Digest string `json:"digest"`
 }
 
-// Resolve discovery on every page. A cursor describes a position in this
-// principal's current catalog; it neither stores nor grants authorization.
 func (s *session) catalog(ctx context.Context, cursor string) (catalogPage, error) {
 	definitions := operatortool.Catalog()
 	if lister, ok := s.executor.(interface {
@@ -54,35 +50,26 @@ func (s *session) catalog(ctx context.Context, cursor string) (catalogPage, erro
 		}
 	}
 	definitions = canonical
-	raw, err := json.Marshal(struct {
-		Identity operatortool.Identity
-		Tools    []operatortool.Definition
-	}{operatortool.ConnectionIdentity(ctx), definitions})
-	if err != nil {
-		return catalogPage{}, err
-	}
-	sum := sha256.Sum256(raw)
-	digest := base64.RawURLEncoding.EncodeToString(sum[:])
 	offset := 0
 	if cursor != "" {
 		if len(cursor) > 256 {
 			return catalogPage{}, operatortool.ErrInvalidArguments
 		}
-		raw, err := base64.RawURLEncoding.DecodeString(cursor)
+		raw, err := json.Marshal(struct {
+			Identity operatortool.Identity
+			Tools    []operatortool.Definition
+		}{operatortool.ConnectionIdentity(ctx), definitions})
+		if err != nil {
+			return catalogPage{}, err
+		}
+		sum := sha256.Sum256(raw)
+		digest := base64.RawURLEncoding.EncodeToString(sum[:])
+		raw, err = base64.RawURLEncoding.DecodeString(cursor)
 		var position catalogCursor
-		if err != nil || decodeObject(raw, &position, true) != nil || position.Digest != digest || position.Offset <= 0 || position.Offset >= len(definitions) || position.Offset%catalogPageSize != 0 {
+		if err != nil || decodeObject(raw, &position, true) != nil || position.Digest != digest || position.Offset <= 0 || position.Offset >= len(definitions) {
 			return catalogPage{}, operatortool.ErrInvalidArguments
 		}
 		offset = position.Offset
 	}
-	end := min(offset+catalogPageSize, len(definitions))
-	page := catalogPage{Tools: append([]operatortool.Definition{}, definitions[offset:end]...)}
-	if end < len(definitions) {
-		raw, err := json.Marshal(catalogCursor{Offset: end, Digest: digest})
-		if err != nil {
-			return catalogPage{}, err
-		}
-		page.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
-	}
-	return page, nil
+	return catalogPage{Tools: append([]operatortool.Definition{}, definitions[offset:]...)}, nil
 }
