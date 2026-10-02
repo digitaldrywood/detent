@@ -35195,6 +35195,296 @@
       "status": "implemented",
       "coverage": "TestWorkItemConversationLookup, TestConversationWorkerBind, TestConversationRunnerExecutesLiveTurns; issue Activity/Surface resolves canonical history without a shell-list entry.",
       "decision": "Native #145 consolidates work-item discovery on the existing conversation read and lease-fenced worker binding owners. Parent #3259 and Claude backend capability work remain separate."
+    },
+    {
+      "id": "hubserver.hosted_api_key_list",
+      "summary": "Hosted API key list",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_ui.go",
+          "kind": "route",
+          "definition": "e.GET(hostedOrganizationBase+\"/api-keys\", s.hostedAPIKeys) [route=\"/api/v2/organizations/:organization/api-keys\"]",
+          "occurrence": 1,
+          "line": 31,
+          "method": "GET",
+          "path": "hostedOrganizationBase + \"/api-keys\"",
+          "handler": "s.hostedAPIKeys",
+          "resolved_path": "/api/v2/organizations/:organization/api-keys"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(OperatorAPIKeys,\"GET\",`${base}/api-keys`)",
+          "occurrence": 1,
+          "line": 159
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner",
+          "unsupported": "Hosted key routes require an organization-bound hosted account session; account entry and unhosted credentials cannot borrow that authority."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner",
+          "unsupported": "Hosted key routes require an organization-bound hosted account session; account entry and unhosted credentials cannot borrow that authority."
+        }
+      ],
+      "authority": {
+        "role": "current organization owner/admin/member/viewer managing their own keys; created scope capped by current role",
+        "credential_scope": "original authenticated account session only; bearer keys and support impersonation denied",
+        "project_grant": "creation and sensitive delivery recheck the existing issuer project grants and exact requested project IDs",
+        "ownership": "original account, organization, session and membership; target keys owned by that account in this organization"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {
+          "when": "all calls",
+          "class": "none"
+        }
+      ],
+      "application": "hubserver.hostedAPIKeysFor, createHostedAPIKeyFor and revokeHostedAPIKeyFor shared with the hosted API handlers through hubAdministration and operatoradmin.",
+      "extraction": "Consolidated existing hosted key owners; no alternate HTTP/database proxy, credential system or lane writer.",
+      "tool": {
+        "set": "credentials",
+        "name": "credential_list",
+        "arguments": "AdministrationCatalog typed input: creation requires one allowed scope, 1–200 explicit project IDs, name up to 200 bytes, expires_in of 1–90 days (for example 30d), and request_id. Revocation uses credential_id and request_id. Reads are paginated. No caller identity, credentials or confirmation mode.",
+        "result": "Current account-owned hosted key metadata; creation includes the API one-time secret only on the originating authenticated connection. Durable receipts retain metadata without secrets. Pending mutations use exact existing browser approval.",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3344",
+      "status": "implemented",
+      "coverage": "TestHostedCredentialMCP, TestHostedCredentialMCPAuthorityChanges, TestHostedAPIKeyCurrentAuthority and TestHostedAPIKeyManagement: dedicated/shared HTTP and stdio execution, exact browser approval, role/grant/expiry/ownership restrictions, bearer denial and redacted connection-bound delivery.",
+      "decision": "Native #95 repairs the historical #63 hosted adapter by reusing existing owners. Rotate/grant stay unavailable; account entry requires reconnecting to the organization destination. Native #48 retains project-access semantics and #47 retains settings presentation. Native #26 remains open for final parity acceptance."
+    },
+    {
+      "id": "hubserver.hosted_api_key_create",
+      "summary": "Hosted API key create",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_ui.go",
+          "kind": "route",
+          "definition": "e.POST(hostedOrganizationBase+\"/api-keys\", s.createHostedAPIKey) [route=\"/api/v2/organizations/:organization/api-keys\"]",
+          "occurrence": 1,
+          "line": 32,
+          "method": "POST",
+          "path": "hostedOrganizationBase + \"/api-keys\"",
+          "handler": "s.createHostedAPIKey",
+          "resolved_path": "/api/v2/organizations/:organization/api-keys"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(CreatedOperatorAPIKey,\"POST\",`${base}/api-keys`,input)",
+          "occurrence": 1,
+          "line": 161
+        },
+        {
+          "source": "web/conversation/src/app/settings/APIKeysSettings.tsx",
+          "kind": "attribute",
+          "definition": "onSubmit={create}",
+          "occurrence": 1,
+          "line": 82
+        },
+        {
+          "source": "web/conversation/src/app/settings/APIKeysSettings.tsx",
+          "kind": "form",
+          "definition": "<form onSubmit={create} className=\"space-y-3\">",
+          "occurrence": 1,
+          "line": 82
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner",
+          "unsupported": "Hosted key routes require an organization-bound hosted account session; account entry and unhosted credentials cannot borrow that authority."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner",
+          "unsupported": "Hosted key routes require an organization-bound hosted account session; account entry and unhosted credentials cannot borrow that authority."
+        }
+      ],
+      "authority": {
+        "role": "current organization owner/admin/member/viewer managing their own keys; created scope capped by current role",
+        "credential_scope": "original authenticated account session only; bearer keys and support impersonation denied",
+        "project_grant": "creation and sensitive delivery recheck the existing issuer project grants and exact requested project IDs",
+        "ownership": "original account, organization, session and membership; target keys owned by that account in this organization"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {
+          "when": "access-changing or sensitive administration",
+          "class": "operator"
+        }
+      ],
+      "application": "hubserver.hostedAPIKeysFor, createHostedAPIKeyFor and revokeHostedAPIKeyFor shared with the hosted API handlers through hubAdministration and operatoradmin.",
+      "extraction": "Consolidated existing hosted key owners; no alternate HTTP/database proxy, credential system or lane writer.",
+      "tool": {
+        "set": "credentials",
+        "name": "credential_create",
+        "arguments": "AdministrationCatalog typed input: creation requires one allowed scope, 1–200 explicit project IDs, name up to 200 bytes, expires_in of 1–90 days (for example 30d), and request_id. Revocation uses credential_id and request_id. Reads are paginated. No caller identity, credentials or confirmation mode.",
+        "result": "Current account-owned hosted key metadata; creation includes the API one-time secret only on the originating authenticated connection. Durable receipts retain metadata without secrets. Pending mutations use exact existing browser approval.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3344",
+      "status": "implemented",
+      "coverage": "TestHostedCredentialMCP, TestHostedCredentialMCPAuthorityChanges, TestHostedAPIKeyCurrentAuthority and TestHostedAPIKeyManagement: dedicated/shared HTTP and stdio execution, exact browser approval, role/grant/expiry/ownership restrictions, bearer denial and redacted connection-bound delivery.",
+      "decision": "Native #95 repairs the historical #63 hosted adapter by reusing existing owners. Rotate/grant stay unavailable; account entry requires reconnecting to the organization destination. Native #48 retains project-access semantics and #47 retains settings presentation. Native #26 remains open for final parity acceptance."
+    },
+    {
+      "id": "hubserver.hosted_api_key_revoke",
+      "summary": "Hosted API key revoke",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_ui.go",
+          "kind": "route",
+          "definition": "e.DELETE(hostedOrganizationBase+\"/api-keys/:key\", s.revokeHostedAPIKey) [route=\"/api/v2/organizations/:organization/api-keys/:key\"]",
+          "occurrence": 1,
+          "line": 33,
+          "method": "DELETE",
+          "path": "hostedOrganizationBase + \"/api-keys/:key\"",
+          "handler": "s.revokeHostedAPIKey",
+          "resolved_path": "/api/v2/organizations/:organization/api-keys/:key"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(null,\"DELETE\",`${base}/api-keys/${encodeURIComponent(id)}`)",
+          "occurrence": 1,
+          "line": 162
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner",
+          "unsupported": "Hosted key routes require an organization-bound hosted account session; account entry and unhosted credentials cannot borrow that authority."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "hosted organization key owner",
+          "unsupported": "Hosted key routes require an organization-bound hosted account session; account entry and unhosted credentials cannot borrow that authority."
+        }
+      ],
+      "authority": {
+        "role": "current organization owner/admin/member/viewer managing their own keys; created scope capped by current role",
+        "credential_scope": "original authenticated account session only; bearer keys and support impersonation denied",
+        "project_grant": "creation and sensitive delivery recheck the existing issuer project grants and exact requested project IDs",
+        "ownership": "original account, organization, session and membership; target keys owned by that account in this organization"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {
+          "when": "access-changing or sensitive administration",
+          "class": "operator"
+        }
+      ],
+      "application": "hubserver.hostedAPIKeysFor, createHostedAPIKeyFor and revokeHostedAPIKeyFor shared with the hosted API handlers through hubAdministration and operatoradmin.",
+      "extraction": "Consolidated existing hosted key owners; no alternate HTTP/database proxy, credential system or lane writer.",
+      "tool": {
+        "set": "credentials",
+        "name": "credential_revoke",
+        "arguments": "AdministrationCatalog typed input: creation requires one allowed scope, 1–200 explicit project IDs, name up to 200 bytes, expires_in of 1–90 days (for example 30d), and request_id. Revocation uses credential_id and request_id. Reads are paginated. No caller identity, credentials or confirmation mode.",
+        "result": "Current account-owned hosted key metadata; creation includes the API one-time secret only on the originating authenticated connection. Durable receipts retain metadata without secrets. Pending mutations use exact existing browser approval.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": true,
+          "idempotent": true,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3344",
+      "status": "implemented",
+      "coverage": "TestHostedCredentialMCP, TestHostedCredentialMCPAuthorityChanges, TestHostedAPIKeyCurrentAuthority and TestHostedAPIKeyManagement: dedicated/shared HTTP and stdio execution, exact browser approval, role/grant/expiry/ownership restrictions, bearer denial and redacted connection-bound delivery.",
+      "decision": "Native #95 repairs the historical #63 hosted adapter by reusing existing owners. Rotate/grant stay unavailable; account entry requires reconnecting to the organization destination. Native #48 retains project-access semantics and #47 retains settings presentation. Native #26 remains open for final parity acceptance."
     }
   ]
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -51,7 +52,7 @@ func (p *fakeProvider) AcceptInvitationByID(ctx context.Context, id, user string
 // Catches account context switching retaining grants, cross-account selection,
 // staff privilege leakage, and revoked membership/session receipt replay.
 func TestEntryAdministrationContext(t *testing.T) {
-	for _, scenario := range []string{"transport", "switch", "foreign organization", "revoked membership", "revoked session", "support denied", "support actor", "logout approve", "logout reject", "logout YOLO", "logout provider failure", "logout revoked session", "logout revoked provider"} {
+	for _, scenario := range []string{"transport", "key boundary", "switch", "foreign organization", "revoked membership", "revoked session", "support denied", "support actor", "logout approve", "logout reject", "logout YOLO", "logout provider failure", "logout revoked session", "logout revoked provider"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newEntryFixture(t)
 			b := newBrowser(t, f.service.Handler())
@@ -79,6 +80,23 @@ func TestEntryAdministrationContext(t *testing.T) {
 			e := f.service.administration
 			if err := e.OpenConnection(ctx); err != nil {
 				t.Fatal(err)
+			}
+			if scenario == "key boundary" {
+				definitions, err := e.ListTools(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{operatortool.CredentialList, operatortool.CredentialCreate, operatortool.CredentialRevoke} {
+					for _, d := range definitions {
+						if d.Name == name {
+							t.Fatal("account connection borrowed organization key authority")
+						}
+					}
+					if _, err := e.Execute(ctx, operatortool.Call{Name: name, Arguments: json.RawMessage(`{}`)}); !errors.Is(err, operatoradmin.ErrUnavailable) {
+						t.Fatalf("account key call=%v", err)
+					}
+				}
+				return
 			}
 			if scenario == "transport" {
 				testEntrySessionTransports(t, f, ctx)

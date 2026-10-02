@@ -38,7 +38,8 @@ func authorizeAction(ctx context.Context, connection operatortool.Connection, ac
 		Scope: apikey.ScopeWrite, OrganizationID: action.OrganizationID, ProjectID: action.ProjectID,
 	}
 	if operatortool.IsAdministration(string(action.Kind)) {
-		requirement.Scope = operatortool.AdministrationScope(string(action.Kind))
+		requirement = operatortool.AdministrationRequirement(string(action.Kind))
+		requirement.OrganizationID, requirement.ProjectID = action.OrganizationID, action.ProjectID
 	}
 	switch string(action.Kind) {
 	case operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.UpdateRunnerCapacity:
