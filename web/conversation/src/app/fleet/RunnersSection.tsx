@@ -6,15 +6,14 @@ import type { FleetResponse, FleetRunner, ProviderCapacity, RunnerRouting } from
 import { cn } from "../../lib/utils.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useResource } from "../account/useResource.ts";
-import { SettingsPageContainer, SettingsRow, SettingsSection, scrollToSettingsTarget } from "../settings/settingsLayout.tsx";
+import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import {
   EnrollRunnerDialog,
   PendingEnrollments,
   type PendingEnrollment,
 } from "./EnrollRunner.tsx";
-import { SettingsHelp } from "../settings/SettingsHelp.tsx";
-import { RUNNER_HELP } from "./runnerHelp.ts";
 import { HostCard } from "./HostCard.tsx";
+import { RunnerDetailSheet, type RunnerProject } from "./RunnerDetailSheet.tsx";
 import { PathValue } from "../account/controls.tsx";
 import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
 import { formatLocalTime } from "./format.ts";
@@ -168,100 +167,12 @@ function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[
   );
 }
 
-function RunnerSettingsForm({
-  runner,
-  onSave,
-}: {
-  readonly runner: FleetRunner;
-  readonly onSave: (runner: FleetRunner, routing: RunnerRouting) => Promise<void>;
-}): React.ReactElement | null {
-  const routing = runner.routing;
-  const [error, setError] = React.useState("");
-  const [saving, setSaving] = React.useState(false);
-  if (routing === undefined) return null;
-  const field = (data: FormData, name: string): string => String(data.get(name) ?? "").trim();
-  const lines = (value: string): string[] => value.split(/[\n,]/).map((part) => part.trim()).filter(Boolean);
-
-  async function submit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    if (routing === undefined) return;
-    const data = new FormData(event.currentTarget);
-    const next: RunnerRouting = {
-      display_name: field(data, "display_name"),
-      tags: lines(field(data, "tags")),
-      state: field(data, "state"),
-      capacity_limit: Number(field(data, "capacity_limit")),
-      project_ids: lines(field(data, "project_ids")),
-      home_project_ids: lines(field(data, "home_project_ids")),
-      isolation_tier: field(data, "isolation_tier"),
-      host_services: field(data, "host_services").split("\n").map((part) => part.trim()).filter(Boolean),
-      availability: {
-        timezone: field(data, "timezone"),
-        windows: lines(field(data, "windows")),
-        hard_deadline: field(data, "hard_deadline"),
-      },
-      spillover: {
-        mode: field(data, "spillover_mode"),
-        after_minutes: field(data, "spillover_mode") === "never" ? 0 : Number(field(data, "after_minutes")),
-      },
-    };
-    setSaving(true);
-    setError("");
-    try {
-      await onSave(runner, next);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Runner settings could not be saved.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <details className="border-t border-border/60 pt-2 text-xs">
-      <summary className="cursor-pointer font-medium">Edit runner settings</summary>
-      <form className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2" onSubmit={(event) => void submit(event)}>
-        <label>Runner name<input className="mt-1 w-full rounded border p-2" name="display_name" defaultValue={routing.display_name} required /></label>
-        <div>
-          <div className="flex items-center gap-1.5">
-            <label htmlFor={`tags-${runner.id}`}>Tags</label>
-            <SettingsHelp label="Tags">{RUNNER_HELP.tags}</SettingsHelp>
-          </div>
-          <input id={`tags-${runner.id}`} className="mt-1 w-full rounded border p-2" name="tags" defaultValue={routing.tags.join(", ")} />
-        </div>
-        <label>State<select className="mt-1 w-full rounded border p-2" name="state" defaultValue={routing.state}><option value="active">Active</option><option value="draining">Draining</option><option value="disabled">Disabled</option></select></label>
-        <div>
-          <div className="flex items-center gap-1.5">
-            <label htmlFor={`capacity_limit-${runner.id}`}>Runner capacity limit</label>
-            <SettingsHelp label="Runner capacity limit">{RUNNER_HELP.limit}</SettingsHelp>
-          </div>
-          <input id={`capacity_limit-${runner.id}`} className="mt-1 w-full rounded border p-2" name="capacity_limit" type="number" min="0" max="10000" defaultValue={routing.capacity_limit} required />
-        </div>
-        <div>
-          <div className="flex items-center gap-1.5">
-            <label htmlFor={`project_ids-${runner.id}`}>Authorized project IDs</label>
-            <SettingsHelp label="Authorized project IDs">{RUNNER_HELP.projects}</SettingsHelp>
-          </div>
-          <input id={`project_ids-${runner.id}`} className="mt-1 w-full rounded border p-2" name="project_ids" defaultValue={routing.project_ids.join(", ")} />
-        </div>
-        <label>Home project IDs<input className="mt-1 w-full rounded border p-2" name="home_project_ids" defaultValue={(routing.home_project_ids ?? []).join(", ")} /></label>
-        <label>Isolation tier<select className="mt-1 w-full rounded border p-2" name="isolation_tier" defaultValue={routing.isolation_tier}><option value="sandbox">Sandbox</option><option value="native-trusted">Trusted only: full host access</option></select></label>
-        <label className="sm:col-span-2">Host services, one per line<textarea className="mt-1 w-full rounded border p-2" name="host_services" rows={2} defaultValue={routing.host_services.join("\n")} placeholder="tcp:127.0.0.1:8080" /></label>
-        <label>Availability timezone<input className="mt-1 w-full rounded border p-2" name="timezone" defaultValue={routing.availability.timezone} placeholder="America/Chicago" /></label>
-        <label>Hard deadline after window closes<input className="mt-1 w-full rounded border p-2" name="hard_deadline" defaultValue={routing.availability.hard_deadline} placeholder="30m" /></label>
-        <label className="sm:col-span-2">Weekly windows, one per line<textarea className="mt-1 w-full rounded border p-2" name="windows" rows={2} defaultValue={routing.availability.windows.join("\n")} placeholder="Mon-Fri 09:00-17:00" /></label>
-        <div><label htmlFor={`spillover-${runner.id}`}>Spillover</label><select id={`spillover-${runner.id}`} className="mt-1 w-full rounded border p-2" name="spillover_mode" defaultValue={routing.spillover.mode}><option value="never">Never</option><option value="after">After waiting</option></select></div>
-        <label>Spillover wait in minutes<input className="mt-1 w-full rounded border p-2" name="after_minutes" type="number" min="0" defaultValue={routing.spillover.after_minutes} /></label>
-        {error === "" ? null : <p role="alert" className="text-destructive sm:col-span-2">{error}</p>}
-        <div className="sm:col-span-2"><Button type="submit" size="sm" disabled={saving}>{saving ? "Saving…" : "Save runner"}</Button></div>
-      </form>
-    </details>
-  );
-}
-
 export function RunnersSectionView({
-  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting,
+  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner,
 }: {
   readonly fleet: FleetResponse;
+  readonly projects?: readonly RunnerProject[];
+  readonly onReloadRunner?: () => Promise<void>;
   readonly now?: number;
   readonly organizationName?: string;
   readonly onEnroll?: (name?: string) => void;
@@ -296,13 +207,10 @@ export function RunnersSectionView({
     }
     setRunnerToOpen(runner.id);
   }
-  React.useEffect(() => {
-    if (runnerToOpen === null) return;
-    scrollToSettingsTarget("runner-" + runnerToOpen, { highlight: false });
-    setRunnerToOpen(null);
-  }, [runnerToOpen, attentionOnly]);
+  const selectedRunner = fleet.runners.find((runner) => runner.id === runnerToOpen);
   return (
     <>
+      {selectedRunner ? <RunnerDetailSheet key={selectedRunner.id} runner={selectedRunner} projects={projects} editable={fleet.editable !== false && onSaveRouting !== undefined} now={now} onClose={() => setRunnerToOpen(null)} onSave={onSaveRouting} onReload={onReloadRunner} /> : null}
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div className="min-w-0 space-y-2">
           <h2 className="text-xl font-semibold tracking-tight">Providers & runners</h2>
@@ -338,7 +246,7 @@ export function RunnersSectionView({
             <div className="overflow-hidden rounded-xl border border-border/60 bg-card/40">
               <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7rem_auto] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground sm:grid"><span>Runner</span><span>Running</span><span>Last check-in</span><span className="w-14" /></div>
               <div className="divide-y divide-border/50">
-                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} settings={onSaveRouting === undefined || runner.routing === undefined ? undefined : <RunnerSettingsForm key={runner.revision} runner={runner} onSave={onSaveRouting} />} />)}
+                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} onOpen={() => openRunner(runner)} />)}
                 {runners.length === 0 ? <p className="px-4 py-6 text-[13px] text-muted-foreground">No runners need attention.</p> : null}
               </div>
             </div>
@@ -366,6 +274,9 @@ export function RunnersSettings(): React.ReactElement {
   const [enrollmentName, setEnrollmentName] = React.useState("");
   const [enrollments, setEnrollments] = React.useState<readonly PendingEnrollment[]>([]);
   const canEnroll = bootstrap?.actor.can_manage_runners ?? false;
+  async function reloadRunner(): Promise<void> {
+    fleet.set(await api.fleet());
+  }
 
   return (
     <SettingsPageContainer>
@@ -401,6 +312,8 @@ export function RunnersSettings(): React.ReactElement {
         <RunnersSectionView
           fleet={fleet.value}
           organizationName={bootstrap?.organization.name}
+          projects={bootstrap?.projects ?? []}
+          onReloadRunner={reloadRunner}
           enrollments={enrollments}
           {...(canEnroll ? { onEnroll: (name = "") => { setEnrollmentName(name); setOpen(true); } } : {})}
           {...(canEnroll && fleet.value.editable ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {
@@ -408,7 +321,7 @@ export function RunnersSettings(): React.ReactElement {
               tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids,
               homeProjectIds: routing.home_project_ids ?? [], isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability,
               spillover: routing.spillover });
-            await fleet.refresh();
+            await reloadRunner();
           } } : {})}
         />
       )}

@@ -78,7 +78,8 @@ for (const width of [1440, 390]) {
     await expect(page.getByTestId("host-card")).toHaveCount(1);
     await page.getByRole("button", { name: "Open Michael's MacBook Pro", exact: true }).click();
     await expect(page.getByTestId("host-card")).toHaveCount(3);
-    await expect(page.locator("#runner-rnr_macbook")).toBeFocused();
+    await expect(page.getByRole("dialog", { name: "Michael's MacBook Pro" })).toBeVisible();
+    await page.keyboard.press("Escape");
     await expect(page).not.toHaveURL(/health=needs_attention/);
     await page.getByRole("link", { name: "Needs attention 1" }).click();
     await page.getByRole("link", { name: "All 3" }).click();
@@ -86,7 +87,8 @@ for (const width of [1440, 390]) {
     await expect(page.getByTestId("host-card")).toHaveCount(3);
     await page.getByRole("button", { name: "Manage Michael's MacBook Pro" }).click();
     const details = page.getByRole("dialog", { name: "Michael's MacBook Pro" });
-    await expect(details).toContainText("Isolation setting: Sandbox");
+    await expect(details.getByRole("heading", { name: "Isolation", exact: true })).toBeVisible();
+    await expect(details).toContainText("Sandbox");
     await expect(details).toContainText("michael@threefold.solutions");
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Enroll a runner", exact: true }).click();
@@ -105,6 +107,66 @@ for (const width of [1440, 390]) {
     expect(await page.locator("body").innerHTML()).not.toContain(token);
     await page.keyboard.press("Escape");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  });
+}
+
+for (const width of [1440, 390]) {
+  test("runner sheet opens from rows and attention and saves at " + width + "px", async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const runner = {
+      ...fleet.runners[1], revision: 4, capacity_limit: 4,
+      routing: {
+        display_name: "Build runner", state: "active", capacity_limit: 4,
+        project_ids: ["proj_preview", "prj_unknown"], home_project_ids: ["prj_unknown"],
+        tags: ["linux"], isolation_tier: "sandbox", host_services: [],
+        availability: { timezone: "UTC", windows: [], hard_deadline: "" },
+        spillover: { mode: "never", after_minutes: 0 },
+      },
+    };
+    let current = { ...fleet, editable: true, runners: [runner] };
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await openFleet(page, current);
+    await page.unroute("**/fleet");
+    await page.route("**/fleet", (route) => route.fulfill({ json: current }));
+    const writes = [];
+    await page.route("**/runners/*/routing", async (route) => {
+      const change = route.request().postDataJSON();
+      writes.push(change);
+      const { expected_revision, ...routing } = change;
+      expect(expected_revision).toBe(current.runners[0].revision);
+      current = { ...current, runners: [{ ...current.runners[0], state: routing.state, capacity_limit: routing.capacity_limit, routing, revision: expected_revision + 1 }] };
+      await route.fulfill({ json: {} });
+    });
+    const row = page.getByTestId("host-card");
+    await row.getByRole("button", { name: "Manage Build runner" }).click();
+    let sheet = page.getByRole("dialog", { name: "Build runner" });
+    await expect(sheet).toBeVisible();
+    const box = await sheet.boundingBox();
+    expect(box.x + box.width).toBe(width);
+    if (width === 390) expect(box.width).toBe(width);
+    await sheet.getByRole("radio", { name: "Draining Finishes what it has" }).check();
+    await sheet.getByLabel("Jobs at once").fill("2");
+    await sheet.getByRole("button", { name: "Save runner" }).click();
+    await expect(sheet).toHaveCount(0);
+    await expect(row).toContainText("draining · Limit 2");
+    await page.getByTestId("runner-attention").getByRole("button", { name: "Open runner Build runner" }).click();
+    sheet = page.getByRole("dialog", { name: "Build runner" });
+    await expect(sheet.getByRole("alert")).toContainText(problem.message);
+    await expect(sheet.getByRole("alert")).toContainText(problem.fix_hint);
+    await expect(sheet.getByRole("alert")).toContainText("Seen since");
+    await expect(sheet.getByRole("checkbox", { name: "Preview project", exact: true })).toBeChecked();
+    await expect(sheet.getByRole("checkbox", { name: "prj_unknown", exact: true })).toBeChecked();
+    await sheet.getByRole("radio", { name: "Disabled Takes nothing" }).check();
+    await sheet.getByLabel("Jobs at once").fill("0");
+    await sheet.getByRole("button", { name: "Save runner" }).click();
+    await expect(sheet).toHaveCount(0);
+    await expect(row).toContainText("disabled · Limit 0");
+    expect(writes.map((write) => [write.state, write.capacity_limit])).toEqual([["draining", 2], ["disabled", 0]]);
+    expect(writes[1].project_ids).toEqual(["proj_preview", "prj_unknown"]);
+    expect(writes[1].home_project_ids).toEqual(["prj_unknown"]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    expect(errors).toEqual([]);
   });
 }
 
