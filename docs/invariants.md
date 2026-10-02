@@ -275,6 +275,11 @@ The existing request owner finishes an in-flight same-selection read and coalesc
 activity into one pending refresh; genuine selection changes still cancel it.
 Refresh re-fetches server data within that chosen depth and enrichment budget,
 without restarting on runner display-name updates or expanding unseen history.
+A queued activity refresh cannot erase a simultaneously requested continuation.
+Background refresh keeps existing controls available; initial and explicit
+continuation reads retain their loading state. Both intents compose through the
+same bounded request owner, while scope changes and authorization refusals
+cancel or clear obsolete data.
 Sorting and filter-choice discovery remain local to loaded items; terminal counts
 describe inventory, not shipment.
 `TestNativeWorkPageOperationalScope` and the conversation Work pagination fixture
