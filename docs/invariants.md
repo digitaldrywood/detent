@@ -46,6 +46,20 @@ Change version/head and decision evidence; genuine fenced claims remain distinct
 This consolidates the observation producers without a new telemetry owner or
 mechanism (INV-3).
 
+The selected runtime read (#159) projects only the current immutable Change
+version and its review/check evidence through the existing summary authority.
+Indexed older-approval existence preserves stale review semantics without
+loading historical versions, discussion, reviews or checks; explicit Change
+detail still returns history. Merging eligibility shares the current summary.
+Runner identities retain project grants, routing, health and isolation evidence;
+shared host occupancy and organization-wide provider reports/reservations are
+read once per snapshot, including live occupancy outside the returned runner
+page. The 100-runner bound remains explicitly truncated and cannot establish a
+complete exclusion decision. `TestNativeRuntimeReadHistoryCost` and
+`TestNativeRuntimeReadSharedCapacityCost` cover indexed history-independent
+reads, shared occupancy, scope, expiry, fencing and truncation; the existing
+Change fixture compares current and full summary semantics.
+
 Scheduled diagnostics for the migrated Detent repository call the existing
 Cloud `file_issue`, revisioned `edit_item` priority and `add_comment` application
 owners using the selected project and current scoped API/MCP connection. New diagnostics enter only a
@@ -1177,6 +1191,9 @@ snapshot through existing application services and never dispatch, write lanes
 or call the forge to manufacture history. Historical gaps stay unavailable.
 Scoped local explanation and operator discovery APIs use the current-grant
 application authority instead of the blanket aggregate-dashboard read refusal.
+Current runtime evidence (#159) consolidates existing Change summary and
+host/provider capacity reads inside that snapshot; it introduces no cache,
+poller, configuration, endpoint, reason code, or read-triggered mutation.
 The schema migration extends the existing append-only event vocabulary and
 preserves all prior evidence; rollback refuses to discard new event types.
 

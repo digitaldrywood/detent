@@ -291,9 +291,16 @@ func nativeLandingCandidateReady(ctx context.Context, query nativeQueryer, scope
 	if change.Landed != nil || change.CurrentVersion == "" {
 		return false, nil
 	}
-	detail, err := readChangeDetail(ctx, query, *scope, item, change.ID, now)
+	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
 	if err != nil {
 		return false, err
 	}
-	return detail.Summary.Status == "reviewed", nil
+	return nativeChangeLandingReady(state, &detail), nil
+}
+
+func nativeChangeLandingReady(state string, detail *tracker.ChangeDetail) bool {
+	if !strings.EqualFold(strings.TrimSpace(state), "Merging") {
+		return true
+	}
+	return detail != nil && detail.Change.Landed == nil && detail.Change.CurrentVersion != "" && detail.Summary.Status == "reviewed"
 }
