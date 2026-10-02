@@ -591,6 +591,15 @@ export function createWorkMock(options: {
         return true;
       }
 
+      const itemLookup = path.match(new RegExp(`^${options.apiBase}/work-items/([^/]+)$`));
+      if (itemLookup !== null && method === "GET") {
+        const issue = issues.find((candidate) => candidate.work_item_id === decodeURIComponent(itemLookup[1]!));
+        json(response, issue === undefined ? 404 : 200, issue ?? {
+          code: "not_found", message: "Resource was not found",
+        });
+        return true;
+      }
+
       if (!path.startsWith(base)) return false;
       const rest = path.slice(base.length).replace(/^\//, "");
       const segments = rest.split("/").map((segment) => decodeURIComponent(segment));

@@ -98,6 +98,40 @@ function shell(page) {
   return page.locator("[data-slot='sidebar-wrapper']");
 }
 
+for (const selection of ["all projects", "different project", "no remembered project"]) {
+  test(`opens an issue link with ${selection}`, async ({ page }) => {
+    await openChat(page);
+    const issueProject = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
+    const created = await hubAPI(page, "POST", `/projects/${issueProject}/work-items`, {
+      idempotency_key: `issue-link-${selection}`,
+      title: `Issue link with ${selection}`,
+      body: "This issue has no linked conversation and resolves its own project.",
+      state: "Todo",
+    });
+    expect(created.status).toBe(200);
+    const item = created.payload.work_item_id;
+    const projectKey = "detent.conversation.lastProject";
+    const otherProject = hub.fixture.project_id;
+    if (selection === "all projects") {
+      await page.goto(new URL("/work", hub.fixture.url).toString());
+      await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), projectKey)).toBe("");
+    } else if (selection === "different project") {
+      await page.goto(`${hub.fixture.chat}/p/${otherProject}`);
+      await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), projectKey)).toBe(otherProject);
+    } else {
+      await page.evaluate((key) => localStorage.removeItem(key), projectKey);
+      expect(await page.evaluate((key) => localStorage.getItem(key), projectKey)).toBeNull();
+    }
+    await page.goto(new URL(`/work/i/${item}`, hub.fixture.url).toString());
+    await expect(page.getByRole("heading", { name: `Issue link with ${selection}`, exact: true })).toBeVisible();
+    await expect(page.getByTestId("issue-properties")).toBeVisible();
+    await expect(page.getByTestId("issue-body")).toContainText("resolves its own project");
+    const lookup = await hubAPI(page, "GET", `/work-items/${item}`);
+    expect(lookup.status).toBe(200);
+    expect(lookup.payload.project_id).toBe(issueProject);
+  });
+}
+
 function sidebar(page) {
   return page.locator("aside.dc-side");
 }

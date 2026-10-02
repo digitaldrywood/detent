@@ -176,6 +176,43 @@ func TestNativeIssueWebURL(t *testing.T) {
 	}
 }
 
+func TestNativeIssueOrganizationLookup(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "granted")
+	granted := f.create(t, "readable")
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "ungranted")
+	ungranted := other.create(t, "private")
+	for _, test := range []struct {
+		name         string
+		organization tracker.OrganizationID
+		item         tracker.NativeWorkItemID
+		want         int
+	}{
+		{"granted project", f.project.OrganizationID, granted.WorkItemID, http.StatusOK},
+		{"ungranted project", f.project.OrganizationID, ungranted.WorkItemID, http.StatusNotFound},
+		{"unknown ID", f.project.OrganizationID, "wi_unknown", http.StatusNotFound},
+		{"other organization", "org_other", granted.WorkItemID, http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := "/api/v2/organizations/" + string(test.organization) + "/work-items/" + string(test.item)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+			requireNativeStatus(t, response, test.want)
+			if test.want != http.StatusOK {
+				requireNativeCode(t, response, http.StatusNotFound, "not_found")
+				return
+			}
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			if issue.WorkItemID != granted.WorkItemID || issue.ProjectID != f.project.ID || issue.Title != granted.Title {
+				t.Fatalf("issue = %#v", issue)
+			}
+			if response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("issue lookup must not be cached")
+			}
+		})
+	}
+}
+
 func TestNativeWorkflowRefusalCode(t *testing.T) {
 	for _, hosted := range []bool{false, true} {
 		name := "local"
