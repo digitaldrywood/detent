@@ -237,56 +237,166 @@ func TestProviderStartRevalidation(t *testing.T) {
 
 func TestProviderQueueOrderAndSelectors(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-	r.enroll(t)
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	report := capacityReport(f.service.config.now())
-	publishCapacity(t, f, r, report)
-	issues := []tracker.NativeIssue{f.create(t, "unsupported urgent"), f.create(t, "compatible high"), f.create(t, "compatible normal")}
-	claim := providerClaim(r, issues[0], "fair")
-	claim.WorkItemID = ""
-	claim.ProviderCandidates = nil
-	for i := len(issues) - 1; i >= 0; i-- {
-		issue := issues[i]
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = ? WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", i, issue.WorkItemID); err != nil {
-			t.Fatal(err)
-		}
-		candidate := providerClaim(r, issue, "").ProviderCandidates[0]
-		if i == 0 {
-			candidate.Requirement.Model = "unsupported"
-		}
-		claim.ProviderCandidates = append(claim.ProviderCandidates, candidate)
-	}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", r.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: claim})
-	requireNativeStatus(t, response, http.StatusOK)
-	var page tracker.NativeCapacityPage
-	decodeHubResponse(t, response, &page)
-	if len(page.Items) != 3 || page.Items[0].WorkItemID != issues[0].WorkItemID || page.Items[1].WorkItemID != issues[1].WorkItemID {
-		t.Fatalf("preview reordered candidates: %+v", page)
-	}
-	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
-	requireNativeStatus(t, response, http.StatusOK)
-	var lease tracker.NativeLease
-	decodeHubResponse(t, response, &lease)
-	if lease.WorkItemID != issues[1].WorkItemID {
-		t.Fatal("capacity changed existing priority order")
-	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
-	descriptor := hubTestPolicy()
-	descriptor.Requirements.MachineID = string(runnerauth.NewBinding().MachineID)
-	descriptor = descriptor.WithID()
-	response = performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, map[string]any{"expected_policy_id": hubTestPolicy().ID, "policy": descriptor})
-	requireNativeStatus(t, response, http.StatusOK)
-	claim.PolicyID, claim.SessionID = descriptor.ID, "wrong-host"
-	for _, path := range []string{"/claims", "/claims/preview"} {
-		response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+path, r.redemption.Credential, claim)
-		requireNativeStatus(t, response, http.StatusConflict)
-		var failure nativeError
-		decodeHubResponse(t, response, &failure)
-		if failure.Code != "selector_no_match" {
-			t.Fatalf("fixed host lost authority: %s", failure.Code)
-		}
+	for _, test := range []struct {
+		name        string
+		states      []string
+		priorities  []int
+		order       []string
+		labels      []string
+		ranks       []string
+		unavailable string
+		want        []int
+		winner      int
+	}{
+		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
+		{name: "merging first overrides urgent todo", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{1, 0, 2}, winner: 1},
+		{name: "home routing honors merging first", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, unavailable: "home", want: []int{1, 0, 2}, winner: 1},
+		{name: "partial home order keeps todo eligible", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging"}, unavailable: "home", want: []int{0, 1, 2}},
+		{name: "another project order", states: []string{"Merging", "Todo", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Rework", "Merging"}, want: []int{1, 2, 0}, winner: 1},
+		{name: "source lane order", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{2, 1, 0}, winner: 2},
+		{name: "numeric priority precedes source lane", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{0, 1, 2}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{0, 1, 2}},
+		{name: "configured labels precede source lanes", states: []string{"Todo", "Rework", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "Todo"}, labels: []string{"hotfix", "bug"}, want: []int{0, 1, 2}},
+		{name: "queue rank breaks equal policy ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{"c", "a", "b"}, want: []int{1, 2, 0}, winner: 1},
+		{name: "unblocker count precedes queue rank", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, unavailable: "unblocker", want: []int{1, 0}, winner: 1},
+		{name: "required review is retained", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "required review", want: []int{1, 2}, winner: 1},
+		{name: "unavailable merging provider falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
+		{name: "changed merging revision falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "revision", want: []int{0, 1, 2}, winner: 1},
+		{name: "unreviewed merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "review", want: []int{1, 2}, winner: 1},
+		{name: "dependency held merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "dependency", want: []int{1, 2}, winner: 1},
+		{name: "leased merging leaves next slot for todo", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "lease", want: []int{1, 2}, winner: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.enroll(t)
+			if test.unavailable == "home" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/runners/"+r.binding.RunnerID+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "runner", State: "active", CapacityLimit: 8, ProjectIDs: []tracker.ProjectID{f.project.ID}, HomeProjectIDs: []tracker.ProjectID{f.project.ID}}}), http.StatusOK)
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			for _, state := range []string{"Merging", "Rework"} {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)", f.project.ID, state, state, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rules := tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: test.unavailable == "required review"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
+			report := capacityReport(f.service.config.now())
+			report.MaxConcurrent = 2
+			publishCapacity(t, f, r, report)
+			issues := []tracker.NativeIssue{f.create(t, "head"), f.create(t, "next"), f.create(t, "tail")}
+			claim := providerClaim(r, issues[0], "fair")
+			claim.WorkItemID, claim.ProviderCandidates = "", nil
+			claim.DispatchPriorityByState, claim.DispatchPriorityByLabel = test.order, test.labels
+			claim.WorkflowStates = []string{"Merging", "Rework", "In Progress", "Todo"}
+			claim.PrioritizeUnblockers = test.unavailable == "unblocker"
+			for i, issue := range issues {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?) WHERE native_id = ?", f.project.ID, test.states[i], issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				rank := fmt.Sprint(i)
+				if test.ranks != nil {
+					rank = test.ranks[i]
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = ?, rank = ? WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", test.priorities[i], rank, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if test.labels != nil && i < len(test.labels) {
+					raw, err := marshalNative([]string{test.labels[i]})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET labels_json = ? WHERE native_id = ?", raw, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.states[i] == "Merging" && test.unavailable != "review" {
+					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+					response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Reviewed work"})
+					requireNativeStatus(t, response, http.StatusOK)
+					var change tracker.ChangeRequest
+					decodeHubResponse(t, response, &change)
+					cf := changeFixture{nativeFixture: f, issue: issue, change: change, path: path + "/" + change.ID}
+					cf.publish(t, "version", "")
+					wantReviewed := test.unavailable != "required review"
+					if detail := cf.detail(t); (detail.Summary.Status == "reviewed") != wantReviewed {
+						t.Fatalf("change readiness = %+v", detail.Summary)
+					}
+				}
+				candidate := providerClaim(r, issue, "").ProviderCandidates[0]
+				if i == 0 && test.unavailable == "provider" {
+					candidate.Requirement.Model = "unsupported"
+				}
+				if i == 0 && test.unavailable == "revision" {
+					candidate.Revision++
+				}
+				claim.ProviderCandidates = append(claim.ProviderCandidates, candidate)
+			}
+			if test.unavailable == "dependency" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (dependent_issue_id, blocker_issue_id, provenance, created_at, updated_at) SELECT a.id, b.id, 'native', ?, ? FROM issues a, issues b WHERE a.native_id = ? AND b.native_id = ?", testTimestamp, testTimestamp, issues[0].WorkItemID, issues[2].WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.unavailable == "unblocker" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (dependent_issue_id, blocker_issue_id, provenance, created_at, updated_at) SELECT a.id, b.id, 'native', ?, ? FROM issues a, issues b WHERE a.native_id = ? AND b.native_id = ?", testTimestamp, testTimestamp, issues[2].WorkItemID, issues[1].WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.unavailable == "lease" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issues[0], "running")), http.StatusOK)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", r.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: claim})
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.NativeCapacityPage
+			decodeHubResponse(t, response, &page)
+			if len(page.Items) != len(test.want) {
+				t.Fatalf("preview count = %d, want %d", len(page.Items), len(test.want))
+			}
+			for i, index := range test.want {
+				if page.Items[i].WorkItemID != issues[index].WorkItemID {
+					t.Fatalf("preview[%d] = %s, want %s", i, page.Items[i].WorkItemID, issues[index].WorkItemID)
+				}
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			if lease.WorkItemID != issues[test.winner].WorkItemID {
+				t.Fatalf("claim = %s, want %s", lease.WorkItemID, issues[test.winner].WorkItemID)
+			}
+			var leases, reservations int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases WHERE released_at IS NULL").Scan(&leases); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM provider_reservations").Scan(&reservations); err != nil {
+				t.Fatal(err)
+			}
+			wantLeases := 1
+			if test.unavailable == "lease" {
+				wantLeases++
+			}
+			if leases != wantLeases || reservations != wantLeases {
+				t.Fatalf("leases/reservations = %d/%d, want %d", leases, reservations, wantLeases)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			if test.unavailable == "lease" {
+				return
+			}
+			descriptor := hubTestPolicy()
+			descriptor.Requirements.MachineID = string(runnerauth.NewBinding().MachineID)
+			descriptor = descriptor.WithID()
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, map[string]any{"expected_policy_id": hubTestPolicy().ID, "policy": descriptor}), http.StatusOK)
+			claim.PolicyID, claim.SessionID = descriptor.ID, "wrong-host"
+			for _, path := range []string{"/claims", "/claims/preview"} {
+				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+path, r.redemption.Credential, claim)
+				requireNativeStatus(t, response, http.StatusConflict)
+				var failure nativeError
+				decodeHubResponse(t, response, &failure)
+				if failure.Code != "selector_no_match" {
+					t.Fatalf("fixed host lost authority: %s", failure.Code)
+				}
+			}
+		})
 	}
 }
 

@@ -2922,6 +2922,45 @@ is not an authorized resurrection.
 
 ## INV-10 — Priority only picks the next job
 
+Native claim and provider preview carry the project's existing dispatch state,
+label and unblocker policy to the shared `dispatchpriority` comparator before
+acquiring a lease. Merging overrides numeric priority only when that project
+configures Merging first; native queue rank remains a tie-breaker after the
+configured priorities. Both paths retain native scope, dependencies, live
+leases, current reviewed Change Request readiness and policy/runner authority.
+Runner home selection derives eligibility from each home project's dispatchable
+workflow and approved runner policy, independently of dispatch ranking. The
+requested project's state filter and comparator apply within that project;
+partial orders do not hide unlisted eligible states or impose the requesting
+project's ordering on another home project. Home grants and spillover rules
+remain authoritative. The existing native capability negotiation requires a
+Hub advertising `dispatch_priority` before a runner sends ranking fields to
+claim or preview. Older Hubs produce an instance scheduling wait before either
+request, preserving their strict request schema and issue failure budgets.
+The existing preview evaluates local readiness before claim within the free-slot
+plus eight-candidate allowance. The planner's existing known-wait classification
+excludes known local waits from expensive evaluation. Unavailable local or
+provider candidates fall through without a lease or capacity hold. Claim rechecks current revisions and
+provider capacity, and dispatch retains its fresh checks. This consolidates
+selection under INV-3 without a new queue, configuration key, reservation,
+preemption or recovery mechanism. Landing protections and refusal evidence
+remain owned by the existing landing path.
+During a recorded active GitHub REST wait, the existing candidate-state owner
+excludes native GitHub PR landing before the single-candidate claim boundary.
+Native coding and Git-only landing remain eligible, with the same dependency
+decision used by planner, retry and final dispatch admission. Local merge slot
+exclusion remains in force. If filtering holds all states, intake returns no
+candidates without a claim; an empty Hub state filter means unrestricted work.
+Expired waits restore eligibility without a fresh GitHub probe. Other projects
+retain their tracker, CI and REST decisions and approved landing requirements.
+`TestProviderQueueOrderAndSelectors` covers native claim/preview ordering and
+unavailable-head fallthrough; `TestProviderSchedulerEndToEnd` covers pre-lease
+local readiness and provider fallback.
+`TestRunnerHomeClaims`, `TestHubSchedulingCycle`,
+`TestHubSchedulingReadinessBeforeClaim` and
+`TestNativeOptionalReportsNegotiateHubSupport` cover home policy isolation,
+recorded REST-wait fallthrough, empty-state intake and mixed-version negotiation.
+
 Project dispatch evaluates candidates in the existing priority order, with at
 most the initial free project slots plus eight candidates of lookahead per pass
 (#3190). Failed hydration, dependency waits, due retries, and rejected dispatches

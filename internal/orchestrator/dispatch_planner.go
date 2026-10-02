@@ -24,6 +24,7 @@ import (
 const dispatchCandidateLookahead = 8
 
 type dispatchPlanner struct {
+	nativeWorkflow       bool
 	workerHostAvailable  func(string) bool
 	operatorRejectedHead func(connector.Issue) (bool, error)
 	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
@@ -105,16 +106,7 @@ func (p dispatchPlanner) plan(
 	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
 	knownWaits := make(map[string]bool, len(plannedCandidates))
 	for _, issue := range plannedCandidates {
-		if _, retryDue := dueRetries[issue.ID]; retryDue {
-			continue
-		}
-		_, running := state.Running[issue.ID]
-		_, deferred := state.deferredCompletions[issue.ID]
-		_, retry := state.Retry[issue.ID]
-		_, claimed := state.Claimed[issue.ID]
-		blocked, parked := state.Blocked[issue.ID]
-		knownWaits[issue.ID] = running || deferred || retry || claimed || (parked && !blockedFromDependency(blocked)) ||
-			(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, p.cfg.TerminalStates))
+		knownWaits[issue.ID] = knownDispatchWait(issue, state, dueRetries, p.cfg.TerminalStates)
 	}
 	slices.SortStableFunc(plannedCandidates, func(a, b connector.Issue) int {
 		waitingA, waitingB := knownWaits[a.ID], knownWaits[b.ID]
@@ -293,6 +285,19 @@ func (p dispatchPlanner) plan(
 	return plan
 }
 
+func knownDispatchWait(issue connector.Issue, state *State, dueRetries map[string]Retry, terminalStates []string) bool {
+	if _, retryDue := dueRetries[issue.ID]; retryDue {
+		return false
+	}
+	_, running := state.Running[issue.ID]
+	_, deferred := state.deferredCompletions[issue.ID]
+	_, retry := state.Retry[issue.ID]
+	_, claimed := state.Claimed[issue.ID]
+	blocked, parked := state.Blocked[issue.ID]
+	return running || deferred || retry || claimed || (parked && !blockedFromDependency(blocked)) ||
+		(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, terminalStates))
+}
+
 func clearBlockedUnblockerCounts(issues []connector.Issue, blocked map[string]Blocked) {
 	for index := range issues {
 		if _, ok := blocked[issues[index].ID]; ok {
@@ -344,7 +349,7 @@ func (p dispatchPlanner) retryAction(
 	if p.forgeAvailabilityBlocks(state, issue, retry, now) {
 		return dispatchAction{}, false, dispatchSkipForgeUnavailable
 	}
-	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused && p.githubRESTDependent(issue) {
 		if retry.DueAt.Before(outage.ResumeAt) {
 			retry.DueAt = outage.ResumeAt
 			state.Retry[retry.Issue.ID] = retry
@@ -775,7 +780,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if activeCIUnavailable(state) && ciDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipCIUnavailable}
 	}
-	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && p.githubRESTDependent(issue) {
 		return dispatchableDecision{reason: dispatchSkipGitHubRESTCapacity}
 	}
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
@@ -1345,6 +1350,10 @@ func (p dispatchPlanner) releaseClaim(state *State, issueID string) {
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+}
+
+func (p dispatchPlanner) githubRESTDependent(issue connector.Issue) bool {
+	return !p.nativeWorkflow || normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && p.cfg.Policy.Gates.GitHubPullRequest
 }
 
 // dispatchLabelSelector projects authorization onto labels. Other predicates
