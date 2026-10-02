@@ -12,6 +12,7 @@ const DIRECT_IMAGE_SOURCE_PATTERN = /^(?:https?:|data:|blob:|\/\/)/i;
 const URI_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 
 export type MarkdownImageSource =
+  | { readonly _tag: "Attachment"; readonly id: string }
   | { readonly _tag: "Direct"; readonly uri: string }
   | { readonly _tag: "WorkspaceFile"; readonly path: string }
   | { readonly _tag: "Blocked" };
@@ -42,6 +43,8 @@ export function classifyMarkdownImageSource(
   if (source.length === 0 || source.startsWith("#") || source.startsWith("?")) {
     return { _tag: "Blocked" };
   }
+  const attachment = /^attachment:(att_[a-zA-Z0-9_-]+)$/.exec(source);
+  if (attachment) return { _tag: "Attachment", id: attachment[1]! };
   if (/^\/organizations\/org_[A-Za-z0-9_-]+\/api\/v2\/projects\/prj_[A-Za-z0-9_-]+\/attachments\/att_[a-f0-9]{32}$/.test(source) || DIRECT_IMAGE_SOURCE_PATTERN.test(source)) {
     return { _tag: "Direct", uri: source };
   }

@@ -7,6 +7,8 @@ describe("Cloud attachment image sources", () => {
 
   it.each([
     [attachment, "Direct"],
+    ["attachment:att_0123456789abcdef0123456789abcdef", "Attachment"],
+    ["attachment:../../secret.png", "Blocked"],
     [attachment.replace("att_", "local_"), "WorkspaceFile"],
     [attachment + "/../../secret.png", "WorkspaceFile"],
     ["/etc/secret.png", "WorkspaceFile"],

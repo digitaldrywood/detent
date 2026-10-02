@@ -5,13 +5,39 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"regexp"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/labstack/echo/v4"
 )
 
 const attachmentMetadataBase = nativeBase + "/attachment-metadata"
+
+var cloudAttachmentReference = regexp.MustCompile(`\]\(\s*<?attachment:(att_[A-Za-z0-9_-]+)>?(?:\s+"[^"]*")?\s*\)`)
+
+func syncCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, itemID, commentID, body string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM attachment_references WHERE work_item_id=? AND comment_id=? AND attachment_id IN (SELECT id FROM attachments WHERE organization_id=? AND project_id=?)`, itemID, commentID, scope.organization, scope.project); err != nil {
+		return err
+	}
+	var ids []string
+	for _, match := range cloudAttachmentReference.FindAllStringSubmatch(body, -1) {
+		ids = append(ids, match[1])
+	}
+	for _, reference := range attachment.References(body, string(scope.organization), string(scope.project)) {
+		ids = append(ids, reference.ID)
+	}
+	for _, id := range ids {
+		if conversation.ValidateAttachmentID(id) != nil {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO attachment_references(attachment_id,work_item_id,comment_id) SELECT id,?,? FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL`, itemID, commentID, scope.organization, scope.project, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (s *Service) registerCloudAttachmentRoutes(e *echo.Echo) {
 	if !s.hostedShared() {
@@ -55,7 +81,7 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 
 func (s *Service) recordCloudAttachment(c echo.Context) error {
 	var record attachment.Metadata
-	if err := c.Bind(&record); err != nil || record.Validate() != nil || record.WorkItemID != "" || record.CommentID != "" || record.DeletedAt != nil {
+	if err := c.Bind(&record); err != nil || record.Validate() != nil || record.WorkItemID != "" || record.CommentID != "" || len(record.ReferencedBy) != 0 || record.DeletedAt != nil {
 		return s.nativeAPIError(c, nativeInvalid("Invalid attachment metadata"))
 	}
 	scope := nativeRequestScope(c)
@@ -121,6 +147,21 @@ func (s *Service) getCloudAttachment(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	record.AuthorizedPrincipal = scope.credential.ID
+	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT work_item_id,comment_id FROM attachment_references WHERE attachment_id=? ORDER BY work_item_id,comment_id", record.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reference attachment.SourceReference
+		if err := rows.Scan(&reference.WorkItemID, &reference.CommentID); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		record.ReferencedBy = append(record.ReferencedBy, reference)
+	}
+	if err := rows.Err(); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	return c.JSON(http.StatusOK, record)
 }
 
@@ -165,7 +206,7 @@ func (s *Service) referenceCloudAttachment(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE attachments SET work_item_id=?,comment_id=nullif(?,'') WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL AND (work_item_id IS NULL OR (work_item_id=? AND coalesce(comment_id,'')=?))`, input.WorkItemID, input.CommentID, scope.organization, scope.project, c.Param("attachment"), input.WorkItemID, input.CommentID)
+	result, err := tx.ExecContext(ctx, `INSERT INTO attachment_references(attachment_id,work_item_id,comment_id) SELECT id,?,? FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL ON CONFLICT(attachment_id,work_item_id,comment_id) DO UPDATE SET attachment_id=excluded.attachment_id`, input.WorkItemID, input.CommentID, scope.organization, scope.project, c.Param("attachment"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
