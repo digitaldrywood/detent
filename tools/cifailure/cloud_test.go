@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -70,7 +71,7 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 		if offset+1 < len(f.items) {
 			page.NextCursor = strconv.Itoa(offset + 1)
 		}
-		output = operatortool.WorkReadResult[tracker.Page[tracker.NativeIssue]]{ProjectID: scheduledCloudProject, Data: page}
+		output = operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]{ProjectID: scheduledCloudProject, Data: operatortool.NativeItemPage(scheduledCloudProject, page)}
 	case "work_comments":
 		id := args["reference"].(string)
 		offset := 0
@@ -254,7 +255,7 @@ func TestCloudTransport(t *testing.T) {
 		dispatchable           bool
 		revokedAfterInitialize bool
 	}{
-		{name: "scoped connection and paginated discovery"},
+		{name: "scoped connection and paginated discovery and reads"},
 		{name: "read only scope", fail: "file_issue"},
 		{name: "revoked key", status: http.StatusUnauthorized},
 		{name: "revoked key on established session", revokedAfterInitialize: true},
@@ -267,6 +268,11 @@ func TestCloudTransport(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := &fakeCloud{fail: tt.fail, dispatchable: tt.dispatchable, badPage: tt.badPage}
+			f.items = []tracker.NativeIssue{cloudItem("wi_first", 1, "First diagnostic"), cloudItem("wi_second", 2, "Second diagnostic")}
+			f.comments = map[string][]tracker.NativeComment{"wi_second": {
+				{OrganizationID: "org", ProjectID: scheduledCloudProject, WorkItemID: "wi_second", Body: "First occurrence"},
+				{OrganizationID: "org", ProjectID: scheduledCloudProject, WorkItemID: "wi_second", Body: "Second occurrence"},
+			}}
 			if tt.badPage == "work_comments" {
 				f.items = []tracker.NativeIssue{cloudItem("wi_imported", 1, "Imported work")}
 			}
@@ -289,11 +295,11 @@ func TestCloudTransport(t *testing.T) {
 				}
 				handler.ServeHTTP(w, r)
 			})}}
-			transport := &cloudMCP{endpoint: "https://app.detent.cloud/organizations/org/mcp", token: "private-test-key", client: client}
+			transport := &cloudMCP{endpoint: "https://cloud.detent.build/api/v2/organizations/org/mcp", token: "private-test-key", client: client}
 			err := transport.initialize(t.Context())
 			revoked = tt.revokedAfterInitialize
+			destination := &cloudDestination{command: transport.call, project: scheduledCloudProject}
 			if err == nil {
-				destination := &cloudDestination{command: transport.call, project: scheduledCloudProject}
 				err = destination.load(t.Context())
 			}
 			if (err != nil) != (tt.fail != "" || tt.status != 0 || tt.dispatchable || tt.badPage != "" || tt.revokedAfterInitialize) {
@@ -301,6 +307,11 @@ func TestCloudTransport(t *testing.T) {
 			}
 			if err != nil && strings.Contains(err.Error(), "private-test-key") {
 				t.Fatal("secret leaked into diagnostic")
+			}
+			if err == nil {
+				if destination.organization != "org" || len(destination.issues) != 2 || destination.issues[1].item.WorkItemID != "wi_second" || !reflect.DeepEqual(destination.issues[1].bodies, []string{"Second diagnostic", "First occurrence", "Second occurrence"}) {
+					t.Fatalf("paginated native reads lost destination or occurrence evidence: %+v", destination.issues)
+				}
 			}
 			if transport.session != "" {
 				revoked = false
@@ -328,9 +339,9 @@ func TestCloudDestinationAuthority(t *testing.T) {
 	}{
 		{"other repository keeps GitHub", "owner/other", "", "", "", true},
 		{"missing connection", "digitaldrywood/detent", "", scheduledCloudProject, "", false},
-		{"missing key", "digitaldrywood/detent", "https://app.detent.cloud/organizations/org/mcp", scheduledCloudProject, "", false},
-		{"wrong project", "digitaldrywood/detent", "https://app.detent.cloud/organizations/org/mcp", "prj_other", "private-key", false},
-		{"insecure connection", "digitaldrywood/detent", "http://app.detent.cloud/organizations/org/mcp", scheduledCloudProject, "private-key", false},
+		{"missing key", "digitaldrywood/detent", "https://cloud.detent.build/api/v2/organizations/org/mcp", scheduledCloudProject, "", false},
+		{"wrong project", "digitaldrywood/detent", "https://cloud.detent.build/api/v2/organizations/org/mcp", "prj_other", "private-key", false},
+		{"insecure connection", "digitaldrywood/detent", "http://cloud.detent.build/api/v2/organizations/org/mcp", scheduledCloudProject, "private-key", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			getenv := func(key string) string {
