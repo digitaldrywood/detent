@@ -584,6 +584,16 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+Native landing merge conflicts are repository refusals, not infrastructure
+failures or shipped work. Explicit GitHub HTTP 405 merge-conflict evidence uses
+the existing `LandRefusalConflict`; unspecified 405 responses, actual branch
+protection, required checks and reviews retain their refusal classification.
+Quota responses retain their separate owner (#89) and never become conflict
+evidence. Unreadable workflow state or an unavailable refusal transition uses
+the existing deferred completion owner without inventing a successful landing.
+`TestGitHubLandingAPIRefusal` and `TestNativeLandingRunCompletion` exercise these
+classification and settlement boundaries (#96).
+
 Cloud shared provider capacity aggregates reports only from runners with current,
 unrevoked authority, using the existing runner validity interval contract.
 Expired and revoked identities retain their historical reports but cannot clamp
@@ -874,6 +884,27 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Native conflict completion selects the project's existing configured
+`ReworkState` through `CompletionLane` and the sole orchestrator lane writer
+(#96). Missing, disallowed, operator-only or terminal rework destinations retain
+the existing deferred completion handoff. Other refusals retain the configured
+review or Blocked destination. This consolidates landing refusal routing under
+the existing completion and rework owners; no configuration, reason code,
+recovery loop or worker lane writer is added.
+
+The existing rework worker rebases source onto the current base and regenerates
+derived artifacts through their build owner when needed. It publishes a new
+immutable Change Request version with its actual head and artifact identity;
+the prior version's review cannot authorize that new version. Current-version
+review, project checks and exact-head landing authority remain required. Only
+an actual landing receipt establishes shipment; worker terminal success and
+landing refusal metadata do not. `TestNativeLandingRunCompletion` and the
+existing `TestNativeExecutionLandsReviewedVersion` cover those boundaries.
+The integration/release owner must still verify a controlled conflict through
+rework, regenerated output, new-version publication and exact-version landing
+after this source change is integrated; local fixture results are not that
+runtime receipt.
 
 Cloud provider report aggregation consolidates validity under the existing runner
 credential authority contract described in INV-2. Historical observations remain

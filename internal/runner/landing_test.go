@@ -68,6 +68,8 @@ func TestLandNativeChange(t *testing.T) {
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true},
 		{name: "a refusal is reported, not recorded", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "the base branch main refused the push"}},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalProtected},
+		{name: "a GitHub conflict retains reviewed identity without a landing receipt", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalConflict, Reason: "Pull Request is not mergeable (HTTP 405)"}},
+			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalConflict, wantGitHub: true},
 		{name: "an unreviewed change is a refusal", stub: landingStub{target: target, targetErr: errors.New("hub says: " + ErrLandingNotReviewed.Error())},
 			wantErr: "resolve landing target"},
 		{name: "an unreviewed change from the hub is a refusal", stub: landingStub{target: target, targetErr: ErrLandingNotReviewed},
@@ -99,6 +101,9 @@ func TestLandNativeChange(t *testing.T) {
 			}
 			if result.NativeLanding.RefusalKind != test.wantRefusal || result.NativeLanding.Landed != (test.wantRefusal == "") {
 				t.Fatalf("landing = %#v", result.NativeLanding)
+			}
+			if result.NativeLanding.ChangeID != target.ChangeID || result.NativeLanding.VersionID != target.VersionID || result.NativeLanding.HeadSHA != head || test.wantRefusal != "" && result.NativeLanding.MergeSHA != "" {
+				t.Fatalf("landing lost exact reviewed identity or invented a merge: %#v", result.NativeLanding)
 			}
 			if len(stub.recorded) != test.wantRecorded {
 				t.Fatalf("recorded = %#v, want %d", stub.recorded, test.wantRecorded)
