@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"reflect"
 	"runtime"
@@ -102,5 +103,15 @@ func TestBackendProbeReapsChildrenAfterParentExits(t *testing.T) {
 	}
 	if state := strings.TrimSpace(string(status)); state != "" && !strings.HasPrefix(state, "Z") {
 		t.Fatalf("probe left child %s running with state %s", pid, state)
+	}
+}
+
+func TestProbeBackendCodexEnforcesSandbox(t *testing.T) {
+	if os.Getenv("DETENT_TEST_CODEX_SANDBOX") != "1" {
+		t.Skip("requires an installed Codex sandbox backend")
+	}
+	backend := workflowconfig.AgentBackend{Kind: workflowconfig.AgentBackendCodex, Command: "codex app-server"}
+	if err := probeBackendIsolation(t.Context(), backend, isolation.Policy{Tier: isolation.Sandbox}); err != nil {
+		t.Fatalf("real Codex filesystem and network enforcement probe: %v", err)
 	}
 }

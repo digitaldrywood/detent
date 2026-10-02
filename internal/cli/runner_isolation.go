@@ -152,6 +152,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	if err := policy.Validate(); err != nil {
 		return err
 	}
+	ctx = isolation.WithPolicy(ctx, policy)
 	if backend.Kind == workflowconfig.AgentBackendCodex {
 		options, settings, err := codex.IsolationSettings(policy)
 		if err != nil {

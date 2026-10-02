@@ -206,6 +206,10 @@ func (s *Service) authorizeOperatorPreview(ctx context.Context, action chatpkg.A
 		_, err := operatortool.AuthorizeCurrent(ctx, hubFleetRequirement(string(action.Kind)))
 		return err
 	}
+	if action.Kind == chatpkg.ActionMoveItem {
+		_, _, err := (nativeOperatorExecutor{service: s}).workflowAuthority(ctx, action.Arguments)
+		return err
+	}
 	if string(action.Kind) == operatortool.BillingCheckout || string(action.Kind) == operatortool.BillingPortal {
 		_, err := s.operatorBillingCredential(ctx, "billing", true)
 		return err

@@ -152,6 +152,7 @@ export function EnrollRunnerDialog({
   onConnected,
   fleet,
   projectIds,
+  initialName = "",
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
@@ -160,6 +161,7 @@ export function EnrollRunnerDialog({
   readonly fleet: Pick<Resource<FleetResponse>, "value" | "error" | "loading" | "refresh">;
   /** Preselects these projects instead of every readable one. */
   readonly projectIds?: readonly string[];
+  readonly initialName?: string;
 }): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
@@ -185,7 +187,10 @@ export function EnrollRunnerDialog({
     [projectIds, projects],
   );
 
-  const [name, setName] = React.useState("");
+  const [name, setName] = React.useState(initialName);
+  React.useEffect(() => {
+    if (open) setName(initialName);
+  }, [open, initialName]);
   const [capacityText, setCapacityText] = React.useState("1");
   const capacity = parseCapacity(capacityText);
   // A response for a dialog the reader already closed must not come back as
@@ -206,14 +211,14 @@ export function EnrollRunnerDialog({
   React.useEffect(() => {
     if (open) return;
     generation.current += 1;
-    setName("");
+    setName(initialName);
     setCapacityText("1");
     setService(true);
     setEnrollment(null);
     setShowToken(false);
     setConnected(null);
     setSelected(initialSelection());
-  }, [open, initialSelection]);
+  }, [open, initialSelection, initialName]);
 
   React.useEffect(() => {
     if (!open || enrollment === null || connected !== null) return;
@@ -468,8 +473,10 @@ export function EnrollRunnerDialog({
 /** The rows under the Runners section: what this screen has handed out. */
 export function PendingEnrollments({
   enrollments,
+  onRenew,
 }: {
   readonly enrollments: readonly PendingEnrollment[];
+  readonly onRenew?: (name: string) => void;
 }): React.ReactElement | null {
   if (enrollments.length === 0) return null;
   return (
@@ -477,7 +484,6 @@ export function PendingEnrollments({
       {enrollments.map((entry) => (
         <SettingsRow
           key={entry.id}
-          className="[&>div>div:first-child]:sm:col-span-2"
           title={
             <span className="flex min-w-0 items-center gap-2">
               <KeyRoundIcon aria-hidden="true" className="size-3.5 shrink-0" />
@@ -485,6 +491,7 @@ export function PendingEnrollments({
             </span>
           }
           description={`No check-in yet · expires ${new Date(entry.expiresAt).toLocaleTimeString()}`}
+          control={onRenew === undefined ? null : <Button size="xs" variant="outline" onClick={() => onRenew(entry.name)}>Make a new command</Button>}
         />
       ))}
     </>

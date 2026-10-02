@@ -190,10 +190,13 @@ describe("the Enroll dialog", () => {
     expect(screen.getByRole("heading", { name: "Build host" })).toBeDefined();
     expect(screen.getByText(/^No check-in yet · expires /)).toBeDefined();
 
-    await user.click(screen.getByRole("button", { name: "Enroll a runner" }));
-    expect(screen.getByLabelText("Name")).toBeDefined();
+    await user.click(screen.getByRole("button", { name: "Make a new command" }));
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Build host");
     expect(document.body.innerHTML).not.toContain(token);
     expect(document.body.innerHTML).not.toContain("detent hub runner register");
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Enroll a runner" }));
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
   });
 
   it.each([

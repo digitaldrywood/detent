@@ -26,6 +26,22 @@ replacement between requests take effect on the next candidate read.
 `TestWakeSpriteRunnersFreshAuthority` and
 `TestWakeSpriteRunnersProjectIsolation` preserve these boundaries.
 
+Configured native workflow requests through MCP (native #219) expose the existing
+typed `move_item` capability in hosted and stdio catalogs. The Hub adapter calls
+`transitionNativeIssueCommand`, the workflow API's current authority, configured
+graph, expected-revision and durable receipt owner. Native daemon requests retain
+the existing connector and orchestrator owner. `get_native_project` supplies the
+project's actual state names and edges. Ordinary reversible configured requests
+retain normal execution; terminal source or target states retain browser
+confirmation and trusted connection YOLO. Discovery retains connection role and
+scope filtering; preview, result delivery, execution and replay recheck current
+organization/project/item authority.
+History records the authenticated human operator and `user_requested`; a state
+request creates no Run, Attempt, lease, approval, completion or landing evidence.
+`TestMCPConfiguredWorkflowTransitions`, `TestMCPNativeWorkCommands`,
+`TestNativeMoveItemArguments` and `TestActionConfirmationClassification` cover
+the transport, owner, CAS, replay and approval boundaries.
+
 Analytics parity (native #33, imported #3665) uses the same application adapters
 for stdio, HTTP MCP and the daemon bridge. Each direct read resolves current
 read authority and project grants before selecting projects or aggregating
@@ -1632,6 +1648,13 @@ goroutines and mutation latency; `TestWakeSpriteRunnersCancellation` covers
 context cancellation and service shutdown. This is fixture evidence of the
 conditional source risk, not a measured production incident.
 
+Native workflow MCP parity (#219) consolidates hosted requests under the existing
+workflow application command and connection approval service. It adds no lane
+writer, transition graph, lease, guard, recovery loop, configuration or UI.
+Project-specific review and validation policy and native fencing remain with
+their existing owners; exposing a requested transition supplies no worker or
+landing evidence.
+
 Hosted fleet approval (native #168) removes volatile heartbeat health from the
 existing configuration approval fence and consolidates material classification
 around the recorded configuration mismatch. Actual capacity application retains
@@ -2524,6 +2547,14 @@ with `sandbox` and extends existing claim compatibility to backend-probed tiers.
 Missing or withdrawn tier reports use the existing no-compatible-work result;
 no new reason code, recovery path, lane writer, or configuration key is introduced.
 Backend policy mapping fails closed instead of retrying as a native process.
+Linux Sandbox provider processes and enforcement probes use the existing child
+launch owner to remove inherited and ambient host capabilities before exec.
+This keeps non-root Sprite capabilities from breaking the bundled Codex sandbox
+and does not grant privileges, change the parent process, or weaken filesystem
+and network enforcement. NativeTrusted and ordinary commands keep their existing
+privilege policy. A required capability drop without support fails before launch;
+it never selects an unconfined fallback or charges an issue with an instance
+failure.
 Codex sandbox threads retain the selected `default_permissions` alongside the
 named profile in session configuration, so workspace-requirements reloads keep
 the same filesystem and limited command-network policy (#3753).
