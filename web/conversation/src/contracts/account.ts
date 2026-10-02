@@ -288,6 +288,7 @@ export type PolicyRequirements = typeof PolicyRequirements.Type;
 
 export const PolicyGates = Schema.Struct({
   kind: Schema.String,
+  human_review: Schema.optional(Schema.Boolean),
   plan_enabled: Schema.Boolean,
   plan_review: Schema.String,
   plan_stop_digest: Schema.String,

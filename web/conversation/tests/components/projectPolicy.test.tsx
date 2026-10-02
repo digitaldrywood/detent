@@ -71,7 +71,7 @@ describe("repository policy after setup", () => {
   it.each(["immediate", "deferred"] as const)("approves the policy a runner reported with one click (%s onboarding)", async (delivery) => {
     const { base, approvedId } = await mount();
     const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-    const reported = { ...current.policy, policy_id: "pol_changed", source_revision: "b".repeat(40) };
+    const reported = { ...current.policy, policy_id: "pol_changed", source_revision: "b".repeat(40), gates: { ...(current.policy.gates as Record<string, unknown>), human_review: true } };
     const posted = await fetch(`${base}/policy/observed`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -109,6 +109,8 @@ describe("repository policy after setup", () => {
     await waitFor(() => expect(screen.queryByText("A runner is waiting for a new policy.")).toBeNull(), httpWait);
     const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
     expect(after.policy.policy_id).toBe("pol_changed");
+    const approvalCall = requests.mock.calls.find(([url, init]) => init?.method === "PUT" && String(url).endsWith("/onboarding/policy"));
+    expect(JSON.parse(String(approvalCall?.[1]?.body)).policy.gates.human_review).toBe(true);
     const puts = requests.mock.calls.filter(([, init]) => init?.method === "PUT").map(([url]) => String(url));
     expect(puts.some((url) => url.endsWith("/projects/proj_alpha/onboarding/policy"))).toBe(true);
     expect(puts.some((url) => url.endsWith("/projects/proj_alpha/policy"))).toBe(false);
