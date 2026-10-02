@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,16 +20,27 @@ type nativeOperatorScopeKey struct{}
 type nativeOperatorExecutor struct{ service *Service }
 
 func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
-	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return nil, err
 	}
 	writable := false
-	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err == nil {
+	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err == nil {
 		writable = true
 	}
-	definitions, err := operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{})).ListTools(ctx)
+	definitions := []operatortool.Definition{}
+	catalog, err := operatorCatalog(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if catalog.credential.HostedRole != "account" {
+		names := (operatorWorkReads{}).WorkReadNames(ctx)
+		for _, definition := range operatortool.WorkReadCatalog() {
+			if slices.Contains(names, definition.Name) {
+				definitions = append(definitions, definition)
+			}
+		}
+		definition, _ := operatortool.Lookup(operatortool.ExplainItem)
+		definitions = append(definitions, definition)
 	}
 	for _, definition := range operatortool.CommandCatalog() {
 		switch definition.Name {

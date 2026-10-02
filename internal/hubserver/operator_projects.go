@@ -39,7 +39,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 	return apikey.ScopeWrite
 }
 func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
-	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return nil, err
 	}
 	defs := []operatortool.Definition{}
@@ -50,7 +50,7 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 		if e.service.config.Hosted == nil && d.Name == "create_hosted_project" || e.service.config.Hosted != nil && d.Name == "create_native_project" {
 			continue
 		}
-		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(d.Name, d.Annotations.ReadOnly)}); err == nil {
+		if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: projectToolScope(d.Name, d.Annotations.ReadOnly)}); err == nil {
 			defs = append(defs, d)
 		}
 	}
