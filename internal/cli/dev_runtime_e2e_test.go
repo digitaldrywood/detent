@@ -14,7 +14,10 @@ import (
 	"testing"
 	"time"
 
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/devruntime"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -318,6 +321,133 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for isolated runtime to stop")
+	}
+}
+
+func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
+	for _, outcome := range []string{"complete", "cancel", "required setup failure"} {
+		t.Run(outcome, func(t *testing.T) {
+			runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			output := &lockedBuffer{}
+			cfg := devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output)
+			if outcome == "required setup failure" {
+				t.Setenv("DETENT_TEST_STARTUP_TOKEN", "")
+				cfg.Global.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", TokenEnvironment: "DETENT_TEST_STARTUP_TOKEN"}
+			}
+			registry := project.NewRegistry()
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			canceled := make(chan struct{})
+			cleanupRelease := make(chan struct{})
+			var releaseOnce, cleanupOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			finishCleanup := func() { cleanupOnce.Do(func() { close(cleanupRelease) }) }
+			done := make(chan error, 1)
+			exited := make(chan struct{})
+			go func() {
+				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
+					managerDependencies: project.ManagerDependencies{Registry: registry},
+					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) {
+						close(entered)
+						select {
+						case <-release:
+						case <-ctx.Done():
+							close(canceled)
+							<-cleanupRelease
+						}
+					},
+				})
+				close(exited)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				unblock()
+				finishCleanup()
+				select {
+				case <-exited:
+				case <-time.After(10 * time.Second):
+					t.Error("timed out joining startup runtime")
+				}
+			})
+			dashboardURL := waitForIsolatedRuntimeURL(t, output, done)
+			select {
+			case <-entered:
+			case err := <-done:
+				t.Fatalf("startup exited before maintenance: %v", err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("maintenance did not start")
+			}
+			client := &http.Client{Timeout: time.Second}
+			response, err := client.Get(dashboardURL + "/health")
+			if err != nil {
+				t.Fatalf("health unavailable during blocked maintenance: %v", err)
+			}
+			var health struct {
+				Ready     bool   `json:"ready"`
+				Lifecycle string `json:"lifecycle"`
+			}
+			err = json.NewDecoder(response.Body).Decode(&health)
+			if closeErr := response.Body.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			if err != nil || response.StatusCode != http.StatusServiceUnavailable || health.Ready || health.Lifecycle != "starting" {
+				t.Fatalf("health during maintenance = %+v, status %d, error %v", health, response.StatusCode, err)
+			}
+			state := waitForDashboard(t, dashboardURL+"/api/v1/state", done)
+			var snapshot struct {
+				Refresh        telemetry.Refresh        `json:"refresh"`
+				LifetimeTotals telemetry.LifetimeTotals `json:"lifetime_totals"`
+			}
+			if err := json.Unmarshal([]byte(state), &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.Refresh.ReadinessStatus() != telemetry.RefreshStatusInitializing || snapshot.LifetimeTotals.Available {
+				t.Fatalf("startup state manufactured observations: %s", state)
+			}
+			if got := registry.List(); len(got) != 0 {
+				t.Fatalf("projects started before setup completed: %v", got)
+			}
+			switch outcome {
+			case "complete":
+				unblock()
+				waitForDashboard(t, dashboardURL+"/health", done)
+				waitForDashboardConditionWithRefresh(t, dashboardURL, dashboardURL+"/api/v1/state", done, "authorized mock work advances", func(body string) bool {
+					return boardStateCountFromBody(t, body, "Merging") == 1
+				})
+				cancel()
+			case "cancel":
+				cancel()
+				select {
+				case <-canceled:
+				case <-time.After(10 * time.Second):
+					t.Fatal("maintenance did not observe cancellation")
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("startup returned before maintenance joined: %v", err)
+				default:
+				}
+				finishCleanup()
+			case "required setup failure":
+				unblock()
+			}
+			select {
+			case err := <-done:
+				if outcome == "required setup failure" {
+					if err == nil || !strings.Contains(err.Error(), "DETENT_TEST_STARTUP_TOKEN is empty") || len(registry.List()) != 0 {
+						t.Fatalf("missing Hub authority admitted projects: %v", err)
+					}
+				} else if !errors.Is(err, context.Canceled) {
+					t.Fatalf("startup exit = %v, want cancellation", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("startup runtime did not exit")
+			}
+		})
 	}
 }
 
