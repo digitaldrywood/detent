@@ -2461,6 +2461,14 @@ with `sandbox` and extends existing claim compatibility to backend-probed tiers.
 Missing or withdrawn tier reports use the existing no-compatible-work result;
 no new reason code, recovery path, lane writer, or configuration key is introduced.
 Backend policy mapping fails closed instead of retrying as a native process.
+Linux Sandbox provider processes and enforcement probes use the existing child
+launch owner to remove inherited and ambient host capabilities before exec.
+This keeps non-root Sprite capabilities from breaking the bundled Codex sandbox
+and does not grant privileges, change the parent process, or weaken filesystem
+and network enforcement. NativeTrusted and ordinary commands keep their existing
+privilege policy. A required capability drop without support fails before launch;
+it never selects an unconfined fallback or charges an issue with an instance
+failure.
 Codex sandbox threads retain the selected `default_permissions` alongside the
 named profile in session configuration, so workspace-requirements reloads keep
 the same filesystem and limited command-network policy (#3753).
