@@ -93,6 +93,9 @@ func readRunner(ctx context.Context, db nativeQueryer, organization tracker.Orga
 	if err != nil {
 		return r, err
 	}
+	if err := applyUrgentRunnerRouting(ctx, db, &r); err != nil {
+		return r, err
+	}
 	r.Leases = []runnerauth.RunnerLease{}
 	rows, err := db.QueryContext(ctx, `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, '')
 FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
@@ -184,24 +187,12 @@ func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
 	return nil
 }
 
-func readRunnerRoutingSnapshot(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string) (runnerauth.RoutingSnapshot, error) {
-	snapshot := runnerauth.RoutingSnapshot{RunnerID: id}
-	var tags, settings, token string
-	err := db.QueryRowContext(ctx, `SELECT display_name, tags_json, state, capacity_limit, revision, routing_settings_json, token_id
-FROM runner_identities WHERE organization_id = ? AND id = ?`, organization, id).Scan(&snapshot.Routing.DisplayName, &tags, &snapshot.Routing.State,
-		&snapshot.Routing.CapacityLimit, &snapshot.Revision, &settings, &token)
-	if err != nil {
-		return snapshot, err
+func readRunnerRoutingSnapshot(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.RoutingSnapshot, error) {
+	runner, _, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), now)
+	if err == nil {
+		err = applyUrgentRunnerRouting(ctx, db, &runner)
 	}
-	if err := json.Unmarshal([]byte(tags), &snapshot.Routing.Tags); err != nil {
-		return snapshot, err
-	}
-	if err := unmarshalRunnerSettings(settings, &snapshot.Routing); err != nil {
-		return snapshot, err
-	}
-	snapshot.Routing.ProjectIDs, err = readRunnerProjects(ctx, db, token)
-	snapshot.Routing = snapshot.Routing.Normalized()
-	return snapshot, err
+	return runnerauth.RoutingSnapshot{RunnerID: id, Revision: runner.Revision, Routing: runner.Routing}, err
 }
 
 func (s *Service) getRunnerRouting(c echo.Context) error {

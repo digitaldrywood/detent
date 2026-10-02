@@ -641,6 +641,23 @@ the maximum issue-local sequence, so a terminal event on a less active issue
 still invalidates the board. `TestHostedWorkspaceEvents` and
 `TestHostedActivityIncludesChangesBelowIssueMaximum` cover these INV-1 boundaries.
 
+Urgent organization release requests (native #186) reuse runner administration,
+material-action approval, revision/idempotency receipts and routing delivery.
+The existing `draining` state excludes new claims while active leases remain
+renewable. Urgency is retained for offline and newly enrolled older runners;
+matching process evidence removes only the urgency-derived drain, preserving
+administrator-owned disabled or draining settings. Enrolled urgent delivery
+uses the runtime context asynchronously so heartbeat and lease renewal never
+wait for sessions to finish. The installed updater drains through its existing
+reservation and pins the selected published version through signature,
+provenance, preflight and rollback verification. Automatic check/apply opt-outs
+do not refuse an explicit urgent request. Urgency never cancels a session or
+introduces a state, reason code, timer or reconciliation loop.
+`TestUrgentRunnerUpdateFleet`, `TestUrgentUpdateOwnerKeepsHeartbeatsAvailable`,
+the urgent cases in `TestSchedulerEnrolledUpdate`,
+`TestServiceChoosesHubUpdateTarget` and `TestHostedMCPFleetControls` cover
+delivery, non-cancellation, restart evidence, pinning and retained authority.
+
 Effective runner capacity (native #90) uses the existing runner administration,
 native command receipt, routing heartbeat, selected global configuration writer
 and runtime reload owners. UI routing capacity edits and MCP/API capacity requests
@@ -2726,6 +2743,13 @@ retain their current authority and are never revoked by the floor.
 `TestNativeRunnerMinimumVersion`, `TestNativeClaimsEventsAndRestartWithoutGitHub`
 and `TestAppUpdates` cover admission boundaries, continued sessions and the
 shared refusal reason.
+
+Urgent Hub organization requests (#186) invoke that existing enrolled drain
+asynchronously with the runner's runtime context; claims stop while heartbeats,
+lease renewals and active sessions continue. The selected urgent release stays
+pinned through the drain, and existing startup evidence removes the derived
+routing drain. `TestUrgentRunnerUpdateFleet` and
+`TestUrgentUpdateOwnerKeepsHeartbeatsAvailable` cover this INV-3 reuse.
 The shutdown drain uses the existing drain-budget timer rather than the five-second
 cleanup context (#2795); shorter parent deadlines emit an error with both budgets.
 `TestShutdownDrainBudget` covers delayed drain acknowledgment, and the live-session

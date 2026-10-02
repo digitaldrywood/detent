@@ -203,7 +203,7 @@ func TestRunnerHomeRoutingCompatibility(t *testing.T) {
 	if len(stored.HomeProjectIDs) != 1 || stored.HomeDrySince == nil {
 		t.Fatalf("legacy update lost home settings: %#v", stored)
 	}
-	snapshot, err := readRunnerRoutingSnapshot(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID)
+	snapshot, err := readRunnerRoutingSnapshot(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
 	if err != nil || len(snapshot.Routing.HomeProjectIDs) != 1 {
 		t.Fatalf("heartbeat snapshot = %#v, %v", snapshot, err)
 	}

@@ -29,7 +29,7 @@ const fleetProtocolMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-2
 // principal attribution, and repeat enrollment/credential effects.
 func TestHostedMCPFleetControls(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
-		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "revoke identity heartbeat", "revoke identity revoked runner", "routing", "routing heartbeat", "routing revoked runner", "host", "capacity", "capacity heartbeat", "capacity revoked runner", "capacity reapply", "capacity reapply heartbeat", "capacity revoked grants", "update", "update revoked grants", "update stale", "ordinary", "revoked grants", "revoked original grants", "revoked original session", "cross organization", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
+		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "revoke identity heartbeat", "revoke identity revoked runner", "routing", "routing heartbeat", "routing revoked runner", "host", "capacity", "capacity heartbeat", "capacity revoked runner", "capacity reapply", "capacity reapply heartbeat", "capacity revoked grants", "update", "update revoked grants", "update stale", "urgent update", "urgent update revoked grants", "ordinary", "revoked grants", "revoked original grants", "revoked original session", "cross organization", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
 
 			t.Run(deployment+"/"+scenario, func(t *testing.T) {
 				var f hostedSecurityFixture
@@ -176,6 +176,9 @@ func TestHostedMCPFleetControls(t *testing.T) {
 					operatorSQL(t, f, "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(f.service.config.now().Add(-runnerauth.HeartbeatTimeout)), runnerID)
 				}
 				if scenario == "reads" {
+					if raw := call(operatortool.GetUrgentRunnerUpdate, map[string]any{}); !strings.Contains(string(raw), `"revision":0`) {
+						t.Fatalf("urgent release read=%s", raw)
+					}
 					if raw := call(operatortool.GetRunnerCapacity, map[string]any{"runner_id": runnerID}); len(raw) == 0 || !strings.Contains(string(raw), "runner_configuration_ceiling") {
 						t.Fatalf("capacity read=%s", raw)
 					}
@@ -262,6 +265,9 @@ func TestHostedMCPFleetControls(t *testing.T) {
 				case "update", "update revoked grants", "update stale":
 					name = operatortool.UpdateApply
 					args = map[string]any{"request_id": "fleet-effect", "runner_id": runnerID, "change": map[string]any{"expected_revision": 1, "expected_build_revision": updateEvidence.Revision, "service": "detent", "version": "1.2.4", "release": true}}
+				case "urgent update", "urgent update revoked grants":
+					name = operatortool.MarkUrgentRunnerUpdate
+					args = map[string]any{"request_id": "fleet-effect", "change": map[string]any{"expected_revision": 0, "version": "1.2.4"}}
 				case "capacity", "capacity heartbeat", "capacity revoked runner", "capacity revoked grants":
 
 					name = operatortool.UpdateRunnerCapacity
@@ -328,7 +334,7 @@ func TestHostedMCPFleetControls(t *testing.T) {
 							operatorSQL(t, f, "UPDATE hosted_sessions SET identity_json=json_set(identity_json,'$.organization_id','org_other') WHERE token_hash=?", sessionHash)
 						}
 					}
-					if scenario == "revoked grants" || scenario == "revoked original grants" || scenario == "capacity revoked grants" || scenario == "update revoked grants" {
+					if scenario == "revoked grants" || scenario == "revoked original grants" || scenario == "capacity revoked grants" || scenario == "update revoked grants" || scenario == "urgent update revoked grants" {
 
 						cachedPage = request(approver, http.MethodGet, "/chat/approval?connection_id="+info.ID, nil)
 						operatorSQL(t, f, "UPDATE hosted_project_grants SET manage_runner=0 WHERE user_id=?", user.identity.Subject)
@@ -337,7 +343,7 @@ func TestHostedMCPFleetControls(t *testing.T) {
 						operatorSQL(t, f, "UPDATE runner_identities SET revision=revision+1 WHERE id=?", runnerID)
 					}
 					reply := decision(receipt.ID, "confirm", "")
-					if scenario == "revoked grants" || scenario == "revoked original grants" || scenario == "capacity revoked grants" || scenario == "update revoked grants" {
+					if scenario == "revoked grants" || scenario == "revoked original grants" || scenario == "capacity revoked grants" || scenario == "update revoked grants" || scenario == "urgent update revoked grants" {
 						want := http.StatusForbidden
 						if scenario == "revoked original grants" {
 							want = http.StatusConflict
@@ -418,6 +424,11 @@ func TestHostedMCPFleetControls(t *testing.T) {
 				// Assert the application effect, not just the adapter receipt.
 				var effects int
 				switch name {
+				case operatortool.MarkUrgentRunnerUpdate:
+					urgent, err := readUrgentRunnerUpdate(t.Context(), f.service.database.db, tracker.OrganizationID(f.service.config.Hosted.OrganizationID))
+					if err != nil || urgent.Revision != 1 || urgent.Request == nil || !urgent.Request.Urgent || urgent.Request.Version != "1.2.4" {
+						t.Fatalf("urgent update=%+v error=%v", urgent, err)
+					}
 				case operatortool.CreateRunnerEnrollment:
 					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_enrollments").Scan(&effects); err != nil {
 						t.Fatal(err)

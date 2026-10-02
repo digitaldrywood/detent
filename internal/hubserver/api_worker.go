@@ -484,7 +484,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 		}
 		if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
-			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, query.NativeScope.organization, query.NativeScope.credential.Runner.RunnerID)
+			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, query.NativeScope.organization, query.NativeScope.credential.Runner.RunnerID, now)
 			if err != nil {
 				return tracker.Lease{}, err
 			}

@@ -23,10 +23,14 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		applyError  error
 		want        string
 		calls       int
+		urgent      bool
+		lastApplied string
 	}{
 		{name: "applied before restart", want: "applied", calls: 1},
 		{name: "detached replacement remains pending", pending: true, want: "uncertain", calls: 1},
 		{name: "restart requested", restart: true, want: "restart_requested", calls: 1},
+		{name: "urgent release bypasses discovery and automatic opt outs", urgent: true, restart: true, want: "restart_requested", calls: 1},
+		{name: "urgent release preserves a newer applied artifact awaiting restart", urgent: true, lastApplied: "1.2.5", want: "refused"},
 		{name: "stale observed build", stale: true, want: "refused"},
 		{name: "missing restart owner", unavailable: true, want: "refused"},
 		{name: "private refusal redacted", applyError: errors.New("/private/credentials/token=secret"), want: "refused", calls: 1},
@@ -36,12 +40,16 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "private_patched_source", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.2.4"}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, applyErr: test.applyError}
 			updater.applyStatus.ReplacementPending = test.pending
+			if test.urgent {
+				updater.checkStatus = Status{}
+			}
 			if test.applyError != nil {
 				updater.applyStatus.Action = ActionRefused
 			}
 			drains, restarts := 0, 0
 			config := SchedulerConfig{CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "scheduler.json"), Updater: updater, RunningBuild: running,
-				ReserveDrain: func(context.Context) (func(), error) { drains++; return func() {}, nil }, RequestRestart: func(string) bool { restarts++; return test.restart }, Now: func() time.Time { return now }}
+				LastAppliedVersion: test.lastApplied,
+				ReserveDrain:       func(context.Context) (func(), error) { drains++; return func() {}, nil }, RequestRestart: func(string) bool { restarts++; return test.restart }, Now: func() time.Time { return now }}
 			if test.unavailable {
 				config.RequestRestart = nil
 			}
@@ -54,6 +62,10 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 				t.Fatalf("initial evidence=%+v", observed)
 			}
 			request := runnerauth.UpdateRequest{RequestedAt: now, ID: "update-test", Service: "detent", ExpectedBuildRevision: observed.Revision, Version: "1.2.4", Release: true}
+			if test.urgent {
+				request.Urgent = true
+				request.ExpectedBuildRevision = ""
+			}
 			if test.stale {
 				request.ExpectedBuildRevision = strings.Repeat("e", 64)
 			}
@@ -67,6 +79,9 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			}
 			if test.calls == 1 && test.applyError == nil && restarts != 1 {
 				t.Fatalf("restart owner calls=%d", restarts)
+			}
+			if test.calls == 1 && (updater.applyOptions[0].Urgent != test.urgent || updater.applyOptions[0].ExpectedVersion != request.Version) {
+				t.Fatalf("lost selected release: %+v", updater.applyOptions[0])
 			}
 			raw, err := json.Marshal(observed)
 			if err != nil || strings.Contains(string(raw), "secret") || strings.Contains(string(raw), "/private") {

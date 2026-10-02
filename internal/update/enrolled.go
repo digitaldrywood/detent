@@ -53,7 +53,9 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		}
 		return s.enrolledObservation(running)
 	}
-	if !s.operationMu.TryLock() {
+	if request.Urgent {
+		s.operationMu.Lock()
+	} else if !s.operationMu.TryLock() {
 		return s.enrolledObservation(running)
 	}
 	defer s.operationMu.Unlock()
@@ -62,7 +64,16 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		return observed
 	}
 	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "refused", ObservedAt: s.cfg.Now().UTC()}
-	if request.Validate() != nil || !observed.Supported || request.Service != observed.Service || request.ExpectedBuildRevision != observed.Revision || request.Version != observed.AvailableVersion || !request.Release && !observed.Pending {
+	targetMatches := request.ExpectedBuildRevision == observed.Revision && request.Version == observed.AvailableVersion
+	if request.Urgent {
+		comparison, err := CompareVersions(request.Version, running.Version)
+		targetMatches = err == nil && comparison > 0
+		if applied := s.Status().LastAppliedVersion; applied != "" {
+			comparison, err = CompareVersions(request.Version, applied)
+			targetMatches = targetMatches && err == nil && comparison > 0
+		}
+	}
+	if request.Validate() != nil || !observed.Supported || request.Service != observed.Service || !targetMatches || !request.Release && !observed.Pending {
 		if request.Validate() != nil {
 			return observed
 		}
@@ -80,6 +91,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	opts := s.cfg.ApplyOptions
 	opts.ExpectedVersion = request.Version
 	opts.FromRelease = request.FromRelease
+	opts.Urgent = request.Urgent
 	applied, err := s.drainAndApplyWithOptionsLocked(ctx, opts)
 	if err != nil || applied.Action != ActionUpdated {
 		receipt.Status = "refused"

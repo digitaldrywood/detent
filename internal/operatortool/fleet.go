@@ -29,6 +29,8 @@ const (
 	FailureBreakerCanary     = "failure_breaker_canary"
 	UpdateApply              = "update_apply"
 	GetRunnerUpdate          = "get_runner_update"
+	GetUrgentRunnerUpdate    = "get_urgent_runner_update"
+	MarkUrgentRunnerUpdate   = "mark_urgent_runner_update"
 	ProgressCredit           = "issue_progress_credit"
 	AcknowledgeWarnings      = "acknowledge_staleness_warnings"
 	RecoverAttempt           = "recover_work_attempt"
@@ -85,6 +87,8 @@ func FleetCatalog() []Definition {
 	update := `{"type":"object","required":["expected_revision","expected_build_revision","service","version"],"properties":{"expected_revision":{"type":"integer","minimum":1},"expected_build_revision":{"type":"string","pattern":"^[a-f0-9]{64}$","maxLength":64},"service":{"type":"string","minLength":6,"maxLength":6,"enum":["detent"]},"version":` + boundedID + `,"release":{"type":"boolean"},"from_release":{"type":"boolean"}},"additionalProperties":false}`
 	add(UpdateApply, "Apply through the installed updater and coordinated restart; Cloud requires runner_id and an observed change. Requires operator approval; acceptance is not running-build evidence.", `"release":{"type":"boolean"},"from_release":{"type":"boolean"},"runner_id":`+boundedID+`,"change":`+update, "", false, true)
 	add(GetRunnerUpdate, "Read enrolled runner update support, requested/applied state and observed running build provenance.", `"runner_id":`+boundedID, `"runner_id"`, true, false)
+	add(GetUrgentRunnerUpdate, "Read the organization's urgent runner release and current revision.", "", "", true, false)
+	add(MarkUrgentRunnerUpdate, "Mark a release urgent for all older runners in this organization. Drains existing sessions before updating; requires operator approval.", `"change":{"type":"object","required":["expected_revision","version"],"properties":{"expected_revision":{"type":"integer","minimum":0},"version":`+boundedID+`},"additionalProperties":false}`, `"change"`, false, true)
 	add(ProgressCredit, "Credit the exact issue through the dashboard command; requires operator approval.", `"reference":`+boundedID, `"project_id","reference"`, false, true)
 	add(AcknowledgeWarnings, "Acknowledge active staleness warnings for this project.", `"warning_ids":`+boundedList, `"project_id","warning_ids"`, false, false)
 	add(RecoverAttempt, "Perform an existing recovery action on an exact attempt; requires operator approval.", `"attempt_id":{"type":"integer","minimum":1},"action":{"type":"string","maxLength":256,"enum":["inspect","abandon","retry_fresh","retry_resume","cleanup_workspace"]},"reason":{"type":"string","maxLength":280}`, `"project_id","attempt_id","action"`, false, true)

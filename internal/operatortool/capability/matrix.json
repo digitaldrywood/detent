@@ -35962,6 +35962,185 @@
       "status": "implemented",
       "coverage": "TestSchedulerEnrolledUpdate; TestSchedulerEnrolledInterruptedReceipt; TestRunnerUpdateApplication; update cases in TestHostedMCPFleetControls; TestRunnerCapacityHeartbeat; TestRunnerRunningBuildProvenance; TestFleetArgumentBoundary.",
       "decision": "Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#93 exposes the existing installed runner updater. Missing/old owners are unavailable; only matching fresh post-start build evidence establishes running. Private patched source is not automatically an approved release."
+    },
+    {
+      "id": "hubserver.get_urgent_runner_update",
+      "summary": "Read the organization urgent runner release",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/runner_enrollment.go",
+          "kind": "route",
+          "definition": "e.GET(urgentRunnerUpdatePath, s.getUrgentRunnerUpdate, admin) [route=\"/api/v2/organizations/:organization/runner-update/urgent\"]",
+          "occurrence": 1,
+          "line": 0,
+          "method": "GET",
+          "path": "urgentRunnerUpdatePath",
+          "handler": "s.getUrgentRunnerUpdate",
+          "resolved_path": "/api/v2/organizations/:organization/runner-update/urgent"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project",
+        "credential_scope": "current authenticated runner administrator; workers receive no configuration administration authority",
+        "project_grant": "current all-project runner grants, checked again before execution and replay",
+        "ownership": "Current organization and its urgent runner release; the existing runner routing and installed updater retain session, lease, artifact and restart ownership."
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Current installed owner protocol/readiness, heartbeat freshness, exact runner/build revision and selected configured release version. No paths, artifact URLs, commands, environment or credentials."
+      ],
+      "confirmation": [
+        {
+          "when": "read",
+          "class": "none"
+        }
+      ],
+      "application": "Service.readUrgentRunnerUpdateCommand",
+      "extraction": "MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.",
+      "tool": {
+        "set": "runs_fleet",
+        "name": "get_urgent_runner_update",
+        "arguments": "No arguments.",
+        "result": "Organization urgent release revision and typed request. Queued urgency is not applied or running evidence.",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3343",
+      "status": "implemented",
+      "coverage": "TestUrgentRunnerUpdateFleet; TestHostedMCPFleetControls; TestFleetArgumentBoundary; TestUrgentUpdateOwnerKeepsHeartbeatsAvailable; TestSchedulerEnrolledUpdate; TestServiceChoosesHubUpdateTarget.",
+      "decision": "Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#186 extends the runner update application owned by this inventory child. Reuse the existing draining state and installed updater drain. Urgency never cancels sessions; active leases remain renewable and matching startup evidence removes only the derived drain."
+    },
+    {
+      "id": "hubserver.mark_urgent_runner_update",
+      "summary": "Mark a release urgent and drain older runners without cancelling sessions",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/runner_enrollment.go",
+          "kind": "route",
+          "definition": "e.PUT(urgentRunnerUpdatePath, s.markUrgentRunnerUpdate, admin) [route=\"/api/v2/organizations/:organization/runner-update/urgent\"]",
+          "occurrence": 1,
+          "line": 0,
+          "method": "PUT",
+          "path": "urgentRunnerUpdatePath",
+          "handler": "s.markUrgentRunnerUpdate",
+          "resolved_path": "/api/v2/organizations/:organization/runner-update/urgent"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project",
+        "credential_scope": "current authenticated runner administrator; workers receive no configuration administration authority",
+        "project_grant": "current all-project runner grants, checked again before execution and replay",
+        "ownership": "Current organization and its urgent runner release; the existing runner routing and installed updater retain session, lease, artifact and restart ownership."
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Current installed owner protocol/readiness, heartbeat freshness, exact runner/build revision and selected configured release version. No paths, artifact URLs, commands, environment or credentials."
+      ],
+      "confirmation": [
+        {
+          "when": "selected runner update and coordinated restart",
+          "class": "operator"
+        }
+      ],
+      "application": "Service.markUrgentRunnerUpdateCommand / existing routing delivery / installed enrolled drain updater",
+      "extraction": "MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.",
+      "tool": {
+        "set": "runs_fleet",
+        "name": "mark_urgent_runner_update",
+        "arguments": "request_id and change containing expected_revision and published semantic version. API requires confirm=true and idempotency_key.",
+        "result": "Organization urgent release revision and typed request. Queued urgency is not applied or running evidence.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": true,
+          "idempotent": true,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3343",
+      "status": "implemented",
+      "coverage": "TestUrgentRunnerUpdateFleet; TestHostedMCPFleetControls; TestFleetArgumentBoundary; TestUrgentUpdateOwnerKeepsHeartbeatsAvailable; TestSchedulerEnrolledUpdate; TestServiceChoosesHubUpdateTarget.",
+      "decision": "Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#186 extends the runner update application owned by this inventory child. Reuse the existing draining state and installed updater drain. Urgency never cancels sessions; active leases remain renewable and matching startup evidence removes only the derived drain."
     }
   ]
 }
