@@ -33,8 +33,8 @@ automatically.
 ## Promotion
 
 The scheduled GitHub Actions workflow validates one pinned `develop` SHA every
-hour when it has new commits since the last validated tag. A green run posts
-release evidence and cuts an annotated patch version tag on that SHA. Production
+hour, even if that commit already carries a release-provenance tag. A green run
+posts release evidence and cuts an annotated patch version tag on that SHA. Production
 promotion is deliberate and separate from the scheduled validation. Do not
 merge `develop` to `main` automatically.
 

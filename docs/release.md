@@ -2,10 +2,11 @@
 
 [Back to README](../README.md#documentation)
 
-GitHub Actions runs the complete suite hourly on a pinned `develop` commit
-when there are new commits since the last validated tag. The scheduled workflow
-uses the default branch's cron. It does not run on pull requests. A manual
-dispatch can force exactly one job to fail to verify issue filing and recovery.
+GitHub Actions runs the complete suite hourly on a pinned `develop` commit.
+The scheduled workflow uses the default branch's cron. Scheduled and manual
+runs validate the pinned current `develop` commit even if it already has a
+release-provenance tag. It does not run on pull requests. A manual dispatch can
+force exactly one job to fail to verify diagnostic filing.
 
 A green run posts a `scheduled-full-ci` commit status, cuts an annotated patch
 version tag on the validated commit, and dispatches the release workflow. The
@@ -19,11 +20,33 @@ Every push to `develop` still deploys to staging, whether the scheduled full
 suite passes or fails. Staging is an integration environment, not a production
 release. Production installations and releases use validated version tags.
 
-A failed scheduled job opens or updates one fingerprinted Todo hotfix issue.
-The next green run closes the open scheduled-failure issues. The workflow skips
-its full suite when the current development commit already has a validated
-tag. The full suite includes the checks that previously ran on pull requests,
-including generated sources, migrations, frontend verification, race shards,
+A failed scheduled job reports through the existing native scheduled reporter
+for `digitaldrywood/detent` and its selected Detent Cloud project, following
+[deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting).
+New diagnostics enter Backlog. Reproducible source or test failures blocking
+deployment or the scheduled validated release require at least High priority.
+The reporter matches open fingerprints and imported occurrences before filing,
+appends occurrences to matching work, and raises unset, Normal or Low priority
+through the existing expected-revision priority owner, preserving High and
+Urgent. Origin stamps, stable problem fingerprints, pinned commit, run, attempt,
+job and source evidence, occurrence replay identity, and imported history remain
+durable. Priority does not authorize admission, remove migration/operator holds,
+or change existing tracker lanes.
+
+Unknown setup, network, backend and protocol failures remain instance-owned
+intake; they authorize no source repair and consume no issue failure allowance.
+A historical pinned failure does not prove that the current head fails or
+staging is down. A green run appends validation evidence through the same native
+comment owner; it does not close issues or establish repair, landing, review
+approval or completion. Other trackers and projects retain their chosen
+reporting priority, admission and validation policies.
+
+Ordinary Detent merging never waits for the scheduled suite, blocking CI or a
+local-gate status. The repository's configured local gate is `true` and publishes
+no validation status; focused diagnostics remain available. Validated release
+tags still require all configured scheduled jobs to succeed. The full suite
+includes the checks that previously ran on pull requests, including generated
+sources, migrations, frontend verification, race shards,
 security, browser visual tests, portability, and packaging snapshots.
 
 The release workflow checks the annotated tag against the tagged full commit
@@ -81,8 +104,10 @@ owner are serialized.
 The Makefile pins sqlc in `SQLC_VERSION`; `make generate`, `make sqlc`, and
 `make setup` use that version. Commit regenerated SQL output with query changes.
 `make check-generated` checks SQL output with `sqlc diff` and checks the generated
-configuration reference without rewriting either. The local `make check-fast` target runs it in each PR worktree, and the
-scheduled full suite runs it on the pinned `develop` commit.
+configuration reference without rewriting either. The scheduled full suite
+runs it on the pinned `develop` commit. Local checks remain optional diagnostics
+under [AGENTS.md validation](../AGENTS.md#validation), without a mandatory
+PR-worktree gate or local status publication.
 GoReleaser builds committed Go sources and regenerates the conversation client
 through `make app` from that exact tag's npm lockfile using Node 24. Conversation
 output is ignored in feature commits. Staging and private operator builds use
