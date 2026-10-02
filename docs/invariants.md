@@ -404,6 +404,17 @@ to attach remotely; this change does not restart or replace them.
 `TestConversationWorkerBind`, `TestWorkItemConversationLookup` and both origins
 in `TestConversationRunnerExecutesLiveTurns` cover binding, visibility,
 duplicate refusal, actual selected-turn delivery and preserved comments.
+Ordinary observational binding preserves the Code/Rework native completion owner
+(#165). The fenced bind response derives continuation intent from existing native
+link receipts and explicit Continue messages, preserving initial interactive work
+and lease-lost continuation ownership even after the prior attempt's Continue
+settles as interrupted or unknown; replacement binding does not replay that
+control. Registered-runner turn-event POSTs reuse
+`events` authorization and the unchanged scoped, runner/lease/fence/attempt owner
+checks. `TestNativeRunnerOpensChangeAndLeavesDispatch` exercises successful binding,
+host finalization, authenticated transcript events and exact-head version publication;
+`TestConversationRunnerExecutesLiveTurns` preserves interactive and explicit Continue
+ownership, and `TestConversationWorkerTurnEvents` exercises registered-runner middleware.
 This consolidates existing conversation/control owners (INV-3); no lane writer,
 recovery loop or second channel is introduced.
 
@@ -1207,7 +1218,7 @@ preserves all prior evidence; rollback refuses to discard new event types.
 
 Native completion (#152) owns recorded publication results instead of falling
 through to legacy pull-request remote truth. A successful nil native result stays
-with existing dirty-source, conversation and drain continuation owners; it does
+with existing dirty-source, interactive conversation and drain continuation owners; it does
 not replay an immutable tracker-unavailable completion. A version missing without
 a diagnostic remains an incomplete handoff. Clean preserved rework heads reuse
 the genuine current immutable Change version only under its current approved

@@ -25,6 +25,10 @@ func TestRunnerOperationAllowed(t *testing.T) {
 		{name: "claims with claim", method: http.MethodPost, path: nativeBase + "/claims", operations: all, want: true},
 		{name: "work item change is collaboration", method: http.MethodPost, path: nativeBase + "/work-items/:item/changes", operations: []string{runnerauth.Collaborate}, want: true},
 		{name: "item events need events", method: http.MethodPost, path: nativeBase + "/work-items/:item/events", operations: []string{runnerauth.Collaborate}},
+		{name: "conversation events with events", method: http.MethodPost, path: nativeBase + "/conversations/:conversation/turn-events", operations: []string{runnerauth.Events}, want: true},
+		{name: "conversation events without events", method: http.MethodPost, path: nativeBase + "/conversations/:conversation/turn-events", operations: []string{runnerauth.Collaborate}},
+		{name: "conversation events wrong method", method: http.MethodDelete, path: nativeBase + "/conversations/:conversation/turn-events", operations: all},
+		{name: "conversation command remains forbidden", method: http.MethodPost, path: nativeBase + "/conversations/:conversation/commands", operations: all},
 		{name: "heartbeat", method: http.MethodPost, path: nativeBase + "/machines/:machine/heartbeat", operations: []string{runnerauth.Heartbeat}, want: true},
 		{name: "outside the native base", method: http.MethodPost, path: "/api/v2/organizations/:organization/members", operations: all},
 	} {

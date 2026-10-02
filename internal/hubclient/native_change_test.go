@@ -95,7 +95,7 @@ func newNativeChangeHubWithStates(t *testing.T, review string, states []tracker.
 
 func newNativeChangeHubTransport(t *testing.T, review string, states []tracker.NativeState, inMemory bool, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	t.Helper()
-	config := hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(nativeChangeAdminToken)}
+	config := hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}
 	if len(repositoryBackend) > 0 {
 		config.ReconcileBackend = repositoryBackend[0]
 	}
@@ -481,7 +481,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			if test.conversation {
 				owner := execution.(*nativeExecution)
 				owner.mu.Lock()
-				owner.conversation = true
+				owner.conversationContinuation = true
 				owner.mu.Unlock()
 			}
 			finish := execution.Finish
@@ -663,6 +663,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
 		name        string
+		interactive bool
 		hosted      bool
 		rework      bool
 		formal      bool
@@ -679,7 +680,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		wantChanges int
 	}{
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
+		{name: "initial interactive code stays conversation owned", interactive: true, staged: true, wantNone: true, wantState: "In Progress"},
 		{name: "host commits staged code", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
+		{name: "ordinary staged code reaches landing", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "hosted template commits reach Human Review", hosted: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "hosted template without commits ends", hosted: true, wantState: "Done"},
 		{name: "no commits", wantState: "Done"},
@@ -714,11 +717,41 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 			}
 			if test.land {
-				states[3].Transitions = append(states[3].Transitions, "Merging")
-				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "Rework"}})
+				state := 1
+				if test.rework {
+					state = 3
+				}
+				states[state].Transitions = append(states[state].Transitions, "Merging")
+				transitions := []string{"Done", review}
+				if test.rework {
+					transitions = append(transitions, "Rework")
+				}
+				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: transitions})
 			}
 			h := newNativeChangeHubTransport(t, review, states, true)
-			issue := h.createInProgress(t, "Update the README")
+			var issue connector.Issue
+			if test.interactive {
+				var created struct {
+					Conversation struct {
+						ID string `json:"id"`
+					} `json:"conversation"`
+				}
+				if err := h.admin.client.request(t.Context(), http.MethodPost, h.admin.base()+"/conversations", map[string]any{"key": "interactive", "title": "Interactive"}, &created); err != nil {
+					t.Fatal(err)
+				}
+				var linked struct {
+					Issue tracker.NativeIssue `json:"issue"`
+				}
+				if err := h.admin.client.request(t.Context(), http.MethodPost, h.admin.base()+"/conversations/"+created.Conversation.ID+"/link", map[string]any{"key": "link", "share_history": true, "issue": map[string]any{"title": "Update the README", "description": "Interactive work"}}, &linked); err != nil {
+					t.Fatal(err)
+				}
+				issue = connector.Issue{ID: string(linked.Issue.WorkItemID), Identifier: "native#1", Title: linked.Issue.Title}
+				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "In Progress"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				issue = h.createInProgress(t, "Update the README")
+			}
 			source := nativeChangeSourceRepo(t)
 			remote := filepath.Join(t.TempDir(), "origin.git")
 			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
@@ -841,6 +874,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			h.failChanges.failVersions.Store(test.failVersion)
 			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			if !provider.bound {
+				t.Fatal("native worker did not bind its conversation")
+			}
 			if test.signingFail {
 				if !errors.Is(err, runner.ErrWorkspacePreparation) || errors.Is(err, workspace.ErrMergeResolutionInvalid) || result.NativeChange != nil {
 					t.Fatalf("host signing failure lost identity or published: result=%+v, error=%v", result.NativeChange, err)
@@ -887,6 +923,37 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 				}
 			}
+			var transcript struct {
+				Conversation struct {
+					Execution struct {
+						AttemptID *string `json:"attempt_id"`
+					} `json:"execution"`
+				} `json:"conversation"`
+				Messages []struct {
+					Text      string  `json:"text"`
+					AttemptID *string `json:"attempt_id"`
+					TurnID    *string `json:"turn_id"`
+					Actor     struct {
+						Kind string `json:"kind"`
+					} `json:"actor"`
+				} `json:"messages"`
+			}
+			if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/conversation", nil, &transcript); err != nil {
+				t.Fatal(err)
+			}
+			attemptID := executionID("attempt", string(execution.Recovery().Lease.ID))
+			if transcript.Conversation.Execution.AttemptID == nil || *transcript.Conversation.Execution.AttemptID != attemptID {
+				t.Fatalf("conversation lost attempt identity: %+v", transcript)
+			}
+			found := false
+			for _, message := range transcript.Messages {
+				if message.Text == "Finished the native work" {
+					found = message.AttemptID != nil && *message.AttemptID == attemptID && message.TurnID != nil && *message.TurnID == "turn-1" && message.Actor.Kind == "runner"
+				}
+			}
+			if !found {
+				t.Fatalf("conversation lost authenticated worker events: %+v", transcript.Messages)
+			}
 			change := result.NativeChange
 			if test.failVersion {
 				if change == nil || change.ChangeID != expected.Change.ID || change.VersionID != "" || change.Reviewed || !strings.Contains(change.VersionError, "version publication unavailable") {
@@ -931,12 +998,23 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
 					t.Fatalf("read stored diff: %v", err)
 				}
-				if stored.HeadSHA != change.HeadSHA || !test.land && stored.BaseSHA != change.BaseSHA || !nativeDiffHas(stored.Files, map[bool]string{false: "CHANGE.md", true: "PRESERVED.md"}[test.land]) {
+				if stored.HeadSHA != change.HeadSHA || !test.land && stored.BaseSHA != change.BaseSHA || !nativeDiffHas(stored.Files, map[bool]string{false: "CHANGE.md", true: "PRESERVED.md"}[test.land && test.rework]) {
 					t.Fatalf("stored diff = %#v, reported %#v", stored, change)
 				}
 				head, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "rev-parse", "HEAD").Output()
 				if err != nil || strings.TrimSpace(string(head)) != stored.HeadSHA {
 					t.Fatalf("published head is not finalized Git HEAD: %s, %v", head, err)
+				}
+				if !test.rework || !test.land {
+					detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					version := detail.Versions[len(detail.Versions)-1]
+					owner := execution.(*nativeExecution).data
+					if version.ID != change.VersionID || version.ID != detail.Change.CurrentVersion || version.HeadSHA != stored.HeadSHA || version.BaseSHA != stored.BaseSHA || version.AttemptID != attemptID || version.RunID != owner.RunID || version.PolicyID != owner.PolicyID {
+						t.Fatalf("published version lost finalized attempt/head/policy identity: %+v", version)
+					}
 				}
 				if test.rework {
 					detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
@@ -972,8 +1050,12 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err != nil || result.NativeLanding == nil || !result.NativeLanding.Landed || result.NativeLanding.VersionID != change.VersionID || result.NativeLanding.HeadSHA != change.HeadSHA || h.state(t, issue.ID) != "Done" {
 					t.Fatalf("preserved head was not genuinely landed: %+v, %v", result.NativeLanding, err)
 				}
-				content, err := exec.CommandContext(t.Context(), "git", "--git-dir", remote, "show", "main:PRESERVED.md").Output()
-				if err != nil || string(content) != "reviewed source\n" || provider.calls != 1 {
+				path, expectedContent := "CHANGE.md", "changed\n"
+				if test.rework {
+					path, expectedContent = "PRESERVED.md", "reviewed source\n"
+				}
+				content, err := exec.CommandContext(t.Context(), "git", "--git-dir", remote, "show", "main:"+path).Output()
+				if err != nil || string(content) != expectedContent || provider.calls != 1 {
 					t.Fatalf("landing did not publish preserved source without another coding turn: %q, %v, calls=%d", content, err, provider.calls)
 				}
 			}
@@ -1002,12 +1084,16 @@ type committingAgent struct {
 	prompt    string
 	workspace string
 	calls     int
+	bound     bool
 }
+
+func (*committingAgent) SupportsLiveControl() bool { return true }
 
 func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	a.calls++
 	a.prompt = request.Prompt
 	a.workspace = request.Workspace
+	a.bound = request.ConversationControl != nil
 	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-native", TurnID: "turn-1"}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
@@ -1029,6 +1115,9 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 				return runner.AgentTurnResult{}, errors.Join(err, errors.New(string(output)))
 			}
 		}
+	}
+	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ThreadID: "thread-native", TurnID: "turn-1", Delta: "Finished the native work", ItemID: "result"}); err != nil {
+		return runner.AgentTurnResult{}, err
 	}
 	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnCompleted, ThreadID: "thread-native", TurnID: "turn-1", Status: "completed"}); err != nil {
 		return runner.AgentTurnResult{}, err

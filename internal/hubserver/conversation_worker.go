@@ -111,6 +111,7 @@ type conversationBindRequest struct {
 
 type conversationBindResponse struct {
 	ConversationID string `json:"conversation_id"`
+	Continuation   bool   `json:"continuation"`
 	// Preferences are the conversation's turn preferences. The runner
 	// applies the explicit ones to its turn request and leaves "auto" to the
 	// project's configured defaults (decisions section 14).
@@ -684,6 +685,15 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 			return err
 		}
 		previous := record.Execution
+		operation := nativeOperation(scope, "POST", "/conversations/"+record.ID+"/link")
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+SELECT 1 FROM native_commands WHERE organization_id = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ')
+) OR EXISTS (
+SELECT 1 FROM conversation_messages WHERE conversation_id = ? AND role = 'user' AND kind = 'continue'
+AND (delivery IN ('saved', 'queued', 'sending') OR (attempt_id = ? AND ?))
+)`, scope.organization, operation, operation, operation, record.ID, previous.Owner.AttemptID, previous.Status != conversation.ExecutionCompleted).Scan(&response.Continuation); err != nil {
+			return err
+		}
 		if !previous.Status.Terminal() && previous.Owner.AttemptID != "" && previous.Owner.AttemptID != request.AttemptID {
 			// The earlier owner lost its lease without unbinding; the new
 			// claim proves that. Settle it before the new attempt takes over.

@@ -23,7 +23,7 @@ import (
 const maxNativeChangeTitle = 512
 
 func (e *nativeExecution) ownsChangeCompletion() bool {
-	return !e.conversation && (e.role == runner.RoleCode || e.role == runner.RoleRework) &&
+	return !e.conversationContinuation && (e.role == runner.RoleCode || e.role == runner.RoleRework) &&
 		e.worktreeState != "dirty"
 }
 
