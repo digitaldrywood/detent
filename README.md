@@ -3,8 +3,17 @@
 # Detent
 
 [![CI](https://github.com/digitaldrywood/detent/actions/workflows/ci.yml/badge.svg)](https://github.com/digitaldrywood/detent/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/digitaldrywood/detent)](LICENSE)
+[![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/digitaldrywood/detent?include_prereleases&sort=semver)](https://github.com/digitaldrywood/detent/releases)
+
+## License
+
+[FSL-1.1-ALv2](LICENSE) permits reading, self-hosting, internal use, modification,
+and redistribution under its terms. It prohibits offering Detent as a competing
+commercial product or service during the first two years after each release.
+Each release becomes available under Apache License 2.0 after two years.
+Earlier MIT-licensed tags remain under the MIT License as published with those
+tags. Learn more at [fsl.software](https://fsl.software/).
 
 **[detent.build](https://detent.build)** — what Detent is, how it works, and how
 to install it.

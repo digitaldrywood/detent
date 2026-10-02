@@ -2,6 +2,17 @@
 
 Detent is a Go agent orchestrator delivered as a single binary. Keep changes small, scoped to the issue or pull request, and aligned with the existing project conventions.
 
+## Contributor License Agreement (CLA)
+
+The CLA bot asks first-time contributors to read and sign the [individual
+Contributor License Agreement](CLA.md) on their first pull request. Sign by
+replying to that pull request with this exact phrase:
+
+> I have read the CLA Document and I hereby sign the CLA
+
+The bot records your signature, so you do not need to sign again on later pull
+requests.
+
 ## Prerequisites
 
 - Go 1.26.
