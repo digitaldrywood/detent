@@ -161,3 +161,77 @@ caches; no per-project cache choice exists (INV-12). The existing reaper trim
 bounds the Go build cache using `global.cache`. `detent doctor` reports the native
 paths, current sizes, and last completed reaper trim per project, and warns about
 remaining Detent-owned cache roots without modifying them.
+
+## Go profiling
+
+Profiling is disabled by default. Add this top-level block to the local
+orchestrator or Cloud runner's `global.yaml`:
+
+```yaml
+profiling:
+  listen_addr: "127.0.0.1:6060"
+  capture:
+    enabled: true
+    interval: 15m
+    cpu_duration: 30s
+    dir: ""
+    max_age: 168h
+    max_bytes: 1GB
+```
+
+For a Hub, put the same block in its `--hosted-config` file, or select a file
+with `detent --config /etc/detent/profiling.yaml hub serve ...`. A standalone
+profiling file needs only the block above. An explicit `--config` takes
+precedence over `--hosted-config` for profiling. These files are watched;
+enabling, disabling, or changing profiling requires no restart and leaves
+running agent sessions in place. Invalid edits are logged and retain the
+previous profiling settings. Listener startup and capture failures are logged
+without stopping the process.
+
+Set `listen_addr: ""` to disable live endpoints and `capture.enabled: false`
+to disable periodic recording. These switches are independent. Only literal
+loopback IPs and `localhost` are accepted; `localhost` binds to `127.0.0.1`
+without DNS resolution. The listener uses its own HTTP server and exposes
+`/debug/pprof/`, never the dashboard or public Hub listener. Use distinct ports
+for processes on the same host. Live profiles can be read with:
+
+```sh
+go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+go tool pprof 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
+```
+
+With `dir` empty, bundles land beside the instance database under
+`profiles/orchestrator`, `profiles/runner` for a Hub-connected runner, or
+`profiles/hub` for the Hub. An explicit `dir` replaces this path. Directories
+created by the profiler have mode `0700` and profiles mode `0600`. Each UTC
+timestamped bundle contains `cpu.pprof`, `heap.pprof`, `allocs.pprof`,
+`goroutine.pprof`, `mutex.pprof`, and `block.pprof` in binary pprof format.
+The first capture starts after one interval. CPU recording lasts for
+`cpu_duration`, which must be positive and no longer than `interval`.
+Mutex sampling records approximately one in 100 contention events; block
+sampling uses a 10 ms rate while capture is enabled. Both rates reset to zero
+when capture is disabled. Heap and allocs retain Go's default sampling rate.
+Go permits one CPU recording at a time; if a live recording overlaps a
+scheduled capture, the scheduled attempt logs the conflict and retries at the
+next interval.
+
+Retention runs once at startup, when capture starts, and after each attempt.
+It removes bundles older than `max_age`, then removes oldest bundles until
+their total file size fits `max_bytes`. Interrupted `.capture-` directories count toward retention;
+other files and directories are left alone. Both limits must be positive.
+Sizes accept integer bytes or `KB`, `MB`, `GB` (decimal) and `KiB`, `MiB`,
+`GiB` (binary). An individual bundle larger than the limit is removed after
+capture. Copy bundles elsewhere before changing retention limits if they need
+to be preserved.
+
+Compare captures using the binary from the recorded release:
+
+```sh
+go tool pprof -diff_base profiles/orchestrator/20261001T120000.000000000Z/cpu.pprof \
+  ./detent profiles/orchestrator/20261001T130000.000000000Z/cpu.pprof
+```
+
+Use the corresponding heap, allocs, mutex, or block files for those comparisons.
+In pprof, `top` shows the largest differences and `list <function>` shows source
+attribution. Allocations and contention profiles accumulate since process
+startup; compare captures from the same process for interval differences.

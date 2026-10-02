@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -116,6 +117,17 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 			if err != nil {
 				return err
 			}
+			profilingPath := hostedConfigPath
+			if flagChanged(cmd, "config") {
+				profilingPath, err = cmd.Flags().GetString("config")
+				if err != nil {
+					return err
+				}
+			}
+			profiles, err := readProfilingConfig(profilingPath)
+			if err != nil {
+				return err
+			}
 			if strings.TrimSpace(databasePath) == "" {
 				return NewValidationError("hub database path is required", "Run detent hub serve --database /path/to/hub.db.", nil)
 			}
@@ -179,6 +191,8 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 					workspaces = &workspaceConfig
 				}
 			}
+			stopProfiling := startWatchedProfiling(cmd.Context(), profiles, profilingPath, filepath.Dir(databasePath), "hub", logger)
+			defer stopProfiling()
 			return run(cmd.Context(), hubserver.Config{
 				Hosted:                     hosted,
 				Conversation:               conversation,

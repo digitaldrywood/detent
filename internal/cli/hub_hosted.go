@@ -12,9 +12,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/profiling"
 )
 
 type hostedFileConfig struct {
+	Profiling                profiling.Config              `yaml:"profiling,omitempty"`
 	Billing                  *hostedBillingFileConfig      `yaml:"billing"`
 	EntitlementAdministrator string                        `yaml:"entitlement_administrator"`
 	EntitlementAdminTokenEnv string                        `yaml:"entitlement_admin_token_env"`
@@ -122,6 +124,9 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubser
 	var config hostedFileConfig
 	if err := decoder.Decode(&config); err != nil {
 		return nil, errors.New("hosted configuration is invalid")
+	}
+	if err := config.Profiling.Validate(); err != nil {
+		return nil, err
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {

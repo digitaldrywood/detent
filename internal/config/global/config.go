@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activehours"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	intakeconfig "github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/profiling"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -76,27 +77,28 @@ type PathResolution struct {
 }
 
 type Config struct {
-	Path                  string          `yaml:"-"`
-	APIVersion            string          `yaml:"apiVersion"`
-	Kind                  string          `yaml:"kind"`
-	Env                   string          `yaml:"env,omitempty"`
-	LogLevel              string          `yaml:"log_level,omitempty"`
-	LogMaxSizeBytes       *int            `yaml:"log_max_size_bytes,omitempty"`
-	LogMaxBackups         *int            `yaml:"log_max_backups,omitempty"`
-	GitHubToken           string          `yaml:"github_token,omitempty"`
-	APIToken              string          `yaml:"api_token,omitempty"`
-	TrustLoopbackPeerRead bool            `yaml:"trust_loopback_peer_read,omitempty"`
-	DashboardAccess       DashboardAccess `yaml:"dashboard_access,omitempty"`
-	Client                HubClient       `yaml:"client,omitempty"`
-	Ops                   Ops             `yaml:"ops,omitempty"`
-	Port                  *int            `yaml:"port,omitempty"`
-	InstanceName          string          `yaml:"instance_name,omitempty"`
-	ServiceName           string          `yaml:"service_name,omitempty"`
-	Notifications         Notifications   `yaml:"notifications,omitempty"`
-	Update                Update          `yaml:"update,omitempty"`
-	Auth                  Auth            `yaml:"auth,omitempty"`
-	Global                Settings        `yaml:"global"`
-	Projects              []Project       `yaml:"projects"`
+	Path                  string           `yaml:"-"`
+	APIVersion            string           `yaml:"apiVersion"`
+	Kind                  string           `yaml:"kind"`
+	Env                   string           `yaml:"env,omitempty"`
+	LogLevel              string           `yaml:"log_level,omitempty"`
+	LogMaxSizeBytes       *int             `yaml:"log_max_size_bytes,omitempty"`
+	LogMaxBackups         *int             `yaml:"log_max_backups,omitempty"`
+	GitHubToken           string           `yaml:"github_token,omitempty"`
+	APIToken              string           `yaml:"api_token,omitempty"`
+	TrustLoopbackPeerRead bool             `yaml:"trust_loopback_peer_read,omitempty"`
+	DashboardAccess       DashboardAccess  `yaml:"dashboard_access,omitempty"`
+	Client                HubClient        `yaml:"client,omitempty"`
+	Ops                   Ops              `yaml:"ops,omitempty"`
+	Port                  *int             `yaml:"port,omitempty"`
+	InstanceName          string           `yaml:"instance_name,omitempty"`
+	ServiceName           string           `yaml:"service_name,omitempty"`
+	Notifications         Notifications    `yaml:"notifications,omitempty"`
+	Profiling             profiling.Config `yaml:"profiling,omitempty"`
+	Update                Update           `yaml:"update,omitempty"`
+	Auth                  Auth             `yaml:"auth,omitempty"`
+	Global                Settings         `yaml:"global"`
+	Projects              []Project        `yaml:"projects"`
 }
 
 type DashboardAccess struct {
@@ -813,6 +815,9 @@ func (c Config) Validate(opts ...Option) error {
 		problems = append(problems, "api_token: must be a single line")
 	}
 	problems = append(problems, c.Notifications.Validate()...)
+	if err := c.Profiling.Validate(); err != nil {
+		problems = append(problems, err.Error())
+	}
 	problems = append(problems, dashboardAccessProblems(c.DashboardAccess)...)
 	problems = append(problems, c.Client.Validate()...)
 	if c.Update.CheckIntervalHours < 0 {
@@ -2083,6 +2088,13 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	var profiles profiling.Config
+	if attrs["profiling"] != nil {
+		if err := decodeYAMLValue(attrs["profiling"], &profiles); err != nil {
+			return Config{}, buildValidationError(path, fmt.Errorf("profiling: %w", err))
+		}
+	}
+	profiles = profiles.Normalized()
 	port, err := optionalIntPointer(attrs["port"], "port")
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -2127,6 +2139,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		InstanceName:          instanceName,
 		ServiceName:           serviceName,
 		Notifications:         notifications,
+		Profiling:             profiles,
 		Update:                update,
 		Auth:                  auth,
 		Global:                settings,
