@@ -36,7 +36,7 @@ const (
 func AdministrationCatalog() []Definition {
 	id := `{"type":"string","minLength":1,"maxLength":256}`
 	role := `{"type":"string","enum":["owner","admin","member","viewer"]}`
-	projects := `{"type":"array","maxItems":64,"items":` + id + `}`
+	projects := `{"type":"array","maxItems":200,"items":` + id + `}`
 	scopes := `{"type":"array","minItems":1,"maxItems":3,"items":{"type":"string","enum":["read","write","admin"]}}`
 	return []Definition{
 		adminDefinition(SessionLogout, "End the current account session and provider sessions after human approval. Later calls and retries are denied; sign in and reconnect for new access.", "", "", false, true),
@@ -55,7 +55,7 @@ func AdministrationCatalog() []Definition {
 		adminDefinition(MemberRemove, "Remove an organization member, preserving existing owner rules.", `"member_id":`+id, `"member_id"`, false, true),
 		adminDefinition(MemberRole, "Change a member role, preserving existing ownership and last-owner rules.", `"member_id":`+id+`,"role":`+role, `"member_id","role"`, false, true),
 		adminDefinition(MemberGrant, "Set or remove the exact member project grant.", `"member_id":`+id+`,"project_id":`+id+`,"write":{"type":"boolean"},"runner":{"type":"boolean"},"revoke":{"type":"boolean"}`, `"member_id","project_id"`, false, true),
-		adminDefinition(CredentialCreate, "Create a credential with exact scopes, project grants and expiry. The credential is delivered only to this authenticated connection; durable retries omit it.", `"name":{"type":"string","minLength":1,"maxLength":120},"scopes":`+scopes+`,"project_ids":`+projects+`,"expires_in":{"type":"string","maxLength":32}`, `"name","scopes"`, false, false),
+		adminDefinition(CredentialCreate, "Create a credential with exact scopes, project grants and expiry. Hosted keys require one scope, 1–200 explicit project IDs and an expiry of 1–90 whole days (for example 30d). The credential is delivered only to this authenticated connection; durable retries omit it.", `"name":{"type":"string","minLength":1,"maxLength":200},"scopes":`+scopes+`,"project_ids":`+projects+`,"expires_in":{"type":"string","maxLength":32}`, `"name","scopes"`, false, false),
 		adminDefinition(CredentialRotate, "Rotate an owned credential; the exact target and grace period require operator approval.", `"credential_id":`+id+`,"grace":{"type":"string","maxLength":32}`, `"credential_id"`, false, true),
 		adminDefinition(CredentialRevoke, "Revoke an existing owned credential.", `"credential_id":`+id, `"credential_id"`, false, true),
 		adminDefinition(CredentialGrant, "Add native credential organization/project grants without expanding platform powers.", `"credential_id":`+id+`,"project_ids":{"type":"array","minItems":1,"maxItems":64,"items":`+id+`}`, `"credential_id","project_ids"`, false, true),
@@ -97,6 +97,14 @@ func AdministrationScope(name string) apikey.Scope {
 	default:
 		return apikey.ScopeAdmin
 	}
+}
+
+func AdministrationRequirement(name string) Requirement {
+	requirement := Requirement{Scope: AdministrationScope(name)}
+	if strings.HasPrefix(name, "credential_") {
+		requirement.ResourceKind = "credentials"
+	}
+	return requirement
 }
 
 func IsAdministration(name string) bool {

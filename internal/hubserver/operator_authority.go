@@ -171,6 +171,16 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
 		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
 	}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+		if requirement.ResourceKind == "credentials" && s.config.Hosted != nil {
+			if requirement.ProjectID != "" || requirement.ResourceID != "" {
+				return operatortool.ErrAccessDenied
+			}
+			_, err := s.hostedKeyCredentialFor(ctx, credential)
+			return err
+		}
+		if requirement.ResourceKind == "credentials" {
+			requirement.ResourceKind = ""
+		}
 		if credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, requirement.Scope) {
 			return operatortool.ErrAccessDenied
 		}

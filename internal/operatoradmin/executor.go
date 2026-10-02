@@ -126,7 +126,9 @@ func (e *Executor) authorize(ctx context.Context, name string, in Input, resourc
 	if e.App == nil || !e.supports(name) {
 		return ErrUnavailable
 	}
-	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: operatortool.AdministrationScope(name), ProjectID: in.ProjectID}); err != nil {
+	requirement := operatortool.AdministrationRequirement(name)
+	requirement.ProjectID = in.ProjectID
+	if _, err := operatortool.AuthorizeCurrent(ctx, requirement); err != nil {
 		return err
 	}
 	return safe(e.App.Authorize(ctx, name, in, resource))

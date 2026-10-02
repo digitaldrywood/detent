@@ -10,6 +10,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func hostedKeyAllows(scope, required apikey.Scope) bool {
@@ -77,7 +79,23 @@ func (s *Service) hostedKeyBrowser(c echo.Context) (apiCredential, error) {
 	if err != nil || credential.Hosted == nil || credential.Hosted.SupportActor != "" {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
-	return credential, nil
+	return s.hostedKeyCredentialFor(c.Request().Context(), credential)
+}
+
+func (s *Service) hostedKeyCredentialFor(ctx context.Context, credential apiCredential) (apiCredential, error) {
+	if s.config.Hosted == nil || credential.Hosted == nil || credential.SessionHash == "" || credential.HostedKeyScope != "" || credential.Hosted.SupportActor != "" {
+		return apiCredential{}, operatortool.ErrAccessDenied
+	}
+	session, err := s.WebSession(ctx, credential.SessionHash, s.config.now())
+	if err != nil || session.Identity.SupportActor != "" {
+		return apiCredential{}, operatortool.ErrAccessDenied
+	}
+	current, _, err := s.hostedSessionCredential(ctx, session, credential.SessionHash)
+	if err != nil || current.ID != credential.ID || current.Hash != credential.Hash || current.HostedMembership != credential.HostedMembership {
+		return apiCredential{}, operatortool.ErrAccessDenied
+	}
+	current.HostedRole = lesserHostedRole(current.HostedRole, credential.HostedRole)
+	return current, nil
 }
 
 type hostedAPIKey struct {
@@ -95,17 +113,31 @@ func (s *Service) hostedAPIKeys(c echo.Context) error {
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "Sign in as an organization member to manage your API keys")
 	}
-	keys := []hostedAPIKey{}
-	rows, err := s.database.db.QueryContext(c.Request().Context(), `SELECT id,name,operator_key_scope,expires_at,token_fingerprint,revoked_at FROM api_tokens WHERE hosted_user_id=? AND hosted_organization_id=? ORDER BY created_at DESC`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
+	keys, err := s.hostedAPIKeysFor(c.Request().Context(), credential)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, struct {
+		Keys []hostedAPIKey `json:"keys"`
+	}{keys})
+}
+
+func (s *Service) hostedAPIKeysFor(ctx context.Context, credential apiCredential) ([]hostedAPIKey, error) {
+	credential, err := s.hostedKeyCredentialFor(ctx, credential)
+	if err != nil {
+		return nil, err
+	}
+	keys := []hostedAPIKey{}
+	rows, err := s.database.db.QueryContext(ctx, `SELECT id,name,operator_key_scope,expires_at,token_fingerprint,revoked_at FROM api_tokens WHERE hosted_user_id=? AND hosted_organization_id=? ORDER BY created_at DESC,id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var key hostedAPIKey
 		var revoked sql.NullString
 		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &key.Expiry, &key.Fingerprint, &revoked); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		key.Revoked = revoked.Valid
 		keys = append(keys, key)
@@ -113,11 +145,11 @@ func (s *Service) hostedAPIKeys(c echo.Context) error {
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	for i := range keys {
 		err := func() error {
-			grants, err := s.database.db.QueryContext(c.Request().Context(), "SELECT project_id FROM token_grants WHERE token_id=? AND organization_id=? ORDER BY project_id", keys[i].ID, s.config.Hosted.OrganizationID)
+			grants, err := s.database.db.QueryContext(ctx, "SELECT project_id FROM token_grants WHERE token_id=? AND organization_id=? ORDER BY project_id", keys[i].ID, s.config.Hosted.OrganizationID)
 			if err != nil {
 				return err
 			}
@@ -133,12 +165,17 @@ func (s *Service) hostedAPIKeys(c echo.Context) error {
 			return grants.Err()
 		}()
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
-	return c.JSON(http.StatusOK, struct {
-		Keys []hostedAPIKey `json:"keys"`
-	}{keys})
+	return keys, nil
+}
+
+type hostedKeyRequest struct {
+	Name     string       `json:"name"`
+	Scope    apikey.Scope `json:"scope"`
+	Days     int          `json:"expires_days"`
+	Projects []string     `json:"project_ids"`
 }
 
 func (s *Service) createHostedAPIKey(c echo.Context) error {
@@ -146,31 +183,57 @@ func (s *Service) createHostedAPIKey(c echo.Context) error {
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "Sign in as an organization member to create an API key")
 	}
-	var request struct {
-		Name     string       `json:"name"`
-		Scope    apikey.Scope `json:"scope"`
-		Days     int          `json:"expires_days"`
-		Projects []string     `json:"project_ids"`
-	}
+	var request hostedKeyRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	key, err := s.createHostedAPIKeyFor(c.Request().Context(), credential, request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusCreated, key)
+}
+
+func (s *Service) authorizeHostedKeyRequest(ctx context.Context, credential apiCredential, request hostedKeyRequest) error {
+	if request.Days < 1 || request.Days > 90 || len(request.Projects) == 0 || len(request.Projects) > 200 || !apikey.ValidScope(request.Scope) {
+		return operatortool.ErrInvalidArguments
+	}
+	if !hostedRoleAllows(credential.HostedRole, request.Scope) {
+		return operatortool.ErrAccessDenied
+	}
+	for _, project := range request.Projects {
+		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
+		if err := s.requireHostedProject(ctx, s.database.db, scope, false); err != nil {
+			return err
+		}
+		if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) createHostedAPIKeyFor(ctx context.Context, credential apiCredential, request hostedKeyRequest) (tokenResponse, error) {
+	credential, err := s.hostedKeyCredentialFor(ctx, credential)
+	if err != nil {
+		return tokenResponse{}, err
+	}
 	if request.Days < 1 || request.Days > 90 || len(request.Projects) > 200 {
-		return s.nativeAPIError(c, nativeInvalid("Choose 1–90 days and at most 200 projects"))
+		return tokenResponse{}, nativeInvalid("Choose 1–90 days and at most 200 projects")
 	}
 	expiry := s.config.now().Add(time.Duration(request.Days) * 24 * time.Hour)
 	scope := apiScopeOperator
 	if request.Scope == apikey.ScopeAdmin {
 		scope = apiScopeAdmin
 	}
-	key, err := s.createAPITokenFor(c.Request().Context(), tokenRequest{Name: request.Name, Scope: scope, Issuer: &credential, KeyScope: request.Scope, ExpiresAt: &expiry, ProjectIDs: request.Projects})
+	key, err := s.createAPITokenFor(ctx, tokenRequest{Name: request.Name, Scope: scope, Issuer: &credential, KeyScope: request.Scope, ExpiresAt: &expiry, ProjectIDs: request.Projects})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return tokenResponse{}, err
 	}
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "credential_created", "POST /api-keys", "", http.StatusCreated); err != nil {
-		return s.nativeAPIError(c, err)
+	if err := s.hostedAudit(ctx, credential.Hosted, "credential_created", "POST /api-keys", "", http.StatusCreated); err != nil {
+		return tokenResponse{}, err
 	}
-	return c.JSON(http.StatusCreated, key)
+	return key, nil
 }
 
 func (s *Service) revokeHostedAPIKey(c echo.Context) error {
@@ -178,18 +241,31 @@ func (s *Service) revokeHostedAPIKey(c echo.Context) error {
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "Sign in to revoke your API key")
 	}
-	var count int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM api_tokens WHERE id=? AND hosted_user_id=? AND hosted_organization_id=?", c.Param("key"), credential.Hosted.Subject, s.config.Hosted.OrganizationID).Scan(&count); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if count != 1 {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if err := s.revokeAPITokenFor(c.Request().Context(), c.Param("key")); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "credential_revoked", "DELETE /api-keys/:key", "", http.StatusNoContent); err != nil {
+	if err := s.revokeHostedAPIKeyFor(c.Request().Context(), credential, c.Param("key")); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) hostedAPIKeyFor(ctx context.Context, credential apiCredential, id string) (hostedAPIKey, error) {
+	keys, err := s.hostedAPIKeysFor(ctx, credential)
+	if err != nil {
+		return hostedAPIKey{}, err
+	}
+	for _, key := range keys {
+		if key.ID == id {
+			return key, nil
+		}
+	}
+	return hostedAPIKey{}, nativeNotFound()
+}
+
+func (s *Service) revokeHostedAPIKeyFor(ctx context.Context, credential apiCredential, id string) error {
+	if _, err := s.hostedAPIKeyFor(ctx, credential, id); err != nil {
+		return err
+	}
+	if err := s.revokeAPITokenFor(ctx, id); err != nil {
+		return err
+	}
+	return s.hostedAudit(ctx, credential.Hosted, "credential_revoked", "DELETE /api-keys/:key", "", http.StatusNoContent)
 }

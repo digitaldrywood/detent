@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"slices"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -19,6 +22,7 @@ type hubAdministration struct{ service *Service }
 func (s *Service) operatorAdministration() *operatoradmin.Executor {
 	names := []string{operatortool.OrganizationSession, operatortool.OrganizationList}
 	if s.config.Hosted != nil {
+		names = append(names, operatortool.CredentialList, operatortool.CredentialCreate, operatortool.CredentialRevoke)
 		names = append(names, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationRevoke, operatortool.MemberRemove, operatortool.MemberRole, operatortool.MemberGrant)
 		if !s.hostedShared() {
 			names = append(names, operatortool.SessionLogout, operatortool.OrganizationSwitch, operatortool.OrganizationCreate, operatortool.SupportStart)
@@ -136,6 +140,46 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 	}
 	if credential.Hosted == nil {
 		return operatortool.ErrAccessDenied
+	}
+	if name == operatortool.CredentialList || name == operatortool.CredentialCreate || name == operatortool.CredentialRevoke {
+		credential, err = s.hostedKeyCredentialFor(ctx, credential)
+		if err != nil {
+			return err
+		}
+		if name == operatortool.CredentialCreate && len(in.Scopes) > 0 {
+			request, err := hostedToolKeyRequest(in)
+			if err != nil {
+				return err
+			}
+			if err := s.authorizeHostedKeyRequest(ctx, credential, request); err != nil {
+				return operatortool.ErrAccessDenied
+			}
+		}
+		id := in.CredentialID
+		if name == operatortool.CredentialCreate {
+			id = resource
+		}
+		if id != "" {
+			key, err := s.hostedAPIKeyFor(ctx, credential, id)
+			if err != nil {
+				return operatortool.ErrAccessDenied
+			}
+			if name == operatortool.CredentialCreate {
+				expiry, err := parseTimeValue(key.Expiry)
+				projects := append([]string(nil), in.ProjectIDs...)
+				sort.Strings(projects)
+				projects = slices.Compact(projects)
+				if len(in.Scopes) != 1 || err != nil || key.Revoked || !expiry.After(s.config.now()) || key.Scope != apikey.Scope(in.Scopes[0]) || len(key.Projects) != len(projects) {
+					return operatortool.ErrAccessDenied
+				}
+				for i, project := range projects {
+					if key.Projects[i] != project {
+						return operatortool.ErrAccessDenied
+					}
+				}
+			}
+		}
+		return nil
 	}
 	if name == operatortool.SupportStart {
 		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
@@ -286,6 +330,10 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 		}
 		return operatoradmin.Page(choices, in), rows.Err()
 	case operatortool.CredentialList:
+		if s.config.Hosted != nil {
+			keys, err := s.hostedAPIKeysFor(ctx, credential)
+			return operatoradmin.Page(keys, in), err
+		}
 		return s.tokenMetadata(ctx, in)
 	default:
 		return nil, operatoradmin.ErrUnavailable
@@ -345,6 +393,11 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 		preview.ResourceID = id
 		preview.Current = struct{ Email, Role string }{email, role}
 	case operatortool.CredentialRotate, operatortool.CredentialRevoke, operatortool.CredentialGrant:
+		if s.config.Hosted != nil {
+			key, err := s.hostedAPIKeyFor(ctx, credential, in.CredentialID)
+			preview.ResourceID, preview.Current = in.CredentialID, key
+			return preview, err
+		}
 		view, err := s.tokenMetadataByID(ctx, in.CredentialID)
 		if err != nil {
 			return preview, err
@@ -360,6 +413,9 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 
 func (a hubAdministration) Execute(ctx context.Context, name string, in operatoradmin.Input, m mutation.Metadata) (operatoradmin.Output, error) {
 	s := a.service
+	if err := a.Authorize(ctx, name, in, ""); err != nil {
+		return operatoradmin.Output{}, err
+	}
 	credential, err := a.credential(ctx)
 	if err != nil {
 		return operatoradmin.Output{}, err
@@ -390,8 +446,13 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	}
 	if !claimed {
 		var output operatoradmin.Output
-		err := json.Unmarshal(replay, &output)
-		return output, err
+		if err := json.Unmarshal(replay, &output); err != nil {
+			return operatoradmin.Output{}, err
+		}
+		if err := a.AuthorizeOutput(ctx, name, in, output); err != nil {
+			return operatoradmin.Output{}, err
+		}
+		return output, nil
 	}
 	output := operatoradmin.Output{ResourceID: m.ResourceID}
 	var data any
@@ -435,6 +496,14 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 			data, err = s.createNativeOrganizationFor(ctx, in.Name)
 		}
 	case operatortool.CredentialCreate:
+		if s.config.Hosted != nil {
+			request, requestErr := hostedToolKeyRequest(in)
+			if requestErr != nil {
+				return operatoradmin.Output{}, requestErr
+			}
+			data, err = s.createHostedAPIKeyFor(ctx, credential, request)
+			break
+		}
 		var token tokenResponse
 		token, err = s.createAPITokenFor(ctx, tokenRequest{Name: in.Name, Scope: nativeToolScope(in.Scopes)})
 		if err == nil {
@@ -448,7 +517,11 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	case operatortool.CredentialRotate:
 		data, err = s.rotateAPITokenFor(ctx, in.CredentialID)
 	case operatortool.CredentialRevoke:
-		err = s.revokeAPITokenFor(ctx, in.CredentialID)
+		if s.config.Hosted != nil {
+			err = s.revokeHostedAPIKeyFor(ctx, credential, in.CredentialID)
+		} else {
+			err = s.revokeAPITokenFor(ctx, in.CredentialID)
+		}
 	case operatortool.CredentialGrant:
 		for _, id := range in.ProjectIDs {
 			if err = s.grantNativeTokenFor(ctx, in.CredentialID, operatortool.ConnectionIdentity(ctx).OrganizationID, id); err != nil {
@@ -463,12 +536,16 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	}
 	if token, ok := data.(tokenResponse); ok {
 		output.ResourceID = token.ID
-		view, readErr := s.tokenMetadataByID(ctx, token.ID)
-		if readErr != nil {
-			return operatoradmin.Output{}, readErr
+		if s.config.Hosted != nil {
+			data = token
+		} else {
+			view, readErr := s.tokenMetadataByID(ctx, token.ID)
+			if readErr != nil {
+				return operatoradmin.Output{}, readErr
+			}
+			view.Token = token.Token
+			data = view
 		}
-		view.Token = token.Token
-		data = view
 	}
 	if org, ok := data.(nativeOrganization); ok {
 		output.ResourceID = string(org.ID)
@@ -483,7 +560,15 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	}
 	receipt := output
 	if name == operatortool.CredentialCreate || name == operatortool.CredentialRotate {
-		receipt.Data = nil
+		if token, ok := data.(tokenResponse); ok {
+			token.Token = ""
+			receipt.Data, err = json.Marshal(token)
+			if err != nil {
+				return operatoradmin.Output{}, err
+			}
+		} else {
+			receipt.Data = nil
+		}
 	}
 	if _, err := s.completeHostedOperation(ctx, command, receipt); err != nil {
 		return operatoradmin.Output{}, mutation.ErrUncertain
@@ -501,6 +586,17 @@ func nativeToolScope(scopes []string) apiScope {
 		return apiScopeAdmin
 	}
 	return apiScopeOperator
+}
+
+func hostedToolKeyRequest(in operatoradmin.Input) (hostedKeyRequest, error) {
+	if len(in.Scopes) != 1 {
+		return hostedKeyRequest{}, operatortool.ErrInvalidArguments
+	}
+	days, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(in.ExpiresIn), "d"))
+	if err != nil || days < 1 || days > 90 {
+		return hostedKeyRequest{}, operatortool.ErrInvalidArguments
+	}
+	return hostedKeyRequest{Name: in.Name, Scope: apikey.Scope(in.Scopes[0]), Days: days, Projects: in.ProjectIDs}, nil
 }
 
 func (s *Service) hostedSwitchFor(ctx context.Context, identity *auth.HostedIdentity, organization string) (string, error) {
@@ -612,6 +708,9 @@ func (s *Service) hostedOrganizationChoicesFor(ctx context.Context, credential a
 func (a hubAdministration) AuthorizeOutput(ctx context.Context, name string, in operatoradmin.Input, output operatoradmin.Output) error {
 	if (name != operatortool.CredentialCreate && name != operatortool.CredentialRotate) || len(output.Data) == 0 {
 		return nil
+	}
+	if err := a.Authorize(ctx, name, in, output.ResourceID); err != nil {
+		return err
 	}
 	var delivered tokenResponse
 	if json.Unmarshal(output.Data, &delivered) != nil {

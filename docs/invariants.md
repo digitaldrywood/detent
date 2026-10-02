@@ -262,6 +262,23 @@ is added. `TestAdministrationExecution`, `TestHostedAdministrationAuthority`,
 `TestEntryAdministrationContext` and `TestMCPCredentialAdministration` cover these
 boundaries with existing application identity fixtures.
 
+Hosted key administration (native #95) exposes only list/create/revoke through
+the organization-bound MCP connection, reusing the hosted API key owners.
+The shared administration/chat requirement identifies credential administration
+separately from general organization administration: members and viewers may
+manage their own keys within their existing allowed scopes. Bearer keys and
+support impersonation remain denied; account entry returns a destination and
+requires reconnecting without transferring its authority. Dedicated and shared
+key operations recheck the original provider session, current membership and
+lesser role, issuer grants, target ownership, expiry and revocation at execution
+and sensitive delivery. Exact browser approval and connection YOLO retain their
+existing owners. Durable business retries retain safe metadata without the
+created secret. `TestHostedCredentialMCP` and
+`TestHostedCredentialMCPAuthorityChanges` cover both transports and deployments,
+browser approval, current authority and connection-bound delivery. Native #48
+owns dynamic All projects semantics; this checkout's hosted key owner still
+uses explicit project IDs. Native #26 remains open for final parity acceptance.
+
 Invitation withdrawal revokes the provider invitation before atomically removing
 the local invitation and releasing its seat. Provider refusal preserves both;
 resend uses the existing invitation and the same owner/admin authority. Invitation
