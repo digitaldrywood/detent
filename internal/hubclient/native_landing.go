@@ -17,16 +17,12 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 		return runner.NativeLandingTarget{}, runner.ErrExecutionAuthorityUnavailable
 	}
 	client, item := e.claim.source.client, e.claim.lease.WorkItemID
-	changes, err := client.Changes(ctx, item)
+	detail, err := client.currentChange(ctx, item)
 	if err != nil {
-		return runner.NativeLandingTarget{}, fmt.Errorf("list changes: %w", err)
+		return runner.NativeLandingTarget{}, err
 	}
-	if len(changes) == 0 {
+	if detail == nil {
 		return runner.NativeLandingTarget{}, fmt.Errorf("%w: the item has no Change Request", runner.ErrLandingNotReviewed)
-	}
-	detail, err := client.Change(ctx, item, changes[len(changes)-1].ID)
-	if err != nil {
-		return runner.NativeLandingTarget{}, fmt.Errorf("read change: %w", err)
 	}
 	target := runner.NativeLandingTarget{ChangeID: detail.Change.ID, VersionID: detail.Change.CurrentVersion, Title: detail.Change.Title, Method: "squash"}
 	for _, version := range detail.Versions {

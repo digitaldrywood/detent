@@ -2,12 +2,14 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -267,11 +269,16 @@ func (h *nativeChangeHub) repolicy(t *testing.T) {
 
 // publish puts a version at the given head on the change as an operator
 // would, so a rework run finds a current version to compare its head with.
-func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, changeID, head string) tracker.ChangeVersion {
+func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, changeID, head string, previous ...string) tracker.ChangeVersion {
 	t.Helper()
 	digest := policy.Digest([]byte(head))
+	var expectedVersionID string
+	if len(previous) > 0 {
+		expectedVersionID = previous[0]
+	}
 	version, err := h.admin.PublishChangeVersion(t.Context(), item, changeID, tracker.PublishChangeVersion{
-		Mutation: nativeMutationKey(),
+		Mutation:          nativeMutationKey(),
+		ExpectedVersionID: expectedVersionID,
 		ChangeVersionInput: tracker.ChangeVersionInput{
 			BaseSHA: strings.Repeat("a", 40), HeadSHA: head, MergeBaseSHA: strings.Repeat("a", 40), Repository: nativeChangeRepository,
 			Code:      tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: digest, Availability: "unverified"},
@@ -542,6 +549,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		hosted      bool
+		rework      bool
+		formal      bool
+		failDetail  bool
 		commit      bool
 		dirty       bool
 		wantNone    bool
@@ -554,28 +564,126 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "hosted template without commits ends", hosted: true, wantState: "Done"},
 		{name: "no commits", wantState: "Done"},
 		{name: "uncommitted edits", dirty: true, wantNone: true, wantState: "In Progress"},
+		{name: "Rework receives current Change discussion", rework: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
+		{name: "Rework receives formal requested changes", rework: true, formal: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
+		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			h := newNativeChangeHub(t)
+			review := "In Review"
+			states := []tracker.NativeState{
+				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}},
+				{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
+				{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+			}
 			if test.hosted {
 				// The default auto_promote.source_state names the review lane.
-				h = newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates())
+				review, states = "Human Review", hubserver.HostedProjectStates()
 			}
+			if test.rework {
+				review, states = "Human Review", []tracker.NativeState{
+					{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+					{Name: "In Progress", Dispatchable: true, Transitions: []string{"Human Review", "Done"}},
+					{Name: "Human Review", Transitions: []string{"Rework", "Done"}},
+					{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Done"}},
+					{Name: "Done", Terminal: true},
+				}
+			}
+			h := newNativeChangeHubTransport(t, review, states, true)
 			issue := h.createInProgress(t, "Update the README")
-			candidate := h.claim(t, issue.ID)
+			source := nativeChangeSourceRepo(t)
+			var expected *tracker.ChangeDetail
+			var candidate connector.Issue
+			if test.rework {
+				item := tracker.NativeWorkItemID(issue.ID)
+				change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+				if err != nil {
+					t.Fatal(err)
+				}
+				old := h.publish(t, item, change.ID, strings.Repeat("a", 40))
+				if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: old.ID, Body: "Historical discussion"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, old.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Historical requested changes"}); err != nil {
+					t.Fatal(err)
+				}
+				head, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "HEAD").Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				current := h.publish(t, item, change.ID, strings.TrimSpace(string(head)), old.ID)
+				if test.formal {
+					if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, current.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Serialize global config updates"}); err != nil {
+						t.Fatal(err)
+					}
+				} else if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: current.ID, Body: "Global config loses concurrent updates"}); err != nil {
+					t.Fatal(err)
+				}
+				currentIssue, err := h.admin.Issue(t.Context(), item)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, state := range []string{"Human Review", "Rework"} {
+					currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				detail, err := h.admin.Change(t.Context(), item, change.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				expected = &detail
+				if test.failDetail {
+					next := h.native.client.httpClient.Transport
+					h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/changes/"+change.ID) {
+							response := httptest.NewRecorder()
+							response.WriteHeader(http.StatusForbidden)
+							return response.Result(), nil
+						}
+						return next.RoundTrip(request)
+					})
+				}
+				candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Rework"}})
+				if test.failDetail {
+					var failure *APIError
+					if !errors.As(err, &failure) || failure.Status != http.StatusForbidden || len(candidates) != 0 || len(h.scheduler.nativeClaims) != 0 {
+						t.Fatalf("failed hydration dispatched work: candidates=%v, error=%v", candidates, err)
+					}
+					if state := h.state(t, issue.ID); state != "Rework" {
+						t.Fatalf("hydration failure changed lane to %s", state)
+					}
+					h.native.client.httpClient.Transport = h.failChanges
+					candidates, err = h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Rework"}})
+					if err != nil || len(candidates) != 1 {
+						t.Fatalf("failed hydration did not release claim: candidates=%v, error=%v", candidates, err)
+					}
+					return
+				}
+				if err != nil || len(candidates) != 1 {
+					t.Fatalf("Rework candidates = %v, %v", candidates, err)
+				}
+				candidate = candidates[0]
+				if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				candidate = h.claim(t, issue.ID)
+			}
 			execution := h.scheduler.RunExecution(issue.ID)
 			if execution == nil {
 				t.Fatal("claimed native issue has no execution lifecycle")
 			}
-			source := nativeChangeSourceRepo(t)
 			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
+			provider := &committingAgent{commit: test.commit, dirty: test.dirty}
 			agent, err := runner.NewRunner(runner.Dependencies{
 				Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Complete the issue"},
 				Workspace:    backend,
-				AgentBackend: &committingAgent{commit: test.commit, dirty: test.dirty},
+				AgentBackend: provider,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -586,6 +694,32 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			if result.FinalState != runner.FinalStateCompleted {
 				t.Fatalf("final state = %q", result.FinalState)
+			}
+			if test.rework {
+				marker := "Native Hub recovery context"
+				start := strings.Index(provider.prompt, marker)
+				if start < 0 {
+					t.Fatal("provider prompt omitted native recovery")
+				}
+				data := provider.prompt[start:]
+				data = data[strings.Index(data, "\n")+1:]
+				var recovery tracker.NativeRecovery
+				if err := json.NewDecoder(strings.NewReader(data)).Decode(&recovery); err != nil {
+					t.Fatal(err)
+				}
+				if recovery.Change == nil || recovery.Change.VersionID != expected.Change.CurrentVersion || !reflect.DeepEqual(recovery.ChangeDetail, expected) {
+					t.Fatalf("provider prompt lost exact Change feedback: change=%+v, detail=%+v", recovery.Change, recovery.ChangeDetail)
+				}
+				if !strings.Contains(provider.prompt, "Discussion is not formal approval") || !strings.Contains(provider.prompt, "historical context, not current approval or rejection") {
+					t.Fatal("provider prompt omitted feedback authority boundaries")
+				}
+				if !test.formal {
+					for _, comment := range recovery.Discussion {
+						if strings.Contains(comment.Body, "Global config loses concurrent updates") {
+							t.Fatal("discussion-only regression used an issue comment")
+						}
+					}
+				}
 			}
 			change := result.NativeChange
 			if test.wantNone {
@@ -609,7 +743,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				t.Fatalf("changes = %#v, want %d", changes, test.wantChanges)
 			}
 			if test.wantChanged {
-				if changes[0].ID != change.ChangeID || changes[0].Title != "Update the README" || !strings.Contains(changes[0].Body, change.HeadSHA) {
+				if changes[0].ID != change.ChangeID || changes[0].Title != "Update the README" || !test.rework && !strings.Contains(changes[0].Body, change.HeadSHA) {
 					t.Fatalf("change = %#v, reported %#v", changes[0], change)
 				}
 				attempt := executionID("attempt", string(execution.Recovery().Lease.ID))
@@ -642,9 +776,11 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 type committingAgent struct {
 	commit bool
 	dirty  bool
+	prompt string
 }
 
 func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	a.prompt = request.Prompt
 	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-native", TurnID: "turn-1"}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}

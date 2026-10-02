@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -34,11 +35,6 @@ func (c *NativeClient) Recovery(ctx context.Context, id tracker.NativeWorkItemID
 			return result, err
 		}
 		result.Attempts = append(result.Attempts, page.Items...)
-		for _, attempt := range page.Items {
-			if attempt.Checkpoint != nil && attempt.Checkpoint.Change != nil {
-				result.Change = attempt.Checkpoint.Change
-			}
-		}
 		if page.NextCursor == "" {
 			break
 		}
@@ -50,15 +46,23 @@ func (c *NativeClient) Recovery(ctx context.Context, id tracker.NativeWorkItemID
 			return result, err
 		}
 		result.History = append(result.History, page.Items...)
-		for _, event := range page.Items {
-			if event.Data.Change != nil && event.Data.Change.VersionID != "" {
-				result.Change = event.Data.Change
-			}
-		}
 		if page.NextCursor == "" {
 			break
 		}
 		cursor = page.NextCursor
 	}
-	return result, nil
+	result.ChangeDetail, err = c.currentChange(ctx, id)
+	if err != nil {
+		return result, err
+	}
+	if result.ChangeDetail == nil || result.ChangeDetail.Change.CurrentVersion == "" {
+		return result, nil
+	}
+	for _, version := range result.ChangeDetail.Versions {
+		if version.ID == result.ChangeDetail.Change.CurrentVersion {
+			result.Change = &tracker.NativeChangeReference{ChangeID: result.ChangeDetail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+			return result, nil
+		}
+	}
+	return result, fmt.Errorf("read change: current version %s is missing", result.ChangeDetail.Change.CurrentVersion)
 }
