@@ -35104,6 +35104,97 @@
       "status": "implemented",
       "coverage": "TestRunnerCapacityOwner; TestRunnerCapacityHeartbeat; TestRunnerCapacityApplication; capacity cases in TestHostedMCPFleetControls and TestFleetArgumentBoundary.",
       "decision": "Native work item prj_6d4919bebd73446798e6cd807feda10e#90 extends the existing fleet capability owner. Report partial or unknown application instead of forging capacity evidence."
+    },
+    {
+      "id": "hubserver.get_work_item_conversation",
+      "summary": "Get canonical work-item conversation",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/conversation_api.go",
+          "kind": "route",
+          "definition": "e.GET(nativeBase+\"/work-items/:item/conversation\", s.getWorkItemConversation, scope) [route=\"/api/v2/organizations/:organization/projects/:project/work-items/:item/conversation\"]",
+          "occurrence": 1,
+          "line": 42,
+          "method": "GET",
+          "path": "nativeBase + \"/work-items/:item/conversation\"",
+          "handler": "s.getWorkItemConversation",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/work-items/:item/conversation"
+        },
+        {
+          "source": "web/conversation/src/app/work/lib/workHttp.ts",
+          "kind": "request",
+          "definition": "send(ConversationSnapshot,\"GET\",url(`${itemBase(projectId, itemId)}/conversation`))",
+          "occurrence": 1,
+          "line": 556
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured."
+        }
+      ],
+      "authority": {
+        "role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes",
+        "credential_scope": "worker or operator (native project); exact registration middleware retained in source",
+        "project_grant": "native project read grant; writes need write grant; runner/terminal access additionally needs runner grant",
+        "ownership": "resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {
+          "when": "read or ordinary non-destructive write",
+          "class": "none"
+        }
+      ],
+      "application": "readWorkItemConversationSnapshot shares readConversationSnapshotFor with conversation-ID reads. The existing authenticated worker bind creates a missing empty shared conversation.",
+      "extraction": "Scoped issue lookup and canonical conversation visibility are checked in the same read transaction. UI/API/MCP return the existing bounded snapshot; live commands remain post_conversation_command with current attempt/turn and existing confirmation.",
+      "tool": {
+        "set": "conversations_workspaces",
+        "name": "get_work_item_conversation",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"work_item_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"project_id\",\"work_item_id\"],\"additionalProperties\":false}",
+        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3346",
+      "status": "implemented",
+      "coverage": "TestWorkItemConversationLookup, TestConversationWorkerBind, TestConversationRunnerExecutesLiveTurns; issue Activity/Surface resolves canonical history without a shell-list entry.",
+      "decision": "Native #145 consolidates work-item discovery on the existing conversation read and lease-fenced worker binding owners. Parent #3259 and Claude backend capability work remain separate."
     }
   ]
 }

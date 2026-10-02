@@ -247,11 +247,42 @@ interface ConversationBridge {
 export function IssuePage(): React.ReactElement {
   const { workItemId } = useParams({ from: "/work/i/$workItemId" });
   const shell = useShell();
-  // The conversation list is this client's only index from work item to
-  // project, and to the conversation the issue is linked to.
-  const linked = shell.conversations.find(
+  const http = useWorkHttp();
+  const indexed = shell.conversations.find(
     (conversation) => conversation.work_item_id === workItemId,
   );
+  const projectId = indexed?.project_id ?? shell.projectId ?? null;
+  const [resolved, setResolved] = React.useState<Conversation | undefined>();
+  React.useEffect(() => {
+    let cancelled = false;
+    setResolved(undefined);
+    if (projectId !== null && indexed === undefined) {
+      void http
+        .getWorkItemConversation(projectId, workItemId)
+        .then((snapshot) => {
+          if (!cancelled) setResolved(snapshot.conversation);
+        })
+        .catch((error: unknown) => {
+          if (!cancelled && !(error instanceof WorkApiError && error.code === "not_found")) {
+            toastManager.add({
+              title: "Worker conversation unavailable",
+              description: String(error),
+              type: "error",
+            });
+          }
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [http, projectId, workItemId, indexed]);
+  const linked =
+    indexed ??
+    (resolved !== undefined &&
+    resolved.work_item_id === workItemId &&
+    resolved.project_id === projectId
+      ? resolved
+      : undefined);
   if (linked === undefined) {
     return <IssueSurface workItemId={workItemId} projectHint={null} conversation={null} />;
   }
@@ -1043,12 +1074,9 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
                 <span className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-card to-transparent" />
               ) : null}
             </div>
-            {/* The mockup's own line under the description. It is only drawn
-                where it is true: an issue created some other way did not come
-                from a chat and does not claim to have. */}
-            {conversation === null ? null : (
+            {conversation?.detail?.conversation.visibility !== "shared" ? null : (
               <p className="mt-2.5 text-muted-foreground text-xs">
-                Created from a chat · history shared with the project
+                Conversation history shared with the project
               </p>
             )}
             {item.body.length > BODY_CLAMP ? (

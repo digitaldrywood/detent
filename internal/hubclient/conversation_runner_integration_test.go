@@ -33,115 +33,164 @@ import (
 // interrupted.
 func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 	useFastConversationTimings(t)
-	hub := newConversationRunnerHub(t)
+	for _, ordinary := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ordinary=%t", ordinary), func(t *testing.T) {
+			hub := newConversationRunnerHub(t)
 
-	var created struct {
-		Conversation struct {
-			ID string `json:"id"`
-		} `json:"conversation"`
-	}
-	hub.expect(t, http.MethodPost, "/conversations", map[string]any{"key": "create-1", "title": "Parser"}, http.StatusCreated, &created)
-	id := created.Conversation.ID
-	var link struct {
-		Issue struct {
-			ID string `json:"id"`
-		} `json:"issue"`
-	}
-	hub.expect(t, http.MethodPost, "/conversations/"+id+"/link", map[string]any{
-		"key": "link-1", "share_history": true,
-		"issue": map[string]any{"title": "Rewrite the parser", "description": "Split the parser into a lexer and a parser."},
-	}, http.StatusOK, &link)
-	issueID := link.Issue.ID
-	if receipt := hub.command(t, id, conversation.Command{Key: "follow-up", Kind: conversation.CommandMessage, Text: "Keep the public API stable."}); receipt.Status != conversation.DeliveryQueued {
-		t.Fatalf("follow-up receipt = %#v, want queued", receipt)
-	}
+			var id, issueID string
+			if ordinary {
+				var issue tracker.NativeIssue
+				hub.expect(t, http.MethodPost, "/work-items", map[string]any{"idempotency_key": "ordinary-1", "title": "Rewrite the parser", "body": "Split the parser into a lexer and a parser.", "state": "Todo"}, http.StatusOK, &issue)
+				issueID = string(issue.WorkItemID)
+				hub.expect(t, http.MethodPost, "/work-items/"+issueID+"/comments", map[string]any{"idempotency_key": "comment-1", "body": "Historical issue comment: do not steer this turn."}, http.StatusOK, nil)
+			} else {
+				var created struct {
+					Conversation struct {
+						ID string `json:"id"`
+					} `json:"conversation"`
+				}
+				hub.expect(t, http.MethodPost, "/conversations", map[string]any{"key": "create-1", "title": "Parser"}, http.StatusCreated, &created)
+				id = created.Conversation.ID
+				var link struct {
+					Issue struct {
+						ID string `json:"id"`
+					} `json:"issue"`
+				}
+				hub.expect(t, http.MethodPost, "/conversations/"+id+"/link", map[string]any{
+					"key": "link-1", "share_history": true,
+					"issue": map[string]any{"title": "Rewrite the parser", "description": "Split the parser into a lexer and a parser."},
+				}, http.StatusOK, &link)
+				issueID = link.Issue.ID
+				if receipt := hub.command(t, id, conversation.Command{Key: "follow-up", Kind: conversation.CommandMessage, Text: "Keep the public API stable."}); receipt.Status != conversation.DeliveryQueued {
+					t.Fatalf("follow-up receipt = %#v, want queued", receipt)
+				}
+			}
 
-	backend := &liveConversationBackend{}
-	scheduler := hub.scheduler(t)
-	first := hub.startAttempt(t, scheduler, backend, issueID)
+			backend := &liveConversationBackend{started: make(chan struct{}, 2)}
+			scheduler := hub.scheduler(t)
+			first := hub.startAttempt(t, scheduler, backend, issueID)
+			select {
+			case <-backend.started:
+			case <-time.After(30 * time.Second):
+				t.Fatal("worker did not start a provider turn")
+			}
+			var canonical runnerSnapshot
+			hub.expect(t, http.MethodGet, "/work-items/"+issueID+"/conversation", nil, http.StatusOK, &canonical)
+			if ordinary {
+				id = canonical.Conversation.ID
+			} else if id != canonical.Conversation.ID {
+				t.Fatal("conversation-origin worker lost its canonical conversation")
+			}
 
-	waiting := hub.await(t, id, "the first question", func(s runnerSnapshot) bool {
-		return s.Conversation.Execution.Status == conversation.ExecutionWaitingInput && s.pendingQuestion() != ""
-	})
-	firstAttempt := waiting.attempt()
-	if capabilities := waiting.Conversation.Execution.Capabilities; !capabilities.Steer || !capabilities.Interrupt || !capabilities.Answer {
-		t.Fatalf("capabilities = %#v, want the runner's live control set", capabilities)
-	}
-	if delivery := waiting.delivery("follow-up"); delivery != conversation.DeliveryDelivered {
-		t.Fatalf("queued follow-up delivery = %q, want delivered with the first turn", delivery)
-	}
-	hub.command(t, id, conversation.Command{
-		Key: "answer-1", Kind: conversation.CommandAnswer, QuestionID: waiting.pendingQuestion(),
-		Answers: map[string][]string{"approach": {"Incremental"}}, Expected: conversation.Expected{AttemptID: firstAttempt},
-	})
-	hub.await(t, id, "the answered turn to continue", func(s runnerSnapshot) bool {
-		return strings.Contains(s.assistantText(), "Taking the Incremental approach.") && s.Conversation.Execution.Status == conversation.ExecutionRunning
-	})
-	hub.command(t, id, conversation.Command{Key: "steer-1", Kind: conversation.CommandMessage, Text: "Also update the changelog.", Expected: conversation.Expected{AttemptID: firstAttempt}})
-	if outcome := awaitRunnerAttempt(t, first); outcome.err != nil || outcome.result.FinalState != runner.FinalStateCompleted {
-		t.Fatalf("first attempt = %#v, error = %v", outcome.result.FinalState, outcome.err)
-	}
-	if err := scheduler.ReleaseClaim(t.Context(), issueID, "completed"); err != nil {
-		t.Fatal(err)
-	}
-	completed := hub.await(t, id, "the first execution to complete", func(s runnerSnapshot) bool {
-		return s.Conversation.Execution.Status == conversation.ExecutionCompleted
-	})
-	if text := completed.assistantText(); !strings.Contains(text, "Noted: Also update the changelog.") {
-		t.Fatalf("assistant text = %q, want the steered reply", text)
-	}
-	if delivery := completed.delivery("steer-1"); delivery != conversation.DeliveryDelivered {
-		t.Fatalf("steer delivery = %q, want delivered", delivery)
-	}
-	if status := completed.questionStatus(waiting.pendingQuestion()); status != conversation.QuestionAnswered {
-		t.Fatalf("question status = %q, want answered", status)
-	}
+			waiting := hub.await(t, id, "the first question", func(s runnerSnapshot) bool {
+				return s.Conversation.Execution.Status == conversation.ExecutionWaitingInput && s.pendingQuestion() != ""
+			})
+			firstAttempt := waiting.attempt()
+			if len(backend.recordedRequests()) != 1 {
+				t.Fatal("binding dispatched another provider turn")
+			}
+			var stale struct {
+				Code string `json:"code"`
+			}
+			hub.expect(t, http.MethodPost, "/conversations/"+id+"/commands", conversation.Command{
+				Key: "stale-turn", Kind: conversation.CommandMessage, Text: "Do not deliver",
+				Expected: conversation.Expected{AttemptID: firstAttempt, TurnID: "past-turn"},
+			}, http.StatusConflict, &stale)
+			if stale.Code != "stale_execution" {
+				t.Fatalf("stale turn result = %q", stale.Code)
+			}
+			if capabilities := waiting.Conversation.Execution.Capabilities; !capabilities.Steer || !capabilities.Interrupt || !capabilities.Answer {
+				t.Fatalf("capabilities = %#v, want the runner's live control set", capabilities)
+			}
+			if delivery := waiting.delivery("follow-up"); !ordinary && delivery != conversation.DeliveryDelivered {
+				t.Fatalf("queued follow-up delivery = %q, want delivered with the first turn", delivery)
+			}
+			hub.command(t, id, conversation.Command{
+				Key: "answer-1", Kind: conversation.CommandAnswer, QuestionID: waiting.pendingQuestion(),
+				Answers: map[string][]string{"approach": {"Incremental"}}, Expected: conversation.Expected{AttemptID: firstAttempt},
+			})
+			hub.await(t, id, "the answered turn to continue", func(s runnerSnapshot) bool {
+				return strings.Contains(s.assistantText(), "Taking the Incremental approach.") && s.Conversation.Execution.Status == conversation.ExecutionRunning
+			})
+			hub.command(t, id, conversation.Command{Key: "steer-1", Kind: conversation.CommandMessage, Text: "Also update the changelog.", Expected: conversation.Expected{AttemptID: firstAttempt, TurnID: "turn-1"}})
+			if outcome := awaitRunnerAttempt(t, first); outcome.err != nil || outcome.result.FinalState != runner.FinalStateCompleted {
+				t.Fatalf("first attempt = %#v, error = %v", outcome.result.FinalState, outcome.err)
+			}
+			if err := scheduler.ReleaseClaim(t.Context(), issueID, "completed"); err != nil {
+				t.Fatal(err)
+			}
+			completed := hub.await(t, id, "the first execution to complete", func(s runnerSnapshot) bool {
+				return s.Conversation.Execution.Status == conversation.ExecutionCompleted
+			})
+			if text := completed.assistantText(); !strings.Contains(text, "Noted: Also update the changelog.") {
+				t.Fatalf("assistant text = %q, want the steered reply", text)
+			}
+			if delivery := completed.delivery("steer-1"); delivery != conversation.DeliveryDelivered {
+				t.Fatalf("steer delivery = %q, want delivered", delivery)
+			}
+			if status := completed.questionStatus(waiting.pendingQuestion()); status != conversation.QuestionAnswered {
+				t.Fatalf("question status = %q, want answered", status)
+			}
 
-	if receipt := hub.command(t, id, conversation.Command{Key: "continue-1", Kind: conversation.CommandContinue, Text: "Continue with the release notes.", Expected: conversation.Expected{AttemptID: firstAttempt}}); receipt.Status != conversation.DeliverySaved {
-		t.Fatalf("continue receipt = %#v, want saved", receipt)
-	}
-	second := hub.startAttempt(t, scheduler, backend, issueID)
-	running := hub.await(t, id, "the continuation to stream", func(s runnerSnapshot) bool {
-		return s.Conversation.Execution.Status == conversation.ExecutionRunning && strings.Contains(s.assistantText(), "Drafting the release notes.")
-	})
-	secondAttempt := running.attempt()
-	if secondAttempt == firstAttempt {
-		t.Fatalf("second attempt reused the first attempt id %s", firstAttempt)
-	}
-	hub.command(t, id, conversation.Command{Key: "interrupt-1", Kind: conversation.CommandInterrupt, Expected: conversation.Expected{AttemptID: secondAttempt}})
-	if outcome := awaitRunnerAttempt(t, second); outcome.err != nil {
-		t.Fatalf("second attempt error = %v", outcome.err)
-	}
-	if err := scheduler.ReleaseClaim(t.Context(), issueID, "interrupted"); err != nil {
-		t.Fatal(err)
-	}
-	interrupted := hub.await(t, id, "the interrupted execution", func(s runnerSnapshot) bool {
-		return s.Conversation.Execution.Status == conversation.ExecutionInterrupted && s.attempt() == secondAttempt
-	})
-	if delivery := interrupted.delivery("interrupt-1"); delivery != conversation.DeliveryDelivered {
-		t.Fatalf("interrupt delivery = %q, want delivered", delivery)
-	}
+			if receipt := hub.command(t, id, conversation.Command{Key: "continue-1", Kind: conversation.CommandContinue, Text: "Continue with the release notes.", Expected: conversation.Expected{AttemptID: firstAttempt}}); receipt.Status != conversation.DeliverySaved {
+				t.Fatalf("continue receipt = %#v, want saved", receipt)
+			}
+			second := hub.startAttempt(t, scheduler, backend, issueID)
+			running := hub.await(t, id, "the continuation to stream", func(s runnerSnapshot) bool {
+				return s.Conversation.Execution.Status == conversation.ExecutionRunning && strings.Contains(s.assistantText(), "Drafting the release notes.")
+			})
+			secondAttempt := running.attempt()
+			if secondAttempt == firstAttempt {
+				t.Fatalf("second attempt reused the first attempt id %s", firstAttempt)
+			}
+			hub.command(t, id, conversation.Command{Key: "interrupt-1", Kind: conversation.CommandInterrupt, Expected: conversation.Expected{AttemptID: secondAttempt}})
+			if outcome := awaitRunnerAttempt(t, second); outcome.err != nil {
+				t.Fatalf("second attempt error = %v", outcome.err)
+			}
+			if err := scheduler.ReleaseClaim(t.Context(), issueID, "interrupted"); err != nil {
+				t.Fatal(err)
+			}
+			interrupted := hub.await(t, id, "the interrupted execution", func(s runnerSnapshot) bool {
+				return s.Conversation.Execution.Status == conversation.ExecutionInterrupted && s.attempt() == secondAttempt
+			})
+			if delivery := interrupted.delivery("interrupt-1"); delivery != conversation.DeliveryDelivered {
+				t.Fatalf("interrupt delivery = %q, want delivered", delivery)
+			}
 
-	requests := backend.recordedRequests()
-	if len(requests) != 2 {
-		t.Fatalf("provider turns = %d, want one per attempt", len(requests))
-	}
-	if !strings.Contains(requests[0].Prompt, "Keep the public API stable.") {
-		t.Fatalf("first turn prompt lost the queued follow-up: %q", requests[0].Prompt)
-	}
-	if !strings.Contains(requests[1].Prompt, "Continue with the release notes.") {
-		t.Fatalf("continuation prompt lost the continue text: %q", requests[1].Prompt)
-	}
-	kinds := backend.consumedKinds()
-	if want := []runner.AgentControlKind{runner.AgentControlAnswer, runner.AgentControlMessage, runner.AgentControlInterrupt}; fmt.Sprint(kinds) != fmt.Sprint(want) {
-		t.Fatalf("consumed controls = %v, want %v", kinds, want)
+			requests := backend.recordedRequests()
+			if len(requests) != 2 {
+				t.Fatalf("provider turns = %d, want one per attempt", len(requests))
+			}
+			if !ordinary && !strings.Contains(requests[0].Prompt, "Keep the public API stable.") {
+				t.Fatalf("first turn prompt lost the queued follow-up: %q", requests[0].Prompt)
+			}
+			if !strings.Contains(requests[1].Prompt, "Continue with the release notes.") {
+				t.Fatalf("continuation prompt lost the continue text: %q", requests[1].Prompt)
+			}
+			kinds := backend.consumedKinds()
+			if want := []runner.AgentControlKind{runner.AgentControlAnswer, runner.AgentControlMessage, runner.AgentControlInterrupt}; fmt.Sprint(kinds) != fmt.Sprint(want) {
+				t.Fatalf("consumed controls = %v, want %v", kinds, want)
+			}
+			if ordinary {
+				for _, message := range completed.Messages {
+					if strings.Contains(message.Text, "Historical issue comment") {
+						t.Fatal("historical issue comment became a conversation message")
+					}
+				}
+				var comments tracker.Page[tracker.NativeComment]
+				hub.expect(t, http.MethodGet, "/work-items/"+issueID+"/comments", nil, http.StatusOK, &comments)
+				if len(comments.Items) != 1 || comments.Items[0].Body != "Historical issue comment: do not steer this turn." {
+					t.Fatalf("issue comments changed: %#v", comments)
+				}
+			}
+		})
 	}
 }
 
 const conversationRunnerAdminToken = "conversation-runner-admin"
 
 type conversationRunnerHub struct {
-	server       *httptest.Server
+	httpClient   *http.Client
 	organization tracker.OrganizationID
 	project      tracker.ProjectID
 	base         string
@@ -165,9 +214,15 @@ func newConversationRunnerHub(t *testing.T) *conversationRunnerHub {
 			t.Error(err)
 		}
 	})
-	server := httptest.NewServer(service.Handler())
-	t.Cleanup(server.Close)
-	admin, err := New(Config{URL: server.URL, TokenSource: func() string { return conversationRunnerAdminToken }, HTTPClient: server.Client()})
+	handler := service.Handler()
+	httpClient := &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		response := recorder.Result()
+		response.Request = request
+		return response, nil
+	})}
+	admin, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return conversationRunnerAdminToken }, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +232,7 @@ func newConversationRunnerHub(t *testing.T) *conversationRunnerHub {
 	if err := admin.request(t.Context(), http.MethodGet, "/api/v2/organizations", nil, &organizations); err != nil {
 		t.Fatal(err)
 	}
-	h := &conversationRunnerHub{server: server, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
+	h := &conversationRunnerHub{httpClient: httpClient, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
 	states := []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
@@ -229,7 +284,7 @@ func (h *conversationRunnerHub) expect(t *testing.T, method, path string, body a
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequestWithContext(t.Context(), method, h.server.URL+h.base+path, reader)
+	request, err := http.NewRequestWithContext(t.Context(), method, "http://hub.test"+h.base+path, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +293,7 @@ func (h *conversationRunnerHub) expect(t *testing.T, method, path string, body a
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	response, err := h.server.Client().Do(request)
+	response, err := h.httpClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,6 +321,7 @@ func (h *conversationRunnerHub) command(t *testing.T, id string, command convers
 
 type runnerSnapshot struct {
 	Conversation struct {
+		ID        string `json:"id"`
 		Execution struct {
 			Status       conversation.ExecutionStatus `json:"status"`
 			AttemptID    *string                      `json:"attempt_id"`
@@ -348,7 +404,7 @@ func (h *conversationRunnerHub) await(t *testing.T, id, reason string, want func
 
 func (h *conversationRunnerHub) scheduler(t *testing.T) *Scheduler {
 	t.Helper()
-	client, err := New(Config{URL: h.server.URL, TokenSource: func() string { return h.worker }, HTTPClient: h.server.Client()})
+	client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return h.worker }, HTTPClient: h.httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,6 +503,7 @@ func (w *conversationStubWorkspace) RecoveryState(context.Context, workspace.Inf
 // asks a question, waits for the answer and then for a steer; its second turn
 // streams until it is interrupted.
 type liveConversationBackend struct {
+	started  chan struct{}
 	mu       sync.Mutex
 	requests []runner.AgentTurnRequest
 	consumed []runner.AgentControlKind
@@ -465,6 +522,9 @@ func (b *liveConversationBackend) RunTurn(ctx context.Context, request runner.Ag
 	b.requests = append(b.requests, request)
 	turn := len(b.requests)
 	b.mu.Unlock()
+	if b.started != nil {
+		b.started <- struct{}{}
+	}
 	if request.ConversationControl == nil {
 		return runner.AgentTurnResult{}, errors.New("turn ran without a conversation control")
 	}
@@ -547,6 +607,15 @@ func (b *liveConversationBackend) consume(ctx context.Context, request runner.Ag
 				return runner.AgentControl{}, errors.New("conversation control queue closed")
 			}
 			if err := command.Validate(); err != nil {
+				command.Reply <- err
+				return runner.AgentControl{}, err
+			}
+			wantTurn := "turn-1"
+			if kind == runner.AgentControlInterrupt {
+				wantTurn = "turn-2"
+			}
+			if command.ThreadID != liveThreadID || command.TurnID != wantTurn {
+				err := fmt.Errorf("control addressed %s/%s, want %s/%s", command.ThreadID, command.TurnID, liveThreadID, wantTurn)
 				command.Reply <- err
 				return runner.AgentControl{}, err
 			}

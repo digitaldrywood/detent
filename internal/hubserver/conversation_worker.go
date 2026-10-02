@@ -357,6 +357,36 @@ func (c *conversationService) readLinkedConversation(ctx context.Context, tx *sq
 	return record, nil
 }
 
+func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, now time.Time) (conversationRecord, error) {
+	record, err := c.readLinkedConversation(ctx, tx, scope, item)
+	if err == nil {
+		return record, nil
+	}
+	var failure *nativeError
+	if !errors.As(err, &failure) || failure.Code != "not_found" || record.ID != "" {
+		return conversationRecord{}, err
+	}
+	issue, _, err := readNativeIssue(ctx, tx, scope, item)
+	if err != nil {
+		return conversationRecord{}, err
+	}
+	record = conversationRecord{
+		ID: conversation.NewConversationID(), OrganizationID: scope.organization, ProjectID: scope.project,
+		OwnerPrincipalID: scope.credential.ID, Title: deriveConversationTitle(issue.Title),
+		Visibility: conversation.VisibilityShared, Status: conversation.StatusActive,
+		WorkItemID: item, LinkedAt: &now,
+		Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if issue.Actor.PrincipalID != "" {
+		record.OwnerPrincipalID = issue.Actor.PrincipalID
+	}
+	if err := c.store.createConversation(ctx, tx, &record); err != nil {
+		return conversationRecord{}, err
+	}
+	return record, nil
+}
+
 // conversationMessageQuery prefixes a constant filter; callers append their
 // constant condition so the full statement is a compile-time string.
 const conversationMessageQuery = "SELECT " + conversationMessageColumns + " FROM conversation_messages WHERE "
@@ -642,7 +672,7 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 		if err != nil {
 			return err
 		}
-		record, err = c.readLinkedConversation(ctx, tx, scope, item)
+		record, err = c.ensureWorkerConversation(ctx, tx, scope, item, now)
 		if err != nil {
 			return err
 		}

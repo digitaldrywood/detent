@@ -7298,3 +7298,23 @@ Apply enrolled runner capacity
 - Confirmation: capacity mutation → operator
 
 Sources: [PUT /api/v2/organizations/:organization/runners/:runner/capacity](../internal/hubserver/runner_enrollment.go#L36)
+## hubserver.get_work_item_conversation
+
+Get canonical work-item conversation
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3346.
+- Decision: Native #145 consolidates work-item discovery on the existing conversation read and lease-fenced worker binding owners. Parent #3259 and Claude backend capability work remain separate.
+- Tool: `conversations_workspaces.get_work_item_conversation` — {"type":"object","properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"work_item_id":{"type":"string","minLength":1,"maxLength":256}},"required":["project_id","work_item_id"],"additionalProperties":false} → Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.
+- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
+- Application: readWorkItemConversationSnapshot shares readConversationSnapshotFor with conversation-ID reads. The existing authenticated worker bind creates a missing empty shared conversation.
+- Extraction: Scoped issue lookup and canonical conversation visibility are checked in the same read transaction. UI/API/MCP return the existing bounded snapshot; live commands remain post_conversation_command with current attempt/turn and existing confirmation.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
+- Coverage: TestWorkItemConversationLookup, TestConversationWorkerBind, TestConversationRunnerExecutesLiveTurns; issue Activity/Surface resolves canonical history without a shell-list entry.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub application service
+- Availability: hosted_dedicated / native / hub application service
+- Availability: hosted_shared / native / hub application service
+- Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
+- Confirmation: read or ordinary non-destructive write → none
+
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/conversation](../internal/hubserver/conversation_api.go#L42), [web/conversation/src/app/work/lib/workHttp.ts:556](../web/conversation/src/app/work/lib/workHttp.ts#L556)

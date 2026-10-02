@@ -507,3 +507,18 @@ authentication context, arbitrary session ID or YOLO setting is a tool argument.
 This child implements #3346, not the final deployment/tracker/transport parity
 acceptance on #3259. The legacy board conversation panel reads tracker/PR comments,
 so its matrix ownership is corrected to the comments child #3341.
+
+Ordinary native work-item controls (native #145) use
+`get_work_item_conversation({project_id, work_item_id})` to read the canonical
+conversation, current execution owner, capabilities and bounded history. The
+same snapshot is available at `GET /work-items/:item/conversation` under the
+scoped project API. Lookup does not create a conversation, issue or attempt.
+An authenticated live-capable worker's existing bind creates an empty shared
+conversation when needed; historical comments remain issue comments.
+Use `post_conversation_command` with the returned conversation ID and current
+expected attempt/turn to steer, or request interrupt through its existing
+material-action approval. Existing accepted/delivered/error receipts remain
+authoritative; a conversation or running issue alone does not prove a provider
+supports live control. Private conversation visibility and current grants apply
+to lookup and command execution. Already-running workers that skipped binding
+before the fix cannot gain a provider control object from an operator lookup.
