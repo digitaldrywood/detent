@@ -665,8 +665,12 @@ reserve or reset values. The reviewed Change Request/version/head stays in
 Merging across retries and restart; capacity completions consume no failed coding
 attempt allowance. Native coding and completions that need no exhausted GitHub
 operation continue normally. Pre-claim readiness, dispatch, retry and completion
-share the existing REST dependency decision; retries carrying a recorded REST
-capacity wait remain held while the instance outage is active.
+share the existing current-stage REST dependency decision (#150). Historical
+retry capacity scope is retained as evidence, not an independent applicability
+authority: due native Rework coding and Git-only landing remain eligible, while
+current native GitHub PR landing and non-native GitHub work remain held during
+an active REST outage. Retry ownership and immutable attempt history remain
+unchanged.
 Explicit native `worker.github_token` access retains
 the existing worker credential policy, isolated environment and capacity accounting;
 omitted access performs no worker credential lookup or GitHub request. Synthetic
@@ -686,6 +690,8 @@ INV-1/INV-2/INV-3 without a mechanism or lane writer.
 `TestRunnerResolvesLandingBeforeWorkspace`, `TestLocalGitCreateReviewedLanding`,
 `TestNativeRunnerPublishesOnlyAfterRecovery` and `TestSSHErrorRoundTrip` exercise
 these boundaries.
+`TestHubSchedulingReadinessBeforeClaim` covers historical REST scopes through
+pre-claim readiness, retry planning and final dispatch admission.
 
 Native rework Git preparation and finalization failures (#141) use the existing
 `workspace_preparation` outcome, including failures after a source-resolution
@@ -3110,7 +3116,8 @@ remain owned by the existing landing path.
 During a recorded active GitHub REST wait, the existing candidate-state owner
 excludes native GitHub PR landing before the single-candidate claim boundary.
 Native coding and Git-only landing remain eligible, with the same dependency
-decision used by planner, retry and final dispatch admission. Local merge slot
+decision used by planner, retry and final dispatch admission, including due
+retries with historical REST capacity scopes (#150). Local merge slot
 exclusion remains in force. If filtering holds all states, intake returns no
 candidates without a claim; an empty Hub state filter means unrestricted work.
 Expired waits restore eligibility without a fresh GitHub probe. Other projects

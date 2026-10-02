@@ -349,7 +349,7 @@ func (p dispatchPlanner) retryAction(
 	if p.forgeAvailabilityBlocks(state, issue, retry, now) {
 		return dispatchAction{}, false, dispatchSkipForgeUnavailable
 	}
-	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused && (p.githubRESTDependent(issue) || retry.CapacityScope.Matches(githubRESTCapacityScope)) {
+	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused && p.githubRESTDependent(issue) {
 		if retry.DueAt.Before(outage.ResumeAt) {
 			retry.DueAt = outage.ResumeAt
 			state.Retry[retry.Issue.ID] = retry
