@@ -8,11 +8,11 @@
 import React from "react";
 
 import type { BootstrapProject } from "../../../contracts/index.ts";
-import { priorityValue, type NativeAttempt, type NativeIssue, type NativeProject } from "../../../contracts/work.ts";
+import { priorityValue, type NativeAttempt, type NativeIssue, type NativeProject, type NativeWorkSummary } from "../../../contracts/work.ts";
 import { useClient } from "../../client.ts";
 import { useRunnerNames } from "./runnerNames.ts";
 import { toChangeView, toProjectView, toWorkItemView } from "./fromWire.ts";
-import type { Lane, ProjectView, WorkItemView } from "./model.ts";
+import type { Lane, ProjectView, WorkItemView, ScopedWorkStats } from "./model.ts";
 import { makeWorkHttp, newWorkKey, serverFilter, type WorkHttp, WorkApiError } from "./workHttp.ts";
 import type { WorkPage, WorkViewState } from "./viewState.ts";
 
@@ -83,6 +83,7 @@ export interface BoardPage {
 }
 
 export interface BoardState {
+  readonly totals: ScopedWorkStats | null;
   readonly pages: readonly BoardPage[];
   readonly loading: boolean;
   readonly error: string | null;
@@ -102,6 +103,7 @@ export interface BoardState {
 }
 
 interface Loaded {
+  readonly work?: NativeWorkSummary;
   readonly project: NativeProject;
   readonly issues: readonly NativeIssue[];
   readonly nextCursor?: string;
@@ -117,6 +119,7 @@ async function loadProject(
   const page = await http.listWorkItems({
     projectId,
     limit: PAGE_LIMIT,
+    includeWork: true,
     // Single-valued only: the hub rejects a repeated query parameter, so one
     // value goes to the server and any others are applied client-side.
     state: serverFilter(view.state),
@@ -131,7 +134,8 @@ async function loadProject(
   });
   return {
     project,
-    issues: page.items,
+    issues: [...(page.work?.items ?? []), ...page.items],
+    work: page.work,
     nextCursor: page.next_cursor,
   };
 }
@@ -161,6 +165,7 @@ export function useBoard(
   const projects: readonly BootstrapProject[] = client.bootstrap.projects;
   const [state, setState] = React.useState<BoardState & { requestKey: string }>({
     requestKey: "",
+    totals: null,
     pages: [],
     loading: true,
     error: null,
@@ -214,12 +219,12 @@ export function useBoard(
     }));
     if (scope.length === 0) {
       setState((current) => ({ ...current, requestKey, pages: [], loading: false, error: null,
-        project: null, items: [], lanes: [], labels: [], assignees: [], priorities: [], truncated: false, enriched: 0, asOf: null }));
+        totals: null, project: null, items: [], lanes: [], labels: [], assignees: [], priorities: [], truncated: false, enriched: 0, asOf: null }));
       return;
     }
     setState((current) => ({ ...current, requestKey, pages: requestedPages, loading: true, error: null,
       ...(current.requestKey === requestKey ? {} : {
-        items: [], lanes: [], project: null, labels: [], assignees: [], priorities: [], asOf: null, truncated: false, enriched: 0,
+        totals: null, items: [], lanes: [], project: null, labels: [], assignees: [], priorities: [], asOf: null, truncated: false, enriched: 0,
       }),
     }));
 
@@ -252,6 +257,25 @@ export function useBoard(
         }
 
         const names = new Map(loaded.map((entry) => [entry.project.project_id, entry.project.name]));
+        let totals: ScopedWorkStats | null = null;
+        if (loaded.every((entry) => entry.work !== undefined)) {
+          const counts = Object.create(null) as Record<string, number>;
+          let running = 0, ready = 0, waiting = 0, completed = 0, total = 0;
+          for (const entry of loaded) {
+            for (const lane of entry.work!.lanes) {
+              const state = entry.project.states.find((state) => state.name === lane.state);
+              counts[lane.state] = (counts[lane.state] ?? 0) + lane.total;
+              total += lane.total;
+              running += lane.running;
+              if (state?.terminal) completed += lane.total;
+              else if (state?.dispatchable) ready += lane.total;
+              else waiting += lane.total;
+            }
+          }
+          totals = { lanes: counts, running, ready, waiting, completed, total,
+            asOf: loaded.map((entry) => entry.work!.as_of).toSorted()[0]!,
+            truncated: loaded.some((entry) => entry.work!.truncated) };
+        }
         const issues = [...new Map(loaded.flatMap((entry) => entry.issues)
           .map((issue) => [issue.work_item_id, issue])).values()];
         const pages = loaded.map((entry) => {
@@ -269,11 +293,12 @@ export function useBoard(
           };
         });
 
-        // The enrichment budget goes to the issues a reader is most likely to
-        // be watching: not finished, most recently touched.
+        const operationalOrder = new Map(loaded.flatMap((entry) =>
+          (entry.work?.items ?? []).map((issue, index) => [issue.work_item_id, index] as const)));
         const enrichable = issues
           .filter((issue) => !issue.terminal)
-          .toSorted((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
+          .toSorted((a, b) => (operationalOrder.get(a.work_item_id) ?? Infinity) - (operationalOrder.get(b.work_item_id) ?? Infinity)
+            || Date.parse(b.updated_at) - Date.parse(a.updated_at))
           .slice(0, ENRICH_LIMIT);
 
         const extras = new Map<string, {
@@ -333,6 +358,7 @@ export function useBoard(
         // reload, including the reload the stream itself had just asked for.
         setState((current) => ({
           requestKey,
+          totals,
           pages,
           loading: false,
           error: null,
@@ -345,7 +371,7 @@ export function useBoard(
           labels: facets.labels,
           assignees: facets.assignees,
           priorities: facets.priorities,
-          truncated: pages.some((page) => page.number > 1 || page.nextCursor !== undefined),
+          truncated: totals?.truncated === true || pages.some((page) => page.number > 1 || page.nextCursor !== undefined),
           enriched: enrichable.length,
           asOf: Date.now(),
           sequence: current.sequence,
@@ -357,6 +383,7 @@ export function useBoard(
         setState((current) => ({
           ...current,
           loading: false,
+          totals: null,
           project: null,
           items: [],
           lanes: [],
@@ -477,7 +504,7 @@ export function useBoard(
   return {
     ...state,
     ...(state.requestKey === requestKey ? {} : {
-      loading: true, error: null, project: null, items: [], lanes: [], pages: [],
+      totals: null, loading: true, error: null, project: null, items: [], lanes: [], pages: [],
       labels: [], assignees: [], priorities: [], asOf: null, truncated: false, enriched: 0,
     }),
     reload,

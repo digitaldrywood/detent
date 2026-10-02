@@ -188,6 +188,18 @@ writes tracker lanes, creates confirmations or adds a protection mechanism.
 `TestHostedOperatorCurrentAuthority` and `TestProtocolWorkReadParity` exercise
 the application boundary and both transports, including direct-call denial.
 
+The native work-items read's optional `include=work` projection keeps scoped
+lane totals and a bounded open selection independent of the inventory cursor
+(#179). Live attempts with current leases sort before dispatchable lanes; lane
+membership alone never establishes a running worker. Compact items omit issue
+bodies and linked-source snapshots. The existing project/filter/archive scope,
+grants, opaque cursor binding, cancellation and 24-item client enrichment budget
+remain authoritative. Search, sorting and multi-value filters remain local to
+loaded items; terminal counts describe inventory, not shipment.
+`TestNativeWorkPageOperationalScope` and the conversation Work pagination fixture
+cover scoped totals, expired leases, bounded reads and persistent operational
+visibility across inventory pages, including refused and stale reads.
+
 Billing/usage MCP parity (#3345) delegates checkout/portal, plan and usage reads,
 exports, and daemon budget overrides to the dashboard application operations.
 Organization billing remains owner-only without support impersonation; plan

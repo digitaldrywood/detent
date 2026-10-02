@@ -169,7 +169,7 @@ export function createWorkMock(options: {
       const count = pagination ? (project.id === options.projects[0]?.id ? 137 : 4) : project.id === options.projects[0]?.id ? 32 : 8;
       for (let index = 0; index < count; index += 1) {
         number += 1;
-        const lane = pagination ? (index === 136 ? "In Progress" : index === 120 ? "Done" : index === 2 ? "In Review" : "Todo") : LANES[index % LANES.length]!;
+        const lane = pagination ? (index === 136 || index === 134 ? "In Progress" : index === 132 || index === 133 || index < 3 ? "Todo" : "Done") : LANES[index % LANES.length]!;
         const id = `wi_${pad(number)}`;
         const created = new Date(now - (index + 1) * 3_600_000).toISOString();
         issues.push({
@@ -217,7 +217,7 @@ export function createWorkMock(options: {
   }
   build();
 
-  const running = () => issues.filter((issue) => issue.state === "In Progress").slice(0, 3);
+  const running = () => issues.filter((issue) => issue.state === "In Progress" && (!pagination || issue.title === "Observed later-page worker")).slice(0, 3);
   const changed = () =>
     issues.filter((issue) => issue.state === "In Review" || issue.state === "Merging").slice(0, 4);
 
@@ -546,6 +546,13 @@ export function createWorkMock(options: {
           const active = issues.find((issue) => issue.title === "Observed later-page worker");
           if (active !== undefined) active.updated_at = new Date(now).toISOString();
         }
+        if (body.openOverflow === true) {
+          for (const issue of issues) {
+            if (issue.state !== "Done" || issue.provenance !== undefined) continue;
+            issue.state = "Todo";
+            issue.terminal = false;
+          }
+        }
         revoked = body.revoked === true;
         expired = body.expired === true;
         json(response, 200, { ready: true });
@@ -660,18 +667,32 @@ export function createWorkMock(options: {
             return true;
           }
         }
-        const matching = scoped
+        const filtered = scoped
           .filter(() => url.searchParams.get("archived") !== "true")
           .filter((issue) => state === null || issue.state === state)
           .filter((issue) => label === null || issue.labels.includes(label))
           .filter((issue) => assignee === null || issue.assignees.includes(assignee))
-          .filter((issue) => priority === null || String(issue.priority ?? "") === priority)
-          .filter((issue) => issue.number > after)
+          .filter((issue) => priority === null || String(issue.priority ?? "") === priority);
+        const matching = filtered.filter((issue) => issue.number > after)
           .toSorted((a, b) => a.number - b.number);
         const page = matching.slice(0, limit);
         const last = page.at(-1);
+        const workIncluded = url.searchParams.get("include") === "work";
+        const open = filtered.filter((issue) => !issue.terminal).toSorted((a, b) =>
+          Number(running().includes(b)) - Number(running().includes(a))
+          || Number(STATES.find((state) => state.name === b.state)?.dispatchable ?? false)
+            - Number(STATES.find((state) => state.name === a.state)?.dispatchable ?? false)
+          || b.number - a.number);
         json(response, 200, {
-          items: page,
+          items: workIncluded ? page.map((issue) => ({ ...issue, body: "" })) : page,
+          ...(workIncluded ? { work: {
+            items: open.slice(0, limit).map((issue) => ({ ...issue, body: "" })),
+            lanes: [...new Set(filtered.map((issue) => issue.state))].map((state) => ({
+              state, total: filtered.filter((issue) => issue.state === state).length,
+              running: filtered.filter((issue) => issue.state === state && running().includes(issue)).length,
+            })),
+            truncated: open.length > limit, as_of: new Date(now).toISOString(),
+          } } : {}),
           ...(last !== undefined && matching.length > page.length
             ? { next_cursor: pagination ? btoa(JSON.stringify({ scope: cursorScope, after: last.number })) : String(last.number) }
             : {}),

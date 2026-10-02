@@ -12,7 +12,7 @@ export function WorkPagination({ pages, loading, onChange }: {
   return (
     <nav aria-label="Work pages" className="flex flex-wrap items-center gap-3 px-5 pb-3 text-xs">
       <span className="w-full text-muted-foreground">
-        Search, sorting and multi-value filters apply to the loaded pages. Filter choices come from loaded items.
+        Search, sorting and multi-value filters apply to the loaded pages and open selection. Filter choices come from loaded items. Lane totals use project scope with server filters.
       </span>
       {pages.map((page) => (
         <div key={page.projectId} className="flex items-center gap-2" data-testid={`work-page-${page.projectId}`}>

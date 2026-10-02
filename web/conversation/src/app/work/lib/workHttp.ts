@@ -152,6 +152,7 @@ export interface ListWorkItemsInput {
   readonly limit?: number | undefined;
   /** Coordinator work items are excluded unless this is on. */
   readonly includeCoordinator?: boolean;
+  readonly includeWork?: boolean;
   readonly archived?: boolean;
 }
 
@@ -552,7 +553,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
           priority: input.priority,
           cursor: input.cursor,
           limit: input.limit,
-          include: input.includeCoordinator === true ? "coordinator" : undefined,
+          include: input.includeWork === true ? "work" : input.includeCoordinator === true ? "coordinator" : undefined,
         }),
         undefined,
         input.signal,
