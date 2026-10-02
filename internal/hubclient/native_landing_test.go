@@ -27,32 +27,37 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		name   string
 		github bool
 		ssh    bool
+		batch  bool
 	}{
-		{"plain git by default", false, false},
-		{"approved GitHub PR policy", true, false},
-		{"SSH native landing", false, true},
+		{"plain git by default", false, false, false},
+		{"approved GitHub PR policy", true, false, false},
+		{"SSH native landing", false, true, false},
+		{"landing and coding in one refresh", false, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh)
+			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch)
 		})
 	}
 }
 
 func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 	t.Parallel()
-	testNativeExecutionLandsReviewedVersion(t, true, false, false)
+	testNativeExecutionLandsReviewedVersion(t, true, false, false, false)
 }
 
-func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh bool) {
+func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool) {
 	t.Helper()
-	h := newNativeChangeHubWithStates(t, "Human Review", []tracker.NativeState{
+	h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
 		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	}, intakeRepositoryBackend{})
+	}, batch, intakeRepositoryBackend{})
+	if batch {
+		h.scheduler.machine.Capacity = 6
+	}
 	if github {
 		next := h.descriptor
 		next.Gates.GitHubPullRequest = true
@@ -130,8 +135,39 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh b
 		t.Fatalf("after approval the item is in %s, want Merging", state)
 	}
 
-	candidates := h.candidatesIn(t, "Merging")
-	if len(candidates) != 1 || candidates[0].ID != issue.ID || candidates[0].State != "Merging" {
+	var candidates []connector.Issue
+	want := 1
+	if batch {
+		want = 6
+		for range 5 {
+			if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Parallel coding", State: "Todo"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var err error
+		candidates, err = h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Merging", "Todo"}, DispatchPriorityByState: []string{"Merging", "Todo"}, AdmissionLimit: 6, CandidateLimit: 14, CandidateReady: func(context.Context, connector.Issue) bool { return true }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(candidates) != want {
+			t.Fatalf("landing batch = %d, want %d", len(candidates), want)
+		}
+		for _, candidate := range candidates[1:] {
+			if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.scheduler.RunExecution(candidate.ID).Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(candidate.ID))
+			if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "running" || recovery.Attempts[0].Identity.Role != runner.RoleCode {
+				t.Fatalf("parallel coding event missing: %+v, %v", recovery.Attempts, err)
+			}
+		}
+	} else {
+		candidates = h.candidatesIn(t, "Merging")
+	}
+	if len(candidates) != want || candidates[0].ID != issue.ID || candidates[0].State != "Merging" {
 		t.Fatalf("landing candidates = %#v", candidates)
 	}
 	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
@@ -146,6 +182,22 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh b
 		t.Fatal(err)
 	}
 	defer stop()
+	if batch {
+		if err := landing.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleMerge, Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		recovery, err := h.admin.Recovery(t.Context(), item)
+		if err != nil || len(recovery.Attempts) != 2 {
+			t.Fatalf("parallel merge event missing: %+v, %v", recovery.Attempts, err)
+		}
+		started := false
+		for _, attempt := range recovery.Attempts {
+			started = started || attempt.Status == "running" && attempt.Identity.Role == runner.RoleMerge
+		}
+		if !started {
+			t.Fatal("batch did not start the merge phase")
+		}
+	}
 	if ssh {
 		landing, _ = nativeSSHExecution(t, guarded, landing, t.TempDir())
 	}

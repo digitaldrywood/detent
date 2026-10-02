@@ -184,7 +184,9 @@ type SchedulingRequest struct {
 	PrioritizeUnblockers    bool
 	CandidateReady          func(context.Context, connector.Issue) bool
 	CandidateKnownWait      func(connector.Issue) bool
+	CandidateAdmitted       func(connector.Issue)
 	CandidateLimit          int
+	AdmissionLimit          int
 	ProviderRequirement     func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
 	Policy                  policy.Descriptor
 	ProjectID               string

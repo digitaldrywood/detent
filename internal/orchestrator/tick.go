@@ -678,6 +678,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			DispatchPriorityByLabel: append([]string(nil), o.cfg.DispatchPriorityByLabel...),
 			PrioritizeUnblockers:    o.cfg.PrioritizeUnblockers,
 			CandidateLimit:          o.dispatchPlanner().hardAvailableSlots(state) + dispatchCandidateLookahead,
+			AdmissionLimit:          max(1, o.dispatchPlanner().hardAvailableSlots(state)),
 			Policy:                  o.cfg.Policy,
 			ProjectID:               o.cfg.Project.ID,
 			Repository:              o.cfg.SchedulingRepository,
@@ -691,16 +692,30 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			}
 			return knownDispatchWait(issue, state, dueRetriesByIssue(state, now), o.cfg.TerminalStates)
 		}
+		var admitted []connector.Issue
+		request.CandidateAdmitted = func(issue connector.Issue) {
+			admitted = append(admitted, issue)
+		}
 		request.CandidateReady = func(ctx context.Context, issue connector.Issue) bool {
 			now := time.Now()
 			if o.now != nil {
 				now = o.now()
 			}
 			preview := state.clone()
+			planner := o.liveDispatchPlanner(ctx, nil)
+			for _, selected := range admitted {
+				required := planner.modelPermitRequiredAtDispatch(selected)
+				preferredHost := ""
+				if retry, ok := preview.Retry[selected.ID]; ok {
+					required = required || retry.MergePrecheck != nil
+					preferredHost = retry.WorkerHost
+				}
+				host, _ := planner.selectWorkerHost(&preview, preferredHost)
+				planner.markDispatched(&preview, dispatchAction{issue: selected, workerHost: host, modelPermitRequired: required}, now)
+			}
 			if blocked, exists := preview.Blocked[issue.ID]; exists && blockedFromDependency(blocked) && issue.DependencySource == connector.BlockedRefSourceNative && !issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
 				delete(preview.Blocked, issue.ID)
 			}
-			planner := o.liveDispatchPlanner(ctx, nil)
 			if retry, ok := preview.Retry[issue.ID]; ok {
 				if retry.DueAt.After(now) {
 					return false

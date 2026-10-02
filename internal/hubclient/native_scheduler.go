@@ -189,37 +189,83 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: request.WorkflowStates,
 		Authors: request.Filter.Authors, Assignees: request.Filter.Assignees, LabelInclude: request.Filter.LabelInclude, LabelExclude: request.Filter.LabelExclude,
 	}
-	var lease tracker.NativeLease
+	s.mu.Lock()
+	limit := min(max(1, request.AdmissionLimit), s.machine.Capacity)
+	s.mu.Unlock()
+	if request.CandidateLimit > 0 {
+		limit = min(limit, request.CandidateLimit)
+	}
+	var leases []tracker.NativeLease
 	if s.providerReports != nil || request.CandidateReady != nil {
-		lease, err = s.claimPreviewCandidate(ctx, request, source, claimRequest)
+		leases, err = s.claimPreviewCandidates(ctx, request, source, claimRequest, limit)
 	} else {
-		lease, err = source.client.Claim(ctx, claimRequest)
-	}
-	if errors.Is(err, ErrNoClaimableWork) {
-		return []connector.Issue{}, nil
-	}
-	if err != nil {
-		return nil, schedulingError(err)
-	}
-	recovery, err := source.client.Recovery(ctx, lease.WorkItemID)
-	if err == nil && recovery.Issue.LinkedSource != nil && recovery.Issue.LinkedSource.Status != "complete" {
-		err = s.intakeNativeSource(ctx, source, lease, recovery.Issue)
-		if err == nil {
-			recovery, err = source.client.Recovery(ctx, lease.WorkItemID)
+		for len(leases) < limit {
+			if len(leases) > 0 {
+				claimRequest.SessionID, err = s.sessionID()
+				if err != nil {
+					break
+				}
+			}
+			var lease tracker.NativeLease
+			lease, err = source.client.Claim(ctx, claimRequest)
+			if err != nil {
+				break
+			}
+			leases = append(leases, lease)
 		}
 	}
-	if err != nil {
-		return nil, schedulingError(errors.Join(err, source.client.Release(context.WithoutCancel(ctx), lease, "work_item_hydration_failed")))
+	if errors.Is(err, ErrNoClaimableWork) || len(leases) > 0 && nativeAdmissionCapacityFull(err) {
+		err = nil
 	}
-	issue := issueFromNative(recovery.Issue)
-	issue.AssignedToWorker = true
-	issue.IsolationPolicy = lease.IsolationPolicy
+	release := func(cause error) error {
+		for _, lease := range leases {
+			cause = errors.Join(cause, source.client.Release(context.WithoutCancel(ctx), lease, "work_item_hydration_failed"))
+		}
+		return schedulingError(cause)
+	}
+	if err != nil {
+		return nil, release(err)
+	}
+	issues := make([]connector.Issue, 0, len(leases))
+	claims := make([]nativeClaim, 0, len(leases))
+	for _, lease := range leases {
+		recovery, err := source.client.Recovery(ctx, lease.WorkItemID)
+		if err == nil && recovery.Issue.LinkedSource != nil && recovery.Issue.LinkedSource.Status != "complete" {
+			err = s.intakeNativeSource(ctx, source, lease, recovery.Issue)
+			if err == nil {
+				recovery, err = source.client.Recovery(ctx, lease.WorkItemID)
+			}
+		}
+		if err != nil {
+			return nil, release(err)
+		}
+		issue := issueFromNative(recovery.Issue)
+		issue.AssignedToWorker = true
+		issue.IsolationPolicy = lease.IsolationPolicy
+		issues = append(issues, issue)
+		claims = append(claims, nativeClaim{availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)})
+	}
 	s.mu.Lock()
-	s.claims[issue.ID] = nativeTrackerLease(lease)
-	s.nativeClaims[issue.ID] = nativeClaim{availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)}
-	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
+	for i, issue := range issues {
+		s.claims[issue.ID] = nativeTrackerLease(leases[i])
+		s.nativeClaims[issue.ID] = claims[i]
+		s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
+	}
 	s.mu.Unlock()
-	return []connector.Issue{issue}, nil
+	return issues, nil
+}
+
+func nativeAdmissionCapacityFull(err error) bool {
+	var failure *APIError
+	if !errors.As(err, &failure) {
+		return false
+	}
+	switch failure.Code {
+	case "provider_capacity", "runner_capacity", "host_capacity":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim nativeClaim) (orchestrator.Claimed, error) {

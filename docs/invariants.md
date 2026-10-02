@@ -3099,8 +3099,20 @@ remain authoritative. The existing native capability negotiation requires a
 Hub advertising `dispatch_priority` before a runner sends ranking fields to
 claim or preview. Older Hubs produce an instance scheduling wait before either
 request, preserving their strict request schema and issue failure budgets.
-The existing preview evaluates local readiness before claim within the free-slot
-plus eight-candidate allowance. The planner's existing known-wait classification
+Native admission fills a bounded batch during the existing refresh. The batch
+shares one free-slot plus eight-candidate evaluation allowance, and claims at
+most the available project slots (or one existing merge-control candidate when
+full), bounded by machine capacity. Each claim uses a distinct session from the
+existing session owner; atomic Hub claims account for earlier leases against
+machine, shared-host and provider capacity. Selected candidates update only a
+planner copy so subsequent readiness checks retain project, stage, worker and
+model limits. Preview ordering, filters, fairness, unblocker priority, immutable
+policy identity and lease fencing retain their existing owners. Batch hydration
+or claim errors release acquired leases through the existing native release
+owner; dispatch releases candidates it cannot select. No additional refresh,
+reservation, recovery path or configuration is introduced (#153).
+The existing preview evaluates local readiness before claim within that shared
+allowance. The planner's existing known-wait classification
 excludes known local waits from expensive evaluation. Unavailable local or
 provider candidates fall through without a lease or capacity hold. Claim rechecks current revisions and
 provider capacity, and dispatch retains its fresh checks. This consolidates
@@ -3108,7 +3120,7 @@ selection under INV-3 without a new queue, configuration key, reservation,
 preemption or recovery mechanism. Landing protections and refusal evidence
 remain owned by the existing landing path.
 During a recorded active GitHub REST wait, the existing candidate-state owner
-excludes native GitHub PR landing before the single-candidate claim boundary.
+excludes native GitHub PR landing before the bounded native claim boundary.
 Native coding and Git-only landing remain eligible, with the same dependency
 decision used by planner, retry and final dispatch admission. Local merge slot
 exclusion remains in force. If filtering holds all states, intake returns no
@@ -3117,7 +3129,12 @@ Expired waits restore eligibility without a fresh GitHub probe. Other projects
 retain their tracker, CI and REST decisions and approved landing requirements.
 `TestProviderQueueOrderAndSelectors` covers native claim/preview ordering and
 unavailable-head fallthrough; `TestProviderSchedulerEndToEnd` covers pre-lease
-local readiness and provider fallback.
+local readiness, provider fallback, mixed-provider batches, stage capacity and
+provider release on hydration failure. `TestNativeAdmissionBatch` and
+`TestNativeAdmissionCompetingRunners` cover actual bounded admission, shared
+lookahead, hydration release and competing claims. The batch case in
+`TestNativeExecutionLandsReviewedVersion` records coding and merge starts from
+one native fetch while retaining reviewed-version landing authority.
 `TestRunnerHomeClaims`, `TestHubSchedulingCycle`,
 `TestHubSchedulingReadinessBeforeClaim` and
 `TestNativeOptionalReportsNegotiateHubSupport` cover home policy isolation,
