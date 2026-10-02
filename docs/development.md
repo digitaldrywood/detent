@@ -18,7 +18,7 @@ commit SHA and build date, rotates
 `tmp/air-combined.log`, and streams combined build and application output to
 `tmp/air-combined.log`.
 
-`make check` runs the local release gate: build, `golangci-lint`, `go vet`,
+`make check` is an optional diagnostic suite: build, `golangci-lint`, `go vet`,
 NilAway, race tests, and the 70 percent coverage check. Run `make generate`
 before committing changes to Templ templates, sqlc queries, or Tailwind inputs.
 `make security` runs the pinned `govulncheck` and standalone `gosec` scans used
@@ -26,6 +26,13 @@ by CI. The gosec baseline skips generated files and documents each legacy rule
 excluded in the Makefile; new findings must be fixed or narrowly annotated.
 `make modernize-check` runs the Go modernizer diff check with the repo's
 selected safe analyzer set.
+
+Follow the repository's [validation policy](../AGENTS.md#validation) and
+[failure reporting policy](../AGENTS.md#deployment-and-release-failure-reporting).
+Focused diagnostics do not become merge gates or local-gate statuses. The
+scheduled suite validates pinned integrated develop commits for release tags;
+genuine Detent source blockers require at least High priority in native Backlog,
+preserving Urgent and operator admission holds.
 
 Several worktrees usually run gates on the same host at once. Every `make`
 test, lint, vet, and build target is capped by `TEST_PROCS` (default 4): it

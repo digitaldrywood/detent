@@ -5,8 +5,9 @@
 Detent uses two long-lived branches.
 
 - `develop` is the default integration and staging branch. Start changes from
-  current `origin/develop` and merge pull requests into `develop` after the
-  branch passes `make check-fast` in its own worktree. No GitHub Actions run
+  current `origin/develop` and land reviewed changes into `develop` under
+  [AGENTS.md validation](../AGENTS.md#validation), with no local validation gate
+  or local-gate status prerequisite. No GitHub Actions run
   starts for a pull request and no branch ruleset requires a status check.
 - `main` remains available for deliberate production promotion. Scheduled full
   validation tags a pinned `develop` SHA and publishes release artifacts from
@@ -14,6 +15,12 @@ Detent uses two long-lived branches.
 
 `develop` always deploys to staging on push, even before scheduled validation.
 Production installations and releases use validated version tags only.
+
+Genuine source/test failures blocking deployment or a validated release require
+at least High priority in this repository's native reporting context, preserving
+Urgent, Backlog and admission holds. Historical pinned failures do not establish
+that the current head fails or staging is down. See the
+[failure reporting policy](../AGENTS.md#deployment-and-release-failure-reporting).
 
 Every push to `develop` redeploys the operator staging Hub through
 `.github/workflows/deploy-staging.yml`. It runs on a GitHub-hosted runner, never

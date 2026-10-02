@@ -84,3 +84,29 @@ bypass to implement this repository's policy.
 Detent workers must use their provided `TMPDIR`, `TMP`, or `TEMP`; never
 fall back to host scratch space in a worker. See CLAUDE.md for safety-critical
 coverage and fuzz diagnostics.
+
+## Deployment and release failure reporting
+
+For `digitaldrywood/detent` and its selected native Cloud project, reproducible
+source or test failures that prevent deployment or the scheduled validated
+release require at least High priority. File new diagnostics in Backlog through
+the existing selected reporting context. Match open fingerprints and imported
+occurrences first; raise unset, Normal or Low priority through the existing
+expected-revision priority owner, preserving High and Urgent. Preserve pinned
+commit, run, attempt, job, source, fingerprint and occurrence evidence, stable
+replay identity, and imported history. Do not create duplicates to change priority.
+
+Priority does not authorize admission, remove migration/operator holds, or
+change tracker lanes. Unknown setup, network, backend and protocol failures
+remain instance-owned intake; they authorize no source repair and consume no
+issue failure allowance. A historical pinned failure does not prove that the
+current head fails or staging is down: staging deploys independently on develop
+pushes, while validated release tags require all configured scheduled jobs to
+succeed. Repair guidance must not demand a local-gate status, blocking CI or CI
+waiting in ordinary issue merging. Other projects retain their chosen reporting
+priority and validation policy.
+
+The operator retired the private Mac hourly producer for Detent on 2026-10-02;
+it continues to serve other repositories. Do not restore its Detent selection
+or copy its private configuration into this repository. The existing native
+scheduled reporter owns durable Detent failure reporting.

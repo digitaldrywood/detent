@@ -142,7 +142,7 @@ func occurrenceKey(getenv func(string) string, j job, fingerprint string) string
 
 func occurrenceMarker(key string) string { return "<!-- detent-scheduled-occurrence:" + key + " -->" }
 
-func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body, key string, _ []string) error {
+func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body, key string, _ []string, sourceFailure bool) error {
 	marker := occurrenceMarker(key)
 	currentOrigin, _ := issueorigin.Parse(body)
 	currentJob := jobEvidence(body)
@@ -150,11 +150,11 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	for _, issue := range c.issues {
 		for _, previous := range issue.bodies {
 			if strings.Contains(previous, marker) {
-				return nil
+				return c.prioritize(ctx, issue, key, sourceFailure)
 			}
 			if origin, ok := issueorigin.Parse(previous); ok && origin.Fingerprint == fingerprint {
 				if origin.Source == currentOrigin.Source && currentJob != "" && jobEvidence(previous) == currentJob {
-					return nil
+					return c.prioritize(ctx, issue, key, sourceFailure)
 				}
 				if match == nil || issue.item.Number < match.item.Number {
 					match = issue
@@ -164,6 +164,9 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	}
 	body += "\n\n" + marker
 	if match != nil {
+		if err := c.prioritize(ctx, match, key, sourceFailure); err != nil {
+			return err
+		}
 		return c.comment(ctx, match, issueorigin.Occurrence(body), key)
 	}
 	title := "fix(ci): " + summary
@@ -172,8 +175,15 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 		title = string(runes[:len(runes)-1])
 	}
 	args := map[string]any{"project_id": c.project, "request_id": "scheduled-create-" + key, "title": title, "description": body, "state": "Backlog", "labels": []string{"ci-scheduled-failure"}}
+	var priority *int
+	if sourceFailure {
+		high := 1
+		priority = &high
+		args["priority"] = high + 1
+	}
 	var result struct {
-		ResourceID string `json:"resource_id"`
+		ResourceID string           `json:"resource_id"`
+		Revision   tracker.Revision `json:"revision,string"`
 	}
 	if err := c.publish(ctx, "file_issue", args, &result); err != nil {
 		return err
@@ -181,7 +191,28 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	if result.ResourceID == "" {
 		return errors.New("scheduled Cloud creation returned no native identity")
 	}
-	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID)}}, bodies: []string{body}})
+	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, Priority: priority}, bodies: []string{body}})
+	return nil
+}
+
+func (c *cloudDestination) prioritize(ctx context.Context, issue *cloudIssue, key string, sourceFailure bool) error {
+	const high = 1
+	if !sourceFailure || issue.item.Priority != nil && *issue.item.Priority <= high {
+		return nil
+	}
+	if issue.item.Revision <= 0 {
+		return errors.New("scheduled priority update has no observed native revision")
+	}
+	args := map[string]any{"project_id": c.project, "identifier": string(issue.item.WorkItemID), "request_id": "scheduled-priority-" + key, "expected_revision": int64(issue.item.Revision), "priority": high}
+	var result struct {
+		Revision tracker.Revision `json:"revision,string"`
+	}
+	if err := c.publish(ctx, "edit_item", args, &result); err != nil {
+		return err
+	}
+	priority := high
+	issue.item.Priority = &priority
+	issue.item.Revision = result.Revision
 	return nil
 }
 
