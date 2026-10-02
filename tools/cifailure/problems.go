@@ -16,12 +16,13 @@ type problem struct {
 }
 
 var (
-	ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	logTime    = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[0-9:.]+Z\s+`)
-	testFail   = regexp.MustCompile(`^\s*--- FAIL: (\S+) \(`)
-	packageEnd = regexp.MustCompile(`^FAIL\s+(\S+)`)
-	diagnostic = regexp.MustCompile(`^(\S+\.go):(\d+):(\d+):\s+(.+)$`)
-	assertion  = regexp.MustCompile(`(?m)^\s+\S+\.go:\d+:`)
+	ansiEscape      = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	logTime         = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[0-9:.]+Z\s+`)
+	testFail        = regexp.MustCompile(`^\s*--- FAIL: (\S+) \(`)
+	packageEnd      = regexp.MustCompile(`^FAIL\s+(\S+)`)
+	diagnostic      = regexp.MustCompile(`^(\S+\.go):(\d+):(\d+):\s+(.+)$`)
+	gosecDiagnostic = regexp.MustCompile(`^\[(\S+\.go):(\d+)\] - (G\d{3} \(CWE-\d+\): .+)$`)
+	assertion       = regexp.MustCompile(`(?m)^\s+\S+\.go:\d+:`)
 )
 
 // parseProblems accepts both ordinary go test output and interleaved -json
@@ -111,7 +112,11 @@ func testProblem(pkg, name, evidence string) problem {
 func sourceProblem(line, workspace string) (problem, bool) {
 	match := diagnostic.FindStringSubmatch(line)
 	if match == nil {
-		return problem{}, false
+		match = gosecDiagnostic.FindStringSubmatch(line)
+		if match == nil {
+			return problem{}, false
+		}
+		match = []string{match[0], match[1], match[2], "", match[3]}
 	}
 	if workspace != "" {
 		match[1] = strings.TrimPrefix(match[1], strings.TrimRight(workspace, "/")+"/")

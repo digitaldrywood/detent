@@ -15,6 +15,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
+const gosecProblem = "go-diagnostic:tools/cifailure/main.go:43::G204 (CWE-78): Subprocess launched with variable (Confidence: HIGH, Severity: MEDIUM)"
+
 func TestParseProblems(t *testing.T) {
 	t.Parallel()
 	const dispatch = "go-test:github.com/digitaldrywood/detent/internal/orchestrator:TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle"
@@ -30,7 +32,11 @@ func TestParseProblems(t *testing.T) {
 		{"parent with independent assertion", "--- FAIL: TestOne (0s)\n    one_test.go:12: parent assertion failed\n    --- FAIL: TestOne/a (0s)\nFAIL\towner/repo/pkg\t0.1s", []string{"go-test:owner/repo/pkg:TestOne", "go-test:owner/repo/pkg:TestOne/a"}},
 		{"JSON subtest parents", `{"Action":"fail","Package":"owner/repo/pkg","Test":"TestOne/a"}` + "\n" + `{"Action":"fail","Package":"owner/repo/pkg","Test":"TestOne"}`, []string{"go-test:owner/repo/pkg:TestOne/a"}},
 		{"source tools and duplicate diagnostics", "\x1b[31minternal/one.go:12:3: Potential nil panic detected\x1b[0m\ninternal/one.go:12:3: Potential nil panic detected\ninternal/two.go:20:7: unused value (staticcheck)", []string{"go-diagnostic:internal/one.go:12:3:Potential nil panic detected", "go-diagnostic:internal/two.go:20:7:unused value (staticcheck)"}},
-		{"workspace path normalization", "/runner/work/repo/repo/internal/one.go:12:3: error\n./internal/one.go:12:3: error", []string{"go-diagnostic:internal/one.go:12:3:error"}},
+		{"workspace path normalization", "/home/runner/work/detent/detent/internal/one.go:12:3: error\n./internal/one.go:12:3: error", []string{"go-diagnostic:internal/one.go:12:3:error"}},
+		{"recorded gosec", fixture(t, "gosec"), []string{gosecProblem}},
+		{"colored gosec and duplicate relative location", "\x1b[31m" + fixture(t, "gosec") + "\x1b[0m\n[./tools/cifailure/main.go:43] - G204 (CWE-78): Subprocess launched with variable (Confidence: HIGH, Severity: MEDIUM)", []string{gosecProblem}},
+		{"gosec tool cache paths", "[/runner/cache/tool/main.go:43] - G204 (CWE-78): Subprocess launched with variable\n[./../cache/main.go:43] - G204 (CWE-78): Subprocess launched with variable\n[D:/runner/cache/main.go:43] - G204 (CWE-78): Subprocess launched with variable", nil},
+		{"unrecognized bracketed output", "[tools/cifailure/main.go:43] - backend startup failed\n[tools/cifailure/main.go:43] - G204: Subprocess launched with variable\n[tools/cifailure/main.go] - G204 (CWE-78): Subprocess launched with variable", nil},
 		{"tool JSON output", `{"Action":"output","Package":"owner/repo/pkg","Output":"internal/one.go:12:3: error\n"}`, []string{"go-diagnostic:internal/one.go:12:3:error"}},
 		{"different diagnostic messages", "internal/one.go:12:3: first error\ninternal/one.go:12:3: second error", []string{"go-diagnostic:internal/one.go:12:3:first error", "go-diagnostic:internal/one.go:12:3:second error"}},
 		{"truncated test without package", "--- FAIL: TestOne (0s)\nfile_test.go:12: missing value", nil},
@@ -42,7 +48,7 @@ func TestParseProblems(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var keys []string
-			for _, p := range parseProblems(tt.log, "/runner/work/repo/repo") {
+			for _, p := range parseProblems(tt.log, "/home/runner/work/detent/detent") {
 				keys = append(keys, p.Key)
 			}
 			if !reflect.DeepEqual(keys, tt.want) {
@@ -153,6 +159,7 @@ func scheduledEnv(key string) string {
 		"GITHUB_SERVER_URL":  "https://github.com",
 		"GITHUB_RUN_ID":      "36804639457",
 		"GITHUB_RUN_ATTEMPT": "1",
+		"GITHUB_WORKSPACE":   "/home/runner/work/detent/detent",
 		"CI_DEVELOP_SHA":     "cac5c45031aa9ec5038f18282553197a469e7fc2",
 	}[key]
 }

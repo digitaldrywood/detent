@@ -3735,6 +3735,11 @@ Job-log fetches allow terminal escape sequences so colored output reaches the
 existing ANSI-stripping parser (#3709). `TestReport` replays the recorded
 colored-log refusal and verifies test identity and occurrence consolidation;
 unreadable logs retain job identity and CI-instance attribution.
+The existing source parser also recognizes recorded bracketed gosec findings
+(native #37). Their repository-relative file, line, empty column and full finding
+message form the source identity; the original finding remains occurrence evidence.
+`TestParseProblems` and `TestCloudReport` cover the recorded format, ANSI removal,
+duplicate locations, repeated jobs/runs and conservative tool-cache fallback.
 The repository scheduled reporter creates unknown or unreadable job fallbacks
 as Backlog intake, using the existing admission artifact contract (#3727).
 Parsed test and source diagnostics remain Todo hotfix repairs in GitHub mode;
