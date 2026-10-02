@@ -353,9 +353,10 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 					return
 				}
 				var receipt struct {
-					ID      string               `json:"action_id"`
-					Status  chatpkg.ActionStatus `json:"status"`
-					Preview chatpkg.Action       `json:"preview"`
+					ID          string               `json:"action_id"`
+					Status      chatpkg.ActionStatus `json:"status"`
+					Preview     chatpkg.Action       `json:"preview"`
+					ApprovalURL *string              `json:"approval_url"`
 				}
 				body := reply.Body.Bytes()
 				if transport != "stdio" {
@@ -374,6 +375,13 @@ func TestMCPActionApprovalBoundary(t *testing.T) {
 				}
 				if receipt.ID == "" {
 					t.Fatalf("no receipt=%s", reply.Body.String())
+				}
+				if receipt.Status == chatpkg.ActionPending {
+					if receipt.ApprovalURL == nil || !strings.Contains(*receipt.ApprovalURL, "connection_id="+receipt.Preview.ConnectionID) {
+						t.Fatalf("pending local action lacks approval destination: %s", body)
+					}
+				} else if receipt.ApprovalURL != nil {
+					t.Fatalf("resolved local action advertises approval: %s", body)
 				}
 
 				if strings.HasPrefix(scenario, "work ") {

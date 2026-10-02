@@ -81,6 +81,13 @@ type Action struct {
 	ResolvedAt        *time.Time                  `json:"resolved_at,omitempty"`
 }
 
+func (a Action) PendingApprovalURL(destination string) string {
+	if a.Status != ActionPending {
+		return ""
+	}
+	return destination
+}
+
 type Conversation struct {
 	RequireConfirmation bool
 	PrincipalID         string `json:"-"`

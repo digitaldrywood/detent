@@ -37,7 +37,7 @@ type operatorActionResult struct {
 	Arguments      json.RawMessage      `json:"arguments"`
 	Preview        chatpkg.Action       `json:"preview"`
 	Status         chatpkg.ActionStatus `json:"status"`
-	ApprovalURL    string               `json:"approval_url"`
+	ApprovalURL    string               `json:"approval_url,omitempty"`
 	ResultTool     string               `json:"result_tool"`
 }
 
@@ -464,7 +464,7 @@ func (s *Server) operatorApprovalURL(id string) string {
 }
 
 func (s *Server) operatorActionResult(action chatpkg.Action) (operatortool.Result, error) {
-	return operatorResult(operatorActionResult{action.Revision, action.CommentID, action.Mutation.CorrelationID, action.ID, action.ConnectionID, action.OrganizationID, action.ProjectID, action.IssueID, action.Identifier, action.ResourceURL, action.Client, action.Kind, action.Arguments, action, action.Status, s.operatorApprovalURL(action.ConnectionID), operatortool.ActionResult})
+	return operatorResult(operatorActionResult{action.Revision, action.CommentID, action.Mutation.CorrelationID, action.ID, action.ConnectionID, action.OrganizationID, action.ProjectID, action.IssueID, action.Identifier, action.ResourceURL, action.Client, action.Kind, action.Arguments, action, action.Status, action.PendingApprovalURL(s.operatorApprovalURL(action.ConnectionID)), operatortool.ActionResult})
 }
 
 func operatorResult(value any) (operatortool.Result, error) {

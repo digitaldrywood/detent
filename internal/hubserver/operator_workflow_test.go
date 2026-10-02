@@ -58,19 +58,31 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 					t.Fatalf("create=%s %v", created, err)
 				}
 				id := content.Data.WorkItemID
+				decodeAction := func(data json.RawMessage) chat.Action {
+					t.Helper()
+					var result struct {
+						Preview     chat.Action `json:"preview"`
+						ApprovalURL *string     `json:"approval_url"`
+					}
+					if err := json.Unmarshal(data, &result); err != nil || result.Preview.ID == "" {
+						t.Fatalf("transition=%s %v", data, err)
+					}
+					if result.Preview.Status == chat.ActionPending {
+						if result.ApprovalURL == nil || !strings.Contains(*result.ApprovalURL, "connection_id="+result.Preview.ConnectionID) {
+							t.Fatalf("pending action lacks exact approval destination: %s", data)
+						}
+					} else if result.ApprovalURL != nil {
+						t.Fatalf("resolved action advertises pending approval: %s", data)
+					}
+					return result.Preview
+				}
 				call := func(key, target string, revision int64, denied bool) chat.Action {
 					t.Helper()
 					data := hostedContextData(t, send("tools/call", operatortool.MoveItem, map[string]any{"project_id": f.project, "request_id": key, "identifier": id, "expected_revision": revision, "target_state": target}), denied)
 					if denied {
 						return chat.Action{}
 					}
-					var result struct {
-						Preview chat.Action `json:"preview"`
-					}
-					if err := json.Unmarshal(data, &result); err != nil || result.Preview.ID == "" {
-						t.Fatalf("transition=%s %v", data, err)
-					}
-					return result.Preview
+					return decodeAction(data)
 				}
 				read := func() tracker.NativeIssue {
 					t.Helper()
@@ -140,7 +152,9 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 					}
 					requireNativeStatus(t, f.browser(http.MethodPost, "/chat/approval", form), http.StatusSeeOther)
 				}
+				decodeAction(hostedContextData(t, send("tools/call", operatortool.ActionResult, map[string]any{"action_id": pending.ID}), false))
 				decision(pending.ID, "confirm", "")
+				decodeAction(hostedContextData(t, send("tools/call", operatortool.ActionResult, map[string]any{"action_id": pending.ID}), false))
 				if read().State != "Retired" || read().Revision != 5 {
 					t.Fatalf("approved terminal issue=%+v", read())
 				}
@@ -201,7 +215,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				if read().Revision != 6 {
 					t.Fatal("reconnect duplicated transition")
 				}
-				hostedContextData(t, send("tools/call", operatortool.ActionResult, map[string]any{"action_id": admission.ID}), false)
+				decodeAction(hostedContextData(t, send("tools/call", operatortool.ActionResult, map[string]any{"action_id": admission.ID}), false))
 				f.grant(t, f.user, false, false)
 				call("admit", "Ready", 1, true)
 				call("revoked", "Revise", 6, true)

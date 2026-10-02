@@ -47,10 +47,18 @@ func (f *browserHostedFixture) billingTool(t *testing.T, account, name, args str
 func billingPreview(t *testing.T, reply billingMCPReply) chat.Action {
 	t.Helper()
 	var value struct {
-		Preview chat.Action `json:"preview"`
+		Preview     chat.Action `json:"preview"`
+		ApprovalURL *string     `json:"approval_url"`
 	}
 	if reply.Result.IsError || len(reply.Error) > 0 || json.Unmarshal(reply.Result.Structured, &value) != nil || value.Preview.ID == "" {
 		t.Fatalf("preview: %+v %s", reply, reply.Result.Structured)
+	}
+	if value.Preview.Status == chat.ActionPending {
+		if value.ApprovalURL == nil || !strings.Contains(*value.ApprovalURL, "connection_id="+value.Preview.ConnectionID) {
+			t.Fatalf("pending billing action lacks approval destination: %s", reply.Result.Structured)
+		}
+	} else if value.ApprovalURL != nil {
+		t.Fatalf("resolved billing action advertises approval: %s", reply.Result.Structured)
 	}
 	return value.Preview
 }
@@ -182,6 +190,9 @@ func TestHostedBillingMCP(t *testing.T) {
 			}
 			if scenario == "reject" {
 				requireNativeStatus(t, f.billingDecision(t, action, "reject", "", false), http.StatusSeeOther)
+				if rejected := billingPreview(t, f.billingTool(t, "owner", operatortool.ActionResult, `{"action_id":"`+action.ID+`"}`)); rejected.Status != chat.ActionRejected {
+					t.Fatal("rejected action lost its disposition")
+				}
 				if len(provider.keys) != 0 {
 					t.Fatal("rejected checkout created customer")
 				}
@@ -236,6 +247,9 @@ func TestHostedBillingMCP(t *testing.T) {
 			}
 			if scenario == "provider failure" {
 				requireNativeStatus(t, decision, http.StatusConflict)
+				if failed := billingPreview(t, f.billingTool(t, "owner", operatortool.ActionResult, `{"action_id":"`+action.ID+`"}`)); failed.Status != chat.ActionFailed {
+					t.Fatal("failed action lost its disposition")
+				}
 				if strings.Contains(decision.Body.String(), "credential-sensitive") || strings.Contains(logs.String(), "whsec_") {
 					t.Fatal("provider secret leaked")
 				}

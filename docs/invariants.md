@@ -17,6 +17,16 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+MCP action results advertise `approval_url` only while the existing action is
+pending. Succeeded, failed and rejected receipts retain their genuine status,
+action identity, result tool, safe resource data and replay semantics without
+presenting a completed operation as a pending human decision. Connection setup's
+approval-page destination is independent and remains available. The shared chat
+action projection is reused by native/local work, billing, fleet, project and
+workspace results; execution, authority, confirmation and audit rules do not
+change. Existing workflow and billing transport fixtures cover pending approval,
+ordinary/YOLO success, approved replay, rejection and provider failure.
+
 Native acceptance (native #233) uses the existing `detent-status` schema in the
 authenticated attempt's final DB report, not provider execution success or prose
 classification. The host remains the only comment and lane writer. Typed

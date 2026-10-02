@@ -540,8 +540,8 @@ func (s *Service) billingActionResult(action chat.Action) (operatortool.Result, 
 		Status        chat.ActionStatus `json:"status"`
 		ResourceID    string            `json:"resource_id,omitempty"`
 		URL           string            `json:"url,omitempty"`
-		ApprovalURL   string            `json:"approval_url"`
+		ApprovalURL   string            `json:"approval_url,omitempty"`
 		ResultTool    string            `json:"result_tool"`
 		CorrelationID string            `json:"correlation_id"`
-	}{action, action.ID, action.Status, action.IssueID, action.ResourceURL, s.billingApprovalURL(action.ConnectionID), operatortool.ActionResult, action.Mutation.CorrelationID})
+	}{action, action.ID, action.Status, action.IssueID, action.ResourceURL, action.PendingApprovalURL(s.billingApprovalURL(action.ConnectionID)), operatortool.ActionResult, action.Mutation.CorrelationID})
 }

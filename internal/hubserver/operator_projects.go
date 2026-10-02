@@ -168,9 +168,9 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 func (e hubProjectExecutor) actionResult(action chatpkg.Action) (operatortool.Result, error) {
 	return hubProjectResult(struct {
 		chatpkg.Action
-		ApprovalURL string `json:"approval_url"`
+		ApprovalURL string `json:"approval_url,omitempty"`
 		ResultTool  string `json:"result_tool"`
-	}{action, e.service.billingApprovalURL(action.ConnectionID), operatortool.ActionResult})
+	}{action, action.PendingApprovalURL(e.service.billingApprovalURL(action.ConnectionID)), operatortool.ActionResult})
 }
 
 func hubProjectResult(value any) (operatortool.Result, error) {

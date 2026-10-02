@@ -398,9 +398,9 @@ func (e workspaceOperatorExecutor) actionResult(action chat.Action, data json.Ra
 		ID         string            `json:"action_id"`
 		Status     chat.ActionStatus `json:"status"`
 		Data       json.RawMessage   `json:"data,omitempty"`
-		URL        string            `json:"approval_url"`
+		URL        string            `json:"approval_url,omitempty"`
 		ResultTool string            `json:"result_tool"`
-	}{action, action.ID, action.Status, data, e.server.billingApprovalURL(action.ConnectionID), operatortool.ActionResult})
+	}{action, action.ID, action.Status, data, action.PendingApprovalURL(e.server.billingApprovalURL(action.ConnectionID)), operatortool.ActionResult})
 }
 func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	var request struct {
