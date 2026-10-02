@@ -62,7 +62,7 @@ func (c *NativeClient) ReportObservedPolicy(ctx context.Context, descriptor poli
 
 func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository string, descriptor policy.Descriptor) error {
 	if err := descriptor.Validate(); err != nil {
-		return err
+		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()}
 	}
 	source := s.nativeProjects[project]
 	if source == nil {
@@ -77,13 +77,13 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 	switch {
 	case err == nil:
 		if err := approval.Policy.Validate(); err != nil {
-			return fmt.Errorf("check approved repository policy: %w", err)
+			return fmt.Errorf("check approved repository policy: %w", &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
 		}
 		err = descriptor.Match(approval.Policy)
 		if err == nil {
 			return nil
 		}
-		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), err)
+		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
 	case errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch":
 		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), fmt.Errorf("check approved repository policy: %w", err))
 	default:
@@ -130,7 +130,7 @@ func (s *Scheduler) checkClaimPolicy(ctx context.Context, issueID, pinnedID stri
 	claim, native := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if !ok || pinnedID != pinned.descriptor.ID {
-		return errors.New("policy_mismatch: claim has no matching pinned repository policy; release it and request a new claim")
+		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "claim has no matching pinned repository policy; release it and request a new claim"}
 	}
 	if err := s.CheckProjectPolicy(ctx, pinned.project, pinned.repository, pinned.descriptor); err != nil {
 		return err
@@ -145,9 +145,11 @@ func (s *Scheduler) checkClaimPolicy(ctx context.Context, issueID, pinnedID stri
 			return err
 		}
 		if r.Binding != file.Identity.Binding || r.MachineID != s.machine.ID || r.OrganizationID != file.Identity.OrganizationID {
-			return errors.New("selector_no_match: Hub lease runner does not match this host's enrolled identity")
+			return &APIError{Status: http.StatusForbidden, Code: "selector_no_match", Message: "Hub lease runner does not match this host's enrolled identity"}
 		}
-		return pinned.descriptor.Requirements.Match(r.RunnerID, string(r.MachineID), r.Tags)
+		if err := pinned.descriptor.Requirements.Match(r.RunnerID, string(r.MachineID), r.Tags); err != nil {
+			return &APIError{Status: http.StatusForbidden, Code: "selector_no_match", Message: err.Error()}
+		}
 	}
 	return nil
 }

@@ -9,23 +9,27 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
-	t.Parallel()
 	const adminToken = "runner-client-test-admin"
+	const hubURL = "https://runner-hub.example.test"
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken)})
 	if err != nil {
 		t.Fatal(err)
@@ -36,32 +40,51 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		}
 	})
 	var dropRotation atomic.Bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var pauseRotation atomic.Bool
+	var policyStatus atomic.Int64
+	rotationEntered, rotationResume := make(chan struct{}), make(chan struct{})
+	var resumeRotation sync.Once
+	transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "runner-hub.example.test" {
+			return nil, errors.New("unexpected runner Hub destination")
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/policy") {
+			if status := policyStatus.Load(); status != 0 {
+				if status < 0 {
+					return nil, errors.New("policy transport unavailable")
+				}
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(int(status))
+				if _, err := recorder.WriteString(`{"code":"unavailable","message":"policy read unavailable"}`); err != nil {
+					return nil, err
+				}
+				return recorder.Result(), nil
+			}
+		}
+		if strings.HasSuffix(r.URL.Path, "/rotate") && pauseRotation.CompareAndSwap(true, false) {
+			close(rotationEntered)
+			select {
+			case <-rotationResume:
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		}
+		recorder := httptest.NewRecorder()
+		service.Handler().ServeHTTP(recorder, r)
 		if strings.HasSuffix(r.URL.Path, "/rotate") && dropRotation.CompareAndSwap(true, false) {
-			recorder := httptest.NewRecorder()
-			service.Handler().ServeHTTP(recorder, r)
 			if recorder.Code != http.StatusOK {
 				t.Errorf("rotation failed before response loss: %d", recorder.Code)
 			}
-			hijacker, ok := w.(http.Hijacker)
-			if !ok {
-				t.Error("test server cannot hijack response")
-				return
-			}
-			connection, _, err := hijacker.Hijack()
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			if err := connection.Close(); err != nil {
-				t.Error(err)
-			}
-			return
+			return nil, errors.New("rotation response lost after commit")
 		}
-		service.Handler().ServeHTTP(w, r)
-	}))
-	t.Cleanup(server.Close)
-	admin, err := New(Config{URL: server.URL, TokenSource: func() string { return adminToken }, HTTPClient: server.Client()})
+		return recorder.Result(), nil
+	})
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	httpClient := &http.Client{Transport: transport}
+	t.Cleanup(func() { resumeRotation.Do(func() { close(rotationResume) }) })
+	admin, err := New(Config{URL: hubURL, TokenSource: func() string { return adminToken }, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +100,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
-	file, err := runnerauth.Initialize(path, server.URL)
+	file, err := runnerauth.Initialize(path, hubURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +119,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if _, err := EnrollRunner(t.Context(), path, organization, enrollment.Token, machine); err != nil {
 		t.Fatalf("lost enrollment response recovery: %v", err)
 	}
-	client, err := New(Config{URL: server.URL, IdentityFile: path, HTTPClient: server.Client()})
+	client, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,6 +233,88 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if adopted.Issue.IsolationPolicy == nil || adopted.Issue.IsolationPolicy.Tier != isolation.NativeTrusted {
 		t.Fatalf("adopted isolation policy = %#v", adopted.Issue.IsolationPolicy)
 	}
+	t.Run("credential rotation preserves the active execution", func(t *testing.T) {
+		execution := scheduler.RunExecution(string(issue.WorkItemID))
+		guarded, stop, err := execution.Guard(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stop()
+		if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		before, err := adminNative.Recovery(t.Context(), issue.WorkItemID)
+		if err != nil || len(before.Attempts) != 1 {
+			t.Fatalf("active attempt = %#v, %v", before.Attempts, err)
+		}
+		for _, test := range []struct {
+			name   string
+			status int64
+		}{
+			{name: "transport failure", status: -1},
+			{name: "hub unavailable", status: http.StatusServiceUnavailable},
+			{name: "rate limited", status: http.StatusTooManyRequests},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				policyStatus.Store(test.status)
+				defer policyStatus.Store(0)
+				_, err := scheduler.RenewClaim(guarded, string(issue.WorkItemID), time.Now())
+				if err == nil || errors.Is(err, orchestrator.ErrSchedulingClaimLost) || guarded.Err() != nil || scheduler.RunExecution(string(issue.WorkItemID)) != execution {
+					t.Fatalf("instance failure discarded the active worker: %v", err)
+				}
+			})
+		}
+		original, err := runnerauth.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rotationDone := make(chan error, 1)
+		pauseRotation.Store(true)
+		go func() {
+			_, err := RefreshRunner(t.Context(), path, true)
+			rotationDone <- err
+		}()
+		defer resumeRotation.Do(func() { close(rotationResume) })
+		select {
+		case <-rotationEntered:
+		case err := <-rotationDone:
+			t.Fatalf("rotation did not reach the credential owner: %v", err)
+		case <-t.Context().Done():
+			t.Fatal(t.Context().Err())
+		}
+		_, err = scheduler.RenewClaim(guarded, string(issue.WorkItemID), time.Now())
+		if !errors.Is(err, instancelock.ErrHeld) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Fatalf("credential-owner contention = %v", err)
+		}
+		if guarded.Err() != nil || scheduler.RunExecution(string(issue.WorkItemID)) != execution {
+			t.Fatalf("rotation discarded the active worker: %v", context.Cause(guarded))
+		}
+		during, err := adminNative.Recovery(t.Context(), issue.WorkItemID)
+		if err != nil || during.Issue.State != before.Issue.State || during.Issue.Revision != before.Issue.Revision || !reflect.DeepEqual(during.Attempts, before.Attempts) {
+			t.Fatalf("contention changed the issue or attempt: %#v, %v", during, err)
+		}
+		resumeRotation.Do(func() { close(rotationResume) })
+		if err := <-rotationDone; err != nil {
+			t.Fatal(err)
+		}
+		rotated, err := runnerauth.Load(path)
+		expectedIdentity := original.Identity
+		expectedIdentity.ExpiresAt = rotated.Identity.ExpiresAt
+		if err != nil || rotated.Credential == original.Credential || rotated.PendingCredential != "" || rotated.Identity.ExpiresAt.Before(original.Identity.ExpiresAt) || !reflect.DeepEqual(rotated.Identity, expectedIdentity) {
+			t.Fatalf("rotation did not preserve identity and grants: %v", err)
+		}
+		renewed, err := scheduler.RenewClaim(guarded, string(issue.WorkItemID), time.Now())
+		if err != nil || renewed.Owner != adopted.Owner || !renewed.LeaseExpiresAt.After(adopted.LeaseExpiresAt) {
+			t.Fatalf("heartbeat after rotation = %#v, %v", renewed, err)
+		}
+		if err := execution.Validate(guarded); err != nil || errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
+			t.Fatalf("worker lost authority after rotation: %v", err)
+		}
+		after, err := adminNative.Recovery(t.Context(), issue.WorkItemID)
+		if err != nil || after.Issue.State != before.Issue.State || after.Issue.Revision != before.Issue.Revision || !reflect.DeepEqual(after.Attempts, before.Attempts) {
+			t.Fatalf("rotation charged an issue attempt or changed its lane: %#v, %v", after, err)
+		}
+	})
 	eligibility, err := fleetAdmin.ProjectEligibility(t.Context(), "native")
 	if err != nil || len(eligibility.Exclusions) != 1 || len(eligibility.Runners) != 1 {
 		t.Fatalf("occupied project eligibility = %#v, %v", eligibility, err)
@@ -296,7 +401,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil || pending.PendingCredential == "" || pending.Credential != file.Credential {
 		t.Fatalf("interrupted rotation not recoverable: %v", err)
 	}
-	restarted, err := New(Config{URL: server.URL, IdentityFile: path, HTTPClient: server.Client()})
+	restarted, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,6 +415,26 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if _, err := RefreshRunner(t.Context(), path, false); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("stale fencing token remains fatal", func(t *testing.T) {
+		stale, err := NewScheduler(client, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := string(issue.WorkItemID)
+		claim := scheduler.nativeClaims[id]
+		claim.lease.FencingToken++
+		stale.nativeClaims[id] = claim
+		stale.claims[id] = nativeTrackerLease(claim.lease)
+		stale.claimPolicies[id] = scheduler.claimPolicies[id]
+		_, err = stale.RenewClaim(t.Context(), id, time.Now())
+		var failure *APIError
+		if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) || !errors.As(err, &failure) || failure.Code != "stale_fencing_token" {
+			t.Fatalf("stale heartbeat retained authority: %v", err)
+		}
+		if _, err := scheduler.RenewClaim(t.Context(), id, time.Now()); err != nil {
+			t.Fatalf("stale heartbeat disturbed the active lease: %v", err)
+		}
+	})
 	if err := admin.RevokeRunner(t.Context(), organization, identity.Binding); err != nil {
 		t.Fatal(err)
 	}

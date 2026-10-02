@@ -224,7 +224,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 
 func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim nativeClaim) (orchestrator.Claimed, error) {
 	if err := s.checkClaimPolicy(ctx, issueID, claim.lease.PolicyID); err != nil {
-		return orchestrator.Claimed{}, errors.Join(orchestrator.ErrSchedulingClaimLost, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
 	}
 	if err := s.ensureNativeMachine(ctx, claim.source); err != nil {
 		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
@@ -257,7 +257,9 @@ func nativeLeaseDeadline(started time.Time, lease tracker.NativeLease) time.Time
 
 func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken, err error) error {
 	var apiErr *APIError
-	lostAuthority := s.client.runner != nil && errors.As(err, &apiErr) && apiErr != nil && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound)
+	lostAuthority := errors.As(err, &apiErr) && apiErr != nil &&
+		(apiErr.Code == "policy_mismatch" || apiErr.Code == "selector_no_match" ||
+			s.client.runner != nil && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound))
 	if claimLost(err) || lostAuthority {
 		s.mu.Lock()
 		if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {

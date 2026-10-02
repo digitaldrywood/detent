@@ -657,6 +657,25 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+Native claim policy heartbeats (#151) share `nativeClaimError` with machine
+heartbeat and lease renewal. Contention on the enrolled runner's identity-file
+lock during credential rotation, policy transport failures, rate limits and Hub
+unavailability retain the active claim and worker without an issue failure or
+lane transition. These errors do not renew or extend the lease: existing native
+fencing and execution deadlines still reject expired authority. Local descriptor
+and runner-selector mismatches use the existing typed `policy_mismatch` and
+`selector_no_match` errors; actual policy, lease, identity and scope refusals
+remain fatal, and only the matching fencing token's cached claim is discarded.
+`TestRunnerClientEnrollmentSchedulingAndRotationRecovery` pauses the real
+credential rotation owner while a native execution is active, verifies unchanged
+issue and attempt records, and then renews with the same identity and grants.
+`TestNativeSchedulerReportsItsUnapprovedPolicyOnce`,
+`TestNativeDelayedResponsesPreserveSuccessor` and
+`TestNativeGuardDeadlineAndRenewal` retain mismatch, fencing and expiry coverage.
+This removes the blanket policy-error claim-loss classification under INV-3;
+credential rotation, atomic private persistence and pending-credential recovery
+keep their existing owners, with no new mechanism or authority bypass.
+
 Native runner GitHub PR landing (#89) uses the existing REST client classifier,
 response accounting, and instance REST capacity completion owner. Actual primary
 or secondary quota responses retain their credential identity, reset and

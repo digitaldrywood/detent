@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,17 +72,19 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 		status    int
 		local     policy.Descriptor
 		wantError bool
+		wantLost  bool
 		reports   int
 	}{
-		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), wantError: true, reports: 1},
-		{name: "approved policy differs", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, reports: 1},
+		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), wantError: true, wantLost: true, reports: 1},
+		{name: "approved policy differs", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, wantLost: true, reports: 1},
+		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), wantError: true, wantLost: true},
 		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 0},
 		{name: "hub unavailable", status: http.StatusServiceUnavailable, local: clientTestPolicy(), wantError: true, reports: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			var reported []policy.Descriptor
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/projects/prj_site/policy/observed"):
@@ -104,9 +107,12 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
-			}))
-			t.Cleanup(server.Close)
-			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "worker" }})
+			})
+			client, err := New(Config{URL: "https://policy-hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, request)
+				return recorder.Result(), nil
+			})}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -128,6 +134,21 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 			}
 			if test.reports > 0 && reported[0].ID != test.local.ID {
 				t.Fatalf("reported %s, want %s", reported[0].ID, test.local.ID)
+			}
+			if test.wantError {
+				id := "wi_" + strings.Repeat("a", 32)
+				lease := tracker.NativeLease{WorkItemID: tracker.NativeWorkItemID(id), PolicyID: test.local.ID, FencingToken: 1}
+				scheduler.nativeClaims[id] = nativeClaim{source: scheduler.nativeProjects["site"], lease: lease}
+				scheduler.claims[id] = nativeTrackerLease(lease)
+				scheduler.claimPolicies[id] = claimPolicy{project: "site", descriptor: test.local}
+				_, err := scheduler.RenewClaim(t.Context(), id, time.Now())
+				if errors.Is(err, orchestrator.ErrSchedulingClaimLost) != test.wantLost {
+					t.Fatalf("heartbeat authority loss = %v, want %v", err, test.wantLost)
+				}
+				_, retained := scheduler.nativeClaims[id]
+				if retained == test.wantLost {
+					t.Fatalf("heartbeat retained claim = %v, want %v", retained, !test.wantLost)
+				}
 			}
 		})
 	}
