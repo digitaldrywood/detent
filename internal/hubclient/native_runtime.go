@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -36,7 +37,16 @@ func (c *NativeClient) RuntimeEvidence(ctx context.Context, item tracker.NativeW
 	return result, err
 }
 
-func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) error {
+func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) (err error) {
+	defer func() {
+		if err != nil {
+			err = e.executionError(err)
+			if nativeTransportUnavailable(err) {
+				slog.Default().Warn("native runtime observation unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
+				err = nil
+			}
+		}
+	}()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.runtimeSupported == nil {

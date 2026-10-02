@@ -21,7 +21,7 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 	if preTurnAttempt(telemetry.WorkAttempt{ErrorClass: attempt.ErrorClass, MetricsJSON: attempt.MetricsJSON, WorkerMetadataJSON: attempt.WorkerMetadataJSON}) {
 		return true
 	}
-	if attempt.TerminalState == store.WorkAttemptTerminalCapacity || attempt.Phase == "completion_deferred" {
+	if attempt.TerminalState == store.WorkAttemptTerminalAbandoned || attempt.TerminalState == store.WorkAttemptTerminalCapacity || attempt.Phase == "completion_deferred" {
 		return true
 	}
 	class := strings.ToLower(strings.TrimSpace(attempt.ErrorClass))
