@@ -1394,7 +1394,11 @@ databases that already applied 64 retain those effects. Fresh, schema-60,
 attachment-62, origin-62, origin-63 and reference-64 fixtures exercise forward
 upgrades. This adds no startup reconciliation loop, migration allocator, validation
 gate or configuration key. Once migration 65 is applied, deployment rollback
-requires a binary that supports schema 65.
+requires a binary that supports schema 65. The subsequently added hosted-project
+event index uses forward SQL migration 66, preserving the genuinely applied Go
+origin migration 65. The schema-65 upgrade fixture verifies unchanged origin and
+reference data plus the new event index. After 66 applies, rollback requires a
+binary that supports schema 66.
 
 Reviewed checkout isolation (#170) consolidates preparation under LocalGit's
 existing source-operation lock, path confinement, workspace usage and cleanup
