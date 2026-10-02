@@ -856,14 +856,14 @@ func (s *Server) hydrateKanbanIssueConversation(ctx context.Context, data templa
 		data.IssueError = response
 		return data
 	}
-	if reader, ok := target.connector.(connector.IssueCommentReader); ok {
-		comments, err := reader.FetchIssueComments(ctx, connector.Issue{
+	if _, ok := target.connector.(connector.IssueCommentReader); ok {
+		comments, err := readIssueDiscussion(ctx, target.connector, connector.Issue{
 			ID:         data.IssueID,
 			Identifier: data.Identifier,
 			URL:        data.IssueURL,
 		})
 		if err != nil {
-			data.IssueError = "Issue comments unavailable: " + err.Error()
+			data.IssueError = "Issue comments unavailable"
 		} else {
 			data = templates.KanbanConversationWithIssueComments(data, telemetryCommentsFromConnector(comments), data.IssueError)
 		}
@@ -884,17 +884,17 @@ func (s *Server) hydrateKanbanPRConversation(ctx context.Context, data templates
 		data.PRComments = nil
 		return data
 	}
-	reader, ok := target.connector.(connector.PullRequestCommentReader)
+	_, ok := target.connector.(connector.PullRequestCommentReader)
 	if !ok {
 		data.PRCommentsSupported = false
 		data.PRComments = nil
 		data.PRError = ""
 		return data
 	}
-	comments, err := reader.FetchPullRequestComments(ctx, data.PRRepository, data.PRNumber)
+	comments, err := readPRDiscussion(ctx, target.connector, data.PRRepository, data.PRNumber)
 	data.PRCommentsSupported = true
 	if err != nil {
-		data.PRError = "PR comments unavailable: " + err.Error()
+		data.PRError = "PR comments unavailable"
 		return data
 	}
 	return templates.KanbanConversationWithPRComments(data, telemetryCommentsFromConnector(comments), true, data.PRError)

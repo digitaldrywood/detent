@@ -74,6 +74,8 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 				var text string
 				if json.Unmarshal(value, &text) == nil {
 					fixture.last[key] = text
+				} else {
+					fixture.last[key] = string(value)
 				}
 			}
 			fixture.last["method"], fixture.last["path"] = r.Method, path

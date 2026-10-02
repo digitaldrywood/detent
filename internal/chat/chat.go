@@ -37,6 +37,7 @@ type Message struct {
 }
 
 type Action struct {
+	GitHubIssueURL    string                      `json:"github_issue_url,omitempty"`
 	ConversationID    string                      `json:"-"`
 	SignOut           *operatortool.SignOutResult `json:"sign_out,omitempty"`
 	resultData        json.RawMessage             // Never serialized into browser, logs or audit.

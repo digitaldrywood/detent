@@ -31,7 +31,7 @@ func (r dashboardWorkReads) WorkReadNames(ctx context.Context) []string {
 		return nil
 	}
 	var names []string
-	var native, comments, events bool
+	var native, comments, prComments, events bool
 	for _, tracked := range s.registry.List() {
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(tracked.ID())}); err != nil {
 			continue
@@ -45,6 +45,9 @@ func (r dashboardWorkReads) WorkReadNames(ctx context.Context) []string {
 		if _, ok := tracked.Connector().(connector.IssueCommentReader); ok {
 			comments = true
 		}
+		if _, ok := tracked.Connector().(connector.PullRequestCommentReader); ok {
+			prComments = true
+		}
 		if _, ok := tracked.Connector().(connector.IssueEventReader); ok {
 			events = true
 		}
@@ -57,6 +60,9 @@ func (r dashboardWorkReads) WorkReadNames(ctx context.Context) []string {
 	}
 	if native || comments {
 		names = append(names, operatortool.WorkComments)
+	}
+	if prComments {
+		names = append(names, operatortool.WorkPRComments)
 	}
 	if native || events || s.store != nil {
 		names = append(names, operatortool.WorkHistory)
@@ -99,7 +105,7 @@ func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request o
 	}
 	if client != nil {
 		switch name {
-		case operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt:
+		case operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkPRComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt:
 			return s.readNativeWork(ctx, client, tracked, request, name)
 		}
 	}
@@ -149,15 +155,20 @@ func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request o
 		if request.Cursor != "" {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
-		reader, ok := tracked.Connector().(connector.IssueCommentReader)
-		if !ok {
-			return operatortool.Result{}, operatortool.ErrReadUnavailable
-		}
-		comments, err := reader.FetchIssueComments(ctx, connectorIssueForWork(issue))
+		comments, err := readIssueDiscussion(ctx, tracked.Connector(), connectorIssueForWork(issue))
 		if err != nil {
 			return operatortool.Result{}, err
 		}
 		return nativeWorkResult(request, operatortool.OffsetPage(comments, request.Offset, request.Limit), nil)
+	case operatortool.WorkPRComments:
+		if request.Cursor != "" {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		if issue.PullRequest == nil || issue.PullRequest.Number <= 0 {
+			return operatortool.Result{}, explain.ErrNotFound
+		}
+		comments, err := readPRDiscussion(ctx, tracked.Connector(), kanbanPullRequestRepository(issue), issue.PullRequest.Number)
+		return nativeWorkResult(request, operatortool.OffsetPage(comments, request.Offset, request.Limit), err)
 	case operatortool.WorkHistory:
 		if request.Cursor != "" {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -308,7 +319,7 @@ func connectorIssueForWork(issue telemetry.Issue) connector.Issue {
 }
 
 func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeClient, tracked *project.Project, request operatortool.WorkReadRequest, name string) (operatortool.Result, error) {
-	if request.Offset != 0 && name != operatortool.WorkReferences && name != operatortool.BoardSessionHistory {
+	if request.Offset != 0 && name != operatortool.WorkReferences && name != operatortool.BoardSessionHistory && name != operatortool.WorkPRComments {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 
@@ -393,6 +404,8 @@ func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeCli
 		return nativeWorkResult(request, operatortool.NativeItemView(request.ProjectID, issue), nil)
 	case operatortool.WorkExport:
 		return nativeWorkResult(request, issue, nil)
+	case operatortool.WorkPRComments:
+		return operatortool.Result{}, operatortool.ErrReadUnavailable
 	case operatortool.WorkRelationships:
 		return nativeWorkResult(request, struct {
 			Dependencies []tracker.NativeWorkItemID  `json:"dependencies"`

@@ -75,9 +75,12 @@ func (s *Server) createWorkItem(ctx context.Context, projectID string, request w
 			}
 			priority = &rank
 		}
-		created, err := executeNativeWorkCommand(ctx, client, nativeWorkCommand{Kind: operatortool.FileIssue, Create: tracker.CreateIssue{Title: request.Title, Body: request.Description, State: state, Labels: request.Labels, Priority: priority}})
+		created, err := executeNativeWorkCommand(ctx, client, nativeWorkCommand{Kind: operatortool.FileIssue, Create: tracker.CreateIssue{GitHubIssueURL: request.GitHubIssueURL, Title: request.Title, Body: request.Description, State: state, Labels: request.Labels, Priority: priority}})
 		issue := created.Issue
 		return workitem.Response{ID: string(issue.WorkItemID), Identifier: projectID + "#" + strconv.Itoa(issue.Number), Number: issue.Number, URL: templates.NativeIssuePath(projectID, issue.WorkItemID)}, err
+	}
+	if request.GitHubIssueURL != "" {
+		return workitem.Response{}, operatortool.ErrInvalidArguments
 	}
 	return workitem.Create(ctx, workitem.Target{ProjectID: projectID, Workflow: tracked.Workflow().Config, Connector: tracked.Connector(), DashboardURL: s.dashboardURL}, request)
 }

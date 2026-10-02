@@ -57,7 +57,7 @@ func WorkCatalog() []Definition {
 	comment := `,"comment_id":{"type":"string","minLength":1,"maxLength":256}`
 	definitions := []Definition{
 		commandDefinition(SetQueuePriority, "Set a compatibility work-item queue priority using the existing dashboard command.", selector+`,"queue_scope":{"type":"string","minLength":1,"maxLength":256},"state":{"type":"string","minLength":1,"maxLength":256},"queue_priority":{"type":"string","enum":["urgent","high","normal","low","none"]}`, `"identifier","queue_scope","state","queue_priority"`, false),
-		commandDefinition(EditItem, "Edit native work-item content, labels and priority with an expected revision. Clearing content requires operator approval. GitHub-backed editing is unavailable when the dashboard does not offer it.", selector+revision+body+`,"title":{"type":"string","minLength":1,"maxLength":256},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":0,"maximum":3}`, `"identifier","expected_revision"`, true),
+		commandDefinition(EditItem, "Edit native work-item content, labels and priority with an expected revision. Clearing content requires operator approval. GitHub-backed editing is unavailable when the dashboard does not offer it.", selector+revision+body+`,"title":{"type":"string","minLength":1,"maxLength":500},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":0,"maximum":3}`, `"identifier","expected_revision"`, true),
 		commandDefinition(AddComment, "Add an issue or supported pull-request comment through the dashboard application command. Embed upload_attachment reference in body to attach a file.", selector+body+`,"target":{"type":"string","enum":["issue","pr"]},"repository":{"type":"string","minLength":1,"maxLength":256},"pull_request":{"type":"integer","minimum":1}`, `"identifier","body"`, false),
 		commandDefinition(EditComment, "Edit a permitted comment; native comments require their expected revision.", selector+revision+body+comment, `"identifier","comment_id","body"`, false),
 		commandDefinition(DeleteComment, "Delete a permitted local comment after real operator approval. Native comment deletion is unavailable.", selector+comment, `"identifier","comment_id"`, true),
@@ -127,6 +127,9 @@ func DecodeWorkArguments(name string, raw json.RawMessage) (WorkArguments, error
 		var text string
 		if json.Unmarshal(value, &text) == nil {
 			limit := 256
+			if key == "title" {
+				limit = 500
+			}
 			if key == "body" {
 				limit = 32768
 			}

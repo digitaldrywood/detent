@@ -45,6 +45,7 @@ type ChangeArguments struct {
 	ProjectID         string                           `json:"project_id"`
 	RequestID         string                           `json:"request_id,omitempty"`
 	ItemID            string                           `json:"work_item_id,omitempty"`
+	LinkedIssues      []tracker.NativeWorkItemID       `json:"linked_issues,omitempty"`
 	ChangeID          string                           `json:"change_id,omitempty"`
 	VersionID         string                           `json:"version_id,omitempty"`
 	ExpectedVersionID *string                          `json:"expected_version_id,omitempty"`
@@ -154,8 +155,9 @@ func ChangeCatalog() []Definition {
 	props["code"] = json.RawMessage(`{"type":"object","required":["kind","uri","sha256","availability"],"properties":{"kind":{"type":"string","enum":["code"]},"uri":{"type":"string","minLength":1,"maxLength":2048},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"availability":{"type":"string","enum":["unverified","available","missing","inaccessible"]}},"additionalProperties":false}`)
 	props["artifacts"] = json.RawMessage(`{"type":"array","maxItems":63,"items":` + string(artifactSchema) + `}`)
 	props["external"] = json.RawMessage(`{"type":"object","required":["provider","id","url"],"properties":{"provider":{"type":"string","enum":["github"]},"id":{"type":"string","minLength":1,"maxLength":128},"url":{"type":"string","minLength":1,"maxLength":2048}},"additionalProperties":false}`)
-	props["title"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":256}`)
+	props["title"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":512}`)
 	props["body"] = json.RawMessage(`{"type":"string","maxLength":32768}`)
+	props["linked_issues"] = json.RawMessage(`{"type":"array","maxItems":32,"items":{"type":"string","pattern":"^wi_[A-Za-z0-9_]+$","maxLength":256}}`)
 	props["decision"] = json.RawMessage(`{"type":"string","enum":["approved","changes_requested","commented"]}`)
 	for _, k := range []string{"expected_revision", "revision", "sequence"} {
 		props[k] = json.RawMessage(`{"type":"integer","minimum":1,"maximum":9007199254740991}`)
@@ -198,7 +200,7 @@ func ChangeCatalog() []Definition {
 	add(ArtifactReferences, "Read artifact receipts and availability for an owned work item.", "work_item_id", "limit offset", true, false)
 	add(GetArtifactReference, "Read the exact immutable artifact receipt, including historical revisions.", "work_item_id artifact_id revision", "", true, false)
 	add(ArtifactAccess, "Authorize an exact artifact revision for download/export through existing manifest/object endpoints. Token expires within one minute; send it as Bearer, never in a URL. Replays reauthorize and mint fresh ephemeral access.", "work_item_id artifact_id revision sha256 request_id", "", false, false)
-	add(CreateChange, "Create a Change Request using the existing application command.", "work_item_id title request_id", "body", false, false)
+	add(CreateChange, "Create a Change Request using the existing application command, optionally linking other work items owned by this project.", "work_item_id title request_id", "body linked_issues", false, false)
 	add(PublishChangeVersion, "Publish a genuine operator-authored immutable version without a Run/Attempt. Use an empty expected_version_id for first publication. Reuses approved policy, artifact validation and promotion; returns the stable published version and live current Change/lane. Unverified artifacts remain unverified; external PR references do not bypass repository protection.", "work_item_id change_id expected_version_id base_sha head_sha merge_base_sha repository code policy_id request_id", "artifacts external", false, false)
 	add(DiscussChange, "Discuss a change through its application command.", "work_item_id change_id body request_id", "version_id", false, false)
 	add(ReviewChange, "Review the current immutable bundle. Approval/requests for changes require real operator confirmation; comments run directly.", "work_item_id change_id version_id expected_revision decision bundle request_id", "body", false, true)
@@ -243,8 +245,21 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 			return args, ErrInvalidArguments
 		}
 	}
-	if args.ProjectID == "" || len(args.RequestID) > 128 || strings.TrimSpace(args.RequestID) != args.RequestID || len(args.Title) > 256 || len(args.Body) > 32768 || args.Limit < 0 || args.Limit > 200 || args.Offset < 0 || args.Offset > 10000 {
+	if args.ProjectID == "" || len(args.RequestID) > 128 || strings.TrimSpace(args.RequestID) != args.RequestID || len(args.Title) > 512 || len(args.Body) > 32768 || args.Limit < 0 || args.Limit > 200 || args.Offset < 0 || args.Offset > 10000 {
 		return args, ErrInvalidArguments
+	}
+	if len(args.LinkedIssues) > 32 || string(fields["linked_issues"]) == "null" {
+		return args, ErrInvalidArguments
+	}
+	for _, id := range args.LinkedIssues {
+		if len(id) > 256 || !strings.HasPrefix(string(id), "wi_") || len(id) <= 3 || strings.ContainsAny(string(id), "/\\?#% \t\n") {
+			return args, ErrInvalidArguments
+		}
+		for _, char := range string(id)[3:] {
+			if char != '_' && (char < '0' || char > '9') && (char < 'A' || char > 'Z') && (char < 'a' || char > 'z') {
+				return args, ErrInvalidArguments
+			}
+		}
 	}
 	if name == PublishChangeVersion {
 		expected := args.ExpectedVersionID

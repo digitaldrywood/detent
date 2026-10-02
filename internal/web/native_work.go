@@ -276,7 +276,8 @@ func executeNativeForm(ctx context.Context, client *hubclient.NativeClient, data
 	}
 	switch data.Action {
 	case "create":
-		issue, err := client.CreateIssue(ctx, tracker.CreateIssue{Mutation: mutation, GitHubIssueURL: data.GitHubIssueURL, Title: data.Title, Body: data.Body, State: data.State, Priority: priority})
+		created, err := executeNativeWorkCommand(ctx, client, nativeWorkCommand{Kind: operatortool.FileIssue, Key: data.Key, Create: tracker.CreateIssue{GitHubIssueURL: data.GitHubIssueURL, Title: data.Title, Body: data.Body, State: data.State, Priority: priority}})
+		issue := created.Issue
 		return nativeFormResult{URL: templates.NativeIssuePath(data.Dashboard.ProjectID, issue.WorkItemID), Issue: issue}, err
 	case "edit":
 		result, err = executeNativeWorkCommand(ctx, client, nativeWorkCommand{Kind: operatortool.EditItem, Key: data.Key, ID: id, ExpectedRevision: tracker.Revision(revision), Title: &data.Title, Body: &data.Body, Priority: priority})

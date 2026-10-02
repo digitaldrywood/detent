@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,7 +24,8 @@ import (
 func TestOperatorGitHubWorkReads(t *testing.T) {
 	// Catch foreign aggregate/detail/comment/PR leakage using the real GitHub
 	// connector and dashboard application fixture, with an isolated HTTP backend.
-	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var providerFailed atomic.Bool
+	githubHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/repos/example/repo" {
 			w.Header().Set("Content-Type", "application/json")
 			if _, err := io.WriteString(w, `{"id":1,"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false}`); err != nil {
@@ -32,7 +33,14 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 			}
 			return
 		}
-		if r.Method != http.MethodGet || r.URL.Path != "/repos/example/repo/issues/1/comments" {
+		if providerFailed.Load() {
+			w.WriteHeader(http.StatusForbidden)
+			if _, err := io.WriteString(w, `{"message":"credential-sensitive-provider-detail"}`); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/example/repo/issues/1/comments" && r.URL.Path != "/repos/example/repo/issues/10/comments" {
 			t.Errorf("unexpected GitHub read: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(404)
 			return
@@ -42,9 +50,8 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		}
-	}))
-	t.Cleanup(githubServer.Close)
-	source, err := github.NewConnector(github.Config{Endpoint: githubServer.URL + "/graphql", APIKey: "fixture", Repository: "example/repo", GitHubStatusSource: workflowconfig.GitHubStatusSourceLabel, ActiveStates: []string{"Todo"}})
+	})
+	source, err := github.NewConnector(github.Config{Endpoint: "http://github.test/graphql", HTTPClient: &http.Client{Transport: nativeWebTransport{handler: githubHandler}}, APIKey: "fixture", Repository: "example/repo", GitHubStatusSource: workflowconfig.GitHubStatusSourceLabel, ActiveStates: []string{"Todo"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +89,9 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "fixture-admin"}, ServerAddress: "127.0.0.1:0"}, deps)
+	clock := time.Now()
+	var ticks atomic.Int64
+	server, err := web.NewServer(web.Config{Now: func() time.Time { return clock.Add(time.Duration(ticks.Add(1)) * time.Second) }, GlobalConfig: globalconfig.Config{APIToken: "fixture-admin"}, ServerAddress: "127.0.0.1:0"}, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +113,13 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 		{"work_config", `{"project_id":"visible"}`, 200, "bug"},
 		{"work_comments", `{"project_id":"visible","reference":"#1","limit":1}`, 200, "First note"},
 		{"work_comments", `{"project_id":"visible","reference":"#1","offset":1,"limit":1}`, 200, "Edited note"},
+		{"work_pr_comments", `{"project_id":"visible","reference":"#1","limit":1}`, 200, `"next_offset":1`},
+		{"work_pr_comments", `{"project_id":"visible","reference":"#1","offset":1,"limit":1}`, 200, "Edited note"},
+		{"work_pr_comments", `{"project_id":"foreign","reference":"hidden"}`, 403, "access_denied"},
+		{"work_pr_comments", `{"project_id":"visible","reference":"hidden"}`, 404, "issue_not_found"},
+		{"work_pr_comments", `{"project_id":"visible","reference":"#2"}`, 404, "issue_not_found"},
+		{"work_pr_comments", `{"project_id":"visible","reference":"#1","repository":"secret/repo"}`, 400, "invalid_arguments"},
+		{"work_pr_comments", `{"project_id":"visible","reference":"#1","pull_request":99}`, 400, "invalid_arguments"},
 		{"work_history", `{"project_id":"visible","reference":"#1","limit":1}`, 200, `"next_offset":1`},
 		{"work_history", `{"project_id":"visible","reference":"#1","offset":1,"limit":1}`, 200, `"items":[`},
 		{"board_activity", `{"project_id":"visible","reference":"#1"}`, 200, `"source":"durable"`},
@@ -131,14 +147,28 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 			if strings.Contains(body, "Foreign secret") || strings.Contains(body, "secret/repo") || strings.Contains(body, "https://secret/pr") {
 				t.Fatalf("foreign data=%s", body)
 			}
-			if test.status == 200 && test.tool != "work_comments" && !strings.Contains(body, `"freshness":"expired"`) {
+			if test.status == 200 && test.tool != "work_comments" && test.tool != "work_pr_comments" && !strings.Contains(body, `"freshness":"expired"`) {
 				t.Fatalf("missing stale state: %s", body)
 			}
-			if test.status == 200 && test.tool == "work_comments" && !strings.Contains(body, `"freshness":"available"`) {
+			if test.status == 200 && (test.tool == "work_comments" || test.tool == "work_pr_comments") && !strings.Contains(body, `"freshness":"available"`) {
 				t.Fatalf("fresh comments inherited expired snapshot: %s", body)
 			}
 		})
 	}
+	providerFailed.Store(true)
+	for _, tool := range []string{"work_comments", "work_pr_comments"} {
+		response := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/"+tool, `{"project_id":"visible","reference":"#1"}`, map[string]string{"Authorization": "Bearer " + key.Token})
+		if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "credential-sensitive-provider-detail") {
+			t.Fatalf("unsafe provider failure=%d %s", response.Code, response.Body)
+		}
+	}
+	for _, target := range []string{"issue", "pr"} {
+		response := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=visible&issue=issue-1&target="+target, "", map[string]string{"Authorization": "Bearer " + key.Token})
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "comments unavailable") || strings.Contains(response.Body.String(), "credential-sensitive-provider-detail") {
+			t.Fatalf("unsafe board discussion failure=%d %s", response.Code, response.Body)
+		}
+	}
+	providerFailed.Store(false)
 	// Number-only references must remain ambiguous when two distinct identities
 	// share the number, rather than silently selecting the first item.
 	snapshot.BoardIssues = append(snapshot.BoardIssues, telemetry.Issue{ID: "collision", Identifier: "another/repo#1", Number: 1, ProjectID: "visible", Title: "Collision", State: "Todo"})
@@ -148,6 +178,13 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 	response := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/work_item", `{"project_id":"visible","reference":"#1"}`, map[string]string{"Authorization": "Bearer " + key.Token})
 	if response.Code != http.StatusConflict {
 		t.Fatalf("ambiguous=%d %s", response.Code, response.Body)
+	}
+	if err := apikey.NewService(backend).Revoke(t.Context(), key.Key.ID); err != nil {
+		t.Fatal(err)
+	}
+	response = performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/work_pr_comments", `{"project_id":"visible","reference":"issue-1"}`, map[string]string{"Authorization": "Bearer " + key.Token})
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked PR read=%d %s", response.Code, response.Body)
 	}
 }
 
@@ -220,5 +257,42 @@ func TestOperatorNativeClientReads(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "explain_item") {
 		t.Fatalf("native read discovery=%d %s", response.Code, response.Body)
 	}
-
+	creation := `{"project_id":"native","request_id":"linked-create","github_issue_url":"https://github.com/example/repo/issues/12","priority":4}`
+	headers := map[string]string{"Authorization": "Bearer web-secret"}
+	connection := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-connections", `{}`, headers)
+	var session struct {
+		ID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(connection.Body.Bytes(), &session); err != nil || session.ID == "" {
+		t.Fatalf("native operator connection=%d %s %v", connection.Code, connection.Body, err)
+	}
+	headers["X-Detent-Connection-ID"] = session.ID
+	response = performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/file_issue", creation, headers)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"issue_id":"wi_example"`) || !strings.Contains(response.Body.String(), `"revision":7`) {
+		t.Fatalf("linked tool creation=%d %s", response.Code, response.Body)
+	}
+	fixture.mu.Lock()
+	link, path, priority := fixture.last["github_issue_url"], fixture.last["path"], fixture.last["priority"]
+	fixture.mu.Unlock()
+	if link != "https://github.com/example/repo/issues/12" || path != "/work-items" || priority != "3" {
+		t.Fatalf("lost native linkage/priority: %s %s %s", link, path, priority)
+	}
+	response = performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/file_issue", creation, headers)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"issue_id":"wi_example"`) {
+		t.Fatalf("linked tool replay=%d %s", response.Code, response.Body)
+	}
+	response = performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/create_change", `{"project_id":"native","work_item_id":"wi_example","request_id":"linked-change","title":"Change","linked_issues":["wi_visible"]}`, headers)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"identifier":"change_created"`) {
+		t.Fatalf("linked Change=%d %s", response.Code, response.Body)
+	}
+	fixture.mu.Lock()
+	links := fixture.last["linked_issues"]
+	fixture.mu.Unlock()
+	if links != `["wi_visible"]` {
+		t.Fatalf("lost Change links: %s", links)
+	}
+	response = performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/work_pr_comments", `{"project_id":"native","reference":"wi_example"}`, map[string]string{"Authorization": "Bearer " + fixture.keys["readnative"]})
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing native PR service=%d %s", response.Code, response.Body)
+	}
 }

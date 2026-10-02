@@ -20,6 +20,7 @@ const (
 	WorkItem            = "work_item"
 	WorkConfig          = "work_config"
 	WorkComments        = "work_comments"
+	WorkPRComments      = "work_pr_comments"
 	WorkHistory         = "work_history"
 	WorkVersion         = "work_version"
 	WorkRelationships   = "work_relationships"
@@ -79,6 +80,7 @@ func WorkReadCatalog() []Definition {
 		{WorkConfig, "Read configured project lanes, priorities and available labels.", ""},
 		{WorkItem, "Read a work item's detail and source freshness.", "reference"},
 		{WorkComments, "Read a bounded page of work-item comments with edit revisions.", "reference cursor offset limit"},
+		{WorkPRComments, "Read a bounded page of the work item's linked PR discussion through the existing forge reader. The application selects the repository and PR; deployments without a PR discussion reader are unavailable.", "reference offset limit"},
 		{WorkHistory, "Read durable application history, identifying the tracker or workflow source; separate from recent_activity's live snapshot.", "reference cursor offset limit"},
 		{WorkVersion, "Read a saved native issue or comment revision.", "reference comment_id revision"},
 		{WorkRelationships, "Read authorized dependencies, relationships and external references.", "reference"},

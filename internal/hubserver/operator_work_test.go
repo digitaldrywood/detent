@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,7 +16,7 @@ import (
 // Catches hub adapters bypassing native replay/revisions or exposing destructive
 // commands when no operator approval or orchestrator service is installed.
 func TestHubMCPWorkCommands(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
+	f := linkedFixture(t)
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
 	call := func(name, key string, fields map[string]any) (json.RawMessage, bool) {
 		t.Helper()
@@ -52,6 +53,34 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	replay, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body", "state": "Todo"})
 	if failed || string(raw) != string(replay) {
 		t.Fatalf("creation replay=%s", replay)
+	}
+	for rank := 1; rank <= 4; rank++ {
+		fields := map[string]any{"title": "Priority", "description": "Exact rank", "priority": rank}
+		raw, failed := call("file_issue", "rank-"+strconv.Itoa(rank), fields)
+		var item tracker.NativeIssue
+		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Priority == nil || *item.Priority != rank-1 {
+			t.Fatalf("rank %d=%s %v", rank, raw, err)
+		}
+	}
+	linkedArgs := map[string]any{"github_issue_url": "github.com/Acme/Orders/issues/12", "state": "Todo"}
+	linkedRaw, failed := call("file_issue", "linked", linkedArgs)
+	var linked tracker.NativeIssue
+	if err := json.Unmarshal(linkedRaw, &linked); err != nil || failed || linked.LinkedSource == nil || linked.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
+		t.Fatalf("linked creation=%s %v", linkedRaw, err)
+	}
+	for _, key := range []string{"linked", "duplicate-link"} {
+		replay, failed := call("file_issue", key, linkedArgs)
+		if failed || string(replay) != string(linkedRaw) {
+			t.Fatalf("linked retry=%s", replay)
+		}
+	}
+	if _, failed := call("file_issue", "linked", map[string]any{"github_issue_url": "github.com/acme/orders/issues/13", "state": "Todo"}); !failed {
+		t.Fatal("changed linked creation retry was accepted")
+	}
+	for _, link := range []string{"https://github.com/acme/private/issues/12", "https://github.com/acme/orders/pull/12", "https://example.com/acme/orders/issues/12"} {
+		if _, failed := call("file_issue", link, map[string]any{"github_issue_url": link}); !failed {
+			t.Fatalf("foreign linkage accepted: %s", link)
+		}
 	}
 	id := string(created.WorkItemID)
 	var comment tracker.NativeComment

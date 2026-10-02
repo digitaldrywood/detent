@@ -25197,9 +25197,9 @@
       ],
       "authority": {
         "role": "local operator (dashboard authentication when configured)",
-        "credential_scope": "read/write/admin (project scope where route supplies project)",
-        "project_grant": "not project-scoped; organization/instance authority still enforced",
-        "ownership": "current organization/account; no cross-organization resource lookup"
+        "credential_scope": "read",
+        "project_grant": "current selected project read grant",
+        "ownership": "current organization/project work-item identity and its linked PR; no arbitrary forge resource"
       },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
@@ -25212,13 +25212,13 @@
           "class": "none"
         }
       ],
-      "application": "s.apiBoardConversation; s.boardCardDashboardData, s.hydrateKanbanIssueConversation, s.hydrateKanbanPRConversation, s.kanbanConversationShellData",
-      "extraction": "The issue/PR comment panel reads existing tracker and forge comments through hydrateKanbanIssueConversation/hydrateKanbanPRConversation. Its meaningful comment read belongs to the comments child #3341; workspace conversation commands do not own tracker comment reads.",
+      "application": "hydrateKanbanIssueConversation / hydrateKanbanPRConversation and dashboardWorkReads share readIssueDiscussion / readPRDiscussion; native issue discussion uses NativeClient.CommentsPage / native readComments",
+      "extraction": "Bound the existing issue and linked-PR discussion readers through canonical work_comments/list_comments and work_pr_comments. Derive the PR repository and number from the authorized item, and redact connector errors in the shared discussion owner.",
       "tool": {
-        "set": "conversations_workspaces",
-        "name": "api_board_conversation",
-        "arguments": "Bounded apiBoardConversationRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "apiBoardConversationResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "set": "board",
+        "name": "work_pr_comments",
+        "arguments": "Issue discussion: work_comments(project_id, reference, cursor or offset, limit) or list_comments(project_id, identifier, cursor, limit). Linked-PR discussion: work_pr_comments(project_id, reference, offset, limit). Limit 1\u2013200; selectors bounded to 256 bytes; no caller-selected repository, PR number, URL, credential or approval.",
+        "result": "WorkReadResult with project, canonical item reference/URL, live read freshness and ReadPage of connector discussion comments plus next_offset; native issue discussion retains cursor paging and comment revisions. At most 256 KiB, opaque unavailable errors.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -25227,9 +25227,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3341",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Explicit ownership correction after inspecting apiBoardConversation: tracker/PR comments, not native workspace conversation history. Remains pending for #3341 and parent #3259 acceptance."
+      "status": "implemented",
+      "coverage": "TestWorkReadArguments and TestWorkReadDirectAuthorityAndSafeFailure (internal/operatortool/work_reads_test.go); TestOperatorGitHubWorkReads and TestOperatorNativeClientReads (internal/web/operator_work_reads_test.go); TestProtocolWorkReadParity (internal/mcp/protocol_test.go); existing native issue discussion coverage in TestHubMCPWorkCommands (internal/hubserver/operator_work_test.go).",
+      "decision": "Canonical tools cover both offered board discussion decisions using shared tracker/forge readers: work_comments/list_comments for issue discussion and work_pr_comments for the linked PR. Current project/resource ownership, paging, result bounds, direct-call validation, provider-error redaction and revoked authority are exercised. PR reads are advertised only with the existing connector PR comment reader; native or Hub deployments without one remain explicitly unavailable rather than claiming issue-only reads provide PR discussion. Parent #3259 retains final conformance and zero-pending acceptance."
     },
     {
       "id": "web.api_board_receipt",
@@ -32388,7 +32388,7 @@
       ],
       "authority": {
         "role": "local operator (dashboard authentication when configured)",
-        "credential_scope": "read",
+        "credential_scope": "write; read grants for preparation and result reads",
         "project_grant": "native project read grant; writes need write grant; runner/terminal access additionally needs runner grant",
         "ownership": "resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain"
       },
@@ -32408,24 +32408,24 @@
           "class": "operator"
         }
       ],
-      "application": "s.nativeIssueForm; s.nativeFormData",
-      "extraction": "Extract web.nativeIssueForm application inputs/results and validation from Echo; reuse s.nativeFormData. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "executeNativeForm / executeNativeWorkCommand / createWorkItem / native work and Change application commands; governed transitions through move_item and ReconcileOperatorMove",
+      "extraction": "Reuse the existing typed work and Change adapters for each form action; shared native creation preserves GitHubIssueURL and the native authority/revision/retry owner.",
       "tool": {
-        "set": "work_reads",
-        "name": "native_issue_submit",
-        "arguments": "Bounded nativeIssueSubmitRequest: project_id, issue_ref; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "nativeIssueSubmitResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "set": "actions",
+        "name": "file_issue",
+        "arguments": "create=file_issue(project_id, request_id, optional github_issue_url, title, description, state, labels, priority rank 1\u20134); edit=edit_item(identifier, expected_revision, title, body, native priority 0\u20133); transition=move_item(identifier, target_state, expected_revision); dependency=set_dependency(identifier, related, operation, expected_revision); comment=add_comment(identifier, body); comment_edit=edit_comment(identifier, comment_id, body, expected_revision); change=create_change(work_item_id, title, body, linked_issues). Every mutation carries project_id and request_id; bounded canonical schemas and 64 KiB request cap apply.",
+        "result": "Canonical work action/native command and Change receipts: work-item/comment/Change identifiers, revision, URL and outcome; retry receipts reuse existing authority and idempotency. Results capped at 256 KiB; service errors are opaque.",
         "annotations": {
           "readOnly": false,
-          "destructive": true,
-          "idempotent": false,
+          "destructive": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3341",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3341 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "TestFileIssueArguments and TestWorkArgumentsDirectCallBounds (internal/operatortool/work_test.go); TestChangeArgumentBoundary (internal/operatortool/changes_test.go); TestMCPNativeWorkCommands (internal/web/work_commands_test.go); TestNativeWorkForms (internal/web/native_work_test.go); TestOperatorNativeClientReads (internal/web/operator_work_reads_test.go); TestHubMCPWorkCommands (internal/hubserver/operator_work_test.go); TestOperatorChangeCommands (internal/hubserver/operator_changes_test.go); TestMCPActionApprovalBoundary (internal/web/operator_commands_test.go).",
+      "decision": "All seven form actions bind to canonical typed work/Change tools. Creation retains permitted native GitHub linkage, optional linked content, exact priority mapping and duplicate/retry identity; edits retain expected revisions; Change creation retains additional project-owned issue links. Lane moves use the existing orchestrator and material/destructive actions retain exact approval or connection YOLO. Parent #3259 remains open for final conformance and unconditional zero-pending acceptance."
     },
     {
       "id": "web.native_run_detail",

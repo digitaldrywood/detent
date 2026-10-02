@@ -365,29 +365,32 @@ func (s *Server) chatStopProposal(ctx context.Context, raw json.RawMessage) (cha
 }
 
 func (s *Server) chatFileIssueProposal(ctx context.Context, raw json.RawMessage) (chatpkg.ToolResult, error) {
-	var request struct {
-		ProjectID   string   `json:"project_id"`
-		Title       string   `json:"title"`
-		Description string   `json:"description"`
-		State       string   `json:"state"`
-		Labels      []string `json:"labels"`
-		Priority    int      `json:"priority"`
-	}
-	if err := decodeChatToolArguments(raw, &request); err != nil {
+	request, err := operatortool.DecodeFileIssue(raw)
+	if err != nil {
 		return chatpkg.ToolResult{}, err
 	}
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.Title = strings.TrimSpace(request.Title)
 	request.Description = strings.TrimSpace(request.Description)
-	if request.ProjectID == "" || request.Title == "" || request.Description == "" {
-		return chatpkg.ToolResult{}, errors.New("project, title, and description are required")
-	}
 	if chatScenario(ctx).ID == "" {
 		if _, ok := s.registry.Get(project.ID(request.ProjectID)); !ok {
 			return chatpkg.ToolResult{}, errors.New("project was not found")
 		}
 	}
-	action := chatpkg.Action{Kind: chatpkg.ActionFileIssue, Material: s.workTerminalState(ctx, request.ProjectID, request.State), ProjectID: request.ProjectID, Title: request.Title, Description: request.Description, State: strings.TrimSpace(request.State), Labels: trimChatStrings(request.Labels), PriorityRank: request.Priority, ScenarioID: chatScenario(ctx).ID}
+	if request.GitHubIssueURL != "" {
+		tracked, ok := s.registry.Get(project.ID(request.ProjectID))
+		if !ok {
+			return chatpkg.ToolResult{}, operatortool.ErrInvalidArguments
+		}
+		if source, ok := tracked.Connector().(nativeClientSource); !ok || source.NativeClient() == nil {
+			return chatpkg.ToolResult{}, operatortool.ErrInvalidArguments
+		}
+	}
+	priority := 0
+	if request.Priority != nil {
+		priority = *request.Priority
+	}
+	action := chatpkg.Action{GitHubIssueURL: request.GitHubIssueURL, Kind: chatpkg.ActionFileIssue, Material: s.workTerminalState(ctx, request.ProjectID, request.State), ProjectID: request.ProjectID, Title: request.Title, Description: request.Description, State: strings.TrimSpace(request.State), Labels: trimChatStrings(request.Labels), PriorityRank: priority, ScenarioID: chatScenario(ctx).ID}
 	return chatpkg.ToolResult{Proposal: &action}, nil
 }
 
@@ -550,7 +553,7 @@ func (s *Server) executeChatStop(ctx context.Context, action chatpkg.Action) (st
 }
 
 func (s *Server) executeChatFileIssue(ctx context.Context, action chatpkg.Action) (string, chatpkg.Action, error) {
-	request := workitem.Request{Title: action.Title, Description: action.Description, State: action.State, Labels: action.Labels}
+	request := workitem.Request{GitHubIssueURL: action.GitHubIssueURL, Title: action.Title, Description: action.Description, State: action.State, Labels: action.Labels}
 	if action.PriorityRank > 0 {
 		request.Priority = &action.PriorityRank
 	}
