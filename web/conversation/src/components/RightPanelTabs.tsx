@@ -653,6 +653,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     // Detent's own surfaces (decisions.md section 19.3, section 18.12); every
     // other member of this union is upstream's.
+    case "ask":
+      return "Ask";
     case "conversation":
       return "Conversation";
     case "output":
@@ -737,6 +739,8 @@ function SurfaceIcon({
         />
       );
     // Detent's own surfaces (decisions.md section 19.3, section 18.12).
+    case "ask":
+      return <MessageSquare className="size-3 shrink-0" />;
     case "conversation":
       return <MessageSquare className="size-3 shrink-0" />;
     case "output":

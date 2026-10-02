@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // The issue page's activity feed: the merge, the fold and what the rows draw.
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import attemptsFixture from "../../src/contracts/fixtures/work-attempt-list.json";
@@ -20,6 +20,7 @@ import {
   mergeActivity,
   type ActivityRow,
 } from "../../src/app/work/lib/activity.ts";
+import { useActivityCitation } from "../../src/app/work/lib/useActivityCitation.ts";
 import { ActivityFeed, LiveRow } from "../../src/app/work/components/ActivityFeed.tsx";
 
 afterEach(cleanup);
@@ -305,4 +306,24 @@ describe("the live row", () => {
     screen.getByTestId("view-conversation").click();
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
+});
+
+it("reveals and highlights a cited folded event and leaves unrelated links alone", () => {
+  function CitedFeed() {
+    const highlightedId = useActivityCitation("wi_subject");
+    return <><a href="#issue-history-evt_old">Lane history</a><a href="#unrelated">Other section</a><ActivityFeed
+      rows={[row({ key: "history:evt_old", lowValue: true, reason: "approval missing" }), row({ key: "history:evt_next", lowValue: true })]}
+      live={null} liveAt={Number.MAX_SAFE_INTEGER} onReply={null} posting={false} highlightedId={highlightedId}
+    /></>;
+  }
+  window.history.replaceState(null, "", "/work/i/wi_subject");
+  render(<CitedFeed />);
+  expect(screen.getByTestId("activity-fold")).not.toBeNull();
+  fireEvent.click(screen.getByRole("link", { name: "Lane history" }));
+  const target = document.getElementById("issue-history-evt_old");
+  expect(target?.getAttribute("data-citation-highlight")).toBe("true");
+  expect(target?.textContent).toContain("approval missing");
+  expect(screen.queryByTestId("activity-fold")).toBeNull();
+  expect(screen.getByRole("link", { name: "Other section" }).getAttribute("href")).toBe("#unrelated");
+  window.history.replaceState(null, "", "/");
 });

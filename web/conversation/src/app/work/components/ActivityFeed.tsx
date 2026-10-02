@@ -60,16 +60,23 @@ function RowGlyph({ icon }: { readonly icon: ActivityIcon }): React.ReactElement
   );
 }
 
-function EventRow({ row }: { readonly row: ActivityRow }): React.ReactElement {
+function activityId(row: ActivityRow): string {
+  return `issue-${row.key.replace(/:claimed$/, "").replace(/:ended$/, "-ended").replace(":", "-")}`;
+}
+
+function EventRow({ row, highlighted = false }: { readonly row: ActivityRow; readonly highlighted?: boolean }): React.ReactElement {
   return (
     <li
+      id={activityId(row)}
+      data-citation-highlight={highlighted ? "true" : undefined}
       data-testid="issue-activity-row"
       data-activity-icon={row.icon}
-      className="flex items-center gap-3 py-1 text-[13px]"
+      className={cn("flex items-center gap-3 rounded-md py-1 text-[13px]", highlighted && "bg-primary/10 ring-2 ring-primary")}
     >
       <RowGlyph icon={row.icon} />
       <p className="min-w-0 text-muted-foreground">
         <span className="font-medium text-foreground">{row.actor}</span> {row.sentence}
+        {highlighted && row.reason !== undefined ? <span className="text-foreground"> · {row.reason}</span> : null}
         {timeLabel(row.at) === "" ? null : (
           <span className="text-muted-foreground/70"> · {timeLabel(row.at)}</span>
         )}
@@ -89,15 +96,17 @@ function CommentCard({
   row,
   onReply,
   posting,
+  highlighted = false,
 }: {
   readonly row: ActivityRow;
   readonly onReply: ((body: string) => void) | null;
   readonly posting: boolean;
+  readonly highlighted?: boolean;
 }): React.ReactElement {
   const [draft, setDraft] = React.useState("");
   const comment = row.comment;
   return (
-    <li className="my-1.5" data-testid="issue-comment">
+    <li id={activityId(row)} data-citation-highlight={highlighted ? "true" : undefined} className={cn("my-1.5 rounded-md", highlighted && "bg-primary/10 ring-2 ring-primary")} data-testid="issue-comment">
       <article className="rounded-[var(--radius)] border border-border bg-card">
         <div className="px-3.5 py-3">
           <div className="flex items-center gap-2 text-[13px]">
@@ -260,10 +269,17 @@ export interface ActivityFeedProps {
   /** Null for a reader who may not write. */
   readonly onReply: ((body: string) => void) | null;
   readonly posting: boolean;
+  readonly highlightedId?: string | null;
 }
 
 export function ActivityFeed(props: ActivityFeedProps): React.ReactElement {
-  const groups = React.useMemo(() => foldActivity(props.rows), [props.rows]);
+  const groups = React.useMemo(() => foldActivity(props.rows).flatMap((group): ActivityGroup[] =>
+    group.kind === "fold" && group.rows.some((row) => activityId(row) === props.highlightedId)
+      ? group.rows.map((row) => ({ kind: "row", key: row.key, row })) : [group]), [props.rows, props.highlightedId]);
+  React.useEffect(() => {
+    if (props.highlightedId == null) return;
+    document.getElementById(props.highlightedId)?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  }, [props.highlightedId, groups]);
   const before: ActivityGroup[] = [];
   const after: ActivityGroup[] = [];
   for (const group of groups) {
@@ -280,9 +296,10 @@ export function ActivityFeed(props: ActivityFeedProps): React.ReactElement {
         row={group.row}
         onReply={props.onReply}
         posting={props.posting}
+        highlighted={activityId(group.row) === props.highlightedId}
       />
     ) : (
-      <EventRow key={group.key} row={group.row} />
+      <EventRow key={group.key} row={group.row} highlighted={activityId(group.row) === props.highlightedId} />
     );
 
   return (

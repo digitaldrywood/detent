@@ -215,6 +215,7 @@ export interface WorkHttp {
     itemId: string,
     limit?: number,
     signal?: AbortSignal,
+    cursor?: string,
   ) => Promise<AttemptPage>;
   /**
    * The latest stored diff on one issue (decisions.md §18.5), or `{diff: null}`
@@ -596,8 +597,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         related_work_item_id: input.relatedWorkItemId,
         operation: input.operation,
       }),
-    listAttempts: (projectId, itemId, limit, signal) =>
-      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit }), undefined, signal),
+    listAttempts: (projectId, itemId, limit, signal, cursor) =>
+      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor }), undefined, signal),
     getWorkItemDiff: (projectId, itemId) =>
       send(WorkItemDiff, "GET", url(`${itemBase(projectId, itemId)}/diff`)),
     listHistory: (input) =>
