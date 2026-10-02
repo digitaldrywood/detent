@@ -15,6 +15,7 @@
 
 ## Workflow
 
+- Follow [AGENTS.md issue authoring](AGENTS.md#issue-authoring) for new work: use the selected project's supplied tracker authority and supported context. Repository identity and PR landing do not select the issue tracker.
 - Work from a Detent-created worktree branch, never directly on `develop` or `main`. Branch from and target `develop`; `main` is production (see [docs/branching.md](docs/branching.md)).
 - Keep generated files and runtime output inside the current worktree.
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.

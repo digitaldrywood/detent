@@ -7,7 +7,7 @@ Detent is a Go agent orchestrator delivered as a single binary. Keep changes sma
 - Go 1.26.
 - Git.
 - Node.js and npm for Tailwind CSS.
-- GitHub CLI for issue and pull request workflow.
+- GitHub CLI when the selected project's tracker or PR workflow uses it.
 
 Install the project tools with:
 
@@ -169,6 +169,11 @@ test(scheduler): cover fair-share selection
 ```
 
 ## Branch And Pull Request Flow
+
+For new work, follow [AGENTS.md issue authoring](AGENTS.md#issue-authoring)
+and let Detent dogfood implementation unless direct changes are explicitly
+authorized. File through the selected project's supplied tracker owner;
+a GitHub repository or PR landing path alone does not authorize GitHub issues.
 
 1. Start from current `origin/develop`.
 2. Create a focused branch for the issue.
