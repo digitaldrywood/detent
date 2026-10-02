@@ -152,14 +152,100 @@ func TestCompletionSnapshotExcludesPartialMutations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(got.Running) != 1 || got.Claimed[issue.ID].Issue.Labels[0] != "original" {
+			wantRunning := 0
+			if publication == "none" {
+				wantRunning = 1
+			}
+			if len(got.Running) != wantRunning || got.Claimed[issue.ID].Issue.Labels[0] != "original" {
 				t.Fatalf("completion snapshot exposes partial mutation: running %#v, claimed %#v", got.Running, got.Claimed)
 			}
 		})
 	}
 }
 
-func TestCompletionSnapshotFreezesWorkerProgress(t *testing.T) {
+func TestCompletionSnapshotRetainsTerminalAttemptDuringHandoff(t *testing.T) {
+	for _, stage := range []string{"lane", "refill"} {
+		t.Run(stage, func(t *testing.T) {
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, ActiveStates: []string{"Todo", "In Progress"}})
+			issue := connector.Issue{ID: "failed", Identifier: "project#1", State: "In Progress"}
+			tracker := &completionRuntimeConnector{terminalRetryConnector: terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}, stage: stage, entered: make(chan struct{}), release: make(chan struct{})}
+			backend := &terminalRetryWorkAttemptStore{}
+			orch, err := New(cfg, Dependencies{Connector: tracker, WorkAttempts: backend})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := newState(cfg)
+			now := time.Now()
+			failed := Running{Issue: issue, WorkAttemptID: 5, StartedAt: now.Add(-3 * time.Second), DispatchSourceState: "Todo", DispatchTargetState: "In Progress"}
+			live := Running{Issue: connector.Issue{ID: "live", State: "In Progress"}, WorkAttemptID: 6, StartedAt: now.Add(-time.Minute)}
+			state.Running[issue.ID] = failed
+			state.Running[live.Issue.ID] = live
+			state.WorkAttempts = []telemetry.WorkAttempt{{AttemptID: 5, Status: "active"}, {AttemptID: 6, Status: "active"}}
+			orch.publishState(&state)
+			orch.startCompletion(&state)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				orch.handleQueuedRunResults(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Request: RunRequest{WorkAttemptID: 5}, CompletedAt: now, Err: errors.New("native checkpoint requires recovery: persisted native session: store record not found")})
+			}()
+			defer func() { close(tracker.release); <-done }()
+			select {
+			case <-tracker.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("completion did not reach the blocked handoff")
+			}
+			observed, err := orch.State(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, active := observed.Running[issue.ID]; active {
+				t.Fatal("terminal failed attempt still appears to be running during handoff")
+			}
+			if observed.Running[live.Issue.ID].WorkAttemptID != 6 {
+				t.Fatal("completion removed the unrelated live worker")
+			}
+			if len(observed.WorkAttempts) != 2 || observed.WorkAttempts[0].Status != "terminal" || observed.WorkAttempts[0].TerminalState != "failure" || observed.WorkAttempts[0].ErrorMessage == "" {
+				t.Fatalf("terminal receipt was hidden during handoff: %#v", observed.WorkAttempts)
+			}
+			if observed.RuntimeObservation.Source != telemetry.SnapshotSourceCached || orch.completionState.Load() == nil {
+				t.Fatal("completion discarded the cached tracker and dispatch fence")
+			}
+		})
+	}
+}
+
+type completionRuntimeConnector struct {
+	terminalRetryConnector
+	stage   string
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *completionRuntimeConnector) UpdateIssueState(ctx context.Context, id, state string) error {
+	if c.stage == "lane" {
+		close(c.entered)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.release:
+		}
+	}
+	return c.terminalRetryConnector.UpdateIssueState(ctx, id, state)
+}
+
+func (c *completionRuntimeConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	if c.stage == "refill" {
+		close(c.entered)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.release:
+		}
+	}
+	return nil, nil
+}
+
+func TestCompletionSnapshotPreservesLiveWorkerProgress(t *testing.T) {
 	t.Parallel()
 	for _, persisted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("persisted heartbeat=%t", persisted), func(t *testing.T) {
@@ -200,12 +286,15 @@ func TestCompletionSnapshotFreezesWorkerProgress(t *testing.T) {
 			orch.publishRuntimeState(&state)
 			orch.publishState(&state)
 			after := read(orch)
-			if before.Running[running.Issue.ID].LastMessage != after.Running[running.Issue.ID].LastMessage || !reflect.DeepEqual(before.WorkAttempts, after.WorkAttempts) || before.RuntimeObservation != after.RuntimeObservation {
-				t.Fatal("cached completion snapshot changed after worker progress")
+			if after.Running[running.Issue.ID].LastMessage != "during completion" || (persisted && after.WorkAttempts[0].StatusMessage != "during completion") || before.RuntimeObservation != after.RuntimeObservation {
+				t.Fatal("completion snapshot omitted live worker progress")
+			}
+			if before.Running[running.Issue.ID].LastMessage != "before completion" || (persisted && before.WorkAttempts[0].StatusMessage != "before completion") {
+				t.Fatal("live publication mutated an earlier completion observation")
 			}
 			after.Running = cloneRunning(after.Running)
-			if before.Running[running.Issue.ID].LastMessage != after.Running[running.Issue.ID].LastMessage {
-				t.Fatal("cloning cached running state reloaded worker progress")
+			if after.Running[running.Issue.ID].LastMessage != "during completion" {
+				t.Fatal("cloning current running state lost worker progress")
 			}
 			orch.publishState(&state)
 			orch.completionState.Store(nil)

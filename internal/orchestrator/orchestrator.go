@@ -1246,14 +1246,22 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 }
 
 func (o *Orchestrator) publishedState() State {
-	if state := o.completionState.Load(); state != nil {
-		return o.observableValidatorState(state.clone())
+	completion := o.completionState.Load()
+	state := State{}
+	if completion != nil {
+		state = completion.clone()
+	} else {
+		state = o.latestState.Load().clone()
 	}
-	state := o.latestState.Load().clone()
 	if runtime := o.latestRuntimeState.Load(); runtime != nil {
 		state.Running = cloneRunning(runtime.Running)
-		state.Claimed = cloneClaimed(runtime.Claimed)
 		state.WorkAttempts = cloneTelemetryWorkAttempts(runtime.WorkAttempts)
+		if completion == nil {
+			state.Claimed = cloneClaimed(runtime.Claimed)
+		}
+	}
+	if completion != nil {
+		return o.observableValidatorState(state)
 	}
 	return o.observableState(state)
 }
@@ -1263,6 +1271,13 @@ func (o *Orchestrator) observableState(state State) State {
 }
 
 func (o *Orchestrator) observableValidatorState(state State) State {
+	for _, running := range state.Running {
+		if running.progress != nil {
+			if heartbeat := running.progress.persisted.Load(); heartbeat != nil {
+				o.applyWorkAttemptHeartbeatSnapshot(&state, running.WorkAttemptID, *heartbeat, running.LastMessageTruncation)
+			}
+		}
+	}
 	// Validator stages already own their lifecycle in validatorRuns. Include their
 	// progress in observations without adding them to the dispatch state machine.
 	o.validatorMu.Lock()
@@ -1285,13 +1300,6 @@ func (o *Orchestrator) observableDispatchState(state State) State {
 	state.PoolDraining = pool.Draining
 	if progress := o.refreshProgress.Load(); progress != nil {
 		state.RefreshProgress = *progress
-	}
-	for _, running := range state.Running {
-		if running.progress != nil {
-			if heartbeat := running.progress.persisted.Load(); heartbeat != nil {
-				o.applyWorkAttemptHeartbeatSnapshot(&state, running.WorkAttemptID, *heartbeat, running.LastMessageTruncation)
-			}
-		}
 	}
 	return state
 }

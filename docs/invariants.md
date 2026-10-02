@@ -2246,11 +2246,15 @@ Project state reads (#3748) use the existing published snapshot owner once the
 first publication is ready, including while the actor is blocked on synchronous
 refill. The competing actor state request and snapshot notification channels are
 removed, along with the read-routing refresh flag. The shared refill owner
-publishes confirmed operation state before its fresh candidate read; unresolved tracker writes remain unpublished. Completion
-snapshots retain priority over runtime and full publications during completion
-refill, until final publication clears the existing fence. Returned state remains
-independent, with live runtime ownership, persisted worker heartbeat and validator
-progress observable outside the fence. Full publication stores runtime ownership
+publishes confirmed operation state before its fresh candidate read; unresolved
+tracker writes remain unpublished. Completion snapshots preserve claimed tracker
+fields and dispatch-pool observations during handoff and refill until final
+publication clears the existing fence. Both completion and ordinary reads reuse
+the latest runtime ownership and durable attempt snapshots. Removing a completed
+worker and recording its terminal receipt publish through that runtime owner
+before tracker handoff or refill can block, so a terminal attempt cannot remain
+visible as an active worker. Unrelated live heartbeat and validator progress
+remain observable, while returned observations are independent copies. Full publication stores runtime ownership
 before the full snapshot and initial readiness, so a newly observed full snapshot
 cannot be overlaid with older runtime ownership. Reads do not advance tracker
 freshness, complete an unfinished refresh or establish dispatch eligibility.
