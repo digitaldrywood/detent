@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/auth"
 )
 
 // TestHostedMemberManagement covers the section 12 membership endpoints: the
@@ -14,8 +16,68 @@ import (
 // protection the removed forms carried.
 func TestHostedMemberManagement(t *testing.T) {
 	t.Parallel()
-	f := newBrowserHostedFixture(t, true)
+	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
 	base := browserHostedOrganizationBase + "/members/"
+	t.Run("member identities", func(t *testing.T) {
+		for _, test := range []struct {
+			name, query           string
+			neverSignedIn, hidden bool
+		}{
+			{name: "signed in member"},
+			{name: "provider member without local row", neverSignedIn: true},
+			{name: "signed in member with missing email", query: "UPDATE hosted_members SET email='' WHERE user_id='user_browser_viewer'"},
+			{name: "locally removed member stays hidden", query: "UPDATE hosted_members SET active=0 WHERE user_id='user_browser_viewer'", hidden: true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
+				user := "user_browser_viewer"
+				if test.neverSignedIn {
+					user = "user_browser_unsigned"
+					if _, err := f.provider.CreateMembership(t.Context(), user, f.provider.organization.ID, "member"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.provider.users[user] = auth.HostedUser{ID: user, Email: "viewer@example.test", Name: "Provider Member"}
+				if test.query != "" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), test.query); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var response hostedMembersResponse
+				browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/members", nil, http.StatusOK), &response)
+				var found bool
+				for _, member := range response.Members {
+					if member.UserID != user {
+						continue
+					}
+					found = true
+					if member.Email != "viewer@example.test" || member.NeverSignedIn != test.neverSignedIn {
+						t.Fatalf("member identity = %#v", member)
+					}
+					if (test.query != "" || test.neverSignedIn) && member.Name != "Provider Member" {
+						t.Fatalf("provider name = %q", member.Name)
+					}
+				}
+				if found == test.hidden {
+					t.Fatalf("member found = %v, hidden = %v", found, test.hidden)
+				}
+				if test.neverSignedIn {
+					var changed hostedMemberView
+					browserHostedDecode(t, f.api(t, "owner", http.MethodPut, base+"membership_"+user+"/role", map[string]any{"role": "viewer"}, http.StatusOK), &changed)
+					if changed.Email != "viewer@example.test" || changed.Name != "Provider Member" || !changed.NeverSignedIn {
+						t.Fatalf("changed member identity = %#v", changed)
+					}
+					f.api(t, "owner", http.MethodDelete, base+"membership_"+user, nil, http.StatusNoContent)
+					browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/members", nil, http.StatusOK), &response)
+					for _, member := range response.Members {
+						if member.UserID == user {
+							t.Fatalf("unsigned member remains after removal: %#v", member)
+						}
+					}
+				}
+			})
+		}
+	})
 	t.Run("owner reads the organization", func(t *testing.T) {
 		var members hostedMembersResponse
 		browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/members", nil, http.StatusOK), &members)

@@ -125,6 +125,19 @@ describe("the login card", () => {
 });
 
 describe("the members table", () => {
+  it.each([
+    { email: "unsigned@example.test", name: "Unsigned Member", identity: "unsigned@example.test" },
+    { email: "", name: "Unsigned Member", identity: "Unsigned Member" },
+    { email: " ", name: " ", identity: "user_unsigned" },
+  ])("identifies an unsigned member as $identity", ({ email, name, identity }) => {
+    const member: Member = { ...MEMBERS[1]!, user_id: "user_unsigned", email, name, never_signed_in: true };
+    renderMembers({ members: [member] });
+    const row = screen.getByRole("row", { name: new RegExp(identity) });
+    expect(row.textContent).toContain("Hasn't signed in yet");
+    expect(screen.getByLabelText(`Role for ${identity}`)).toBeInstanceOf(HTMLSelectElement);
+    expect((within(row).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("offers a role control and a removal for a manager", () => {
     renderMembers();
     expect(

@@ -38,6 +38,7 @@ type browserHostedProvider struct {
 	authorizations     map[string]string
 	codes              map[string]auth.Identity
 	emails             map[string]bool
+	users              map[string]auth.HostedUser
 	sequence           int
 	invitationDelivery func(context.Context, string, string) error
 }
@@ -96,6 +97,16 @@ func (p *browserHostedProvider) CurrentSession(_ context.Context, identity auth.
 		return auth.HostedIdentity{}, auth.ErrHostedIdentity
 	}
 	return current, nil
+}
+
+func (p *browserHostedProvider) User(_ context.Context, id string) (auth.HostedUser, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	user, ok := p.users[id]
+	if !ok {
+		return auth.HostedUser{}, auth.ErrHostedIdentity
+	}
+	return user, nil
 }
 
 func (p *browserHostedProvider) Memberships(_ context.Context, user, organization string) ([]auth.Membership, error) {
@@ -207,6 +218,10 @@ func (p *browserHostedProvider) identity(user, email, organization, support stri
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.sequence++
+	if p.users == nil {
+		p.users = map[string]auth.HostedUser{}
+	}
+	p.users[user] = auth.HostedUser{ID: user, Email: email}
 	now := time.Now().UTC()
 	hosted := auth.HostedIdentity{Subject: user, OrganizationID: organization, SessionID: fmt.Sprintf("session_browser_%d", p.sequence), CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(browserHostedPreviewLifetime), SupportActor: support}
 	if support != "" {
@@ -817,6 +832,13 @@ func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Han
 func TestHostedBrowserPreviewSeed(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	if os.Getenv("DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER") != "" {
+		user := auth.HostedUser{ID: "user_browser_unsigned", Email: "unsigned@example.test", Name: "Unsigned Member"}
+		f.provider.users[user.ID] = user
+		if _, err := f.provider.CreateMembership(t.Context(), user.ID, f.provider.organization.ID, "member"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	f.seedPreview(t)
 	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
 		f.seedIssueAsk(t)

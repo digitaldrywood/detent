@@ -279,14 +279,20 @@ export function MembersTable({
       </TableHeader>
       <TableBody>
         {members.map((member) => {
+          const identity = member.email.trim() || member.name?.trim() || member.user_id;
           const busy = busyMember === member.id;
           const failure = errorFor(member);
           return (
             <TableRow key={member.id}>
               <TableCell>
-                <div className="font-medium text-foreground">{member.email}</div>
+                <div className="font-medium text-foreground">{identity}</div>
+                {member.email.trim() && member.name?.trim() ? (
+                  <div className="text-xs text-muted-foreground">{member.name}</div>
+                ) : null}
                 <div className="text-xs text-muted-foreground">
-                  {member.status === "active" ? "Active" : "Disabled"}
+                  {member.status === "active"
+                    ? member.never_signed_in ? "Hasn't signed in yet" : "Active"
+                    : "Disabled"}
                 </div>
                 {failure === null ? null : (
                   <div className="pt-1">
@@ -297,7 +303,7 @@ export function MembersTable({
               <TableCell>
                 {canManage ? (
                   <NativeSelect
-                    aria-label={`Role for ${member.email}`}
+                    aria-label={`Role for ${identity}`}
                     value={member.role}
                     disabled={busy}
                     options={ROLE_OPTIONS.map((option) => ({
@@ -317,7 +323,7 @@ export function MembersTable({
                 <ProjectAccess
                   projects={projects}
                   grants={member.grants}
-                  identity={member.email}
+                  identity={identity}
                   canManage={canManage}
                   busy={busy}
                   onChange={(projectId, grant) => onGrantChange(member, projectId, grant)}

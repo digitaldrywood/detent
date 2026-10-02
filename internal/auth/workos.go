@@ -66,6 +66,8 @@ type workosUser struct {
 	ID            string `json:"id"`
 	Email         string `json:"email"`
 	EmailVerified bool   `json:"email_verified"`
+	FirstName     string `json:"first_name"`
+	LastName      string `json:"last_name"`
 }
 
 type workosSession struct {
@@ -447,6 +449,22 @@ func validWorkOSSession(session workosSession, identity HostedIdentity) bool {
 		return identity.SupportActor == "" && identity.SupportReason == ""
 	}
 	return identity.SupportActor != "" && normalizeEmail(session.Impersonator.Email) == identity.SupportActor && session.Impersonator.Reason == identity.SupportReason && ValidSupportReason(identity.SupportReason)
+}
+
+func (p *workosProvider) User(ctx context.Context, id string) (HostedUser, error) {
+	if !validWorkOSID(id) {
+		return HostedUser{}, ErrHostedIdentity
+	}
+	var user workosUser
+	if err := p.request(ctx, http.MethodGet, "/user_management/users/"+id, nil, &user); err != nil {
+		return HostedUser{}, err
+	}
+	email := normalizeEmail(user.Email)
+	if user.ID != id || !validWorkOSEmail(email) {
+		return HostedUser{}, ErrHostedIdentity
+	}
+	name := strings.TrimSpace(strings.TrimSpace(user.FirstName) + " " + strings.TrimSpace(user.LastName))
+	return HostedUser{ID: user.ID, Email: email, Name: name}, nil
 }
 
 func (p *workosProvider) Memberships(ctx context.Context, userID string, organizationID string) ([]Membership, error) {

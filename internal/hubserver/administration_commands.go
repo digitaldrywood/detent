@@ -49,7 +49,10 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 		if err == nil {
 			member.Role.Slug = lesserHostedRole(member.Role.Slug, role)
 		}
-		view := hostedMemberView{ID: member.ID, UserID: member.UserID, Email: emails[member.UserID], Role: member.Role.Slug, Status: member.Status, Grants: []hostedMemberGrant{}}
+		view, err := s.hostedMemberIdentity(ctx, member, emails)
+		if err != nil {
+			return response, err
+		}
 		if list, ok := grants[member.UserID]; ok {
 			view.Grants = list
 		}

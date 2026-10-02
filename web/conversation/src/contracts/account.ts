@@ -197,6 +197,8 @@ export const Member = Schema.Struct({
   id: Schema.String,
   user_id: Schema.String,
   email: Schema.String,
+  name: Schema.optional(Schema.String),
+  never_signed_in: Schema.optional(Schema.Boolean),
   role: Schema.String,
   /** `active` for a member who can sign in; anything else is disabled. */
   status: Schema.String,
