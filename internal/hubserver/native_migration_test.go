@@ -55,6 +55,9 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, started), http.StatusOK)
 	observed := started
 	observed.Type, observed.IdempotencyKey, observed.Data.Sequence = "run.observed", "migration-observed", 2
+	runtime := *started.Data.Runtime
+	runtime.Phase = "validation"
+	observed.Data.Runtime = &runtime
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, observed), http.StatusOK)
 	if _, err := provider.DownTo(t.Context(), 58); err == nil {
 		t.Fatal("rollback discarded native runtime evidence")

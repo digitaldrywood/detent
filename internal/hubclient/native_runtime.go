@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -35,7 +36,6 @@ func (c *NativeClient) RuntimeEvidence(ctx context.Context, item tracker.NativeW
 }
 
 func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) error {
-	publish := observation.Activity != nil || observation.Landing != nil || observation.REST != nil
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.runtimeSupported == nil {
@@ -98,12 +98,42 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 			observation.PhasesDropped++
 		}
 	}
+	current := runtimeEvidence(observation)
+	var before tracker.NativeRuntimeObservation
+	if previous != nil {
+		before = runtimeEvidence(*previous)
+	}
+	publish := previous == nil || current.Phase != before.Phase || !reflect.DeepEqual(current.Identity, before.Identity) || !reflect.DeepEqual(current.Landing, before.Landing)
+	changed := previous == nil || !reflect.DeepEqual(current, before)
+	if !changed {
+		return nil
+	}
 	e.data.Runtime = &observation
 	e.runtimeDirty = true
 	if e.data.Identity == nil || !publish {
 		return nil
 	}
 	return e.append(ctx, "run.observed", "", nil)
+}
+
+func runtimeEvidence(observation tracker.NativeRuntimeObservation) tracker.NativeRuntimeObservation {
+	observation.HeartbeatAt = time.Time{}
+	if observation.Activity != nil {
+		profile := *observation.Activity
+		profile.AsOf = time.Time{}
+		observation.Activity = &profile
+	}
+	if observation.Landing != nil {
+		landing := *observation.Landing
+		landing.ObservedAt = time.Time{}
+		observation.Landing = &landing
+	}
+	if observation.REST != nil {
+		rest := *observation.REST
+		rest.ObservedAt = time.Time{}
+		observation.REST = &rest
+	}
+	return observation
 }
 
 func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, generation uint64) error {
@@ -130,6 +160,9 @@ func (e *nativeExecution) ObserveLanding(ctx context.Context, landing runner.Nat
 func (e *nativeExecution) FlushRuntime(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.flush(ctx); err != nil {
+		return err
+	}
 	if !e.runtimeDirty || e.data.Identity == nil {
 		return nil
 	}

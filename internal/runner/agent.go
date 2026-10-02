@@ -1179,7 +1179,7 @@ func (r *Runner) runAgentTurn(
 		profileStage = "merging"
 	}
 	activityProfile := r.startActivityProfile(ctx, runRequest, detentSessionID, info.Path, profileWorkflow, profileStage)
-	defer activityProfile.close()
+	defer activityProfile.finish()
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
@@ -3240,7 +3240,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		effort = resolvedSelection.Effort
 	}
 	activityProfile := r.startActivityProfile(sessionCtx, runReq, sessionID, info.Path, workflow, "validation")
-	defer activityProfile.close()
+	defer activityProfile.finish()
 	stopCompute := r.meterCompute(runReq.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,

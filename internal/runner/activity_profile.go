@@ -149,6 +149,13 @@ func (r *activityRecorder) close() {
 	}
 }
 
+func (r *activityRecorder) finish() {
+	if r != nil {
+		r.close()
+		<-r.done
+	}
+}
+
 func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, sessionID int64, workspace string, workflow config.Workflow, stage string) *activityRecorder {
 	backend, ok := r.store.(activityProfileStore)
 	if !ok || sessionID <= 0 {
@@ -183,8 +190,27 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 		snapshots := 0
 		event := store.WorkflowPhaseEvent{ProjectID: r.projectID, SessionID: sessionID, IssueID: request.Issue.ID, Identifier: request.Issue.Identifier, IssueURL: request.Issue.URL, PRNumber: pullRequestNumber(request.Issue), PhaseType: workflowmetrics.PhaseTypeAgentActivity, PhaseName: "instruction_activity", StartedAt: started}
 		var id int64
+		var savedProfile [32]byte
+		dirty := true
 		persist := func() {
-			profile.Dropped += recorder.dropped.Swap(0)
+			dropped := recorder.dropped.Swap(0)
+			profile.Dropped += dropped
+			if !dirty && dropped == 0 {
+				return
+			}
+			dirty = true
+			checkpoint := profile
+			checkpoint.AsOf = time.Time{}
+			encoded, err := json.Marshal(checkpoint)
+			if err != nil {
+				r.logger.Warn("activity telemetry checkpoint unavailable", "session_id", sessionID, "error", err)
+				return
+			}
+			signature := sha256.Sum256(encoded)
+			if signature == savedProfile {
+				dirty = false
+				return
+			}
 			profile.AsOf = r.now()
 			event.Status = profile.Status
 			event.FinishedAt = profile.FinishedAt
@@ -202,6 +228,8 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 				return
 			}
 			id = next
+			savedProfile = signature
+			dirty = false
 		}
 		persist()
 		open := make(map[string]int)
@@ -217,6 +245,7 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 			for draining {
 				select {
 				case observation, ok := <-recorder.queue:
+					dirty = true
 					if !ok {
 						if profile.Status == "running" {
 							profile.Status = "ended_without_terminal_event"
