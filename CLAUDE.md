@@ -80,9 +80,9 @@ source of incidents.
 ### Safety-critical orchestrator validation
 
 - `internal/orchestrator/implement_progress.go`, `internal/orchestrator/backend_capacity.go`, `internal/orchestrator/spend_progress.go`, `internal/orchestrator/ranking.go`, `internal/scheduler/global_gate.go`, and the capacity path in `internal/admission/manager.go` are safety-critical brakes and dispatch controls.
-- Changes to these files must preserve their exact-file coverage floor of at least 90% in `scripts/coverage-exceptions.txt`.
-- Changes to their comparison, signature, time-window, ordering, reservation, or capacity-cleanup logic must preserve the seed cases and pass `FuzzSafetyCriticalOrchestratorBoundaries`, which covers diffstat cleanliness, signature equality, capacity resume arithmetic, spend-progress baselines, dispatch ordering, and priority-only real-capacity acquisition.
-- Run `go test ./internal/orchestrator -run '^$' -fuzz=. -fuzztime=30s` before submitting such changes.
+- Changes to these files must preserve meaningful safety regression coverage. Changes to their comparison, signature, time-window, ordering, reservation, or capacity-cleanup logic must preserve the seed cases in `FuzzSafetyCriticalOrchestratorBoundaries`, which covers diffstat cleanliness, signature equality, capacity resume arithmetic, spend-progress baselines, dispatch ordering, and priority-only real-capacity acquisition.
+- The [scheduled suite](docs/invariants.md#inv-5--local-pull-request-validation-and-scheduled-release-evidence) retains the exact-file coverage floors of at least 90% in [scripts/coverage-exceptions.txt](scripts/coverage-exceptions.txt) and execution of the boundary fuzz seeds on pinned integrated `develop` commits.
+- Focused coverage and fuzzing are available as diagnostics during an edit; for example, `go test ./internal/orchestrator -run '^$' -fuzz=. -fuzztime=30s`. Under [AGENTS.md validation](AGENTS.md#validation), ordinary submission, completion, admission, and merge do not wait for a coverage percentage, fuzz duration, local status, or scheduled run.
 
 ## Diagnosis
 

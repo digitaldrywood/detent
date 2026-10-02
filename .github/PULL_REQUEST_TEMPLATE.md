@@ -2,7 +2,11 @@
 
 -
 
-Fixes #N
+Selected tracker reference: link the native Cloud work item or GitHub issue
+that owns this change. Use `Fixes #N` only for a GitHub-tracked issue.
+
+Deployment or release blockers follow the [High-priority reporting
+contract](../AGENTS.md#deployment-and-release-failure-reporting).
 
 Invariants touched: none, or INV IDs with a link to the same-PR invariant edit.
 
@@ -14,4 +18,8 @@ Invariants touched: none, or INV IDs with a link to the same-PR invariant edit.
 
 ## Test Plan
 
-- [ ] `make check`
+- Record the focused diagnostics or browser verification performed, their
+  results, and any remaining evidence gaps. State when diagnostics were not run.
+- Follow [repository validation](../AGENTS.md#validation): ordinary submission
+  and merge do not wait for a full suite, coverage percentage, fuzz duration,
+  local status, or scheduled run.
