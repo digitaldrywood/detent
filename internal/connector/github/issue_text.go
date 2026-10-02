@@ -150,7 +150,7 @@ func parseWorkpadSignal(issue githubIssueNode) *workpad.Signal {
 	repo := strings.TrimSpace(issue.Repository.NameWithOwner)
 	selected := -1
 	fallback := -1
-	var recordedAt *time.Time
+	var recordedAt time.Time
 	for index := len(issue.Comments.Nodes) - 1; index >= 0; index-- {
 		comment := issue.Comments.Nodes[index]
 		if !workpadCommentBody(comment.Body) {
@@ -164,9 +164,9 @@ func parseWorkpadSignal(issue githubIssueNode) *workpad.Signal {
 			selected = fallback
 			break
 		}
-		if selected < 0 || updatedAt.After(*recordedAt) {
+		if selected < 0 || updatedAt.After(recordedAt) {
 			selected = index
-			recordedAt = updatedAt
+			recordedAt = *updatedAt
 		}
 	}
 	if selected >= 0 {

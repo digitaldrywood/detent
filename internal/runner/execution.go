@@ -255,8 +255,13 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	if deadlineExpired {
 		artifactCtx = localCtx
 	}
+	state := r.workspaceRecoveryState(backend, localCtx, info, issue, "native_checkpoint")
+	checkpoint := executionCheckpoint(state)
+	if state != nil {
+		checkpoint.Resume = "resume_session"
+	}
 	var artifactErr error
-	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil {
+	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
 		if err := artifacts.FinalizeArtifacts(artifactCtx, info.Path); err != nil {
 			if !deadlineExpired {
 				return err
@@ -266,11 +271,6 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	}
 	completionErr := errors.Join(finalizationErr, publicationErr, artifactErr)
 
-	state := r.workspaceRecoveryState(backend, localCtx, info, issue, "native_checkpoint")
-	checkpoint := executionCheckpoint(state)
-	if state != nil {
-		checkpoint.Resume = "resume_session"
-	}
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
 		if _, err := r.PreserveWorkspace(localCtx, req.Issue); err != nil {
 			r.logger.Warn("preserve native workspace failed", "issue_id", req.Issue.ID, "error", err)

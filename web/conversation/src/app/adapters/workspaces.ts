@@ -252,39 +252,42 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
   // what the effect actually depends on.
   const requiresKey = [...input.requires].sort().join(",");
 
-  const [workspace, setWorkspace] = React.useState<Workspace | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const binding = React.useMemo(
+    () => ({ http, projectId, workItemId, attemptId, requiresKey, enabled }),
+    [http, projectId, workItemId, attemptId, requiresKey, enabled],
+  );
+  const [result, setResult] = React.useState<{
+    binding: typeof binding;
+    workspace: Workspace | null;
+    loading: boolean;
+    error: string | null;
+  }>(() => ({ binding, workspace: null, loading: false, error: null }));
+  const workspace = result.binding === binding ? result.workspace : null;
+  const loading = result.binding === binding ? result.loading : enabled;
+  const error = result.binding === binding ? result.error : null;
   const [nonce, setNonce] = React.useState(0);
   const retry = React.useCallback(() => setNonce((value) => value + 1), []);
 
   React.useEffect(() => {
     if (!enabled || projectId === null || workItemId === null) {
-      setWorkspace(null);
-      setError(null);
-      setLoading(false);
+      setResult({ binding, workspace: null, error: null, loading: false });
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    setResult({ binding, workspace: null, error: null, loading: true });
     void acquire(http, projectId, workItemId, requiresKey.split(","), attemptId)
       .then((next) => {
         if (cancelled) return;
-        setWorkspace(next);
+        setResult({ binding, workspace: next, error: null, loading: false });
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setWorkspace(null);
-        setError(describe(cause));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        setResult({ binding, workspace: null, error: describe(cause), loading: false });
       });
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, workItemId, attemptId, requiresKey, enabled, nonce]);
+  }, [binding, http, projectId, workItemId, attemptId, requiresKey, enabled, nonce]);
 
   // Readiness by subscription (§18.1). The stream is the project's, so every
   // frame is filtered down to this workspace's id before it is believed.
@@ -298,7 +301,9 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
     const onWorkspaceEvent = (event: MessageEvent<string>) => {
       const next = workspaceFromEvent(event.data, workspaceId);
       if (next === null) return;
-      setWorkspace(next);
+      setResult((current) => current.binding === binding
+        ? { ...current, workspace: next }
+        : current);
     };
     for (const type of WORKSPACE_EVENT_TYPES) {
       source.addEventListener(type, onWorkspaceEvent as EventListener);
@@ -309,7 +314,7 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
       }
       source.close();
     };
-  }, [http, projectId, workspaceId]);
+  }, [binding, http, projectId, workspaceId]);
 
   const relayUrl = React.useMemo(
     () =>

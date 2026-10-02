@@ -160,27 +160,46 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	}
 }
 
-// TestClaimCandidatesKeepOfferingUnsuccessfulAttempts pins the other half of
-// the guard: only a succeeded attempt suppresses anything, so a retry after a
-// failure is untouched.
 func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 	t.Parallel()
 
-	for _, outcome := range []string{"failed", "cancelled", "interrupted"} {
-		t.Run(outcome, func(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		outcome    string
+		checkpoint string
+		candidate  bool
+	}{
+		{name: "failed", outcome: "failed", candidate: true},
+		{name: "cancelled", outcome: "cancelled", candidate: true},
+		{name: "interrupted", outcome: "interrupted", candidate: true},
+		{name: "successful dirty source continuation", outcome: "succeeded", checkpoint: "dirty", candidate: true},
+		{name: "successful finalized unpushed source", outcome: "succeeded", checkpoint: "unpushed"},
+		{name: "successful clean source", outcome: "succeeded", checkpoint: "clean"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newDispatchGuardFixture(t)
 			event := tracker.NativeRunEvent{
 				Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
 				Data: tracker.NativeRunData{
 					Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
-					LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: outcome,
+					LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: test.outcome,
 				},
 			}
+			if test.checkpoint != "" {
+				checkpoint := event
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", newNativeID("checkpoint"), ""
+				checkpoint.Data.Handoff = nativeTestCheckpoint()
+				checkpoint.Data.Handoff.WorktreeState = test.checkpoint
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, checkpoint), http.StatusOK)
+				event.Data.Sequence++
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
+			event.IdempotencyKey = newNativeID("replay-finish")
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 			f.release(t)
-			if !f.candidate(t) {
-				t.Fatalf("an attempt that ended %s must still be retried", outcome)
+			if got := f.candidate(t); got != test.candidate {
+				t.Fatalf("claim candidate = %t, want %t for %s with %s checkpoint", got, test.candidate, test.outcome, test.checkpoint)
 			}
 		})
 	}

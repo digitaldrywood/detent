@@ -102,27 +102,23 @@ export interface RightPanelController extends RightPanelState {
 }
 
 export function useRightPanel(scopeKey: string): RightPanelController {
-  const [state, setState] = React.useState<RightPanelState>(() => readStored()[scopeKey] ?? EMPTY);
-
-  // A scope change re-reads rather than resets: coming back to a conversation
-  // finds the surface that was open on it.
-  const previousScope = React.useRef(scopeKey);
-  if (previousScope.current !== scopeKey) {
-    previousScope.current = scopeKey;
-    // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [snapshot, setSnapshot] = React.useState(() => ({
+    scopeKey,
+    state: readStored()[scopeKey] ?? EMPTY,
+  }));
+  const state = snapshot.scopeKey === scopeKey ? snapshot.state : readStored()[scopeKey] ?? EMPTY;
+  if (snapshot.scopeKey !== scopeKey) {
+    setSnapshot({ scopeKey, state });
   }
-  React.useEffect(() => {
-    setState(readStored()[scopeKey] ?? EMPTY);
-  }, [scopeKey]);
 
   const update = React.useCallback(
     (next: (current: RightPanelState) => RightPanelState) => {
-      setState((current) => {
-        const value = next(current);
+      setSnapshot((current) => {
+        const value = next(current.scopeKey === scopeKey ? current.state : readStored()[scopeKey] ?? EMPTY);
         const stored = readStored();
         stored[scopeKey] = value;
         writeStored(stored);
-        return value;
+        return { scopeKey, state: value };
       });
     },
     [scopeKey],

@@ -108,6 +108,7 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 	if err := validate(ctx); err != nil {
 		return err
 	}
+	startedPaused := paused
 	prepared, err := l.prepareRework(ctx, info, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef})
 	if err != nil {
 		return err
@@ -127,6 +128,9 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 		return err
 	}
 	if len(conflicts) != 0 {
+		if !startedPaused {
+			return nil
+		}
 		return fmt.Errorf("%w: unresolved source conflicts: %s", ErrMergeResolutionInvalid, strings.Join(conflicts, ", "))
 	}
 	for _, kind := range []string{"rebase-merge", "rebase-apply"} {
@@ -142,6 +146,9 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 		result, inspectErr := reworkRebaseResult(ctx, info.Path, err)
 		if inspectErr != nil {
 			return inspectErr
+		}
+		if result.Status == MergePrepareStatusConflict {
+			return nil
 		}
 		return fmt.Errorf("%w: %s", ErrMergeResolutionInvalid, result.Message)
 	}

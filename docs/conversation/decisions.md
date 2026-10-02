@@ -1357,7 +1357,7 @@ What it is. A terminal is the runner account's authority, handed to a
 person. Stripping environment variables does not confine a shell: the
 process can read the runner's provider login files, its credential store,
 other checkouts and anything else that user can read. The contract does not
-pretend otherwise. It offers two isolation levels the runner declares in
+pretend otherwise. It offers three isolation levels the runner declares in
 `isolation` and the organization chooses between:
 
 - `user`: the PTY runs as the runner's user in the worktree. Provider
@@ -1366,16 +1366,23 @@ pretend otherwise. It offers two isolation levels the runner declares in
   `workspaces.terminal.isolation: user` explicitly and the person is an
   owner or admin with the `runners` grant. The setting page says in words
   what this level exposes.
+- `sandbox`: the runner applies kernel confinement before the configured shell
+  starts, inherited by its children. Only the assigned worktree is writable;
+  runner credentials, other checkouts and host services are inaccessible.
+  Members with `write` and the `runners` grant may use it. This is the default
+  policy; actual support is measured independently of agent-worker isolation.
+  Darwin uses Seatbelt and confines descendants to the PTY's process group;
+  process-group job control is consequently restricted. Linux currently reports
+  unavailable sandbox support. See [runtime acceptance](operations.md#terminal-isolation-and-runtime-acceptance).
 - `container`: the runner starts the PTY inside a container (or equivalent
   the runner implements) that mounts only the worktree, has no access to
   the runner's home directory, credential files or sockets, and runs as an
   unprivileged user. Members with `write` and the `runners` grant may use
-  it. This is the default the setting offers and the only level a viewer of
-  the setting page sees as recommended.
+  it. No container PTY launcher is currently implemented.
 
-A runner that cannot provide `container` reports `isolation: "user"` and
-the terminal card stays disabled for organizations that require
-`container`, with the reason.
+A runner reports the isolation it actually enforces. A runner that cannot
+provide the organization's required isolation is excluded and Terminal stays
+disabled with the reason; an unsupported sandbox never becomes a user shell.
 
 - Frames. Person → runner: `open {cols, rows, cwd?}` (cwd relative to the
   worktree; shell is the runner's choice), `input {data}`, `resize {cols,

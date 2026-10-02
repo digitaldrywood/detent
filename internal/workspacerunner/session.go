@@ -110,7 +110,8 @@ type Support struct {
 	// Terminal is whether this runner offers the terminal channel at all. It is
 	// ANDed with what the platform can actually do, so a caller cannot turn on
 	// a surface the build has no way to serve.
-	Terminal bool
+	Terminal  bool
+	Isolation string
 }
 
 // DefaultSupport is what the runner process serves unless a caller narrows it.
@@ -122,7 +123,14 @@ type Support struct {
 // own, and then the capability is never reported and the workspace is never
 // claimed for a terminal.
 func DefaultSupport() Support {
-	return Support{Terminal: workspaceterminal.Supported}
+	return Support{Terminal: workspaceterminal.Supported, Isolation: workspaceterminal.AvailableIsolation()}
+}
+
+func (s Support) TerminalIsolation() string {
+	if s.Isolation == "" {
+		return workspacesession.IsolationUser
+	}
+	return s.Isolation
 }
 
 // Capabilities is what this runner can serve in principle.
@@ -301,11 +309,7 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 		// than failed, and the header disables its git group with that reason
 		// (section 18.12).
 		WorkspaceIdentity: s.config.Identity, Capabilities: s.served(),
-		// A runner with no container runtime reports user isolation and the
-		// terminal card stays disabled for organizations that require a
-		// container. This slice serves no terminal at all, so the honest
-		// answer is the level the PTY would run at if one existed.
-		Isolation: workspacesession.IsolationUser,
+		Isolation: s.config.Support.TerminalIsolation(),
 	})
 	if err != nil {
 		return fmt.Errorf("bind workspace: %w", err)
@@ -422,7 +426,7 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	// disabled with the reason. A read-only workspace opens no service at all,
 	// because a terminal is refused there whatever the runner can do (18.1).
 	if s.config.Support.Terminal && !bound.Checkout.ReadOnly {
-		terminal, err := workspaceterminal.New(path, s.config.Shell, workspacesession.IsolationUser, s.logger)
+		terminal, err := workspaceterminal.New(path, s.config.Shell, s.config.Support.TerminalIsolation(), s.logger)
 		if err != nil {
 			s.logger.Info("workspace.terminal_unavailable", "path", path, "error", err)
 		} else {
@@ -529,7 +533,7 @@ func (s *Session) heartbeat(ctx context.Context, state, reason string) error {
 	s.mu.Unlock()
 	session, err := s.config.Hub.HeartbeatWorkspace(ctx, s.config.WorkspaceID, hubclient.WorkspaceHeartbeatRequest{
 		WorkspaceIdentity: s.config.Identity, State: state, Reason: reason, HeadSHA: head,
-		Capabilities: capabilities, Isolation: workspacesession.IsolationUser,
+		Capabilities: capabilities, Isolation: s.config.Support.TerminalIsolation(),
 		// The path and the host are reported on every beat rather than at bind
 		// alone, so a runner that re-prepared a fresh worktree corrects the
 		// resource instead of leaving a stale path behind it.

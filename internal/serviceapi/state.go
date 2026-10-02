@@ -164,8 +164,11 @@ func boundStateValue(value any, path string, budget int) (stateNode, bool) {
 		if node.size() > budget {
 			return stateNode{}, false
 		}
-		for i := range min(len(value), StateCollectionLimit) {
-			child, ok := boundStateValue(value[i], path+"/"+strconv.Itoa(i), budget-node.size())
+		for i, item := range value {
+			if i >= StateCollectionLimit {
+				break
+			}
+			child, ok := boundStateValue(item, path+"/"+strconv.Itoa(i), budget-node.size())
 			if !ok {
 				break
 			}

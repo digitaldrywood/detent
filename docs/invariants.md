@@ -448,11 +448,44 @@ Unknown availability disables Surface controls with a safe explanation. Surface
 requests name the selected attempt so retained-runner ownership and active-attempt
 read-only restrictions remain application-owned. Projection confers no authority:
 commands and relay traffic retain current role, grants, owner, path, lease and
-plan checks. Raw Mac terminals still report `user`; this change does not activate
-them under sandbox policy or authorize any tenant's terminal activation.
+plan checks. Terminal launch confinement is independent of provider-worker isolation;
+native #162 binds registration, bind, heartbeat and opened isolation to the same
+measured terminal support. Darwin uses a deny-default Seatbelt profile, verified
+by an actual PTY probe and a confirmation emitted inside each sandbox before
+the configured shell starts. Only the canonical worktree is writable; system
+binaries/libraries are readable, runner environment and host IPC/network authority
+are absent. Symlink escapes, runner-home roots and nested mounts are refused.
+Sandbox descendants cannot change session or process group, including through
+`posix_spawn`, and cannot read host process arguments/environment. This retains the existing
+group teardown authority even after the shell exits. This restricts shell job
+control within sandbox terminals. A failed host/probe/launch never opens an
+unrestricted replacement. Linux has no implemented confined PTY and reports
+`user`; explicit user-policy terminals retain their existing restrictions. Tenant
+workspace/terminal defaults stay disabled and sandbox policy continues to refuse
+user-only runners. Runtime probe skips do not establish production support.
 `TestCloudAllocationGeneratesTenantConfiguration` and
 `TestAppBootstrapWorkspaceAvailability` cover persistence and truthful availability.
+`TestSandboxUnavailable`, `TestSandboxTerminalContainment`,
+`TestSandboxRootAuthority`, `TestSandboxMountContainment`, `TestSandboxChildCannotDetach`,
+`TestServiceOpenRefusals`, and the extended close/cancellation/exit table cover
+launch refusal, environment/path confinement and descendant teardown. Existing
+session and Hub relay tests retain current authority, lease and fencing coverage.
+Reviewed deployment and separately authorized scoped enablement remain necessary
+before real-workspace browser/API acceptance; see
+[terminal operations](conversation/operations.md#terminal-isolation-and-runtime-acceptance).
 No mechanism, control channel, configuration key or lane writer is introduced.
+
+Files selection (native #167) stays keyed to the native work item while its
+linked conversation becomes available. Navigating to another item restores that
+item's panel state before any surface can request its workspace. Workspace
+acquisition, event subscription and relay tickets share the current
+client/project/item/attempt/capability binding;
+changing that binding clears the previous workspace from the rendered surface
+before acquisition completes. Revoked availability and unavailable file channels
+use the existing Files explanation. `rightPanelWorkspace.test.tsx` follows the
+enabled picker through panel state, scoped workspace metadata, ticket minting,
+directory listing and a file read, and `workspaces.test.tsx` rejects stale attempt
+binding. Existing relay and filesystem authority is unchanged.
 
 Effective runner capacity (native #90) uses the existing runner administration,
 native command receipt, routing heartbeat, selected global configuration writer
@@ -579,6 +612,18 @@ failures even when the validator turn also fails, and cannot yield a verdict.
 `TestLocalGitSeedReviewHead`, `TestLocalGitSeedReviewHeadUsesPullRequestRepository`,
 and `TestLocalGitVerifyReviewTreeAfterSeeding`
 cover these boundaries (#3031).
+
+Validator verdict identity also binds the current task title/body, referenced
+authoritative qualification evidence, and effective review instructions to the
+repository/PR/base/head provenance (#3087). Fresh tracker input is read before
+reuse and again before publication. Legacy rows without a context digest cannot
+approve or reject current code. Unrelated comments, timestamps and Workpad
+progress prose do not change identity; referenced qualification evidence does.
+`TestValidatorAcceptanceContextIdentity`, `TestValidatorContextMemoReuse`,
+`TestValidatorContextSchedulesOnceAndRejectsHeldResult`,
+`TestValidatorLegacyContextNotReusable`, and `TestValidatorContextStorageRestart`
+cover these boundaries. This extends the existing validator lifecycle without
+adding a recovery mechanism or granting a gate waiver.
 
 Verified PR delivery uses immutable forge `MergedAt` when hydrated, otherwise a
 successful programmatic merge's post-API observation time (#3482). The existing
@@ -1362,6 +1407,33 @@ source-only replay instructions are checked before privileged continuation.
 Sandbox metadata roots grant only the assigned branch's ref, reflog and lock
 files, plus the existing worktree metadata and objects; they never grant branch
 parent directories, sibling ref writes or the common Git directory.
+
+Late host replay conflicts (#163) share the existing successful dirty-source
+continuation under INV-1, INV-2 and INV-3. A successful model turn may leave
+staged preserved work that delays rebase preparation until the host commits it.
+A conflict introduced by that preparation, or by continuing a resolved replay
+into the next commit, preserves a successful native attempt and its dirty
+checkpoint. The claim owner's existing already-answered predicate no longer
+suppresses successful attempts with dirty checkpoints, so ordinary continuation
+can claim the source-resolution session without a lane move, new dispatch request,
+reason code or retry owner. Conflicts still unresolved when host finalization
+begins remain genuine source failures and consume the existing failure allowance.
+Native work without a forge PR uses existing workspace-diff progress accounting;
+unpublished replay commits cannot establish stranded forge work. Repeated unchanged
+diffs retain their existing no-progress accounting and configured budget controls.
+Immutable artifact capture requires a clean or unpushed recovery checkpoint;
+paused rebase indexes are excluded from attempt diff capture. Dirty native success
+publishes no Change version, does not inherit review and establishes no landing.
+`TestNativeReworkFinalizesBeforeImmutableEvidence` reproduces staged work,
+late conflict and successive replay conflicts, including preserved resolved
+progress. `TestNativeChangeRunCompletion` verifies durable progress metadata,
+ordinary continuation and genuine failure-allowance consequences.
+`TestClaimCandidatesKeepOfferingUnsuccessfulAttempts` retains clean-success
+suppression and checks dirty-success claim eligibility.
+`TestNativeRunnerOpensChangeAndLeavesDispatch` verifies the authentic successful
+dirty receipt, unchanged prior version and feedback, subsequent resolution,
+exact-head/version/policy publication and actual local-transport landing.
+
 `TestLocalGitNativeReworkOwnsPausedRebase`,
 `TestNativeReworkFinalizesBeforeImmutableEvidence` and
 `TestGitMetadataWritableRootsForLinkedWorktree` cover these boundaries. The source
@@ -1973,8 +2045,8 @@ from backend enforcement rather than adding another cache revision guard.
 Claude verifies effective policy on its worker before sending a model prompt.
 `TestRunnerIsolationClaims`, `TestRunnerIsolationHeartbeatWithdrawsTier`,
 `TestProbeBackendTiers`, and each backend's `TestIsolationSettings` cover dispatch,
-withdrawal, failed probes, and policy mapping. Raw workspace terminals still report
-their actual `user` isolation independently of agent sandbox support.
+withdrawal, failed probes, and policy mapping. Workspace terminals report their
+own measured isolation independently of agent sandbox support (native #162).
 
 Runner policy identity (#3273) preserves the historical digest representation
 of equivalent absent/default execution settings across binary upgrades. The
