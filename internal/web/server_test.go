@@ -11,6 +11,7 @@ import (
 	"errors"
 	"html"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	detent "github.com/digitaldrywood/detent"
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/budget"
@@ -5569,19 +5571,41 @@ func TestServerServesDefaultStaticAssetsFromArbitraryWorkingDirectory(t *testing
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/static/css/output.css", nil)
-
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	paths := []string{"css/output.css", "app/conversation/app.js", "app/conversation/app.css", "app/conversation/THIRD_PARTY_LICENSES.txt", "app/conversation/index.html"}
+	chunks := 0
+	if err := fs.WalkDir(detent.StaticFS(), "app/conversation", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasPrefix(name, "app/conversation/chunks/") {
+			chunks++
+		}
+		if !entry.IsDir() {
+			paths = append(paths, name)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
-		t.Fatalf("Content-Type = %q, want text/css", got)
+	if chunks == 0 {
+		t.Fatal("conversation lazy chunks are missing")
 	}
-	if !strings.Contains(rec.Body.String(), "tailwindcss") {
-		t.Fatalf("body missing embedded CSS marker:\n%s", rec.Body.String())
+	for _, name := range slices.Compact(slices.Sorted(slices.Values(paths))) {
+		t.Run(name, func(t *testing.T) {
+			expected, err := fs.ReadFile(detent.StaticFS(), name)
+			if err != nil || len(expected) == 0 {
+				t.Fatalf("embedded asset %s: %v", name, err)
+			}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/static/"+name, nil)
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), expected) {
+				t.Fatalf("served asset %s: status %d, bytes %d, want %d", name, rec.Code, rec.Body.Len(), len(expected))
+			}
+			if got := rec.Header().Get("Content-Type"); strings.HasSuffix(name, ".css") && !strings.HasPrefix(got, "text/css") {
+				t.Fatalf("Content-Type = %q, want text/css", got)
+			}
+		})
 	}
 }
 

@@ -3,7 +3,6 @@ set -eu
 
 repo="digitaldrywood/detent"
 project_name="detent"
-module_package="github.com/digitaldrywood/detent/cmd/detent"
 api_base="${DETENT_GITHUB_API_BASE:-https://api.github.com/repos/$repo}"
 download_base="${DETENT_RELEASE_DOWNLOAD_BASE:-https://github.com/$repo/releases/download}"
 state_dir="${DETENT_STATE_DIR:-"$HOME/.detent"}"
@@ -222,16 +221,16 @@ install_release() {
 	arch="$2"
 
 	if ! command -v curl >/dev/null 2>&1; then
-		printf '%s\n' "curl is not available; falling back to go install" >&2
+		printf '%s\n' "curl is not available; falling back to prepared source" >&2
 		return 1
 	fi
 	if ! command -v tar >/dev/null 2>&1; then
-		printf '%s\n' "tar is not available; falling back to go install" >&2
+		printf '%s\n' "tar is not available; falling back to prepared source" >&2
 		return 1
 	fi
 
 	tag="$(release_tag)" || {
-		printf '%s\n' "Could not resolve the latest Detent release; falling back to go install" >&2
+		printf '%s\n' "Could not resolve the latest Detent release; falling back to prepared source" >&2
 		return 1
 	}
 	version="$tag"
@@ -239,7 +238,7 @@ install_release() {
 	checksums="$tmp_dir/checksums.txt"
 
 	asset_name="$(download_archive "$tag" "$version" "$os" "$arch" "$archive")" || {
-		printf '%s\n' "No Detent release asset found for $tag $os/$arch; falling back to go install" >&2
+		printf '%s\n' "No Detent release asset found for $tag $os/$arch; falling back to prepared source" >&2
 		return 1
 	}
 	download_checksums "$tag" "$version" "$checksums" || abort "Could not download checksums for release $tag"
@@ -253,14 +252,23 @@ install_release() {
 	cp "$tmp_dir/release/detent" "$tmp_dir/detent"
 }
 
-install_go() {
-	version="${DETENT_VERSION:-latest}"
-	go_bin="$tmp_dir/go-bin"
-
+install_source() {
 	command -v go >/dev/null 2>&1 || abort "Cannot install Detent: release asset unavailable and go is not installed"
-	mkdir -p "$go_bin"
-	GOBIN="$go_bin" go install "$module_package@$version"
-	cp "$go_bin/detent" "$tmp_dir/detent"
+	command -v curl >/dev/null 2>&1 || abort "Cannot download prepared Detent source: curl is not installed"
+	command -v tar >/dev/null 2>&1 || abort "Cannot unpack prepared Detent source: tar is not installed"
+	tag="$(release_tag)" || abort "Could not resolve the Detent source release"
+	version="$(trim_v "$tag")"
+	asset_name="${project_name}_${version}_source.tar.gz"
+	archive="$tmp_dir/source.tar.gz"
+	checksums="$tmp_dir/source-checksums.txt"
+	download_file "$download_base/$tag/$asset_name" "$archive" || abort "Could not download prepared source for $tag"
+	download_checksums "$tag" "$version" "$checksums" || abort "Could not download checksums for source release $tag"
+	verify_checksum "$archive" "$checksums" "$asset_name"
+	mkdir -p "$tmp_dir/source"
+	tar -xzf "$archive" -C "$tmp_dir/source" --strip-components=1
+	[ -s "$tmp_dir/source/BUILD_LDFLAGS" ] || abort "Prepared source archive is missing build identity"
+	ldflags="$(cat "$tmp_dir/source/BUILD_LDFLAGS")"
+	(cd "$tmp_dir/source" && go build -ldflags "$ldflags" -o "$tmp_dir/detent" ./cmd/detent)
 }
 
 install_local() {
@@ -268,10 +276,16 @@ install_local() {
 		abort "Cannot build Detent locally: install.sh is not running from a checkout"
 	}
 
-	build_version="$(git -C "$dir" describe --tags --always 2>/dev/null || echo dev)"
-	build_commit="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo none)"
-	build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-	ldflags="-X main.version=$build_version -X main.commit=$build_commit -X main.date=$build_date"
+	if [ -s "$dir/BUILD_LDFLAGS" ]; then
+		ldflags="$(cat "$dir/BUILD_LDFLAGS")"
+	else
+		command -v make >/dev/null 2>&1 || abort "Building a source checkout requires make and Node; Go-only builds use the prepared release source archive"
+		(cd "$dir" && make app)
+		build_version="$(git -C "$dir" describe --tags --always 2>/dev/null || echo dev)"
+		build_commit="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo none)"
+		build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+		ldflags="-X main.version=$build_version -X main.commit=$build_commit -X main.date=$build_date"
+	fi
 	(cd "$dir" && go build -ldflags "$ldflags" -o "$tmp_dir/detent" ./cmd/detent)
 }
 
@@ -288,11 +302,11 @@ install_binary() {
 	fi
 }
 
-install_release_or_go() {
+install_release_or_source() {
 	if [ -n "$target_os" ] && install_release "$target_os" "$target_arch"; then
 		return
 	fi
-	install_go
+	install_source
 }
 
 report_service_restart_required() {
@@ -326,7 +340,7 @@ if [ -n "$target_info" ]; then
 else
 	target_os=""
 	target_arch=""
-	printf '%s\n' "No supported release target detected; falling back to go install if needed" >&2
+	printf '%s\n' "No supported release target detected; falling back to prepared source if needed" >&2
 fi
 
 mkdir -p "$install_dir" "$state_dir" || abort "Cannot create install or state directory"
@@ -357,12 +371,12 @@ if [ -n "$source_binary" ]; then
 elif [ "$install_mode" = "local" ]; then
 	install_local
 elif [ "$install_mode" = "release" ]; then
-	install_release_or_go
+	install_release_or_source
 elif [ "$install_mode" = "auto" ]; then
 	if source_checkout_dir >/dev/null 2>&1; then
 		install_local
 	else
-		install_release_or_go
+		install_release_or_source
 	fi
 else
 	abort "Unknown DETENT_INSTALL_MODE: $install_mode"

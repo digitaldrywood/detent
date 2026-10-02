@@ -9,7 +9,7 @@ can execute these steps top to bottom; replace each `<...>` placeholder. The
 complete, annotated reference instance to compare against as you work.
 
 1. **Install Detent.** `brew install digitaldrywood/tap/detent` (macOS/Linux),
-   `go install github.com/digitaldrywood/detent/cmd/detent@latest`, or a
+   a Go-only build of the prepared source archive, or a
    platform installer from [Install](../README.md#install). Verify: `detent version`.
 
 2. **Install and authenticate the GitHub CLI.** Install

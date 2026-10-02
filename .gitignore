@@ -8,3 +8,5 @@ node_modules/
 .envrc
 detent-release.key
 *.key
+
+/static/app/conversation/

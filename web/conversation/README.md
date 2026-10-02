@@ -25,24 +25,23 @@ See [third-party notices](./THIRD_PARTY_NOTICES.md) for MIT and Apache-2.0 attri
 ## Build
 
 ```sh
-make app        # npm ci when needed, then vite build
+make app        # npm ci, then vite build
 make app-test   # tsc --noEmit && vitest run
 make app-dev    # vite dev server, proxying to a local hub
-make check-app  # typecheck, tests, rebuild, bundle drift and attribution
+make check-app  # typecheck, tests, rebuild, source diagnostics and attribution
 ```
 
-`make check-app` is the branch gate and runs inside `make check`
-(decisions.md §10.15). After the typecheck and the unit tests it rebuilds the
-bundle and fails if `static/app/conversation` changed — the built client is
-committed, so a client change that was not rebuilt is drift — and fails if
-`app.js` lost its MIT attribution banner. The build is deterministic (fixed
-output names, no content hashes, no timestamps), so two builds of the same tree
-are byte identical and the drift check means what it says.
+`make check-app` runs typechecking, unit tests, a build and attribution checks.
+It is an optional diagnostic and runs in the scheduled integrated-source suite.
+There is no committed-output drift check.
 
-`make generate` runs `make app`. The output lands in
-`static/app/conversation/` (`index.html`, `app.js`, `app.css`, fixed names, no
-content hashes) and is committed, following the precedent of
-`static/css/output.css`, so `go build` never needs Node.
+`make generate` and `make build` run `make app`. Its complete output lands in
+ignored `static/app/conversation/`, including the shell, CSS, workers, lazy
+chunks and third-party licenses. Feature commits contain client source only.
+Staging, releases and private operators generate assets from their selected
+source before Go compilation. The prepared release source archive carries the
+same output for Go-only end-user builds; raw module downloads cannot provide
+it. See [build ownership](../../docs/development.md#conversation-assets).
 
 `app.js` begins with the MIT notice for the reused T3 Code source
 (decisions.md §10.13). It is prepended by the `detent-mit-attribution` plugin

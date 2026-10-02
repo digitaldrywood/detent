@@ -48,6 +48,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.preflight.outputs.develop_sha }}
+      - uses: ./.github/actions/prepare-conversation
+
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -64,6 +66,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.preflight.outputs.develop_sha }}
+
+      - uses: ./.github/actions/prepare-conversation
 
       - uses: actions/setup-go@v6
         with:
@@ -103,6 +107,8 @@ jobs:
           ref: ${{ needs.preflight.outputs.develop_sha }}
           fetch-depth: 0
 
+      - uses: ./.github/actions/prepare-conversation
+
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -111,13 +117,7 @@ jobs:
       - name: Verify committed generated sources
         run: make check-generated
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: web/conversation/package-lock.json
-
-      - name: Verify the Cloud client and its committed bundle
+      - name: Verify Cloud client sources and generated assets
         run: make check-app
 
       - name: Check integrated migration versions
@@ -173,6 +173,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.preflight.outputs.develop_sha }}
+      - uses: ./.github/actions/prepare-conversation
+
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -211,6 +213,8 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.develop_sha }}
 
+      - uses: ./.github/actions/prepare-conversation
+
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -228,6 +232,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.preflight.outputs.develop_sha }}
+
+      - uses: ./.github/actions/prepare-conversation
 
       - uses: actions/setup-go@v6
         with:
@@ -317,6 +323,8 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.develop_sha }}
 
+      - uses: ./.github/actions/prepare-conversation
+
       - name: Set up Go (uncached on macOS)
         uses: actions/setup-go@v6
         timeout-minutes: 3
@@ -383,6 +391,8 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.develop_sha }}
 
+      - uses: ./.github/actions/prepare-conversation
+
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -429,8 +439,8 @@ jobs:
 
           output="$(sh ./install.sh 2>&1)"
           printf '%s\n' "$output"
-          if grep -Fq "falling back to go install" <<< "$output"; then
-            echo "Release installer fell back to go install" >&2
+          if grep -Fq "falling back to prepared source" <<< "$output"; then
+            echo "Release installer fell back to prepared source" >&2
             exit 1
           fi
           grep -F "Verified checksum for detent_" <<< "$output"
@@ -459,8 +469,8 @@ jobs:
           if ($exitCode -ne 0) {
             throw "install.ps1 failed with exit code $exitCode"
           }
-          if ($output -match 'falling back to go install') {
-            throw 'Release installer fell back to go install'
+          if ($output -match 'falling back to prepared source') {
+            throw 'Release installer fell back to prepared source'
           }
           if (-not ($output -match 'Verified checksum for detent_.*_windows_.*\.zip')) {
             throw 'install.ps1 did not report checksum verification'
@@ -503,6 +513,12 @@ jobs:
         with:
           go-version: '1.26.6'
           cache: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/conversation/package-lock.json
 
       - name: Install minisign
         run: |

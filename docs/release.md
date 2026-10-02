@@ -56,12 +56,12 @@ including an explicit release swap requested for a `go install` binary. It does
 not automatically replace binaries managed by Homebrew, Scoop, Winget, deb/rpm
 packages, or `go install`; automatic update reports the appropriate external
 command instead. For a Go-managed binary, an explicit `detent update --yes` (or
-selection of the interactive Go-install option) executes `go install` and checks
-the installed version, without enforcing signed release provenance. Using
+legacy Go-install option) now reports the prepared source archive build path.
+Go module archives no longer contain conversation build output. Using
 `detent update --from-release` instead switches to the release-managed path and
 requires its provenance checks.
 
-Package-manager upgrades, explicit Go-install updates, manual binary copies,
+Package-manager upgrades, prepared-source builds, manual binary copies,
 and service-manager deployment are host-administrator actions outside signed
 release provenance enforcement. Administrators are responsible for validating
 the package source and confirming the restarted binary's full commit for those
@@ -83,5 +83,24 @@ The Makefile pins sqlc in `SQLC_VERSION`; `make generate`, `make sqlc`, and
 `make check-generated` checks SQL output with `sqlc diff` and checks the generated
 configuration reference without rewriting either. The local `make check-fast` target runs it in each PR worktree, and the
 scheduled full suite runs it on the pinned `develop` commit.
-GoReleaser uses the same verification hook and builds committed sources
-instead of regenerating them during release.
+GoReleaser builds committed Go sources and regenerates the conversation client
+through `make app` from that exact tag's npm lockfile using Node 24. Conversation
+output is ignored in feature commits. Staging and private operator builds use
+the same entry point before Go compilation.
+
+GoReleaser publishes `detent_<version>_source.tar.gz`, containing the exact
+tagged source, every generated conversation asset and `BUILD_LDFLAGS` with the
+version, full commit and build date. It is included in the existing signed
+checksums alongside the binary archives. Go-only consumers build this prepared
+archive; automatic GitHub source archives and Go module downloads do not
+contain ignored output. The tag and signed provenance still refer to the
+validated source commit, never a later generated-output commit. This trades
+module-proxy installation convenience for source-only feature integration and
+a complete Go-only release-source build.
+
+The shell and PowerShell installers use this checksum-verified source archive
+when the platform binary asset is unavailable. Local checkout installation
+regenerates assets before compiling; prepared source installation uses its
+packaged assets and build identity. Private operator source compositions use
+`make build`, or `make app` before a custom Go build. No public prebuilt bundle
+is substituted for private source.

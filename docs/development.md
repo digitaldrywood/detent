@@ -89,3 +89,44 @@ runtime audit aid behind `GOEXPERIMENT=goroutineleakprofile`; the stable CI
 coverage for now is the goleak-backed test gate.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full contributor workflow.
+
+
+## Conversation assets
+
+Conversation source and its npm lockfile are tracked; `static/app/conversation/`
+is ignored build output. Do not stage that directory in feature commits.
+`make app` installs the locked dependencies and builds the entire client.
+`make generate` runs it before Go generators, and `make build` embeds that
+output. Use Node 24 for the same toolchain as staging and release builds.
+
+For a private operator build, first select the complete source composition in
+this isolated checkout, then run `make build`. When supplying custom Go flags
+or cross-compiling, run `make app` followed by the desired `go build` command.
+Always regenerate after changing or integrating client source or the lockfile;
+a direct Go build cannot determine whether existing ignored output is stale.
+An unprepared checkout fails compilation rather than producing an absent UI.
+Prepared release source archives already contain the embed inputs and
+`BUILD_LDFLAGS`, so end users compile those with Go alone.
+
+Staging and scheduled fresh-checkout consumers call the repository's
+`prepare-conversation` action, which uses this same `make app` entry point.
+GoReleaser's before hook calls it for release and snapshot builds and includes
+all output in its prepared source archive. Every consumer builds from its
+pinned checkout; assets from a different feature branch are never reused.
+
+`make check-app` retains typechecking, client unit tests, rebuilding and
+attribution diagnostics. It does not compare against committed bundles and is
+not a shipping gate. The scheduled suite validates integrated source as before.
+
+To reproduce the contention regression and exercise embedded delivery, run:
+
+```sh
+python3 scripts/verify-conversation-build.py
+```
+
+The diagnostic creates a repository under the provided worker scratch directory,
+merges two independent client edits with source-only commits, builds a local
+GoReleaser snapshot, and compiles its prepared source with Go alone. Both builds
+exercise the existing embedded HTTP handler for every conversation asset from
+an arbitrary working directory. It neither publishes a release nor touches
+tracker state, shared refs or the running service.
