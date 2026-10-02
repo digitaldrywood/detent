@@ -423,7 +423,11 @@ discovery once regardless of catalog size. Existing opaque cursors still validat
 their principal/catalog digest and bounded offset against current authority,
 then return all remaining tools without another cursor. The `2026-07-28` stateless
 protocol validates per-request metadata and mirrored HTTP headers; older handshakes retain their
-bound sessions. Discovery cursors and client metadata confer no authority.
+bound sessions. Modern `tools/list` and `server/discover` results carry
+`ttlMs: 0` and `cacheScope: "private"` through the shared result serializer
+(native #213), without retaining a catalog cache. Other modern results retain
+their complete discriminator without cache hints; older result shapes stay
+unchanged. Discovery cursors and client metadata confer no authority.
 Project-resource tool discovery preserves member write capabilities using the existing role predicate,
 while organization administration retains its separate role requirements.
 Discovery has no selected project; actual calls always recheck current project

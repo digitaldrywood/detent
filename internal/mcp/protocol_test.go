@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -180,12 +181,19 @@ func TestProtocolApplicationParity(t *testing.T) {
 			t.Run(transport+"/"+version, func(t *testing.T) {
 				t.Parallel()
 				fixture := newProtocolFixture(t, transport, version)
+				request := func(t *testing.T, method string, params map[string]any) rpcResponse {
+					t.Helper()
+					response := fixture.request(method, params)
+					assertProtocolResultShape(t, version, method, response)
+					return response
+				}
+				request(t, "ping", nil)
 				if fixture.modern {
 					var discover struct {
 						ResultType string   `json:"resultType"`
 						Supported  []string `json:"supportedVersions"`
 					}
-					decodeResult(t, fixture.request("server/discover", nil), &discover)
+					decodeResult(t, request(t, "server/discover", nil), &discover)
 					if discover.ResultType != "complete" || !reflect.DeepEqual(discover.Supported, supportedVersions()) {
 						t.Fatalf("discovery: %+v", discover)
 					}
@@ -193,7 +201,7 @@ func TestProtocolApplicationParity(t *testing.T) {
 				// Direct invocation before catalog discovery must still check the application.
 				params := map[string]any{"name": operatortool.SetPriority, "arguments": map[string]string{"project_id": "other", "request_id": "request-1", "identifier": "issue-3339", "priority": "high"}}
 				var denied toolCallResult
-				decodeResult(t, fixture.request("tools/call", params), &denied)
+				decodeResult(t, request(t, "tools/call", params), &denied)
 				if !denied.IsError || denied.Content[0].Text != operatortool.ErrAccessDenied.Error() {
 					t.Fatalf("direct selector bypass: %+v", denied)
 				}
@@ -209,7 +217,7 @@ func TestProtocolApplicationParity(t *testing.T) {
 						fixture.application.catalog = catalog.tools
 						before := fixture.application.listCalls.Load()
 						var page catalogPage
-						decodeResult(t, fixture.request("tools/list", nil), &page)
+						decodeResult(t, request(t, "tools/list", nil), &page)
 						if !reflect.DeepEqual(page.Tools, catalog.tools) || page.NextCursor != "" {
 							t.Fatalf("typed catalog/schema/annotation parity mismatch: tools=%d want=%d nextCursor=%q", len(page.Tools), len(catalog.tools), page.NextCursor)
 						}
@@ -224,7 +232,7 @@ func TestProtocolApplicationParity(t *testing.T) {
 					})
 				}
 				params["arguments"].(map[string]string)["project_id"] = "project"
-				response := fixture.request("tools/call", params)
+				response := request(t, "tools/call", params)
 				var result toolCallResult
 				decodeResult(t, response, &result)
 				if result.IsError || len(result.Content) != 1 || !strings.Contains(result.Content[0].Text, `"resource_id":"issue-3339"`) {
@@ -233,16 +241,65 @@ func TestProtocolApplicationParity(t *testing.T) {
 				if version != "2024-11-05" && version != "2025-03-26" && !jsonEqual(result.StructuredContent, json.RawMessage(result.Content[0].Text)) {
 					t.Fatal("structured/text results diverged")
 				}
-				if fixture.modern && !bytes.Contains(response.Result, []byte(`"resultType":"complete"`)) {
-					t.Fatal("missing complete discriminator")
-				}
 				fixture.application.denied.Store(true)
-				decodeResult(t, fixture.request("tools/call", params), &denied)
+				decodeResult(t, request(t, "tools/call", params), &denied)
 				if !denied.IsError || denied.Content[0].Text != operatortool.ErrAccessDenied.Error() {
 					t.Fatalf("revoked authority reused: %+v", denied)
 				}
 			})
 		}
+	}
+}
+
+func assertProtocolResultShape(t *testing.T, version, method string, response rpcResponse) {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	decodeResult(t, response, &fields)
+	want := []string{}
+	switch method {
+	case "tools/list":
+		want = append(want, "tools")
+	case "tools/call":
+		want = append(want, "content")
+		var isError bool
+		if raw, ok := fields["isError"]; ok {
+			if err := json.Unmarshal(raw, &isError); err != nil || !isError {
+				t.Errorf("%s invalid isError: %s", method, raw)
+			}
+			want = append(want, "isError")
+		}
+		if !isError && version != "2024-11-05" && version != "2025-03-26" {
+			want = append(want, "structuredContent")
+		}
+	case "server/discover":
+		want = append(want, "supportedVersions", "capabilities", "instructions")
+	}
+	if version == ProtocolVersion {
+		want = append(want, "resultType", "_meta")
+		var resultType string
+		if err := json.Unmarshal(fields["resultType"], &resultType); err != nil || resultType != "complete" {
+			t.Errorf("%s invalid resultType: %s", method, fields["resultType"])
+		}
+		if method == "tools/list" || method == "server/discover" {
+			want = append(want, "ttlMs", "cacheScope")
+			var ttl *int64
+			if err := json.Unmarshal(fields["ttlMs"], &ttl); err != nil || ttl == nil || *ttl != 0 {
+				t.Errorf("%s ttlMs = %s, want integer 0 for current-authority discovery", method, fields["ttlMs"])
+			}
+			var scope string
+			if err := json.Unmarshal(fields["cacheScope"], &scope); err != nil || scope != "private" {
+				t.Errorf("%s cacheScope = %s, want private", method, fields["cacheScope"])
+			}
+		}
+	}
+	got := make([]string, 0, len(fields))
+	for field := range fields {
+		got = append(got, field)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("%s %s result fields = %v, want %v", version, method, got, want)
 	}
 }
 
@@ -311,7 +368,9 @@ func TestCatalogCursorCurrentAuthority(t *testing.T) {
 			t.Parallel()
 			fixture := newProtocolFixture(t, transport, ProtocolVersion)
 			var first catalogPage
-			decodeResult(t, fixture.request("tools/list", nil), &first)
+			response := fixture.request("tools/list", nil)
+			assertProtocolResultShape(t, ProtocolVersion, "tools/list", response)
+			decodeResult(t, response, &first)
 			raw, err := json.Marshal(struct {
 				Identity operatortool.Identity
 				Tools    []operatortool.Definition
@@ -333,7 +392,9 @@ func TestCatalogCursorCurrentAuthority(t *testing.T) {
 			for _, offset := range []int{1, 5, len(first.Tools) - 1} {
 				var remaining catalogPage
 				before := fixture.application.listCalls.Load()
-				decodeResult(t, fixture.request("tools/list", map[string]any{"cursor": encodeCursor(offset, digest)}), &remaining)
+				response := fixture.request("tools/list", map[string]any{"cursor": encodeCursor(offset, digest)})
+				assertProtocolResultShape(t, ProtocolVersion, "tools/list", response)
+				decodeResult(t, response, &remaining)
 				if !reflect.DeepEqual(remaining.Tools, first.Tools[offset:]) || remaining.NextCursor != "" || fixture.application.listCalls.Load()-before != 1 {
 					t.Fatalf("cursor offset %d did not finish discovery in one lookup: %+v", offset, remaining)
 				}
@@ -350,7 +411,9 @@ func TestCatalogCursorCurrentAuthority(t *testing.T) {
 				t.Fatalf("changed permissions reused cursor: %+v", changed)
 			}
 			var readPage catalogPage
-			decodeResult(t, fixture.request("tools/list", nil), &readPage)
+			response = fixture.request("tools/list", nil)
+			assertProtocolResultShape(t, ProtocolVersion, "tools/list", response)
+			decodeResult(t, response, &readPage)
 			for _, tool := range readPage.Tools {
 				if !tool.Annotations.ReadOnly {
 					t.Fatal("write scope escaped filtering")
@@ -358,7 +421,7 @@ func TestCatalogCursorCurrentAuthority(t *testing.T) {
 			}
 			fixture.application.writeDenied.Store(false)
 			fixture.application.denied.Store(true)
-			response := fixture.request("tools/list", map[string]any{"cursor": cursor})
+			response = fixture.request("tools/list", map[string]any{"cursor": cursor})
 			if response.Error == nil || response.Error.Message != operatortool.ErrAccessDenied.Error() {
 				t.Fatalf("stale cursor widened authority: %+v", response)
 			}
