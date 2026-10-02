@@ -536,7 +536,3 @@ target to GitHub Projects v2. It is now a ground-up Go rewrite: one CGO-free
 binary instead of a BEAM service, plus multi-project orchestration, the gated
 merge train, a richer operator dashboard, `detent doctor`, Windows support, and
 a GoReleaser pipeline. That earlier Elixir implementation is archived.
-
-## License
-
-Detent is released under the MIT license. See [LICENSE](LICENSE).
