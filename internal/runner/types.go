@@ -650,7 +650,7 @@ type RunRequest struct {
 	sessionTurnOffset         int
 	sessionTokenOffset        int64
 	retainCheckpoint          bool
-	finalizeNativeRework      bool
+	finalizeNativeWork        bool
 }
 
 type ForgeRetry struct {

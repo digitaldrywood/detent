@@ -740,9 +740,9 @@ func appendNativeIssueInstructions(prompt string, issue connector.Issue) string 
 
 const nativeCompletionContract = "## Native completion contract\n\n" +
 	"This project uses Detent's native tracker. These rules override any tracker, Workpad, or pull request instructions above. " +
-	"Commit your work on the current attempt branch in this workspace. " +
+	"Stage only your finished issue changes with git add on the current attempt branch in this workspace. The runner owns commit signing and native commit/rebase finalization under the active lease before publishing an immutable Change version. Do not commit, run rebase or rebase --continue, update branches/refs, or use signing workarounds. Leave the staged index for the runner, including during a paused rebase. " +
 	"Never push to or open or update pull requests on the forge, never run `gh` or call the GitHub API, do not post or edit tracker, GitHub issue, or Workpad comments, and do not change issue state or labels. " +
-	"When the run finishes, Detent records the Change Request from your commits. " +
+	"When host finalization and artifact capture succeed, Detent records the Change Request from the exact finalized head. " +
 	"Report any blocker in your final message."
 
 func appendNativeCompletionContract(prompt string) string {

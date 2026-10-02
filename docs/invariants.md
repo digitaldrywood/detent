@@ -782,7 +782,8 @@ these boundaries.
 `TestHubSchedulingReadinessBeforeClaim` covers historical REST scopes through
 pre-claim readiness, retry planning and final dispatch admission.
 
-Native rework Git preparation and finalization failures (#141) use the existing
+Native code commit and rework Git preparation/finalization failures (#141, #156)
+use the existing
 `workspace_preparation` outcome, including failures after a source-resolution
 turn. The existing instance failure owner retains the issue's runnable lane and
 excludes the attempt from its failure allowance; successful source turns retain
@@ -790,6 +791,20 @@ their existing progress semantics. Genuine unresolved source conflicts remain
 resolution failures. `TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`
 covers metadata/signing failures after resolution, issue allowance, and continued
 eligibility of other runnable work without a new failure family or scheduler.
+Host commit signing and authority failures preserve staged work and the existing
+checkpoint/retention owner, skip immutable artifact capture and version publication,
+and report a failed native Finish. They never become additional source findings
+or authorize another issue coding attempt. Current requested-change feedback and
+the prior immutable version remain intact; unavailable authority cannot write a
+new checkpoint. The staged/signing cases in
+`TestNativeReworkFinalizesBeforeImmutableEvidence` and
+`TestNativeRunnerOpensChangeAndLeavesDispatch` cover this completion boundary.
+Host staged commits suppress all repository hooks for that command with
+`core.hooksPath` set to the platform null device. Signing capability remains
+host-owned; tracked hooks cannot run with host credentials. Repository hooks
+configuration, author identity and signing policy remain unchanged, covered by
+`TestLocalGitNativeWorkDisablesTrackedHooks` for unsigned Code, SSH-signed Code
+and SSH-signed Rework.
 
 Native landing merge conflicts are repository refusals, not infrastructure
 failures or shipped work. Explicit merge-conflict evidence in the decoded GitHub
@@ -1176,12 +1191,25 @@ receipt clears its probe; source cleanliness alone cannot clear the refusal.
 `TestNativeLandingRunCompletion` cover these consolidated authorities under
 INV-1 and INV-3 without a new reason, poller, configuration or recovery loop.
 
-Native rework (#141) consolidates rebase preparation and continuation under
+Native code/rework (#141, #156) consolidates commit finalization, rebase
+preparation and continuation under
 `LocalGit` and its existing source-operation lock. Workspace creation retains a
 verified paused transaction on the assigned branch. Workers resolve and stage
-source/index conflicts; the execution epilogue finalizes the rebase before
+authorized issue edits and source/index conflicts; the execution epilogue commits
+an unpaused staged repair and finalizes the rebase before
 capturing artifacts, diffs or the final checkpoint. Source diagnostics and the
-model turn run outside the source lock. Native machine replay explicitly avoids
+model turn run outside the source lock. Commit finalization verifies the owned
+worktree/common Git directory and assigned branch, then revalidates the active
+execution lease/policy authority under that lock. Ordinary host commits retain
+the project's effective signing configuration; unavailable signing fails as an
+instance capability without an unsigned fallback, configuration change or worker
+key access. Workers neither commit nor use signing workarounds. Ordinary tracker
+workflow remains unchanged. The staged host commit alone overrides
+`core.hooksPath` with the platform null device, disabling pre-commit,
+prepare-commit-msg, commit-msg and post-commit hooks without changing repository
+configuration, author identity or signing. `--no-verify` is insufficient for
+this host boundary. Paused rebase replay retains its existing ownership.
+Native machine replay explicitly avoids
 personal signing, including a signer option saved by an earlier paused rebase;
 host configuration and signer material remain untouched. Legacy Git signing and
 actual forge signing/protection requirements retain their existing owners.
@@ -1197,6 +1225,10 @@ fixture attempts a nested macOS sandbox when the host permits it; a sandboxed
 worker that forbids nesting still exercises source/index resolution, explicit
 root authority, signer inheritance and transaction finalization. Nested sandbox
 denial is not OS sandbox enforcement evidence.
+Signed commit fixtures use real SSH signatures and verification; GPG-unavailable
+fixtures exercise actual Git commit failure and retained staged work. Runtime
+acceptance of a GPG-configured worker's OS denial of signer material and unrelated
+common refs remains with the integration owner when nested sandboxing is unavailable.
 
 `TestNativeRunnerOpensChangeAndLeavesDispatch` exercises rework preparation
 against a local Git transport while preserving the HTTPS repository identity.

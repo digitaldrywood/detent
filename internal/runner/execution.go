@@ -231,13 +231,13 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	}
 	localCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	defer cancel()
-	if req.finalizeNativeRework && ctx.Err() == nil && !req.retainCheckpoint {
-		if preparer, ok := backend.(workspace.ReworkPreparer); ok {
+	var finalizationErr error
+	if req.finalizeNativeWork && ctx.Err() == nil && !req.retainCheckpoint {
+		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
 			if err := req.Execution.Validate(ctx); err != nil {
-				return err
-			}
-			if err := preparer.FinalizeRework(ctx, info, issue); err != nil {
-				return nativeGitError("finalize native rework", err)
+				finalizationErr = err
+			} else if err := finalizer.FinalizeNativeWork(ctx, info, issue, req.Execution.Validate); err != nil {
+				finalizationErr = nativeGitError("finalize native work", err)
 			}
 		}
 	}
@@ -256,7 +256,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		artifactCtx = localCtx
 	}
 	var artifactErr error
-	if artifacts, ok := req.Execution.(ArtifactExecution); ok {
+	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil {
 		if err := artifacts.FinalizeArtifacts(artifactCtx, info.Path); err != nil {
 			if !deadlineExpired {
 				return err
@@ -264,14 +264,14 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 			artifactErr = err
 		}
 	}
-	completionErr := errors.Join(publicationErr, artifactErr)
+	completionErr := errors.Join(finalizationErr, publicationErr, artifactErr)
 
 	state := r.workspaceRecoveryState(backend, localCtx, info, issue, "native_checkpoint")
 	checkpoint := executionCheckpoint(state)
 	if state != nil {
 		checkpoint.Resume = "resume_session"
 	}
-	if checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
+	if completionErr != nil || checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
 		if _, err := r.PreserveWorkspace(localCtx, req.Issue); err != nil {
 			r.logger.Warn("preserve native workspace failed", "issue_id", req.Issue.ID, "error", err)
 			return errors.Join(completionErr, ErrNativeRecoveryRequired, err)
@@ -287,7 +287,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	if err := req.Execution.Checkpoint(checkpointCtx, checkpoint); err != nil {
 		return errors.Join(completionErr, err)
 	}
-	if checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
+	if completionErr != nil || checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
 		return completionErr
 	}
 	afterCtx, stop := context.WithTimeout(ctx, r.afterRunTimeout)
