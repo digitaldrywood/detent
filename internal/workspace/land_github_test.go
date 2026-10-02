@@ -67,6 +67,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "atomic 409 rejects the head without English text", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, message: "La branche a été modifiée", wantRefusal: LandRefusalHeadMoved},
 		{name: "atomic 409 rejects the head without a body", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, emptyBody: true, wantRefusal: LandRefusalHeadMoved},
 		{name: "atomic 409 rejects the head without JSON", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, failureBody: "upstream refused the merge", wantRefusal: LandRefusalHeadMoved},
+		{name: "base race retains item continuation", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Base branch was modified. Review and try the merge again.", wantRefusal: LandRefusalBaseMoved},
 		{name: "atomic merge rejects a closed PR", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request is closed", wantRefusal: LandRefusalHeadMoved},
 		{name: "atomic merge rejects a PR that is not open", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request is not open", wantRefusal: LandRefusalHeadMoved},
 		{name: "authentication 403", method: "merge", failureMethod: "GET", status: 403, message: "Resource not accessible by integration"},
@@ -351,8 +352,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			}
 			if test.wantRefusal != "" {
 				var refusal *LandRefusal
-				if !errors.As(err, &refusal) || refusal.Kind != test.wantRefusal || errors.Is(err, github.ErrRateLimited) || fixture.remoteMain(t) != base || result.MergeSHA != "" {
+				if !errors.As(err, &refusal) || refusal.Kind != test.wantRefusal || errors.Is(err, forgeavailability.ErrUnavailable) || errors.Is(err, github.ErrRateLimited) || fixture.remoteMain(t) != base || result.MergeSHA != "" {
 					t.Fatalf("merge refusal = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
+				}
+				if test.wantRefusal == LandRefusalBaseMoved {
+					var status *github.StatusError
+					if !errors.Is(err, connector.ErrPullRequestBaseOutOfDate) || !errors.As(err, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.message) {
+						t.Fatalf("base race lost its original atomic refusal: %v", err)
+					}
 				}
 				if !test.external && (!strings.Contains(strings.Join(methods, ","), "PUT") || !strings.Contains(refusal.Reason, "GitHub refused")) {
 					t.Fatalf("refusal did not come from the atomic merge: %v, %v", err, methods)
