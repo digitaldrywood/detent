@@ -244,6 +244,9 @@ func RequiresConfirmation(action Action) bool {
 	case ActionFileIssue:
 		return action.Material || strings.EqualFold(action.State, "Done") || strings.EqualFold(action.State, "Cancelled")
 	case ActionMoveItem:
+		if action.NativeWorkflow {
+			return action.Material
+		}
 		ordinarySource := strings.EqualFold(action.CurrentState, "Backlog") || strings.EqualFold(action.CurrentState, "Todo")
 		ordinaryTarget := strings.EqualFold(action.TargetState, "Todo") || strings.EqualFold(action.TargetState, "Backlog")
 		return action.Material || !ordinarySource || !ordinaryTarget

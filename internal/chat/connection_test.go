@@ -264,6 +264,8 @@ func TestActionConfirmationClassification(t *testing.T) {
 		{Action{Kind: ActionMoveItem, CurrentState: "Todo", TargetState: "Cancelled"}, true},
 		{Action{Kind: ActionMoveItem, CurrentState: "Done", TargetState: "Todo"}, true},
 		{Action{Kind: ActionMoveItem, CurrentState: "In Progress", TargetState: "Backlog"}, true},
+		{Action{Kind: ActionMoveItem, NativeWorkflow: true, CurrentState: "Intake", TargetState: "Ready"}, false},
+		{Action{Kind: ActionMoveItem, NativeWorkflow: true, CurrentState: "Ready", TargetState: "Retired", Material: true}, true},
 		{Action{Kind: ActionSetPriority}, false}, {Action{Kind: ActionStopRun}, true},
 		{Action{Kind: ActionFileIssue}, false}, {Action{Kind: ActionFileIssue, State: "Done"}, true},
 		{Action{Kind: "create_workspace"}, false},

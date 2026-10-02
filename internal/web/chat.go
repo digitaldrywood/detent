@@ -302,7 +302,8 @@ func (s *Server) chatMoveProposal(ctx context.Context, raw json.RawMessage) (cha
 	if err := s.pinNativeCommandRevision(ctx, &action, request.ExpectedRevision); err != nil {
 		return chatpkg.ToolResult{}, err
 	}
-	action.Material = s.workTerminalState(ctx, request.ProjectID, request.TargetState)
+	action.NativeWorkflow = action.Work != nil
+	action.Material = s.workTerminalState(ctx, request.ProjectID, request.TargetState) || action.NativeWorkflow && s.workTerminalState(ctx, request.ProjectID, issue.State)
 	return chatpkg.ToolResult{Proposal: &action}, nil
 }
 

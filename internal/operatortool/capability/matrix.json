@@ -23481,8 +23481,8 @@
           "class": "operator"
         }
       ],
-      "application": "moveKanbanCard / ReconcileOperatorMove",
-      "extraction": "moveKanbanCard / ReconcileOperatorMove; NativeConnector retains the expected revision and the native workflow graph. Hub-only adapters have no lane writer.",
+      "application": "transitionNativeIssueCommand / NativeConnector / ReconcileOperatorMove",
+      "extraction": "Hosted MCP delegates configured native transitions to transitionNativeIssueCommand, the existing workflow API transaction/CAS/ledger owner. Stdio and HTTP use the same typed move_item definition; native daemon moves retain the NativeConnector and orchestrator owner.",
       "tool": {
         "set": "actions",
         "name": "move_item",
@@ -23497,8 +23497,8 @@
       },
       "owner": "digitaldrywood/detent#3341",
       "status": "implemented",
-      "coverage": "TestMCPActionApprovalBoundary; TestMCPNativeWorkCommands; TestHubMCPWorkCommands; TestHubMCPCompatibilityCommands. Standard-library fixtures in internal/web, internal/hubserver and internal/orchestrator; TestWorkArgumentsDirectCallBounds covers direct-call bounds. This child does not complete #3259.",
-      "decision": "Uses the existing application command and current connection authority. Durable application receipts prevent duplicate effects; ordinary writes run directly and material actions use real operator approval. Hub-only deployments without daemon approval/orchestrator services return opaque unavailable errors. All five original read tools remain; parent parity remains pending."
+      "coverage": "TestMCPConfiguredWorkflowTransitions covers dedicated/shared stdio/HTTP discovery, custom state reads, admission, reversible Rework/Merging requests, CAS/graph refusals, human attribution, browser confirmation/YOLO, native ledger replay across reconnects and revocation. TestMCPNativeWorkCommands retains daemon native transition and approval coverage; TestNativeMoveItemArguments covers direct input bounds.",
+      "decision": "Native #219 closes the configured workflow MCP gap under native #26 without a new lane writer. Current organization/project/item authority is resolved before direct calls, preview, approval and replay. Native expected_revision and durable workflow receipts remain authoritative. Ordinary reversible configured transitions run directly; terminal source/target states use existing browser approval and trusted connection YOLO. Hub deployments without an approval service refuse material requests. No worker, completion, review or landing evidence is invented."
     },
     {
       "id": "hubserver.unbind_workspace_worker",

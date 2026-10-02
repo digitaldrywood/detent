@@ -44,7 +44,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	}
 	for _, definition := range operatortool.CommandCatalog() {
 		switch definition.Name {
-		case operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority:
+		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority:
 			if writable {
 				definitions = append(definitions, definition)
 			}
@@ -59,6 +59,9 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 }
 
 func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	if call.Name == operatortool.MoveItem {
+		return e.workflowTransition(ctx, call)
+	}
 	if operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
 		return operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{})).Execute(ctx, call)
 	}
