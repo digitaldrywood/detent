@@ -270,7 +270,11 @@ within each filter dimension are authoritative across the selected authorized
 projects (native #181). Items and lane totals use the same complete filter scope. Transport cursors stay internal
 to loading more matching results on the same Board/List; no global history page
 controls remain. Filter changes cancel obsolete reads and reset continuation;
-activity refresh reads a bounded current selection rather than replaying history.
+activity refresh retains visible work and the explicitly loaded matching depth.
+The existing request owner finishes an in-flight same-selection read and coalesces
+activity into one pending refresh; genuine selection changes still cancel it.
+Refresh re-fetches server data within that chosen depth and enrichment budget,
+without restarting on runner display-name updates or expanding unseen history.
 Sorting and filter-choice discovery remain local to loaded items; terminal counts
 describe inventory, not shipment.
 `TestNativeWorkPageOperationalScope` and the conversation Work pagination fixture

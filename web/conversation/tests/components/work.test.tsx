@@ -656,10 +656,10 @@ vi.mock("../../src/app/App.tsx", () => ({
 
 afterEach(() => { vi.unstubAllGlobals(); globalThis.localStorage.clear(); resetRunnerNamesForTests(); });
 
-async function pagedWork(path = "/work") {
+async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof workPaginationFixture>["fetch"]) => ReturnType<typeof workPaginationFixture>["fetch"]) {
   const fixture = workPaginationFixture();
   await fixture.control();
-  vi.stubGlobal("fetch", fixture.fetch);
+  vi.stubGlobal("fetch", wrapFetch?.(fixture.fetch) ?? fixture.fetch);
   const root = createRootRoute({ component: Outlet });
   const all = createRoute({ getParentRoute: () => root, path: "/work", component: () => <WorkBoard projectId={null} /> });
   const project = createRoute({ getParentRoute: () => root, path: "/work/p/$projectId", component: () => {
@@ -854,6 +854,56 @@ describe("the filter-first Work surface", () => {
     expect(screen.getByTestId("stat-running").textContent).toBe("0observed running");
   });
 
+  it("finishes a slow first read and retains usable work during continuous activity", async () => {
+    const sources: EventTarget[] = [];
+    vi.stubGlobal("EventSource", class extends EventTarget {
+      readyState = 1;
+      constructor() { super(); sources.push(this); }
+      close() {}
+    });
+    let release!: () => void;
+    let started!: () => void;
+    let pendingSignal: AbortSignal | undefined;
+    let hold = true;
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    const deferred = new Promise<void>((resolve) => { release = resolve; });
+    const fixture = await pagedWork("/work", (fetch) => async (input, init) => {
+      if (hold && String(input).includes("/proj_alpha/work-items")) {
+        hold = false;
+        pendingSignal = init?.signal ?? undefined;
+        started();
+        await deferred;
+      }
+      return fetch(input, init);
+    });
+    await waiting;
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "40" })));
+    for (const sequence of [41, 42]) {
+      act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: String(sequence) })));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 450)));
+      expect(pendingSignal?.aborted).toBe(false);
+    }
+    await act(async () => { release(); });
+    await settledWork();
+    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toHaveLength(2);
+
+    const refreshing = fixture.deferPage();
+    fireEvent.click(screen.getByRole("button", { name: "Load more matching work" }));
+    await refreshing.waiting;
+    const continuation = fixture.requests.findLast((request) => request.url.searchParams.has("cursor"))!;
+    for (const sequence of [43, 44]) {
+      act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: String(sequence) })));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 450)));
+      expect(continuation.signal?.aborted).toBe(false);
+      expect(screen.getByText("Observed later-page worker")).not.toBeNull();
+      expect(screen.getByTestId("stat-running").textContent).toContain("1observed running");
+    }
+    await act(async () => { refreshing.release(); });
+    await settledWork();
+    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
+  });
+
   it("refreshes a bounded current selection after activity within the observation budget", async () => {
     const sources: EventTarget[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
@@ -872,7 +922,11 @@ describe("the filter-first Work surface", () => {
     await waitFor(() => expect(fixture.requests.slice(before).some((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toBe(true));
     await settledWork();
     const refreshed = fixture.requests.slice(before);
-    expect(refreshed.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) => !request.url.searchParams.has("cursor"))).toBe(true);
+    const alphaReads = refreshed.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items"));
+    expect(alphaReads).toHaveLength(2);
+    expect(alphaReads[0]!.url.searchParams.has("cursor")).toBe(false);
+    expect(alphaReads[1]!.url.searchParams.has("cursor")).toBe(true);
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("141 loaded items / 141 matching");
     expect(refreshed.filter((request) => request.url.pathname.endsWith("/attempts"))).toHaveLength(24);
     expect(refreshed.filter((request) => request.url.pathname.endsWith("/changes"))).toHaveLength(24);
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
