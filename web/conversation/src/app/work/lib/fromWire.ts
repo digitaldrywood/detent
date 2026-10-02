@@ -184,6 +184,8 @@ export function toWorkItemView(
     body: issue.body,
     state: issue.state,
     stateId: issue.state,
+    terminal: issue.terminal,
+    sourceProvider: issue.provenance?.provider ?? null,
     priority: priorityName(issue.priority),
     labels,
     assignees: [...issue.assignees],

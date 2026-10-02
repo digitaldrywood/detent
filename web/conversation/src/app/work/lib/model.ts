@@ -65,6 +65,8 @@ export interface WorkItemView {
   readonly body: string;
   readonly state: string;
   readonly stateId: string;
+  readonly terminal: boolean;
+  readonly sourceProvider: string | null;
   readonly priority: string | null;
   readonly labels: readonly string[];
   readonly assignees: readonly string[];
@@ -90,12 +92,12 @@ export interface ProjectView {
 }
 
 /** True when the card should wear the live treatment (A.11: never a queue). */
-export function isLive(item: WorkItemView): boolean {
-  return item.attempt !== null && item.attempt.running;
+export function isLive(item: WorkItemView, terminal = item.terminal): boolean {
+  return !terminal && item.attempt !== null && item.attempt.running;
 }
 
-export function isBlocked(item: WorkItemView): boolean {
-  return item.blockedBy.length > 0;
+export function isBlocked(item: WorkItemView, terminal = item.terminal): boolean {
+  return !terminal && item.blockedBy.length > 0;
 }
 
 const PRIORITY_ORDER: Readonly<Record<string, number>> = {

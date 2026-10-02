@@ -162,10 +162,15 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const items = React.useMemo(() => {
     const overridden = board.items.map((item) => {
       const state = moved.get(item.id);
-      return state === undefined ? item : { ...item, state, stateId: state };
+      return state === undefined ? item : {
+        ...item,
+        state,
+        stateId: state,
+        terminal: board.lanes.find((lane) => lane.name === state)?.terminal ?? item.terminal,
+      };
     });
     return sortItems(searchItems(applyFilters(overridden, view), view.q), view.sort);
-  }, [board.items, moved, view]);
+  }, [board.items, board.lanes, moved, view]);
 
   const stats = React.useMemo(() => boardStats(items, board.lanes), [items, board.lanes]);
   const projects = React.useMemo(
