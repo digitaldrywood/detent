@@ -7,16 +7,6 @@
 // screen reader or a keyboard cannot reach fails the test rather than passing
 // on a class name.
 //
-// **What the fixture can and cannot cover.** The Go preview seeds one project
-// with two issues: `Review the invitation flow` in `Todo`, and the issue the
-// seeded conversation was linked to. It seeds no attempt, no change request
-// and no second project. So this spec asserts what exists — lanes, cards, the
-// keyboard move, the view switch, the URL state, the issue page — and the
-// treatments that need an attempt or a change (the worker strip, the PR chip,
-// the review dock's four tabs) are covered against fixtures in
-// `web/conversation/tests/components/work.test.tsx` and against the mock hub
-// in `web/conversation/tests/work.test.ts`. Each is named at the assertion
-// that would otherwise be silently absent.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");

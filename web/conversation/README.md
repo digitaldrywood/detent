@@ -140,7 +140,7 @@ an issue" makes the coordinator answer with a `data.proposal` status message.
 | `src/app/account/` | Login, organization, project settings and the first-run wizard, with the account API client and its hooks |
 | `src/app/settings/` | T3's settings layout and navigation, and the `/settings` page |
 | `src/app/fleet/` | Fleet and spend: the hero number, the chart, the totals and the host cards |
-| `src/app/work/` | The Work board, the list, the issue page, the changes list and the review dock |
+| `src/app/work/` | The Work board, the list, the issue page, the changes list and Change Request review |
 | `dev/` | The mock hub, and the native work API's own mock |
 | `tests/` | Runtime integration tests against the mock hub, and component tests |
 
@@ -640,7 +640,7 @@ burst of ticks into one reload.
   `422`), the string revision, an allowed and a disallowed transition, a stale
   revision, a scripted conflict and its recovery, and the activity stream.
 - `tests/components/work.test.tsx` covers the card, the lane, the list row, the
-  stats strip and the review dock's four tabs against the shared fixtures.
+  stats strip and Surface Diff against the shared fixtures.
 - `tests/components/activity.test.tsx` covers the feed: one sentence per
   history type, the merge of all four sources, the fold rule, the comment card
   and its reply, and the live row in both of its states.

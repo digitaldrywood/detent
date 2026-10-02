@@ -963,8 +963,9 @@ On main: the list accepts the `state`, `label`, `assignee` and `priority` filter
    including T3's sidebar provider, tooltips, hover preview cards and row
    icons; adaptation is only allowed for data bindings, handlers and
    Detent-only content.
-4. The review dock ships as Diff / State / Receipt / Activity first; visual
-   review later.
+4. The issue retains the original Properties aside and mobile layout. Diff
+   opens through the user-selected Surface; Change Request review and round
+   history stay on the linked change page (operator correction, October 1).
 5. Naming stays: Chat, New chat, Needs you.
 6. Sharing rules stand (private by default, whole history on link).
 7. One conversation per issue and one issue per conversation, but
