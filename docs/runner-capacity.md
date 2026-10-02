@@ -21,6 +21,10 @@ only `global.max_concurrent_agents` and `client.capacity`, and uses the normal
 configuration reload. It reports the runtime limit separately until reload
 finishes. A repeat of the same request returns its original receipt; use a new
 capacity read for current application evidence.
+Saved limits and their revision are read back after the write. Stale-revision
+and write-permission failures remain visible on subsequent heartbeats while the
+selected configuration revision is unchanged. Changing that configuration or
+applying a corrected request replaces the previous outcome.
 
 Results separate `desired`, `applied`, `effective`, `status`, and attributed
 `limits` with observation times. `effective` is the runner configuration

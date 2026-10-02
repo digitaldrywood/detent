@@ -284,6 +284,12 @@ execution permission retain their existing owners. Project, pool and lane admiss
 remains authoritative at claim time. External provider-capacity producers are
 unmanaged: responses name the account/backend ceiling and instruct the operator to
 change the producer configuration, never the generated report.
+The selected configuration owner reads back saved limits and their revision
+after writing, while runtime limits retain reload authority. Application failures
+remain visible in subsequent heartbeat observations only for the same selected
+configuration revision; a changed configuration or corrected request replaces
+that outcome. This retains application evidence without another retry or recovery
+owner.
 
 `TestRunnerCapacityOwner`, `TestRunnerCapacityHeartbeat`,
 `TestRunnerCapacityApplication`, the capacity cases in `TestHostedMCPFleetControls`

@@ -112,6 +112,27 @@ func TestRunnerCapacityOwner(t *testing.T) {
 				if scenario == "stale configuration" && (result == nil || result.Constraint == "") {
 					t.Fatalf("stale result=%+v", result)
 				}
+				if scenario == "stale configuration" || scenario == "immutable configuration" {
+					observed := owner(t.Context(), nil)
+					if observed == nil || observed.Constraint != result.Constraint || observed.Manageable != result.Manageable {
+						t.Fatalf("application failure lost before heartbeat: result=%+v observed=%+v", result, observed)
+					}
+					if err := os.Chmod(path, 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, append(original, []byte("\n# corrected operator configuration\n")...), 0600); err != nil {
+						t.Fatal(err)
+					}
+					observed = owner(t.Context(), nil)
+					if observed == nil || observed.Constraint != "" || !observed.Manageable {
+						t.Fatalf("old failure attributed to new configuration: observed=%+v", observed)
+					}
+					request.ExpectedConfigRevision = observed.Revision
+					applied := owner(t.Context(), request)
+					if applied == nil || applied.LocalLimit != 6 || applied.ClientLimit != 6 || !applied.Manageable || applied.Constraint != "Waiting for the existing configuration reload to apply the saved limits." {
+						t.Fatalf("corrected request did not apply: %+v", applied)
+					}
+				}
 				return
 			}
 			if result == nil || result.Constraint == "" || result.RuntimeLimit != 2 {
@@ -123,6 +144,10 @@ func TestRunnerCapacityOwner(t *testing.T) {
 			}
 			if saved.Global.MaxConcurrentAgents != 6 || saved.Client.Capacity != 6 {
 				t.Fatalf("saved capacity=%+v", saved.Client)
+			}
+			observed := owner(t.Context(), nil)
+			if observed == nil || result.Revision != observed.Revision || result.LocalLimit != 6 || result.ClientLimit != 6 || result.RuntimeLimit != 2 {
+				t.Fatalf("saved evidence=%+v observed=%+v", result, observed)
 			}
 			saved.Global.MaxConcurrentAgents, saved.Client.Capacity = 2, 2
 			if !reflect.DeepEqual(saved, cfg) {
