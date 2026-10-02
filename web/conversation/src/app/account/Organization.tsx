@@ -325,20 +325,26 @@ export function InviteForm({
   pending = false,
   error = null,
 }: {
-  readonly onInvite: (input: { email: string; role: string }) => void;
+  readonly onInvite: (input: { email: string; role: string }) => Promise<boolean>;
   readonly pending?: boolean;
   readonly error?: string | null;
 }): React.ReactElement {
   const [email, setEmail] = React.useState("");
   const [role, setRole] = React.useState<string>("member");
+  const [invitedEmail, setInvitedEmail] = React.useState<string | null>(null);
   return (
     <form
-      className="flex flex-col gap-2 py-3 sm:flex-row sm:items-end"
-      onSubmit={(event) => {
+      className="flex flex-col gap-2 py-3 sm:flex-row sm:flex-wrap sm:items-end"
+      onSubmit={async (event) => {
         event.preventDefault();
         const value = email.trim();
-        if (value.length === 0) return;
-        onInvite({ email: value, role });
+        if (pending || value.length === 0) return;
+        setInvitedEmail(null);
+        if (await onInvite({ email: value, role })) {
+          setEmail("");
+          setRole("member");
+          setInvitedEmail(value);
+        }
       }}
     >
       <div className="flex flex-1 flex-col gap-1.5">
@@ -347,6 +353,7 @@ export function InviteForm({
           id="invite-email"
           type="email"
           value={email}
+          disabled={pending}
           placeholder="colleague@example.com"
           onChange={(event) => setEmail(event.currentTarget.value)}
         />
@@ -356,6 +363,7 @@ export function InviteForm({
         <NativeSelect
           id="invite-role"
           value={role}
+          disabled={pending}
           options={ROLE_OPTIONS}
           onValueChange={setRole}
           className="min-w-[130px]"
@@ -367,6 +375,11 @@ export function InviteForm({
       <div className="w-full sm:w-auto">
         <ControlError message={error} />
       </div>
+      {invitedEmail === null ? null : (
+        <p role="status" className="w-full text-sm text-muted-foreground">
+          Invitation sent to {invitedEmail}.
+        </p>
+      )}
     </form>
   );
 }
@@ -595,7 +608,7 @@ export function OrganizationRoute(): React.ReactElement {
         {canManage ? (
           <SettingsRow title="Invite somebody" description="They receive a link and join with their own account.">
             <InviteForm
-              onInvite={(input) => void invite.call(input)}
+              onInvite={async (input) => (await invite.call(input)) !== null}
               pending={invite.pending}
               error={invite.error?.message ?? null}
             />

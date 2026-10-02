@@ -157,6 +157,33 @@ test("the organization page lists the members and gates the controls by role", a
   await expectNoSeriousAxeViolations(page, "/organization as viewer");
 });
 
+test("sending invitations resets the form and shows the newest invitation with its enforced expiry", async ({ page }) => {
+  await openAs(page, "owner", "/settings/organization");
+  const invitations = page.locator("section").filter({ has: page.getByRole("heading", { name: "Invitations", exact: true }) });
+  for (const email of ["older-invite@example.test", "newest-invite@example.test"]) {
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    await page.getByLabel("Role", { exact: true }).selectOption("viewer");
+    const responsePromise = page.waitForResponse((response) =>
+      response.request().method() === "POST" && response.url().endsWith("/members/invitations"),
+    );
+    await page.getByRole("button", { name: "Send invitation", exact: true }).click();
+    const response = await responsePromise;
+    expect(response.status()).toBe(201);
+    const created = await response.json();
+    expect(created.email).toBe(email);
+    expect(created.expires_at).toBeTruthy();
+    await expect(page.getByLabel("Email", { exact: true })).toHaveValue("");
+    await expect(page.getByLabel("Role", { exact: true })).toHaveValue("member");
+    await expect(page.getByRole("status").filter({ hasText: `Invitation sent to ${email}.` })).toBeVisible();
+    const row = invitations.locator('[data-slot="settings-row"]').first();
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(email);
+    await expect(row).toContainText(`Invited as viewer. Expires ${created.expires_at}.`);
+    await page.reload();
+    await expect(invitations.locator('[data-slot="settings-row"]').first()).toContainText(`Expires ${created.expires_at}.`);
+  }
+});
+
 test("removing the last owner is refused by the hub and said in the page", async ({ page }) => {
   await openAs(page, "owner", "/settings/organization");
 

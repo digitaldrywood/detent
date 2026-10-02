@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -82,6 +83,14 @@ func TestLandNativeChange(t *testing.T) {
 		{name: "quota retains reviewed identity and actual metrics", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{githubRequest: true}, wantErr: "github rate limited", quota: true},
 		{name: "a refusal is reported, not recorded", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "the base branch main refused the push"}},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalProtected},
+		{name: "a GitHub conflict retains reviewed identity without a landing receipt", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalConflict, Reason: "Pull Request is not mergeable (HTTP 405)"}},
+			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalConflict, wantGitHub: true},
+		{name: "an atomic GitHub head refusal retains reviewed identity without a receipt", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "Head branch was modified (HTTP 409)"}},
+			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalHeadMoved, wantGitHub: true},
+		{name: "quota evidence takes precedence over repository refusal", stub: landingStub{target: target}, backend: landingBackend{err: errors.Join(fmt.Errorf("%w: remaining=0 reserve=100", ErrWorkerGitHubRESTReserved), &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "HTTP 403"})},
+			wantErr: "remaining=0 reserve=100"},
+		{name: "typed quota evidence takes precedence over repository refusal", stub: landingStub{target: target}, backend: landingBackend{err: errors.Join(&github.StatusError{Err: github.ErrRateLimited, StatusCode: http.StatusForbidden, RateLimitKind: "primary_exhausted", CredentialIdentity: "landing-token", ObservedAt: time.Now()}, &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "HTTP 403"})},
+			wantErr: "github rate limited"},
 		{name: "an unreviewed change is a refusal", stub: landingStub{target: target, targetErr: errors.New("hub says: " + ErrLandingNotReviewed.Error())},
 			wantErr: "resolve landing target"},
 		{name: "an unreviewed change from the hub is a refusal", stub: landingStub{target: target, targetErr: ErrLandingNotReviewed},
@@ -116,6 +125,14 @@ func TestLandNativeChange(t *testing.T) {
 				if len(stub.recorded) != test.wantRecorded {
 					t.Fatalf("recorded = %#v", stub.recorded)
 				}
+				if IsCapacityError(backend.err) && !IsCapacityError(err) || errors.Is(backend.err, github.ErrRateLimited) && !errors.Is(err, github.ErrRateLimited) {
+					t.Fatalf("quota lost capacity ownership: %v, %#v", err, result)
+				}
+				if IsCapacityError(backend.err) || errors.Is(backend.err, github.ErrRateLimited) {
+					if result.NativeLanding == nil || result.NativeLanding.ChangeID != target.ChangeID || result.NativeLanding.VersionID != target.VersionID || result.NativeLanding.HeadSHA != head || result.NativeLanding.Landed || result.NativeLanding.RefusalKind != "" || result.Output != "" || result.FinalState != "" {
+						t.Fatalf("capacity wait lost reviewed identity or became a completed refusal: %#v", result)
+					}
+				}
 				return
 			}
 			if err != nil {
@@ -126,6 +143,9 @@ func TestLandNativeChange(t *testing.T) {
 			}
 			if result.NativeLanding.RefusalKind != test.wantRefusal || result.NativeLanding.Landed != (test.wantRefusal == "") {
 				t.Fatalf("landing = %#v", result.NativeLanding)
+			}
+			if result.NativeLanding.ChangeID != target.ChangeID || result.NativeLanding.VersionID != target.VersionID || result.NativeLanding.HeadSHA != head || test.wantRefusal != "" && result.NativeLanding.MergeSHA != "" {
+				t.Fatalf("landing lost exact reviewed identity or invented a merge: %#v", result.NativeLanding)
 			}
 			if len(stub.recorded) != test.wantRecorded {
 				t.Fatalf("recorded = %#v, want %d", stub.recorded, test.wantRecorded)

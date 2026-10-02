@@ -1,11 +1,12 @@
 import React from "react";
+import * as Schema from "effect/Schema";
 
 import { SpritesCard } from "./SpritesCard.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import type { ObservedPolicy, PolicyApproval, ProjectIntegration } from "../../contracts/account.ts";
-import { INTAKE_CHOICES, PROJECTION_CHOICES } from "../../contracts/account.ts";
+import { INTAKE_CHOICES, PROJECTION_CHOICES, WorkflowState } from "../../contracts/account.ts";
 import {
   SettingsPageContainer,
   SettingsRow,
@@ -78,6 +79,65 @@ const PROJECTION_OPTIONS = PROJECTION_CHOICES.map((value) => ({
   value,
   label: value === "summary" ? "Summary" : "Disabled",
 }));
+
+export function WorkflowSettings({
+  integration,
+  canManage,
+  saving,
+  error,
+  onSave,
+}: {
+  readonly integration: ProjectIntegration;
+  readonly canManage: boolean;
+  readonly saving: boolean;
+  readonly error: string | null;
+  readonly onSave: (states: readonly WorkflowState[]) => void;
+}): React.ReactElement {
+  const stored = JSON.stringify(integration.states ?? [], null, 2);
+  const [draft, setDraft] = React.useState(stored);
+  const [parseError, setParseError] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    setDraft(stored);
+    setParseError(null);
+  }, [stored]);
+  const native = integration.profile === "native";
+  return (
+    <SettingsSection title="Workflow">
+      <SettingsRow
+        title="Project states"
+        description={native ? "The first state is the initial lane for new issues. Review dispatch, operator ownership and allowed transitions before saving." : "This workflow is owned by the source tracker."}
+        status={
+          <ul className="text-sm">
+            {(integration.states ?? []).map((state, index) => (
+              <li key={state.name}>
+                {state.name}{index === 0 ? " · Initial" : ""} · {state.terminal ? "Terminal" : state.dispatchable ? "Dispatchable" : "Nondispatchable"}{state.operator_only ? " · Operator only" : ""}
+              </li>
+            ))}
+          </ul>
+        }
+      >
+        {native && canManage ? (
+          <div className="flex flex-col gap-2 pb-3">
+            <Textarea aria-label="Workflow definition" rows={12} className="font-mono text-xs" value={draft} disabled={saving} onChange={(event) => { setDraft(event.currentTarget.value); setParseError(null); }} />
+            <ControlError message={parseError ?? error} />
+            <div>
+              <Button size="sm" disabled={saving || draft === stored} onClick={() => {
+                let states: readonly WorkflowState[];
+                try {
+                  states = Schema.decodeUnknownSync(Schema.Array(WorkflowState))(JSON.parse(draft));
+                } catch {
+                  setParseError("Enter a JSON array of states with names, terminal and dispatchable flags, and transition names.");
+                  return;
+                }
+                onSave(states);
+              }}>{saving ? "Saving…" : "Save workflow"}</Button>
+            </div>
+          </div>
+        ) : null}
+      </SettingsRow>
+    </SettingsSection>
+  );
+}
 
 export function PolicyRow({
   policy,
@@ -204,6 +264,7 @@ export function ProjectSettingsView({
   onOpenFleet,
   header,
   sprites,
+  workflow,
 }: {
   readonly projectName: string;
   readonly integration: ProjectIntegration;
@@ -227,6 +288,7 @@ export function ProjectSettingsView({
    */
   readonly header?: React.ReactNode;
   readonly sprites?: React.ReactNode;
+  readonly workflow?: React.ReactNode;
 }): React.ReactElement {
   const unbound = (integration.repository ?? "").length === 0;
   const dirty = draftChanged(draft, draftOf(integration));
@@ -361,6 +423,8 @@ export function ProjectSettingsView({
         />
       </SettingsSection>
 
+      {workflow}
+
       <SettingsSection title="Execution">
         <PolicyRow
           policy={policy}
@@ -444,6 +508,28 @@ export function ProjectSettingsRoute({
     } catch (cause) {
       // The conflict's own body carries nothing to recover from, so the screen
       // re-reads and shows the reader what is actually stored.
+      if (cause instanceof AccountError && cause.isConflict) await integration.refresh();
+      throw cause;
+    }
+  });
+
+  const saveWorkflow = useMutation(async (states: readonly WorkflowState[]) => {
+    const current = integration.value;
+    if (current === undefined) return null;
+    try {
+      const saved = await api.saveIntegration({
+        projectId,
+        key: newKey(),
+        revision: current.revision,
+        intake: current.intake,
+        projection: current.projection,
+        repositoryEnabled: current.repository_enabled,
+        states,
+      });
+      integration.set(saved);
+      globalThis.location.reload();
+      return saved;
+    } catch (cause) {
       if (cause instanceof AccountError && cause.isConflict) await integration.refresh();
       throw cause;
     }
@@ -542,6 +628,7 @@ export function ProjectSettingsRoute({
       header={header}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
       sprites={<SpritesCard key={projectId} projectId={projectId} canManage={canManage} />}
+      workflow={<WorkflowSettings integration={integration.value} canManage={canManage && project?.can_write === true} saving={saveWorkflow.pending} error={saveMessage(saveWorkflow.error)} onSave={(states) => void saveWorkflow.call(states)} />}
     />
   );
 }

@@ -70,6 +70,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	} else {
 		result, err = lander.LandChange(ctx, info, issue, options)
 	}
+	if IsCapacityError(err) || errors.Is(err, github.ErrRateLimited) {
+		return RunResult{NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
+	}
 	var refusal *workspace.LandRefusal
 	if errors.As(err, &refusal) {
 		r.logWorkerEvent(req.Issue, "worker_native_landing_refused",
@@ -77,9 +80,6 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		return r.refusedLanding(req, target, refusal.Kind, refusal.Reason), nil
 	}
 	if err != nil {
-		if errors.Is(err, github.ErrRateLimited) {
-			return RunResult{NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
-		}
 		return RunResult{}, err
 	}
 	landed := NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method}

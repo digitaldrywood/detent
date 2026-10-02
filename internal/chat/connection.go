@@ -41,7 +41,7 @@ func authorizeAction(ctx context.Context, connection operatortool.Connection, ac
 		requirement.Scope = operatortool.AdministrationScope(string(action.Kind))
 	}
 	switch string(action.Kind) {
-	case operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost:
+	case operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.UpdateRunnerCapacity:
 		// The hub dashboard grants runner administration separately from project
 		// writes; a member with all current runner grants need not be an owner.
 		requirement.Scope, requirement.ResourceKind = apikey.ScopeAdmin, "runners"

@@ -132,19 +132,27 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 			r.Leases[i].ProviderReservation = &reservation
 		}
 	}
+	var capacityRaw string
+	if err := db.QueryRowContext(ctx, "SELECT capacity_configuration_json FROM runner_identities WHERE organization_id = ? AND id = ?", organization, id).Scan(&capacityRaw); err != nil {
+		return r, err
+	}
+	if err := json.Unmarshal([]byte(capacityRaw), &r.CapacityConfig); err != nil {
+		return r, err
+	}
 	return r, nil
 }
 
 type runnerSettings struct {
-	HomeProjectIDs []tracker.ProjectID     `json:"home_project_ids"`
-	IsolationTier  string                  `json:"isolation_tier"`
-	HostServices   []string                `json:"host_services"`
-	Availability   runnerauth.Availability `json:"availability"`
-	Spillover      runnerauth.Spillover    `json:"spillover"`
+	CapacityRequest *runnerauth.CapacityRequest `json:"capacity_request,omitempty"`
+	HomeProjectIDs  []tracker.ProjectID         `json:"home_project_ids"`
+	IsolationTier   string                      `json:"isolation_tier"`
+	HostServices    []string                    `json:"host_services"`
+	Availability    runnerauth.Availability     `json:"availability"`
+	Spillover       runnerauth.Spillover        `json:"spillover"`
 }
 
 func settingsFromRouting(r runnerauth.Routing) runnerSettings {
-	return runnerSettings{HomeProjectIDs: r.HomeProjectIDs, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability, Spillover: r.Spillover}
+	return runnerSettings{CapacityRequest: r.CapacityRequest, HomeProjectIDs: r.HomeProjectIDs, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability, Spillover: r.Spillover}
 }
 
 func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
@@ -152,6 +160,7 @@ func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
 	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
 		return err
 	}
+	routing.CapacityRequest = settings.CapacityRequest
 	routing.IsolationTier = settings.IsolationTier
 	routing.HostServices = settings.HostServices
 	routing.Availability = settings.Availability
@@ -213,6 +222,7 @@ type runnerRoutingRequest struct {
 // effective preserves optional settings exactly as the dashboard command does.
 func (request runnerRoutingRequest) effective(current runnerauth.Routing) runnerauth.RoutingChange {
 	change := request.RoutingChange
+	change.CapacityRequest = current.CapacityRequest
 	if request.IsolationTier == nil || *request.IsolationTier == "" {
 		change.IsolationTier = current.IsolationTier
 	} else {
@@ -271,6 +281,12 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 			return nil, nativeConflict(tracker.Revision(r.Revision))
 		}
 		change = request.effective(r.Routing)
+		if change.CapacityLimit != r.CapacityLimit {
+			change.CapacityRequest = nil
+		}
+		if (change.CapacityLimit != r.CapacityLimit || r.CapacityRequiresApplication(change.CapacityLimit, now)) && change.CapacityLimit > 0 && freshCapacityConfig(r, now) {
+			change.CapacityRequest = &runnerauth.CapacityRequest{ExpectedConfigRevision: r.CapacityConfig.Revision, Capacity: change.CapacityLimit}
+		}
 		if err := change.Validate(); err != nil {
 			return nil, nativeInvalid(err.Error())
 		}

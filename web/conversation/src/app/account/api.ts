@@ -29,6 +29,7 @@ import {
   ProjectsResponse,
   RunnerEnrollment,
   SupportResponse,
+  type WorkflowState,
 } from "../../contracts/account.ts";
 import { isApiError } from "../../contracts/index.ts";
 import { hubPath } from "../../runtime/basePath.ts";
@@ -252,12 +253,14 @@ export function makeAccountApi(options: AccountApiOptions) {
       intake: string;
       projection: string;
       repositoryEnabled: boolean;
+      states?: readonly WorkflowState[];
     }) =>
       send(ProjectIntegration, "PUT", `${project(input.projectId)}/integration`, {
         expected_revision: input.revision,
         intake: input.intake,
         projection: input.projection,
         repository_enabled: input.repositoryEnabled,
+        ...(input.states !== undefined ? { states: input.states } : {}),
         idempotency_key: input.key,
       }),
     policy: (projectId: string) => send(PolicyApproval, "GET", `${project(projectId)}/policy`),

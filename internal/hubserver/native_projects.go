@@ -41,7 +41,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 	if err := s.database.db.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
 		return nativeCapabilitiesResponse{}, err
 	}
-	features := []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeCheckoutRepositoryCapability, tracker.NativeLocalChecksCapability}
+	features := []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeCheckoutRepositoryCapability, tracker.NativeLocalChecksCapability, tracker.NativeRunnerCapacityCapability}
 	if s.workspaces != nil {
 		features = append(features, tracker.NativeWorkspaceCapability)
 	}
@@ -196,4 +196,41 @@ func (s *Service) getNativeProject(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, project)
+}
+
+func updateNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope, states []tracker.NativeState, now time.Time) error {
+	project, err := readNativeProject(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	if project.Profile != "native" {
+		return nativeInvalid("Compatibility project workflow is externally owned")
+	}
+	if err := validateNativeStates(states); err != nil {
+		return err
+	}
+	encoded, err := marshalNative(states)
+	if err != nil {
+		return err
+	}
+	var occupied int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id
+WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=w.detent_state)`, scope.project, encoded).Scan(&occupied); err != nil {
+		return err
+	}
+	if occupied != 0 {
+		return nativeInvalid("Workflow states used by work items cannot be removed")
+	}
+	for _, state := range states {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_states WHERE project_id=?
+AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=workflow_states.detent_state)`, scope.project, encoded); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, "UPDATE projects SET states_json=? WHERE organization_id=? AND id=?", encoded, scope.organization, scope.project)
+	return err
 }

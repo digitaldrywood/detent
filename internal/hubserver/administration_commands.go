@@ -162,12 +162,12 @@ func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credentia
 		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, &nativeError{Code: "unavailable", Message: "The invitation could not be sent", status: 503})
 	}
 	created := formatHubTime(s.config.now())
-	if _, err := s.database.db.ExecContext(ctx, `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, role, created); err != nil {
-		return hostedInvitationView{}, err
-	}
 	view := hostedInvitationView{ID: invitation.ID, Email: email, Role: role, CreatedAt: created}
 	if !invitation.ExpiresAt.IsZero() {
 		view.ExpiresAt = formatHubTime(invitation.ExpiresAt)
+	}
+	if _, err := s.database.db.ExecContext(ctx, `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, role, created, view.ExpiresAt); err != nil {
+		return hostedInvitationView{}, err
 	}
 	return view, nil
 }

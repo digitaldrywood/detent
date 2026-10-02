@@ -20,13 +20,10 @@ import (
 
 // collectRunnerLocalChecks reuses doctor and the configured provider's local
 // authentication probe. Raw details never cross the runner/Hub boundary.
-func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name, workdir string, diagnose func(context.Context, doctorConfig) doctorReport, auth func(context.Context, workflowconfig.AgentBackend) bool) runnerauth.LocalChecks {
+func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name string, diagnose func(context.Context, doctorConfig) doctorReport, auth func(context.Context, workflowconfig.AgentBackend) bool) runnerauth.LocalChecks {
 	checks := runnerauth.LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "pending"}
-	if !runnerCheckoutReady(workdir) {
-		return checks
-	}
-	_, workflow, _, err := resolveRunnerSetupPolicy(ctx, cfg.Path, name)
-	if err != nil {
+	resolved, workflow, _, err := resolveRunnerSetupPolicy(ctx, cfg.Path, name)
+	if err != nil || !runnerCheckoutReady(ctx, project.ManagerConfigFromGlobal(resolved).Projects[0]) {
 		return checks
 	}
 	checks.Checkout = "passed"
@@ -144,7 +141,7 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 		if err != nil {
 			return nil, err
 		}
-		checks := collectRunnerLocalChecks(ctx, cfg, selected.ID, selected.Workdir, func(ctx context.Context, cfg doctorConfig) doctorReport {
+		checks := collectRunnerLocalChecks(ctx, cfg, selected.ID, func(ctx context.Context, cfg doctorConfig) doctorReport {
 			return runDoctor(ctx, cfg, options{}, doctorDeps{})
 		}, probeRunnerProviderAuth)
 		if checks.Checkout == "passed" {

@@ -23,6 +23,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	CapacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	// LocalChecks are startup observations by local project, reused by the heartbeat owner.
 	LocalChecks        map[string]runnerauth.LocalChecks
 	GitHubDiscovery    func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
@@ -41,28 +42,29 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
-	localChecks        map[string]runnerauth.LocalChecks
-	githubDiscovery    func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
-	githubIntake       func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
-	problems           func() []runnerauth.Problem
-	isolationReport    func(context.Context) isolationpolicy.Report
-	providerReports    func() ([]providercapacity.Report, error)
-	claimPolicies      map[string]claimPolicy
-	nativeProjects     map[string]*NativeConnector
-	nativeClaims       map[string]nativeClaim
-	nativeHeartbeats   map[tracker.ProjectID]time.Time
-	checkoutRepository func(project string) string
-	reportedPolicies   map[string]string
-	client             *Client
-	machine            Machine
-	heartbeatInterval  time.Duration
-	leaseTTL           time.Duration
-	now                func() time.Time
-	sessionID          func() (string, error)
-	mu                 sync.Mutex
-	registered         bool
-	lastHeartbeat      time.Time
-	claims             map[string]tracker.Lease
+	capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
+	localChecks           map[string]runnerauth.LocalChecks
+	githubDiscovery       func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
+	githubIntake          func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
+	problems              func() []runnerauth.Problem
+	isolationReport       func(context.Context) isolationpolicy.Report
+	providerReports       func() ([]providercapacity.Report, error)
+	claimPolicies         map[string]claimPolicy
+	nativeProjects        map[string]*NativeConnector
+	nativeClaims          map[string]nativeClaim
+	nativeHeartbeats      map[tracker.ProjectID]time.Time
+	checkoutRepository    func(project string) string
+	reportedPolicies      map[string]string
+	client                *Client
+	machine               Machine
+	heartbeatInterval     time.Duration
+	leaseTTL              time.Duration
+	now                   func() time.Time
+	sessionID             func() (string, error)
+	mu                    sync.Mutex
+	registered            bool
+	lastHeartbeat         time.Time
+	claims                map[string]tracker.Lease
 }
 
 func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
@@ -86,14 +88,15 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
-		localChecks:     config.LocalChecks,
-		githubIntake:    config.GitHubIntake,
-		githubDiscovery: config.GitHubDiscovery,
-		problems:        config.Problems,
-		isolationReport: config.IsolationReport,
-		providerReports: config.ProviderReports,
-		claimPolicies:   make(map[string]claimPolicy),
-		client:          client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
+		capacityConfiguration: config.CapacityConfiguration,
+		localChecks:           config.LocalChecks,
+		githubIntake:          config.GitHubIntake,
+		githubDiscovery:       config.GitHubDiscovery,
+		problems:              config.Problems,
+		isolationReport:       config.IsolationReport,
+		providerReports:       config.ProviderReports,
+		claimPolicies:         make(map[string]claimPolicy),
+		client:                client, machine: config.Machine, heartbeatInterval: config.HeartbeatInterval,
 		leaseTTL: config.LeaseTTL, now: now, sessionID: sessionID, claims: make(map[string]tracker.Lease),
 		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
 		checkoutRepository: config.CheckoutRepository,

@@ -21,6 +21,8 @@ type landingHTTPClient func(*http.Request) (*http.Response, error)
 func (f landingHTTPClient) Do(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestLocalGitLandChangeViaGitHub(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
 		name          string
 		method        string
@@ -31,6 +33,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		message       string
 		rate          bool
 		retryAfter    string
+		wantRefusal   string
+		moved         bool
 	}{
 		{name: "merges the reviewed head", method: "merge"},
 		{name: "uses the policy squash method", method: "squash"},
@@ -38,11 +42,21 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "reuses an open PR", method: "merge", pullState: "open"},
 		{name: "records an already merged reviewed head", method: "merge", pullState: "merged"},
 		{name: "ignores an older merged PR", method: "merge", pullState: "older"},
-		{name: "publishes a reworked branch", method: "squash", reworked: true},
+		{name: "publishes a reworked branch despite a stale list head", method: "squash", reworked: true, pullState: "stale"},
+		{name: "atomic merge rejects a genuinely moved head", method: "squash", reworked: true, pullState: "stale", moved: true, wantRefusal: LandRefusalHeadMoved},
+		{name: "atomic merge rejects a closed PR", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request is closed", wantRefusal: LandRefusalHeadMoved},
+		{name: "atomic merge rejects a PR that is not open", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request is not open", wantRefusal: LandRefusalHeadMoved},
 		{name: "authentication 403", method: "merge", failureMethod: "GET", status: 403, message: "Resource not accessible by integration"},
+		{name: "authentication 401", method: "merge", failureMethod: "GET", status: 401, message: "Bad credentials"},
 		{name: "protected merge 403", method: "merge", failureMethod: "PUT", status: 403, message: "Protected branch update failed"},
 		{name: "required reviews", method: "merge", failureMethod: "PUT", status: 405, message: "Branch protection requires reviews"},
 		{name: "required checks", method: "merge", failureMethod: "PUT", status: 405, message: "Required status checks have not passed"},
+		{name: "protected base 405", method: "merge", failureMethod: "PUT", status: 405, message: "Protected branch update failed"},
+		{name: "unspecified merge refusal", method: "merge", failureMethod: "PUT", status: 405, message: "Method Not Allowed"},
+		{name: "explicit merge conflict", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", wantRefusal: LandRefusalConflict},
+		{name: "unmergeable pull request", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request is not mergeable", wantRefusal: LandRefusalConflict},
+		{name: "read refusal is not a merge conflict", method: "merge", failureMethod: "GET", status: 405, message: "Pull Request is not mergeable"},
+		{name: "create refusal is not a head refusal", method: "merge", failureMethod: "POST", status: 405, message: "Pull Request is closed"},
 		{name: "read primary quota 403", method: "merge", failureMethod: "GET", status: 403, message: "API rate limit exceeded for user585100", rate: true},
 		{name: "create primary quota 403", method: "merge", failureMethod: "POST", status: 403, message: "API rate limit exceeded", rate: true},
 		{name: "merge primary quota 403", method: "merge", failureMethod: "PUT", status: 403, message: "API rate limit exceeded", rate: true},
@@ -57,9 +71,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			repository := "https://github.com/example/repo"
 			runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
 			runGit(t, fixture.source, "remote", "set-url", "origin", repository+".git")
+			previous := base
 			if test.reworked {
 				tree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", fixture.head+"^{tree}"))
-				previous := strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Previous attempt"))
+				previous = strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Previous attempt"))
 				runGit(t, fixture.source, "push", "origin", previous+":refs/heads/"+fixture.info.Branch)
 			}
 			var methods []string
@@ -71,6 +86,15 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					DisableConditionalRequests: true,
 					HTTPClient: landingHTTPClient(func(req *http.Request) (*http.Response, error) {
 						methods = append(methods, req.Method)
+						var body map[string]string
+						if req.Method == http.MethodPut {
+							if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+								t.Fatal(err)
+							}
+							if body["sha"] != fixture.head || body["merge_method"] != test.method {
+								t.Fatalf("merge body = %#v", body)
+							}
+						}
 						status := http.StatusOK
 						headers := make(http.Header)
 						headers.Set("X-RateLimit-Limit", "5000")
@@ -91,11 +115,20 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						} else {
 							switch req.Method {
 							case "GET":
+								published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
+								if published != fixture.head {
+									t.Fatalf("list read preceded reviewed head publication: %s", published)
+								}
 								switch {
 								case createdPull:
 									response = "[" + pull + "]"
 								case test.pullState == "open":
 									response = "[" + pull + "]"
+								case test.pullState == "stale":
+									response = "[" + strings.ReplaceAll(pull, fixture.head, previous) + "]"
+									if test.moved {
+										runGit(t, fixture.remote, "update-ref", "refs/heads/"+fixture.info.Branch, previous)
+									}
 								case test.pullState == "merged":
 									runGit(t, fixture.remote, "update-ref", "refs/heads/main", fixture.head)
 									response = fmt.Sprintf(`[{"number":7,"state":"closed","merged":true,"merge_commit_sha":"%s","head":{"sha":"%s"},"base":{"ref":"main"}}]`, fixture.head, fixture.head)
@@ -108,15 +141,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 								createdPull = true
 								response = pull
 							case "PUT":
-								var body map[string]string
-								if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-									t.Fatal(err)
+								published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
+								if published != body["sha"] {
+									status = http.StatusConflict
+									response = `{"message":"Head branch was modified. Review and try the merge again."}`
+								} else {
+									runGit(t, fixture.remote, "update-ref", "refs/heads/main", fixture.head)
+									response = fmt.Sprintf(`{"merged":true,"sha":"%s"}`, fixture.head)
 								}
-								if body["sha"] != fixture.head || body["merge_method"] != test.method {
-									t.Fatalf("merge body = %#v", body)
-								}
-								runGit(t, fixture.remote, "update-ref", "refs/heads/main", fixture.head)
-								response = fmt.Sprintf(`{"merged":true,"sha":"%s"}`, fixture.head)
 							}
 						}
 						return &http.Response{StatusCode: status, Header: headers, Body: io.NopCloser(strings.NewReader(response))}, nil
@@ -130,6 +162,16 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			client := newClient(false)
 			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client}
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), fixture.info, fixture.issue, opts)
+			if test.wantRefusal != "" {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != test.wantRefusal || errors.Is(err, github.ErrRateLimited) || fixture.remoteMain(t) != base || result.MergeSHA != "" {
+					t.Fatalf("merge refusal = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
+				}
+				if !strings.Contains(strings.Join(methods, ","), "PUT") || !strings.Contains(refusal.Reason, "GitHub refused") {
+					t.Fatalf("refusal did not come from the atomic merge: %v, %v", err, methods)
+				}
+				return
+			}
 			if test.failureMethod != "" {
 				var refusal *LandRefusal
 				if test.rate {
@@ -160,10 +202,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.MergeSHA != fixture.head || result.BaseRef != "main" || result.Method != test.method || !result.AttemptBranchPushed || fixture.remoteMain(t) != fixture.head {
+			if result.MergeSHA != fixture.head || result.BaseRef != "main" || result.BaseBefore != base || result.Method != test.method || !result.AttemptBranchPushed || fixture.remoteMain(t) != fixture.head {
 				t.Fatalf("landing = %#v", result)
 			}
-			wantCreate := test.pullState != "open" && test.pullState != "merged" && !(test.rate && test.failureMethod == "PUT")
+			wantCreate := test.pullState != "open" && test.pullState != "stale" && test.pullState != "merged" && !(test.rate && test.failureMethod == "PUT")
 			wantMerge := test.pullState != "merged"
 			calls := strings.Join(methods, ",")
 			if strings.Contains(calls, "POST") != wantCreate || strings.Contains(calls, "PUT") != wantMerge {

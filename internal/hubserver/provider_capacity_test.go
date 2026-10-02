@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -311,38 +312,142 @@ func TestProviderOlderReportsCannotRestoreQuota(t *testing.T) {
 
 func TestProviderPoolIsolation(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-	r.enroll(t)
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	report := capacityReport(f.service.config.now())
-	publishCapacity(t, f, r, report)
-	issue := f.create(t, "reserved")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "reserved")), http.StatusOK)
 	for _, test := range []struct {
-		name, provider, shared string
-		otherOrganization      bool
-		used                   int
+		name, provider, shared, authority, availability, leaseEnd string
+		otherOrganization, stale, offline, reserve                bool
+		used, bound, finalBound                                   int
+		state                                                     string
 	}{
-		{"same pool", "openai", "team", false, 1},
-		{"explicit independent account", "openai", "independent", false, 0},
-		{"unknown sharing", "openai", "", false, 1},
-		{"other provider", "anthropic", "team", false, 0},
-		{"other organization", "openai", "team", true, 0},
+		{name: "same pool", reserve: true, used: 1, bound: 2, state: "available"},
+		{name: "explicit independent account", shared: "independent", reserve: true, bound: 4, state: "available"},
+		{name: "unknown sharing", shared: "unknown", reserve: true, used: 1, bound: 2, state: "available"},
+		{name: "other provider", provider: "anthropic", reserve: true, bound: 4, state: "available"},
+		{name: "other organization", otherOrganization: true, reserve: true, bound: 4, state: "available"},
+		{name: "valid lower report", bound: 2, state: "available"},
+		{name: "valid offline authority", offline: true, bound: 2, state: "available"},
+		{name: "valid exhaustion", availability: "exhausted", bound: 2, state: "exhausted"},
+		{name: "valid unknown", availability: "unknown", bound: 2, state: "unknown"},
+		{name: "valid stale report", stale: true, availability: "exhausted", bound: 2, state: "unknown"},
+		{name: "expired historical report", authority: "expired", stale: true, offline: true, bound: 4, state: "available"},
+		{name: "expired exhaustion", authority: "expired", availability: "exhausted", bound: 4, state: "available"},
+		{name: "revoked exhaustion", authority: "revoked", availability: "exhausted", bound: 4, state: "available"},
+		{name: "future authority", authority: "future", bound: 4, state: "available"},
+		{name: "invalid expiry", authority: "invalid", bound: 4, state: "available"},
+		{name: "missing expiry", authority: "missing", bound: 4, state: "available"},
+		{name: "expired pinned lease until expiry", authority: "expired", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
+		{name: "revoked pinned lease until expiry", authority: "revoked", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
+		{name: "expired report with pinned lease until release", authority: "expired", reserve: true, leaseEnd: "release", used: 1, bound: 2, finalBound: 4, state: "available"},
+		{name: "draining authority and lease", authority: "draining", reserve: true, leaseEnd: "release", used: 1, bound: 2, finalBound: 2, state: "available"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			other := report
-			other.Provider, other.SharedAccountAlias, other.MaxConcurrent = test.provider, test.shared, 3
-			organization := f.project.OrganizationID
+			t.Parallel()
+			now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "provider-authority")
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			current := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			current.enroll(t)
+			otherFixture := f
 			if test.otherOrganization {
-				organization = "org_other"
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations (id, name, created_at) VALUES ('org_other', 'Other', ?)", formatHubTime(now)); err != nil {
+					t.Fatal(err)
+				}
+				otherFixture = newNativeFixture(t, f.service, "org_other", "other-provider")
+				approveHubTestPolicy(t, f.service, otherFixture.base+"/policy", hubTestPolicy())
 			}
-			view, err := providerView(t.Context(), f.service.database.db, organization, other, f.service.config.now())
-			if err != nil || view.Used != test.used {
-				t.Fatalf("view = %+v, %v", view, err)
+			otherRunner := prepareRunner(t, otherFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			otherRunner.enroll(t)
+			report := capacityReport(now)
+			report.MaxConcurrent = 4
+			if test.leaseEnd == "release" {
+				report.MaxConcurrent = 2
 			}
-			if test.used != 0 && view.MaxConcurrent != 1 {
-				t.Fatal("did not preserve the conservative shared bound")
+			publishCapacity(t, f, current, report)
+			other := capacityReport(now)
+			other.AccountAlias, other.MaxConcurrent = "older-runner", 2
+			if test.stale {
+				other.ObservedAt = now.Add(-48 * time.Hour)
+			}
+			if test.provider != "" {
+				other.Provider = test.provider
+			}
+			if test.shared != "" {
+				other.SharedAccountAlias = test.shared
+				if test.shared == "unknown" {
+					other.SharedAccountAlias = ""
+				}
+			}
+			publishCapacity(t, otherFixture, otherRunner, other)
+			var lease tracker.NativeLease
+			if test.reserve {
+				owner := otherRunner
+				if test.leaseEnd == "release" {
+					owner = current
+				}
+				issue := owner.nativeFixture.create(t, "reserved")
+				response := performHubAPIRequest(t, f.service, http.MethodPost, owner.nativeFixture.base+"/claims", owner.redemption.Credential, providerClaim(owner, issue, "reserved"))
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &lease)
+			}
+			if test.leaseEnd == "release" {
+				report.MaxConcurrent = 4
+				publishCapacity(t, f, current, report)
+			}
+			if test.availability != "" {
+				other.Availability = test.availability
+			}
+			publishCapacity(t, otherFixture, otherRunner, other)
+			if test.offline {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", formatHubTime(now.Add(-48*time.Hour)), otherRunner.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var statement string
+			switch test.authority {
+			case "expired":
+				statement = "UPDATE api_tokens SET expires_at = ? WHERE id = ?"
+			case "future":
+				statement = "UPDATE api_tokens SET created_at = ? WHERE id = ?"
+			case "invalid":
+				statement = "UPDATE api_tokens SET expires_at = 'invalid' WHERE id = ?"
+			case "missing":
+				statement = "UPDATE api_tokens SET expires_at = NULL WHERE id = ?"
+			case "revoked":
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, otherRunner.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
+			case "draining":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state = 'draining' WHERE id = ?", otherRunner.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if statement != "" {
+				args := []any{otherRunner.binding.RunnerID}
+				if test.authority == "expired" {
+					args = []any{formatHubTime(now), otherRunner.binding.RunnerID}
+				} else if test.authority == "future" {
+					args = []any{formatHubTime(now.Add(time.Second)), otherRunner.binding.RunnerID}
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), statement, args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			view, err := providerView(t.Context(), f.service.database.db, f.project.OrganizationID, report, now)
+			if err != nil || view.Used != test.used || view.MaxConcurrent != test.bound || view.State != test.state {
+				t.Fatalf("view = %+v, %v; want used=%d bound=%d state=%s", view, err, test.used, test.bound, test.state)
+			}
+			if test.leaseEnd != "" {
+				if test.leaseEnd == "release" {
+					path := f.base + "/leases/" + string(lease.ID) + "/release"
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, current.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				} else {
+					now = lease.ExpiresAt
+				}
+				view, err = providerView(t.Context(), f.service.database.db, f.project.OrganizationID, report, now)
+				if err != nil || view.Used != 0 || view.MaxConcurrent != test.finalBound {
+					t.Fatalf("ended lease view = %+v, %v; want used=0 bound=%d", view, err, test.finalBound)
+				}
+			}
+			stored, err := readProviderReports(t.Context(), f.service.database.db, otherRunner.binding.RunnerID)
+			if err != nil || len(stored) != 1 || !reflect.DeepEqual(stored[0], other) {
+				t.Fatalf("historical report changed: %+v, %v", stored, err)
 			}
 		})
 	}

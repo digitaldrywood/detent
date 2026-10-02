@@ -29,14 +29,15 @@ type hostedFleetLease struct {
 }
 
 type hostedFleetRunner struct {
-	Problems     []runnerauth.Problem `json:"problems"`
-	ID           string               `json:"id"`
-	DisplayName  string               `json:"display_name"`
-	Hostname     string               `json:"hostname"`
-	Health       string               `json:"health"`
-	State        string               `json:"state"`
-	OS           string               `json:"os"`
-	Architecture string               `json:"architecture"`
+	Capacity     *runnerauth.CapacityView `json:"capacity_configuration,omitempty"`
+	Problems     []runnerauth.Problem     `json:"problems"`
+	ID           string                   `json:"id"`
+	DisplayName  string                   `json:"display_name"`
+	Hostname     string                   `json:"hostname"`
+	Health       string                   `json:"health"`
+	State        string                   `json:"state"`
+	OS           string                   `json:"os"`
+	Architecture string                   `json:"architecture"`
 	// Version is the Detent build this runner's host reported. The settings
 	// screen compares it against the response's Current to draw the update
 	// state the footer's pill points at.
@@ -182,6 +183,11 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 		if editable {
 			view.Routing = &runner.Routing
 			view.Revision = runner.Revision
+			capacity, err := s.runnerCapacityView(ctx, s.database.db, runner, "", s.config.now())
+			if err != nil {
+				return nil, err
+			}
+			view.Capacity = &capacity
 		}
 		fleet = append(fleet, view)
 		machines = append(machines, string(runner.MachineID))

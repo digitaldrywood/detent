@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -12,15 +13,16 @@ import (
 )
 
 type ProjectIntegration struct {
-	Profile            string            `json:"profile"`
-	Revision           tracker.Revision  `json:"revision,string"`
-	Intake             string            `json:"intake"`
-	Projection         string            `json:"projection"`
-	RepositoryEnabled  bool              `json:"repository_enabled"`
-	Repository         string            `json:"repository,omitempty"`
-	CheckoutRepository string            `json:"checkout_repository,omitempty"`
-	Authority          map[string]string `json:"authority"`
-	RepositoryID       int64             `json:"-"`
+	States             []tracker.NativeState `json:"states,omitempty"`
+	Profile            string                `json:"profile"`
+	Revision           tracker.Revision      `json:"revision,string"`
+	Intake             string                `json:"intake"`
+	Projection         string                `json:"projection"`
+	RepositoryEnabled  bool                  `json:"repository_enabled"`
+	Repository         string                `json:"repository,omitempty"`
+	CheckoutRepository string                `json:"checkout_repository,omitempty"`
+	Authority          map[string]string     `json:"authority"`
+	RepositoryID       int64                 `json:"-"`
 }
 
 type GitHubRequestCount struct {
@@ -41,10 +43,17 @@ func (s *Service) githubRequestCounts(c echo.Context) error {
 
 func readProjectIntegration(ctx context.Context, query nativeQueryer, scope nativeScope) (ProjectIntegration, error) {
 	var result ProjectIntegration
+	var states string
 	err := query.QueryRowContext(ctx, `SELECT p.profile, p.integration_revision, p.github_intake, p.github_projection,
-p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository
+p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json
 FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(
-		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository)
+		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states)
+	if err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal([]byte(states), &result.States); err != nil {
+		return result, err
+	}
 	owner := "detent"
 	if result.Profile == "github_compatible" {
 		owner = "github"
@@ -71,10 +80,11 @@ func (s *Service) getCutoverReceipt(c echo.Context) error {
 
 type updateProjectIntegrationRequest struct {
 	tracker.Mutation
-	ExpectedRevision  tracker.Revision `json:"expected_revision,string"`
-	Intake            string           `json:"intake"`
-	Projection        string           `json:"projection"`
-	RepositoryEnabled bool             `json:"repository_enabled"`
+	States            *[]tracker.NativeState `json:"states,omitempty"`
+	ExpectedRevision  tracker.Revision       `json:"expected_revision,string"`
+	Intake            string                 `json:"intake"`
+	Projection        string                 `json:"projection"`
+	RepositoryEnabled bool                   `json:"repository_enabled"`
 }
 
 func (s *Service) updateProjectIntegration(c echo.Context) error {
@@ -82,6 +92,9 @@ func (s *Service) updateProjectIntegration(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
+	scope := nativeRequestScope(c)
+	scope.requireHostedAdmin = true
+	c.Set("native_scope", scope)
 	return s.nativeMutation(c, request.Mutation, request, s.updateProjectIntegrationOperation(request))
 }
 
@@ -105,6 +118,11 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		}
 		if err := requireIntegrationIdle(ctx, tx, scope, now); err != nil {
 			return nil, err
+		}
+		if request.States != nil {
+			if err := updateNativeProjectStates(ctx, tx, scope, *request.States, now); err != nil {
+				return nil, err
+			}
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = ?, github_projection = ?, github_repository_enabled = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, scope.project)
 		if err != nil {

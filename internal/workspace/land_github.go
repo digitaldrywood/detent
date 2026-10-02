@@ -31,7 +31,6 @@ type githubLandingMerge struct {
 }
 
 // LandChangeViaGitHub lands a reviewed head through a GitHub pull request
-// when the project's approved policy explicitly opts in. Git and gh both run
 // on the project runner; the Hub receives only the resulting commit identity.
 func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Issue, opts LandOptions) (LandResult, error) {
 	normalized, err := l.normalizeInfo(info, issue)
@@ -131,7 +130,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if pull.Merged || pull.MergedAt != "" {
 		mergeSHA = pull.MergeCommitSHA
 	} else {
-		if pull.State != "open" || pull.Head.SHA != head {
+		if pull.State != "open" {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the GitHub pull request no longer names the reviewed head")
 		}
 		var merged githubLandingMerge
@@ -184,6 +183,15 @@ func githubLandingAPI(ctx context.Context, client GitHubRESTClient, result any, 
 	}
 	var status *github.StatusError
 	if errors.As(err, &status) {
+		if method == http.MethodPut && strings.HasSuffix(path, "/merge") {
+			message := strings.ToLower(status.Body)
+			if status.StatusCode == http.StatusConflict && strings.Contains(message, "head branch was modified") || status.StatusCode == http.StatusMethodNotAllowed && (strings.Contains(message, "pull request is closed") || strings.Contains(message, "pull request is not open")) {
+				return refuse(LandRefusalHeadMoved, "GitHub refused the reviewed head merge: "+status.Error())
+			}
+			if status.StatusCode == http.StatusMethodNotAllowed && (strings.Contains(message, "merge conflict") || strings.Contains(message, "pull request is not mergeable")) {
+				return refuse(LandRefusalConflict, "GitHub refused the pull request merge: "+status.Error())
+			}
+		}
 		switch status.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden, http.StatusMethodNotAllowed, http.StatusUnprocessableEntity:
 			return refuse(LandRefusalProtected, "GitHub refused the pull request operation: "+status.Error()+". Resolve its authentication, reviews, checks or branch protection, then approve the Change Request again.")
