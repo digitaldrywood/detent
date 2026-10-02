@@ -139,6 +139,33 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if err := json.Unmarshal(raw, &published); err != nil || failed || published.Version == nil || published.Detail == nil || published.Detail.Change.CurrentVersion != published.Version.ID || published.WorkItemState != current.State || published.Version.RunID != "" || published.Version.AttemptID != "" {
 		t.Fatalf("MCP operator publication=%s %v", raw, err)
 	}
+	states := append([]tracker.NativeState(nil), f.project.States...)
+	for i := range states {
+		if states[i].Name == "In Progress" {
+			states[i].OperatorOnly = true
+		}
+	}
+	stateJSON, err := json.Marshal(states)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(stateJSON), f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	move := map[string]any{"project_id": f.project.ID, "request_id": "worker-move", "identifier": id, "expected_revision": current.Revision, "target_state": "In Progress"}
+	worker := f.worker(t, "workflow-worker")
+	response := performHubWorkCall(t, f.service, path, worker, operatortool.MoveItem, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.MoveItem, "arguments": move}})
+	requireNativeStatus(t, response, http.StatusForbidden)
+	if observed := readWorkItem(t, f, created.WorkItemID, ""); observed.State != current.State || observed.Revision != current.Revision {
+		t.Fatal("worker request changed workflow")
+	}
+	for _, key := range []string{"operator-move", "operator-move"} {
+		raw, failed = call(operatortool.MoveItem, key, map[string]any{"identifier": id, "expected_revision": current.Revision, "target_state": "In Progress"})
+		var moved tracker.NativeIssue
+		if err := json.Unmarshal(raw, &moved); err != nil || failed || moved.State != "In Progress" || moved.Revision != current.Revision+1 {
+			t.Fatalf("Hub workflow command=%s %v", raw, err)
+		}
+	}
 }
 
 // GitHub-compatible relationships, ordering and priority use the same commands

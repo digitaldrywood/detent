@@ -18,7 +18,6 @@ import (
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
 	// Hubs expose native work commands and hosted billing/usage operations.
-	// Daemon-only telemetry and lane commands remain unavailable here.
 	s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now))
 	s.administration = s.operatorAdministration()
 	s.administration.Chat = s.operatorChat
