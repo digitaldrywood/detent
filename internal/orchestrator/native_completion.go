@@ -10,6 +10,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func (o *Orchestrator) completeNativeChangeRun(
@@ -89,13 +90,16 @@ func (o *Orchestrator) completeNativeChangeRun(
 		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
 	change = o.refreshNativeChangeReview(ctx, issueID, change)
+	report, reported := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
+	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
+	needsReview := !change.Changed && !accepted || reported && !accepted
 	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
-	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed)
-	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && direct && dispatchableState(states, landing) {
+	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed || needsReview)
+	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && !needsReview && direct && dispatchableState(states, landing) {
 		target, ok = landing, true
 	}
 	if !ok {
-		if change.Changed {
+		if change.Changed || needsReview {
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), review))
 		}
 		return handoff(fmt.Errorf("native workflow allows no move from %s to a terminal lane", strings.TrimSpace(issue.State)))
@@ -103,7 +107,15 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, "completed_active_review_transition"); err != nil {
 		return handoff(fmt.Errorf("move native item to %s: %w", target, err))
 	}
-	if err := o.connector.CreateComment(ctx, issueID, nativeCompletionComment(change, issue.State, target)); err != nil {
+	comment := nativeCompletionComment(change, issue.State, target)
+	if needsReview {
+		disposition := "no valid complete detent-status disposition"
+		if report != nil && report.Invalid == nil {
+			disposition = "detent-status " + report.Status
+		}
+		comment = fmt.Sprintf("The provider turn completed with %s. Moved from %s to %s for review; the completed turn and any genuine source version are preserved, but issue acceptance is not recorded.", disposition, displayStateName(issue.State), displayStateName(target))
+	}
+	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the completed run: %w", err))
 	}
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", nativeChangeMetadata(change))
