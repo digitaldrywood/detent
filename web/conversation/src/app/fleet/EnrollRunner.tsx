@@ -245,7 +245,7 @@ export function EnrollRunnerDialog({
             <>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <div className="flex flex-1 flex-col gap-1.5">
-                  <Label htmlFor="enroll-runner-name">Name</Label>
+                  <Label htmlFor="enroll-runner-name" className="sm:min-h-7">Name</Label>
                   <Input
                     id="enroll-runner-name"
                     autoComplete="off"
@@ -261,9 +261,9 @@ export function EnrollRunnerDialog({
                 </div>
                 <div className="flex flex-col gap-1.5 sm:w-32">
                   <div className="flex items-center gap-1">
-                    <Label htmlFor="enroll-runner-capacity">Concurrent work items</Label>
-                    <ContextHelp label="Concurrent work items">
-                      One runner identity and process can execute up to this many independent work items concurrently, each with its own workspace and agent. 6 means up to six jobs on this runner; it does not enroll six runners. Start with 1, then increase as CPU, memory, and provider capacity allow. Shared host, project, provider, and other dispatch limits can lower effective concurrency.
+                    <Label htmlFor="enroll-runner-capacity">Concurrency</Label>
+                    <ContextHelp label="Concurrency">
+                      Concurrent work items: one runner identity and process can execute up to this many independent work items concurrently, each with its own workspace and agent. 6 means up to six jobs on this runner; it does not enroll six runners. Start with 1, then increase as CPU, memory, and provider capacity allow. Shared host, project, provider, and other dispatch limits can lower effective concurrency.
                     </ContextHelp>
                   </div>
                   <Input

@@ -459,7 +459,7 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
   // capacity and projects, never for runner or machine IDs.
   await expect(dialog.getByLabel("Runner id")).toHaveCount(0);
   await dialog.getByLabel("Name").fill("Build host");
-  await dialog.getByLabel("Concurrent work items", { exact: true }).fill("2");
+  await dialog.getByLabel("Concurrency", { exact: true }).fill("2");
   await expectNoSeriousAxeViolations(page, "the enrollment dialog");
 
   await dialog.getByRole("button", { name: "Create command" }).click();
