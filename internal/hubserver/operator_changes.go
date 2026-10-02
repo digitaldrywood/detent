@@ -39,7 +39,11 @@ func (e hubOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Defi
 		if d.Name == operatortool.ApproveChangeReviewPolicy || d.Name == operatortool.BindArtifactService || d.Name == operatortool.ReviewChange && e.service.config.Hosted != nil {
 			scope = apikey.ScopeAdmin
 		}
-		if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: scope}); err == nil {
+		requirement := operatortool.Requirement{Scope: scope}
+		if scope == apikey.ScopeWrite {
+			requirement.ResourceKind = "work_item"
+		}
+		if _, err := e.service.authorizeCatalog(ctx, requirement); err == nil {
 			out = append(out, d)
 		}
 	}

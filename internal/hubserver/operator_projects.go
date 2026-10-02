@@ -50,7 +50,11 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 		if e.service.config.Hosted == nil && d.Name == "create_hosted_project" || e.service.config.Hosted != nil && d.Name == "create_native_project" {
 			continue
 		}
-		if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: projectToolScope(d.Name, d.Annotations.ReadOnly)}); err == nil {
+		requirement := operatortool.Requirement{Scope: projectToolScope(d.Name, d.Annotations.ReadOnly)}
+		if requirement.Scope == apikey.ScopeWrite {
+			requirement.ResourceKind = "project"
+		}
+		if _, err := e.service.authorizeCatalog(ctx, requirement); err == nil {
 			defs = append(defs, d)
 		}
 	}

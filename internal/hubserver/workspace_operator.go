@@ -63,7 +63,7 @@ func (e workspaceOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 			continue
 		}
 		if !d.Annotations.ReadOnly {
-			if _, err := e.server.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err != nil {
+			if _, err := e.server.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "workspace"}); err != nil {
 				continue
 			}
 		}
