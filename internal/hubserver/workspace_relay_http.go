@@ -1009,63 +1009,67 @@ func (w *workspaceService) readRunner(ctx context.Context, connection *relayConn
 		if !ok {
 			return
 		}
-		if frame.Type == "" {
-			continue
-		}
-		if frame.Stream == "" {
-			// A runner frame with no stream has no audience: the hub does not
-			// know who asked, and guessing would show one person another's
-			// output.
-			continue
-		}
-		stream, person := w.relay.runnerStream(connection, frame.Stream)
-		if stream == nil {
-			continue
-		}
-		if frame.Type == workspacesession.TypeAck {
-			continue
-		}
-		outbound := frame
-		outbound.Actor = nil
-		outbound.Seq = w.relay.nextToPerson(stream)
-		// A hub stream has no person to deliver to and none to acknowledge, so
-		// nothing is buffered on it for a replay nobody can ask for (section
-		// 18.12). Buffering would make a long build overflow a stream with no
-		// reader behind it and kill the very run the hub started.
-		overflow := false
-		if !stream.hubOwned {
-			overflow = w.relay.bufferForPerson(connection.workspaceID, stream, outbound, outbound.Seq)
-		}
+		w.handleRunnerFrame(ctx, connection, frame)
+	}
+}
+
+func (w *workspaceService) handleRunnerFrame(ctx context.Context, connection *relayConnection, frame workspacesession.Frame) {
+	if frame.Type == "" {
+		return
+	}
+	if frame.Stream == "" {
+		// A runner frame with no stream has no audience: the hub does not
+		// know who asked, and guessing would show one person another's
+		// output.
+		return
+	}
+	stream, person := w.relay.runnerStream(connection, frame.Stream)
+	if stream == nil {
+		return
+	}
+	if frame.Type == workspacesession.TypeAck {
+		return
+	}
+	outbound := frame
+	outbound.Actor = nil
+	outbound.Seq = w.relay.nextToPerson(stream)
+	// A hub stream has no person to deliver to and none to acknowledge, so
+	// nothing is buffered on it for a replay nobody can ask for (section
+	// 18.12). Buffering would make a long build overflow a stream with no
+	// reader behind it and kill the very run the hub started.
+	overflow := false
+	if !stream.hubOwned {
+		overflow = w.relay.bufferForPerson(connection.workspaceID, stream, outbound, outbound.Seq)
+	}
+	if person != nil {
+		person.send(outbound)
+	}
+	if overflow {
+		// The reader stopped acknowledging and the buffer passed its cap.
+		// Closing the stream is the contract's answer: the alternative is
+		// the hub growing without bound for one reader's convenience.
+		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
 		if person != nil {
-			person.send(outbound)
+			person.send(workspacesession.ErrorFrame(stream.channel, stream.id, workspacesession.CodeOverflow, relayCodeMessage(workspacesession.CodeOverflow)))
 		}
-		if overflow {
-			// The reader stopped acknowledging and the buffer passed its cap.
-			// Closing the stream is the contract's answer: the alternative is
-			// the hub growing without bound for one reader's convenience.
-			w.relay.closeStream(ctx, connection.workspaceID, stream.id)
-			if person != nil {
-				person.send(workspacesession.ErrorFrame(stream.channel, stream.id, workspacesession.CodeOverflow, relayCodeMessage(workspacesession.CodeOverflow)))
-			}
-			connection.send(workspacesession.Frame{Channel: stream.channel, Stream: stream.id, Type: workspacesession.TypeClose})
-			continue
-		}
-		if stream.channel == workspacesession.ChannelTerminal {
-			// The hub is not only forwarding a terminal stream, it is recording
-			// it (section 18.3). A recording is the only thing a closed tab
-			// leaves behind, and an owner auditing who was in a worktree has
-			// nothing else to read.
-			w.recordRunnerTerminalFrame(connection, stream, frame)
-		}
-		if stream.channel == workspacesession.ChannelExec {
-			// The hub is not only forwarding an exec stream, it is recording
-			// it: the run row is what a person comes back to after the tab is
-			// closed, and it is the only record a run nobody watched leaves.
-			w.recordExecFrame(ctx, connection, stream, frame)
-		}
-		if frame.Type == workspacesession.TypeClosed || frame.Type == workspacesession.TypeClose {
-			w.relay.closeStream(ctx, connection.workspaceID, stream.id)
-		}
+		connection.send(workspacesession.Frame{Channel: stream.channel, Stream: stream.id, Type: workspacesession.TypeClose})
+		return
+	}
+	if stream.channel == workspacesession.ChannelTerminal {
+		// The hub is not only forwarding a terminal stream, it is recording
+		// it (section 18.3). A recording is the only thing a closed tab
+		// leaves behind, and an owner auditing who was in a worktree has
+		// nothing else to read.
+		w.recordRunnerTerminalFrame(connection, stream, frame)
+	}
+	if stream.channel == workspacesession.ChannelExec {
+		// The hub is not only forwarding an exec stream, it is recording
+		// it: the run row is what a person comes back to after the tab is
+		// closed, and it is the only record a run nobody watched leaves.
+		w.recordExecFrame(ctx, connection, stream, frame)
+	}
+	if frame.Type == workspacesession.TypeClosed || frame.Type == workspacesession.TypeClose {
+		w.relay.closeStream(ctx, connection.workspaceID, stream.id)
 	}
 }
 

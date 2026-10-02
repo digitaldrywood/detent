@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,8 +21,259 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/workspacefiles"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
+
+func TestWorkspaceOperatorFiles(t *testing.T) {
+	f := newWorkspaceRunnerFixture(t)
+	bound, lease := f.bound(t)
+	workspace := bound.Session.ID
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workspace_sessions SET read_only = 1 WHERE id = ?", workspace); err != nil {
+		t.Fatal(err)
+	}
+	ctx := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "files")
+	for _, test := range []struct{ name, update, status, code string }{
+		{"runner unavailable", "", "unavailable", workspacesession.CodeStaleExecution},
+		{"unsupported", `UPDATE workspace_sessions SET capabilities_json = '{}' WHERE id = ?`, "unsupported_transport", workspacesession.CodeForbidden},
+		{"ended", `UPDATE workspace_sessions SET state = 'closed' WHERE id = ?`, "unavailable", workspacesession.CodeWorkspaceClosed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.update != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), test.update, workspace); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := workspaceOperatorCall(t, f.service, ctx, "workspace_file_list", map[string]any{"project_id": f.project.ID, "workspace_id": workspace})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var response struct {
+				Status, Code string
+				Result       json.RawMessage
+			}
+			if err := json.Unmarshal(workspaceOperatorData(t, result), &response); err != nil || response.Status != test.status || response.Code != test.code || len(response.Result) != 0 {
+				t.Fatalf("availability=%s err=%v", result.Content, err)
+			}
+			capabilities, _ := json.Marshal(bound.Session.Capabilities)
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workspace_sessions SET capabilities_json = ?, state = ? WHERE id = ?", string(capabilities), bound.Session.State, workspace); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name, tool string
+		args       map[string]any
+		want       error
+	}{
+		{"foreign project", "workspace_file_list", map[string]any{"project_id": "foreign"}, operatortool.ErrAccessDenied},
+		{"foreign workspace", "workspace_file_list", map[string]any{"workspace_id": "ws_foreign"}, operatortool.ErrAccessDenied},
+		{"parent traversal", "workspace_file_read", map[string]any{"path": "../host"}, operatortool.ErrInvalidArguments},
+		{"absolute path", "workspace_file_read", map[string]any{"path": "/private/host"}, operatortool.ErrInvalidArguments},
+		{"absolute root", "workspace_file_list", map[string]any{"path": "/"}, operatortool.ErrInvalidArguments},
+		{"windows path", "workspace_file_read", map[string]any{"path": `C:\host`}, operatortool.ErrInvalidArguments},
+		{"nul path", "workspace_file_read", map[string]any{"path": "a\x00b"}, operatortool.ErrInvalidArguments},
+		{"oversized read", "workspace_file_read", map[string]any{"length": 32769}, operatortool.ErrInvalidArguments},
+		{"negative offset", "workspace_file_read", map[string]any{"offset": -1}, operatortool.ErrInvalidArguments},
+		{"oversized cursor", "workspace_file_list", map[string]any{"cursor": strings.Repeat("x", 4097)}, operatortool.ErrInvalidArguments},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := map[string]any{"project_id": f.project.ID, "workspace_id": workspace, "path": "text"}
+			for key, value := range test.args {
+				args[key] = value
+			}
+			if _, err := workspaceOperatorCall(t, f.service, ctx, test.tool, args); !errors.Is(err, test.want) {
+				t.Fatalf("error=%v want=%v", err, test.want)
+			}
+		})
+	}
+	runner := &relayConnection{id: "relayrunner_test", workspaceID: workspace, runner: true, out: make(chan relayOutbound, relayWriteQueue), done: make(chan struct{})}
+	if _, err := f.service.workspaces.relay.attachRunner(runner); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for _, directory := range []string{"empty", "pages"} {
+		if err := os.Mkdir(filepath.Join(root, directory), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range workspacesession.DirectoryPage + 1 {
+		if err := os.Mkdir(filepath.Join(root, "pages", strconv.Itoa(i)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, data := range map[string][]byte{"text": []byte(strings.Repeat("x", 40000)), "binary": {0, 255, 1}, ".env": []byte("private credential")} {
+		if err := os.WriteFile(filepath.Join(root, path), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("host secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	files, err := workspacefiles.Open(root, workspacesession.Denylist{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = files.Close() })
+	var cursor string
+	for _, test := range []struct {
+		name, tool, path, code              string
+		malformed                           string
+		offset, length, count, requested    int
+		binary, more, next, revoke, expired bool
+	}{
+		{name: "empty directory", tool: "workspace_file_list", path: "empty"},
+		{name: "directory page", tool: "workspace_file_list", path: "pages", count: 500, more: true},
+		{name: "directory continuation", tool: "workspace_file_list", path: "pages", count: 1, next: true},
+		{name: "bounded text", tool: "workspace_file_read", path: "text", length: 32768, more: true},
+		{name: "requested chunk", tool: "workspace_file_read", path: "text", length: 7, requested: 7, more: true},
+		{name: "text continuation", tool: "workspace_file_read", path: "text", offset: 32768, length: 7232},
+		{name: "binary", tool: "workspace_file_read", path: "binary", length: 3, binary: true},
+		{name: "secret denied", tool: "workspace_file_read", path: ".env", code: workspacesession.CodeDenied},
+		{name: "symlink escape", tool: "workspace_file_read", path: "escape", code: workspacesession.CodeForbidden},
+		{name: "missing", tool: "workspace_file_read", path: "missing", code: workspacesession.CodeNotFound},
+		{name: "oversized runner page", tool: "workspace_file_list", path: "empty", malformed: "page"},
+		{name: "oversized runner content", tool: "workspace_file_read", path: "text", malformed: "content"},
+		{name: "runner host path", tool: "workspace_file_read", path: "text", malformed: "path"},
+		{name: "expired lease during read", tool: "workspace_file_read", path: "text", code: workspacesession.CodeStaleExecution, expired: true},
+		{name: "revoked during read", tool: "workspace_file_read", path: "text", revoke: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := map[string]any{"project_id": f.project.ID, "workspace_id": workspace, "path": test.path}
+			if test.offset != 0 {
+				args["offset"] = test.offset
+			}
+			if test.requested != 0 {
+				args["length"] = test.requested
+			}
+			if test.next {
+				args["cursor"] = cursor
+			}
+			raw, _ := json.Marshal(args)
+			type answer struct {
+				result operatortool.Result
+				err    error
+			}
+			done := make(chan answer, 1)
+			go func() {
+				result, err := (workspaceOperatorExecutor{server: f.service}).Execute(ctx, operatortool.Call{Name: test.tool, Arguments: raw})
+				done <- answer{result, err}
+			}()
+			forwarded := (<-runner.out).frame
+			var request workspacesession.FilesRequest
+			if err := json.Unmarshal(forwarded.Payload, &request); err != nil || request.Path != test.path || forwarded.Actor == nil || request.Length > 32768 {
+				t.Fatalf("request=%+v frame=%+v err=%v", request, forwarded, err)
+			}
+			var value any
+			responseType := workspacesession.TypeFilesListed
+			if test.tool == "workspace_file_list" {
+				value, err = files.List(t.Context(), request)
+			} else {
+				responseType = workspacesession.TypeFilesContent
+				value, err = files.Read(t.Context(), request)
+			}
+			switch test.malformed {
+			case "page":
+				value = workspacesession.FilesListed{Path: request.Path, Entries: make([]workspacesession.FilesEntry, workspacesession.DirectoryPage+1)}
+			case "content":
+				content := value.(workspacesession.FilesContent)
+				content.Data = strings.Repeat("x", 40000)
+				value = content
+			case "path":
+				content := value.(workspacesession.FilesContent)
+				content.Path = outside
+				value = content
+			}
+			frame := workspacesession.Frame{Channel: forwarded.Channel, Stream: forwarded.Stream, Type: responseType}
+			if err != nil {
+				frame = workspacesession.ErrorFrame(forwarded.Channel, forwarded.Stream, workspacefiles.ErrorCode(err), "private host path: "+outside)
+			} else {
+				frame.Payload, _ = workspacesession.Encode(value)
+			}
+			if test.revoke {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = created_at WHERE id = ?", f.ownerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.expired {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", "2000-01-01T00:00:00Z", lease.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.service.workspaces.handleRunnerFrame(t.Context(), runner, frame)
+			got := <-done
+			if test.expired {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", formatHubTime(lease.ExpiresAt), lease.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			closed := (<-runner.out).frame
+			if closed.Type != workspacesession.TypeClose || closed.Stream != forwarded.Stream {
+				t.Fatalf("cleanup=%+v", closed)
+			}
+			if test.malformed != "" {
+				if !errors.Is(got.err, errWorkspaceOperationUnavailable) || len(got.result.Content) != 0 {
+					t.Fatalf("malformed content bytes=%d err=%v", len(got.result.Content), got.err)
+				}
+				return
+			}
+			if test.revoke {
+				if !errors.Is(got.err, operatortool.ErrAccessDenied) || len(got.result.Content) != 0 {
+					t.Fatalf("revoked content bytes=%d err=%v", len(got.result.Content), got.err)
+				}
+				return
+			}
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			var response struct {
+				Status, Code string
+				Result       json.RawMessage
+			}
+			if err := json.Unmarshal(workspaceOperatorData(t, got.result), &response); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(got.result.Content), outside) || strings.Contains(string(got.result.Content), "private credential") {
+				t.Fatal("private data leaked")
+			}
+			if test.code != "" {
+				if response.Status != "unavailable" || response.Code != test.code || len(response.Result) != 0 {
+					t.Fatalf("denied=%s", got.result.Content)
+				}
+				return
+			}
+			if response.Status != "available" {
+				t.Fatalf("response=%s", got.result.Content)
+			}
+			if test.tool == "workspace_file_list" {
+				var listed workspacesession.FilesListed
+				if err := json.Unmarshal(response.Result, &listed); err != nil || len(listed.Entries) != test.count || (listed.NextCursor != "") != test.more {
+					t.Fatalf("listing=%+v %v", listed, err)
+				}
+				cursor = listed.NextCursor
+			} else {
+				var content workspacesession.FilesContent
+				if err := json.Unmarshal(response.Result, &content); err != nil {
+					t.Fatal(err)
+				}
+				data := []byte(content.Data)
+				if test.binary {
+					data, err = base64.StdEncoding.DecodeString(content.Data)
+				}
+				if err != nil || len(data) != test.length || content.Offset != int64(test.offset) || content.Truncated != test.more || (content.Encoding == "base64") != test.binary {
+					t.Fatalf("content bytes=%d offset=%d truncated=%v encoding=%s err=%v", len(data), content.Offset, content.Truncated, content.Encoding, err)
+				}
+			}
+		})
+	}
+	if count := f.service.workspaces.relay.detachedCount(workspace); count != 0 {
+		t.Fatalf("detached streams=%d", count)
+	}
+}
 
 func workspaceOperatorContext(t *testing.T, s *Service, token, organization, connection string) context.Context {
 	t.Helper()
@@ -375,7 +628,7 @@ func TestWorkspaceOperatorActions(t *testing.T) {
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM project_action_runs").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("runs=%d %v", count, err)
 	}
-	for _, name := range []string{"get_workspace", "workspace_file_read", "workspace_terminal"} {
+	for _, name := range []string{"get_workspace", "workspace_file_list", "workspace_terminal"} {
 		result, err := workspaceOperatorCall(t, f.service, ctx, name, map[string]any{"project_id": f.project.ID, "workspace_id": workspace})
 		if err != nil || strings.Contains(string(result.Content), "/private/hidden") {
 			t.Fatalf("projection %s=%s %v", name, result.Content, err)
@@ -507,6 +760,11 @@ func TestWorkspaceOperatorRunnerAuthority(t *testing.T) {
 			}
 			human := chat.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx))
 			f.grant(t, owner, true, false)
+			for _, tool := range []string{"workspace_file_list", "workspace_file_read"} {
+				if _, err := workspaceOperatorCall(t, f.service, ctx, tool, map[string]any{"project_id": f.project, "workspace_id": "ws_private", "path": "text"}); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("%s revoked runners grant=%v", tool, err)
+				}
+			}
 			if _, err := f.service.operatorChat.Confirm(human, "runner-test", action.ID); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("revoked runner grant=%v", err)
 			}

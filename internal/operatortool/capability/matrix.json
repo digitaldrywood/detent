@@ -34803,7 +34803,7 @@
     },
     {
       "id": "workspace.file_read",
-      "summary": "Read a workspace file through the existing relay file channel",
+      "summary": "List workspace directories and read relative files through the existing relay file owner",
       "audience": "operator",
       "sources": [
         {
@@ -34871,13 +34871,13 @@
           "class": "none"
         }
       ],
-      "application": "Shared dashboard workspace/conversation/action commands and reads; daemon provider chat uses chat.Service.Send/OperatorTranscript. MCP does not invoke HTTP handlers, shell or SQL.",
-      "extraction": "Dashboard and MCP call the same extracted application commands. Current principal/org/project/resource and runner grants are resolved at call and approved execution; mutation.Metadata and existing durable receipts bind retries.",
+      "application": "workspaceOperatorExecutor delegates typed list/read frames through workspaceService.handlePersonFrame and the existing runner workspacefiles.Service; current read/runners grants and subject ownership apply.",
+      "extraction": "Reuse the existing relay connection, streams, per-frame lease/fencing authority, audit and confined runner file operations. Recheck current MCP credentials before returning data; release the temporary stream.",
       "tool": {
         "set": "conversations_workspaces",
         "name": "workspace_file_read",
-        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"workspace_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"project_id\",\"workspace_id\"],\"additionalProperties\":false}",
-        "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"workspace_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"path\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":4096},\"offset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":2147483647},\"length\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":32768}},\"required\":[\"project_id\",\"workspace_id\",\"path\"],\"additionalProperties\":false}",
+        "result": "Available result with relative path, MIME, size, offset, UTF-8/base64 data and truncation; at most 32768 content bytes. Unsupported/unavailable results retain workspace state and existing refusal codes.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -34887,8 +34887,8 @@
       },
       "owner": "digitaldrywood/detent#3346",
       "status": "implemented",
-      "coverage": "TestWorkspaceOperatorConversation, TestWorkspaceOperatorAttachments, TestWorkspaceOperatorActions, TestWorkspaceOperatorRunnerAuthority, TestWorkspaceOperatorHistoryBudget, TestWorkspaceOperatorBrowserApproval, TestMCPOperatorChatRetry; focused native/dashboard regressions.",
-      "decision": "Authorized typed unsupported_transport result includes workspace capabilities/state or conversation snapshot/cursor and polling alternatives. Interactive browser relay/SSE is not a raw MCP transport; no shell input, filesystem path, relay ticket or worker proxy is accepted."
+      "coverage": "TestWorkspaceOperatorFiles, TestWorkspaceOperatorRunnerAuthority; existing workspacefiles confinement and relay routing fixtures.",
+      "decision": "workspace_file_read accepts a relative path and offset/length with a 32768-byte cap. Companion workspace_file_list accepts relative path, cursor and show_ignored, returning at most 500 entries and next_cursor. Successful empty directories remain available; unsupported, ended, disconnected and expired workspace reads remain distinct. No shell, raw ticket, host path, runner error text or generic proxy is exposed."
     },
     {
       "id": "administration.transport_and_approval",

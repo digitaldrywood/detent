@@ -743,9 +743,16 @@ execution resolve current project/resource authority and runner grants; hosted
 checks use the same transaction to avoid reacquiring the hub's sole connection.
 Conversation command keys, attachment ownership/size rules and configured action
 revision checks remain application-owned. Successful action deletions replay their
-principal-bound, input-bound receipt after checking current project authority. Workspace paths and relay-session internals
-are omitted from MCP projections; terminal/file/SSE requests return explicit
-transport decisions with authorized state and polling alternatives. Bounded message
+principal-bound, input-bound receipt after checking current project authority. Absolute workspace
+paths and relay-session internals are omitted from MCP projections. Native #241 exposes bounded relative file
+listing and reads through the same relay and confined runner file owner, retaining
+current project read/runners grants, subject ownership and lease/fencing checks.
+Each exchange rechecks current credential authority before returning bytes and
+releases its stream; no ticket or runner error message is returned. Directory
+pages retain the 500-entry limit and cursor; content chunks are at most 32 KiB,
+with UTF-8/base64 and truthful size/offset/truncation. Unsupported or unavailable
+workspaces never appear as successful empty listings. Terminal/SSE requests retain
+explicit transport decisions with authorized state and polling alternatives. Bounded message
 history preserves continuation cursors, and attachment/output/recording reads use
 bounded byte chunks. Hosted confirmation reuses connection chat actions and existing
 browser session/CSRF authority; bearer credentials never approve. Only the originating hosted
@@ -755,7 +762,7 @@ private to that session and are delivered only through authorized tool results; 
 previews and browser conversations omit them. Durable command receipts retain the
 application data for authorized reconnect retries. A nested provider receives
 only authorized read tools, while operator actions use the named command tools.
-`TestWorkspaceOperatorConversation`, `TestWorkspaceOperatorAttachments`,
+`TestWorkspaceOperatorFiles`, `TestWorkspaceOperatorConversation`, `TestWorkspaceOperatorAttachments`,
 `TestWorkspaceOperatorActions`, `TestWorkspaceOperatorRunnerAuthority`,
 `TestWorkspaceOperatorHistoryBudget`, `TestWorkspaceOperatorBrowserApproval`,
 `TestWorkspaceOperatorUnavailable` and `TestMCPOperatorChatRetry` cover these boundaries.

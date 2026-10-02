@@ -23,6 +23,8 @@ type workspaceOperatorExecutor struct{ server *Service }
 var errWorkspaceOperationUnavailable = errors.New("workspace operation is unavailable")
 
 type workspaceToolRequest struct {
+	Path             string           `json:"path"`
+	ShowIgnored      bool             `json:"show_ignored"`
 	ProjectID        string           `json:"project_id"`
 	RequestID        string           `json:"request_id"`
 	WorkspaceID      string           `json:"workspace_id"`
@@ -91,7 +93,7 @@ func workspaceRequirement(name string, r workspaceToolRequest, write bool) opera
 	case r.WorkItemID != "":
 		requirement.ResourceKind, requirement.ResourceID = "work_item", r.WorkItemID
 	}
-	if name == "create_project_action_run" || name == "workspace_terminal" || name == "workspace_file_read" || name == "create_workspace" || name == "create_project_action" || name == "patch_project_action" {
+	if name == "create_project_action_run" || name == "workspace_terminal" || name == "workspace_file_read" || name == "workspace_file_list" || name == "create_workspace" || name == "create_project_action" || name == "patch_project_action" {
 		requirement.ResourceKind = "runners:" + requirement.ResourceKind
 	}
 	return requirement
@@ -534,7 +536,9 @@ func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name
 			return nil, err
 		}
 		return boundedWorkspaceContent(recording.ID, []byte(recording.Cast), r.Offset, length)
-	case "workspace_file_read", "workspace_terminal":
+	case "workspace_file_list", "workspace_file_read":
+		return s.readWorkspaceFilesTool(ctx, scope, name, r)
+	case "workspace_terminal":
 		workspace, err := s.readWorkspaceTool(ctx, scope, "get_workspace", r)
 		if err != nil {
 			return nil, err
