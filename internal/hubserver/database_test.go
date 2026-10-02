@@ -61,6 +61,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"artifact_services",
 		"artifact_references",
 		"artifact_grants",
+		"attachments",
 		"change_evidence",
 		"change_issue_links",
 		"change_requests",
