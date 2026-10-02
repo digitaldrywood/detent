@@ -33,6 +33,7 @@ type hostedFleetRunner struct {
 	Capacity           *runnerauth.CapacityView `json:"capacity_configuration,omitempty"`
 	Problems           []runnerauth.Problem     `json:"problems"`
 	ID                 string                   `json:"id"`
+	MachineID          string                   `json:"machine_id"`
 	DisplayName        string                   `json:"display_name"`
 	Hostname           string                   `json:"hostname"`
 	Health             string                   `json:"health"`
@@ -55,8 +56,6 @@ type hostedFleetRunner struct {
 	Availability       runnerauth.Availability  `json:"availability"`
 	Routing            *runnerauth.Routing      `json:"routing,omitempty"`
 	Revision           int64                    `json:"revision,omitempty"`
-
-	machine string
 }
 
 type hostedFleetAllowance struct {
@@ -173,7 +172,6 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	fleet := make([]hostedFleetRunner, 0, len(runners))
-	machines := make([]string, 0, len(runners))
 	for _, entry := range runners {
 		runner, err := readRunner(ctx, s.database.db, organization, entry.id, s.config.now())
 		if err != nil {
@@ -191,10 +189,6 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 			view.Capacity = &capacity
 		}
 		fleet = append(fleet, view)
-		machines = append(machines, string(runner.MachineID))
-	}
-	for index := range fleet {
-		fleet[index].machine = machines[index]
 	}
 	return fleet, nil
 }
@@ -205,17 +199,17 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 func scopeHostUsage(runners []hostedFleetRunner) {
 	used := map[string]int{}
 	for _, runner := range runners {
-		used[runner.machine] += len(runner.Leases)
+		used[runner.MachineID] += len(runner.Leases)
 	}
 	for index := range runners {
-		runners[index].HostUsed = used[runners[index].machine]
+		runners[index].HostUsed = used[runners[index].MachineID]
 	}
 }
 
 func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map[tracker.ProjectID]bool, now time.Time) hostedFleetRunner {
 	view := hostedFleetRunner{
 		Update: runner.UpdateView(now),
-		ID:     runner.RunnerID, DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Status(now),
+		ID:     runner.RunnerID, MachineID: string(runner.MachineID), DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Status(now),
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},

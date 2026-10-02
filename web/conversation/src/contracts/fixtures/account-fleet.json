@@ -2,6 +2,7 @@
   "runners": [
     {
       "id": "rnr_macbook",
+      "machine_id": "machine_macbook",
       "display_name": "Michael's MacBook Pro",
       "hostname": "michaels-macbook-pro.local",
       "health": "healthy",
@@ -73,6 +74,7 @@
     },
     {
       "id": "rnr_macmini",
+      "machine_id": "machine_macmini",
       "display_name": "mac-mini-1",
       "hostname": "mac-mini-1.local",
       "health": "stale",
