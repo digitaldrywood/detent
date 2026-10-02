@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -394,7 +395,15 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
 			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2}
 		}},
-		{name: "native due coding retry retains recorded REST wait", state: "Rework", native: true, githubPR: true, setup: func(s *State, issue connector.Issue) {
+		{name: "native due coding retry ignores historical REST scope", state: "Rework", native: true, githubPR: true, want: true, setup: func(s *State, issue connector.Issue) {
+			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
+			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2, CapacityScope: githubRESTCapacityScope}
+		}},
+		{name: "native due Git landing retry ignores historical REST scope", state: "Merging", native: true, want: true, setup: func(s *State, issue connector.Issue) {
+			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
+			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2, CapacityScope: githubRESTCapacityScope}
+		}},
+		{name: "non-native due coding retry respects REST wait", state: "Rework", setup: func(s *State, issue connector.Issue) {
 			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
 			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2, CapacityScope: githubRESTCapacityScope}
 		}},
@@ -428,12 +437,57 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 				t.Fatal("REST-held native PR landing remained in upstream states")
 			}
 			if ready := source.request.CandidateReady(t.Context(), issue); ready != test.want {
-				t.Fatalf("ready = %t, want %t", ready, test.want)
+				t.Errorf("ready = %t, want %t", ready, test.want)
 			}
 			afterRetry, hasRetry := state.Retry[issue.ID]
 			afterBlocked, hasBlocked := state.Blocked[issue.ID]
 			if hadRetry != hasRetry || hadBlocked != hasBlocked || !reflect.DeepEqual(afterRetry, beforeRetry) || !reflect.DeepEqual(afterBlocked, beforeBlocked) || len(state.Running) != beforeRunning {
 				t.Fatal("pre-lease readiness mutated live scheduling state")
+			}
+			outage, paused := activeGitHubRESTCapacityOutage(&state, now)
+			if !paused {
+				return
+			}
+			if hadRetry {
+				t.Run("retry admission", func(t *testing.T) {
+					retryState := newState(cfg)
+					test.setup(&retryState, issue)
+					action, ready, reason := o.dispatchPlanner().retryAction(&retryState, issue, beforeRetry, now)
+					if ready != test.want || !ready && reason != dispatchSkipGitHubRESTCapacity {
+						t.Fatalf("retry ready = %t, reason = %q, want ready %t", ready, reason, test.want)
+					}
+					if ready {
+						if action.attempt != beforeRetry.Attempt || action.retryState == nil || action.retryState.CapacityScope != beforeRetry.CapacityScope || !action.retryState.DueAt.Equal(beforeRetry.DueAt) {
+							t.Fatalf("retry action lost historical ownership: %+v", action)
+						}
+					} else if retained := retryState.Retry[issue.ID]; retained.Attempt != beforeRetry.Attempt || retained.CapacityScope != beforeRetry.CapacityScope || !retained.DueAt.Equal(outage.ResumeAt) {
+						t.Fatalf("REST-dependent retry lost wait evidence: %+v", retained)
+					}
+				})
+			}
+			for _, suppliedRetry := range []bool{false, true} {
+				if suppliedRetry && !hadRetry {
+					continue
+				}
+				t.Run("dispatch supplied retry="+strconv.FormatBool(suppliedRetry), func(t *testing.T) {
+					dispatchState := newState(cfg)
+					test.setup(&dispatchState, issue)
+					o.supervisor = newTestSupervisor(t, FakeRunner{}, cfg)
+					o.runResults = make(chan runpkg.Completion, 1)
+					defer o.releaseRunningSlots(&dispatchState)
+					var retry *Retry
+					if suppliedRetry {
+						retry = &beforeRetry
+						delete(dispatchState.Retry, issue.ID)
+					}
+					outcome := o.dispatchIssueWithAdmission(t.Context(), &dispatchState, issue, beforeRetry.Attempt, now, "", o.dispatchPlanner().modelPermitRequiredAtDispatch(issue), retry)
+					if outcome.dispatched != test.want || !outcome.dispatched && outcome.reason != dispatchIssueFailureGitHubRESTPaused {
+						t.Fatalf("dispatch = %+v, want dispatched %t", outcome, test.want)
+					}
+					if !reflect.DeepEqual(dispatchState.BackendOutages, state.BackendOutages) {
+						t.Fatal("dispatch changed shared REST outage evidence")
+					}
+				})
 			}
 		})
 	}

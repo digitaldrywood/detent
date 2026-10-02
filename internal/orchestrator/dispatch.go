@@ -629,7 +629,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, queuedRetry, now) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
 	}
-	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && (o.dispatchPlanner().githubRESTDependent(issue) || queuedRetry.CapacityScope.Matches(githubRESTCapacityScope)) {
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && o.dispatchPlanner().githubRESTDependent(issue) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
 	if !projectFailureBreakerAllowsDispatch(state, now) && !o.dispatchPlanner().workspaceBreakerAllowsMerge(state, issue) {
