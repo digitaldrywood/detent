@@ -117,18 +117,27 @@ choose their own CI and branch protection policies, including PR-triggered CI,
 merge-group CI, required checks, and strict freshness. The orchestrator honors
 each project's configured gate and repository rules.
 
-Pull requests run `make check-fast` in their own worktree before merge. The
-command has no shared validation lock. No GitHub Actions workflow starts on a
-pull request and no branch ruleset requires a status check. Every `develop`
+Ordinary Detent merging does not wait for blocking CI, the scheduled suite or a
+local-gate status. The configured local gate is `true` and publishes no status;
+local checks remain optional diagnostics under
+[AGENTS.md validation](../AGENTS.md#validation). No GitHub Actions workflow starts
+on a pull request and no branch ruleset requires a status check. Every `develop`
 push deploys to staging even when the scheduled full suite later fails.
 
-GitHub Actions runs the complete suite hourly on one pinned `develop` SHA when
-new commits exist since the last validated tag. A green run posts
+GitHub Actions runs the complete suite hourly on one pinned `develop` SHA,
+including when that commit already carries a release-provenance tag. All
+configured scheduled jobs must succeed before a green run posts
 `scheduled-full-ci` status and cuts an annotated patch version tag. The release
-workflow verifies that status and publishes artifacts from the tag. It does
-not merge to `main` or deploy production. A failing job opens or updates one
-fingerprinted Todo hotfix issue; a later green run closes it. Manual dispatch
-can force one job failure to verify that path.
+workflow verifies the authenticated status and tag provenance before signing
+and publishing artifacts. It does not merge to `main` or deploy production.
+The existing native scheduled reporter files diagnostics in Backlog, gives
+source/test blockers at least High priority while preserving Urgent, and appends
+occurrences to matching fingerprints, including imported evidence. A later green
+run appends validation evidence without closing native work. Historical pinned
+failures do not establish that the current head fails or staging is down. See
+[release reporting](release.md) for evidence preservation, instance-owned intake
+and admission boundaries. Manual dispatch can force one job failure to verify
+diagnostic filing.
 
 Portability stress remains manual only. The scheduled full suite includes
 invariant checks, lint, build, vet, tests, race shards, coverage, security,
