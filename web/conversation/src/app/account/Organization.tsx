@@ -22,7 +22,7 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog.tsx";
 import { Switch } from "../../components/ui/switch.tsx";
-import type { Member, MembersResponse, ProjectGrant } from "../../contracts/account.ts";
+import type { Invitation, Member, MembersResponse, ProjectGrant } from "../../contracts/account.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect } from "./controls.tsx";
@@ -422,6 +422,9 @@ export function OrganizationRoute(): React.ReactElement {
   const [removing, setRemoving] = React.useState<Member | null>(null);
   const [busyMember, setBusyMember] = React.useState<string | null>(null);
   const [memberErrors, setMemberErrors] = React.useState<Record<string, string>>({});
+  const [revoking, setRevoking] = React.useState<Invitation | null>(null);
+  const [activeInvitation, setActiveInvitation] = React.useState<string | null>(null);
+  const [resentInvitation, setResentInvitation] = React.useState<string | null>(null);
 
   const canManage = bootstrap?.actor.can_manage ?? false;
   const actorRole = bootstrap?.actor.role ?? "viewer";
@@ -469,6 +472,23 @@ export function OrganizationRoute(): React.ReactElement {
     await members.refresh();
     return created;
   });
+
+  const invitationAction = useMutation(
+    async (invitation: Invitation, action: "revoke" | "resend") => {
+      setActiveInvitation(invitation.id);
+      setResentInvitation(null);
+      const input = { invitation: invitation.id, key: newKey() };
+      if (action === "revoke") {
+        await api.revokeInvitation(input);
+        setRevoking(null);
+      } else {
+        await api.resendInvitation(input);
+        setResentInvitation(invitation.id);
+      }
+      await members.refresh();
+      return true;
+    },
+  );
 
   const create = useMutation(async (name: string) => {
     if (sharedEntry) {
@@ -600,7 +620,36 @@ export function OrganizationRoute(): React.ReactElement {
             key={invitation.id}
             title={invitation.email}
             description={`Invited as ${invitation.role}. Expires ${invitation.expires_at}.`}
-          />
+          >
+            {canManage ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={invitationAction.pending}
+                  onClick={() => void invitationAction.call(invitation, "resend")}
+                >
+                  Resend
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive-outline"
+                  disabled={invitationAction.pending}
+                  onClick={() => {
+                    invitationAction.clearError();
+                    setActiveInvitation(invitation.id);
+                    setRevoking(invitation);
+                  }}
+                >
+                  Revoke
+                </Button>
+                {activeInvitation === invitation.id ? (
+                  <ControlError message={invitationAction.error?.message ?? null} />
+                ) : null}
+                {resentInvitation === invitation.id ? <span role="status">Invitation resent.</span> : null}
+              </div>
+            ) : null}
+          </SettingsRow>
         ))}
         {(members.value?.invitations ?? []).length === 0 ? (
           <SettingsRow title="No pending invitations" description="Nobody is waiting to join." />
@@ -615,6 +664,43 @@ export function OrganizationRoute(): React.ReactElement {
           </SettingsRow>
         ) : null}
       </SettingsSection>
+
+      <Dialog
+        open={revoking !== null}
+        onOpenChange={(open) => {
+          if (!open) setRevoking(null);
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Revoke invitation to {revoking?.email}?</DialogTitle>
+            <DialogDescription>
+              The invitation link will no longer let them join this organization.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <ControlError message={invitationAction.error?.message ?? null} />
+          </DialogPanel>
+          <DialogFooter>
+            <DialogClose
+              render={
+                <Button variant="outline" disabled={invitationAction.pending}>
+                  Keep invitation
+                </Button>
+              }
+            />
+            <Button
+              variant="destructive"
+              disabled={invitationAction.pending}
+              onClick={() => {
+                if (revoking !== null) void invitationAction.call(revoking, "revoke");
+              }}
+            >
+              {invitationAction.pending ? "Revoking…" : "Revoke invitation"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
 
       <RemoveMemberDialog
         member={removing}

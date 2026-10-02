@@ -181,6 +181,13 @@ is added. `TestAdministrationExecution`, `TestHostedAdministrationAuthority`,
 `TestEntryAdministrationContext` and `TestMCPCredentialAdministration` cover these
 boundaries with existing application identity fixtures.
 
+Invitation withdrawal revokes the provider invitation before atomically removing
+the local invitation and releasing its seat. Provider refusal preserves both;
+resend uses the existing invitation and the same owner/admin authority. Invitation
+acceptance requires the locally issued pending record, including after login has
+started. `TestHostedInvitationLifecycle`, `TestHostedLoginInvitationEmailEntry`
+and the account browser invitation spec cover these INV-1 boundaries.
+
 Account/session parity (#3662) shares semantic landing/onboarding facts with browser
 account reads and binds destinations to current session/membership checks,
 including cached organization-switch delivery. `session_logout` shares browser

@@ -178,6 +178,13 @@ export function makeAccountApi(options: AccountApiOptions) {
         `${base}/members/invitations/${encodeURIComponent(input.invitation)}`,
         { idempotency_key: input.key },
       ),
+    resendInvitation: (input: { invitation: string; key: string }) =>
+      send(
+        null,
+        "POST",
+        `${base}/members/invitations/${encodeURIComponent(input.invitation)}/resend`,
+        { idempotency_key: input.key },
+      ),
     removeMember: (input: { member: string; key: string }) =>
       send(null, "DELETE", `${base}/members/${encodeURIComponent(input.member)}`, {
         idempotency_key: input.key,
