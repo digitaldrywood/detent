@@ -5274,15 +5274,22 @@ func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 		status  int
 		message string
 		want    bool
+		body    string
+		quota   bool
 	}{
-		{"strict protection", 405, "Head branch is out of date. Review and try the merge again.", true},
-		{"base race", 405, "Base branch was modified. Review and try the merge again.", true},
-		{"required failure", 405, "Required status check Test is failing.", false},
-		{"native queue", 405, "Pull request must be merged using the merge queue.", false},
-		{"conflict", 405, "Pull Request is not mergeable", false},
-		{"changed head", 409, "Head branch is out of date.", false},
-		{"permission", 403, "Head branch is out of date.", false},
-		{"transient", 502, "Head branch is out of date.", false},
+		{name: "strict protection", status: 405, message: "Head branch is out of date. Review and try the merge again.", want: true},
+		{name: "base race", status: 405, message: "Base branch was modified. Review and try the merge again.", want: true},
+		{name: "required failure", status: 405, message: "Required status check Test is failing."},
+		{name: "native queue", status: 405, message: "Pull request must be merged using the merge queue."},
+		{name: "conflict", status: 405, message: "Pull Request is not mergeable"},
+		{name: "changed head", status: 409, message: "Head branch is out of date."},
+		{name: "permission", status: 403, message: "Head branch is out of date."},
+		{name: "transient", status: 502, message: "Head branch is out of date."},
+		{name: "metadata cannot supply base refusal", status: 405, body: `{"message":"Required status check Test is failing.","documentation_url":"Base branch was modified"}`},
+		{name: "required check mentioning base refusal", status: 405, message: "Required status check 'Base branch was modified' has not passed."},
+		{name: "closure mentioning base refusal", status: 405, message: "Pull Request is closed. Base branch was modified."},
+		{name: "malformed JSON cannot supply base refusal", status: 405, body: `{"message":"Base branch was modified"`},
+		{name: "quota precedes base refusal", status: 403, message: "Base branch was modified", quota: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -5290,8 +5297,24 @@ func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			server := newGraphQLTestServer(t, []graphqlTestResponse{{method: http.MethodPut, path: "/repos/example/repo/pulls/42/merge", status: tt.status, body: string(body)}})
-			c := newGitHubTestConnector(t, server, Config{})
+			if tt.body != "" {
+				body = []byte(tt.body)
+			}
+			reset := time.Now().Add(time.Hour).Truncate(time.Second)
+			c, err := NewConnector(Config{Endpoint: "https://merge-refusal.test/graphql", TokenSource: StaticTokenSource(tt.name), HTTPClient: recoveryHTTPClient(func(request *http.Request) (*http.Response, error) {
+				if request.Method != http.MethodPut || request.URL.Path != "/repos/example/repo/pulls/42/merge" {
+					t.Fatalf("unexpected merge request %s %s", request.Method, request.URL)
+				}
+				headers := make(http.Header)
+				if tt.quota {
+					headers.Set("X-RateLimit-Remaining", "0")
+					headers.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+				}
+				return &http.Response{StatusCode: tt.status, Header: headers, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+			})})
+			if err != nil {
+				t.Fatal(err)
+			}
 			err = c.MergePullRequest(t.Context(), "example/repo", 42, "checked-head", "squash")
 			if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) != tt.want {
 				t.Fatalf("error = %v, want base refusal %t", err, tt.want)
@@ -5299,6 +5322,12 @@ func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 			var status *StatusError
 			if !errors.As(err, &status) || status.StatusCode != tt.status {
 				t.Fatalf("lost original status: %v", err)
+			}
+			if errors.Is(err, ErrRateLimited) != tt.quota || tt.quota && !status.ResetAt.Equal(reset) {
+				t.Fatalf("lost quota precedence or reset: %v", err)
+			}
+			if tt.want && !strings.Contains(err.Error(), "PUT /repos/example/repo/pulls/42/merge") {
+				t.Fatalf("lost merge endpoint identity: %v", err)
 			}
 		})
 	}
