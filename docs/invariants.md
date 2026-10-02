@@ -4159,7 +4159,7 @@ is not an authorized resurrection.
 ## INV-10 — Priority only picks the next job
 
 Native claim and provider preview carry the project's existing dispatch state,
-label and unblocker policy to the shared `dispatchpriority` comparator before
+label and unblocker policy through the existing `dispatchpriority` order before
 acquiring a lease. Merging overrides numeric priority only when that project
 configures Merging first; native queue rank remains a tie-breaker after the
 configured priorities. Both paths retain native scope, dependencies, live
@@ -4185,6 +4185,26 @@ policy identity and lease fencing retain their existing owners. Batch hydration
 or claim errors release acquired leases through the existing native release
 owner; dispatch releases candidates it cannot select. No additional refresh,
 reservation, recovery path or configuration is introduced (#153).
+
+Native #191 shares the conversation notification primitive with the existing
+candidate/claim owner. Organization-scoped postcommit hints wake the runner's
+outbound wait and the existing project refresh; the hint grants no execution
+authority. Epoch cursors retain changes across reconnects and duplicate wakes
+coalesce. Held requests retain no database connection, transaction or scheduler
+execution. Runner drain and shutdown cancel the wait; the existing timer retains
+retry, expiration and older-Hub refresh ownership. Unchanged heartbeats and active
+runtime observations do not wake dispatch. Current native authority is rechecked
+before returning a hint, and the atomic claim still rechecks all admission rules.
+Native selection applies the existing comparator order and filters in SQL through
+indexed scope, queue and dependency lookups, with at most 100 returned candidate
+IDs per page. Claims query one bounded page, narrowed to the selected ID for
+candidate-specific requests; preview hydrates at
+most its negotiated remaining candidate allowance. Home selection compares only
+its selected project heads. `TestProviderQueueOrderAndSelectors` preserves
+comparator parity and bounded cursor pages; `TestNativeDispatchWaitLifecycle`,
+`TestNativeDispatchWaitReconnects`, `TestRunNativeCandidateWake` and
+`TestNativeDispatchWaitScale` preserve wait cleanup, bounded reconnects, prompt
+refresh, unique leases and the absence of candidate reads while waiting.
 Normal typed provider, runner and host capacity refusals terminate both empty
 and partial batches successfully (#183). They acquire no rejected work and
 leave candidate refresh health and configured cadence with their existing

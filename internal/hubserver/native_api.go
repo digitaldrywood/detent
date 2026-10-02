@@ -145,6 +145,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/work-items/:item/comments/:comment/versions/:revision", s.getNativeVersion, read)
 	e.POST(nativeBase+"/claims", s.claimNativeIssue, worker)
 	e.POST(nativeBase+"/claims/preview", s.previewProviderCandidates, worker)
+	e.GET(nativeBase+"/claims/wait", s.waitNativeCandidates, worker)
 	e.POST(nativeBase+"/leases/:lease/renew", s.renewNativeLease, worker)
 	e.POST(nativeBase+"/leases/:lease/release", s.releaseNativeLease, worker)
 	e.POST(nativeBase+"/machines/register", s.registerNativeMachine, worker)
@@ -244,6 +245,10 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 }
 
 func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope) error {
+	return authorizeNativeProject(ctx, d.db, scope)
+}
+
+func authorizeNativeProject(ctx context.Context, db nativeQueryer, scope nativeScope) error {
 	if scope.credential.Runner.RunnerID != "" && scope.credential.Runner.OrganizationID != scope.organization {
 		return nativeNotFound()
 	}
@@ -253,7 +258,7 @@ func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope
 	condition, grantArgs := scope.credential.projectGrantSQL("projects.organization_id", "projects.id")
 	query += " AND (" + condition + ")"
 	args = append(args, grantArgs...)
-	if err := d.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return err
 	}
 	if count != 1 {
@@ -393,6 +398,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.notifyNativeDispatch(scope, input)
 	return json.RawMessage(response), nil
 }
 func (s *Service) requireCompatibilityResource(c echo.Context) error {

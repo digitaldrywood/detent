@@ -102,6 +102,10 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 }
 
 func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenResponse, error) {
+	organizations, err := credentialDispatchOrganizations(ctx, s.database.db, id)
+	if err != nil {
+		return tokenResponse{}, err
+	}
 	token, err := s.config.generateToken()
 	if err != nil {
 		return tokenResponse{}, err
@@ -121,6 +125,9 @@ func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenRespon
 	if rows != 1 {
 		return tokenResponse{}, nativeNotFound()
 	}
+	for _, organization := range organizations {
+		s.notifications.notify(dispatchNotificationKey(organization))
+	}
 	view, err := s.tokenMetadataByID(ctx, id)
 	if err != nil {
 		return tokenResponse{}, err
@@ -130,6 +137,10 @@ func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenRespon
 }
 
 func (s *Service) revokeAPITokenFor(ctx context.Context, id string) error {
+	organizations, err := credentialDispatchOrganizations(ctx, s.database.db, id)
+	if err != nil {
+		return err
+	}
 	now, err := s.database.currentTime()
 	if err != nil {
 		return err
@@ -144,6 +155,9 @@ func (s *Service) revokeAPITokenFor(ctx context.Context, id string) error {
 	}
 	if rows != 1 {
 		return nativeNotFound()
+	}
+	for _, organization := range organizations {
+		s.notifications.notify(dispatchNotificationKey(organization))
 	}
 	return nil
 }
@@ -170,7 +184,11 @@ func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, pro
 	if _, err := tx.ExecContext(ctx, "UPDATE api_tokens SET native_only=1 WHERE id=?", id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notifications.notify(dispatchNotificationKey(tracker.OrganizationID(organization)))
+	return nil
 }
 
 func (s *Service) createNativeOrganizationFor(ctx context.Context, name string) (nativeOrganization, error) {

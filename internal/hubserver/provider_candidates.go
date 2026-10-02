@@ -16,6 +16,9 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
+	if request.Limit < 0 || request.Limit > 100 {
+		return s.nativeAPIError(c, nativeInvalid("Candidate limit must be between 1 and 100"))
+	}
 	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		scope := nativeRequestScope(c)
 		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
@@ -25,6 +28,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 			return nil, err
 		}
 		query := claimCandidateQuery{DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers, PolicyID: request.PolicyID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
+		query.Limit, query.After, query.AvailableAt = request.Limit, request.After, now
 		if _, err := validateClaimPolicy(ctx, tx, query, request.MachineID); err != nil {
 			return nil, err
 		}
@@ -38,12 +42,11 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 			return nil, err
 		}
 		page := tracker.NativeCapacityPage{Items: []tracker.NativeIssue{}}
-		started := request.After == 0
+		limit := request.Limit
+		if limit == 0 {
+			limit = 100
+		}
 		for _, id := range ids {
-			if !started {
-				started = id == request.After
-				continue
-			}
 			lease, found, err := readUnreleasedLease(ctx, tx, id)
 			if err != nil {
 				return nil, err
@@ -67,13 +70,9 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 				return nil, err
 			}
 			page.Items = append(page.Items, s.nativeIssueResponse(issue))
-			if len(page.Items) == 100 {
-				page.Next = id
-				break
-			}
 		}
-		if !started {
-			return nil, providerWait("provider_candidate_changed", "Queue changed during provider selection; refresh the candidate page")
+		if len(ids) == limit {
+			page.Next = ids[len(ids)-1]
 		}
 		return page, nil
 	})

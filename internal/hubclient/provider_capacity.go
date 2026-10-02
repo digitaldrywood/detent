@@ -21,12 +21,19 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 	reports := append([]providercapacity.Report(nil), s.machine.ProviderReports...)
 	s.mu.Unlock()
 	preview := tracker.NativeCapacityPreview{NativeClaim: claim}
+	boundedPreview, err := source.client.HubFeature(ctx, tracker.NativeDispatchWaitCapability)
+	if err != nil {
+		return leases, err
+	}
 	if providerEnabled {
 		claim.Capabilities = append(claim.Capabilities, tracker.NativeProviderCapacityCapability)
 	}
 	evaluated := 0
 	var waiting error
 	for {
+		if boundedPreview && request.CandidateLimit > 0 {
+			preview.Limit = min(100, request.CandidateLimit-evaluated)
+		}
 		var page tracker.NativeCapacityPage
 		if err := source.client.client.request(ctx, http.MethodPost, source.client.base()+"/claims/preview", preview, &page); err != nil {
 			return leases, err

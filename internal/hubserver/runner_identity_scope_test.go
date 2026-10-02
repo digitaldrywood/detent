@@ -22,6 +22,8 @@ func TestRunnerOperationAllowed(t *testing.T) {
 		{name: "attempt diff without claim", method: http.MethodPost, path: nativeBase + "/attempts/:attempt/diff", operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Heartbeat, runnerauth.Events}},
 		{name: "attempt diff read", method: http.MethodGet, path: nativeBase + "/attempts/:attempt/diff", operations: []string{runnerauth.Read}, want: true},
 		{name: "claims need claim", method: http.MethodPost, path: nativeBase + "/claims", operations: []string{runnerauth.Read}},
+		{name: "dispatch waits need claim", method: http.MethodGet, path: nativeBase + "/claims/wait", operations: []string{runnerauth.Read}},
+		{name: "dispatch waits with claim", method: http.MethodGet, path: nativeBase + "/claims/wait", operations: all, want: true},
 		{name: "claims with claim", method: http.MethodPost, path: nativeBase + "/claims", operations: all, want: true},
 		{name: "work item change is collaboration", method: http.MethodPost, path: nativeBase + "/work-items/:item/changes", operations: []string{runnerauth.Collaborate}, want: true},
 		{name: "item events need events", method: http.MethodPost, path: nativeBase + "/work-items/:item/events", operations: []string{runnerauth.Collaborate}},

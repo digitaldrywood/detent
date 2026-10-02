@@ -103,7 +103,7 @@ func (c ConversationConfig) normalized() ConversationConfig {
 type conversationService struct {
 	server *Service
 	store  *conversationStore
-	broker *conversationBroker
+	broker *notificationBroker
 	config ConversationConfig
 	logger *slog.Logger
 	// coordinator answers messages in conversations without a linked
@@ -147,7 +147,7 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 	service := &conversationService{
 		server: server,
 		store:  newConversationStore(server.database.db),
-		broker: newConversationBroker(),
+		broker: server.notifications,
 		config: cfg,
 		logger: server.config.Logger.With("component", "conversation"),
 	}
@@ -279,31 +279,33 @@ func (c *conversationService) stop() {
 	c.broker.closeAll()
 }
 
-// conversationBroker wakes subscribers when a conversation gained events.
+// notificationBroker wakes subscribers when a conversation gained events.
 // It carries no payload: subscribers read the durable event log from their
 // cursor, so a slow subscriber can never lose or reorder events.
-type conversationBroker struct {
+type notificationBroker struct {
 	mu          sync.Mutex
 	closed      bool
-	subscribers map[string]map[*conversationSubscription]struct{}
+	epoch       string
+	revisions   map[string]uint64
+	subscribers map[string]map[*notificationSubscription]struct{}
 }
 
-type conversationSubscription struct {
+type notificationSubscription struct {
 	conversationID string
 	wake           chan struct{}
 	closed         chan struct{}
 	once           sync.Once
 }
 
-func newConversationBroker() *conversationBroker {
-	return &conversationBroker{subscribers: map[string]map[*conversationSubscription]struct{}{}}
+func newNotificationBroker() *notificationBroker {
+	return &notificationBroker{epoch: newNativeID("wait"), revisions: make(map[string]uint64), subscribers: map[string]map[*notificationSubscription]struct{}{}}
 }
 
 // subscribe registers interest in a conversation. The returned wake channel
 // receives at most one pending signal; closed is closed when the broker
 // shuts down. Call cancel when done.
-func (b *conversationBroker) subscribe(conversationID string) (subscription *conversationSubscription, cancel func()) {
-	subscription = &conversationSubscription{conversationID: conversationID, wake: make(chan struct{}, 1), closed: make(chan struct{})}
+func (b *notificationBroker) subscribe(conversationID string) (subscription *notificationSubscription, cancel func()) {
+	subscription = &notificationSubscription{conversationID: conversationID, wake: make(chan struct{}, 1), closed: make(chan struct{})}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
@@ -312,7 +314,7 @@ func (b *conversationBroker) subscribe(conversationID string) (subscription *con
 	}
 	set, ok := b.subscribers[conversationID]
 	if !ok {
-		set = map[*conversationSubscription]struct{}{}
+		set = map[*notificationSubscription]struct{}{}
 		b.subscribers[conversationID] = set
 	}
 	set[subscription] = struct{}{}
@@ -329,15 +331,18 @@ func (b *conversationBroker) subscribe(conversationID string) (subscription *con
 	}
 }
 
-func (s *conversationSubscription) close() {
+func (s *notificationSubscription) close() {
 	s.once.Do(func() { close(s.closed) })
 }
 
 // notify wakes every subscriber of the conversation. Call it after the
 // transaction that appended events has committed.
-func (b *conversationBroker) notify(conversationID string) {
+func (b *notificationBroker) notify(conversationID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if _, tracked := b.revisions[conversationID]; tracked {
+		b.revisions[conversationID]++
+	}
 	for subscription := range b.subscribers[conversationID] {
 		select {
 		case subscription.wake <- struct{}{}:
@@ -346,7 +351,7 @@ func (b *conversationBroker) notify(conversationID string) {
 	}
 }
 
-func (b *conversationBroker) closeAll() {
+func (b *notificationBroker) closeAll() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closed = true
@@ -355,7 +360,7 @@ func (b *conversationBroker) closeAll() {
 			subscription.close()
 		}
 	}
-	b.subscribers = map[string]map[*conversationSubscription]struct{}{}
+	b.subscribers = map[string]map[*notificationSubscription]struct{}{}
 }
 
 // Error codes specific to conversations, in addition to the shared native

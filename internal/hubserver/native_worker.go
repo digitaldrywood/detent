@@ -175,6 +175,7 @@ func (s *Service) releaseNativeLease(c echo.Context) error {
 	if err := s.database.Release(c.Request().Context(), tracker.ReleaseRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, Reason: request.Reason}); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	s.notifyNativeDispatch(nativeRequestScope(c), request)
 	if s.conversations != nil {
 		s.conversations.leaseReleased(c.Request().Context(), tracker.LeaseID(c.Param("lease")))
 	}

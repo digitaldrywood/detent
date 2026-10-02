@@ -203,6 +203,10 @@ type SchedulingSource interface {
 	ReleaseClaim(context.Context, string, string) error
 }
 
+type candidateChangeWaiter interface {
+	WaitCandidateChanges(context.Context, string, chan<- struct{})
+}
+
 type Dependencies struct {
 	TrimHostCache        func(context.Context, toolcache.Policy, time.Time) error
 	Connector            connector.Connector
@@ -807,6 +811,21 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	ticker := time.NewTicker(o.cfg.PollInterval)
 	defer ticker.Stop()
+	candidateChanges := make(chan struct{}, 1)
+	waitCtx, stopCandidateWait := context.WithCancel(ctx)
+	waitDone := make(chan struct{})
+	if waiter, ok := o.scheduling.(candidateChangeWaiter); ok {
+		go func() {
+			defer close(waitDone)
+			waiter.WaitCandidateChanges(waitCtx, o.projectID, candidateChanges)
+		}()
+	} else {
+		close(waitDone)
+	}
+	defer func() {
+		stopCandidateWait()
+		<-waitDone
+	}()
 
 	state := newState(o.cfg)
 	defer o.stopWorkspaceCleanup()
@@ -838,6 +857,16 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			return ctx.Err()
 		case now := <-ticker.C:
 			state.syncWorkerProgress()
+			o.startTick(&state, now)
+			o.tick(ctx, &state, now)
+			o.finishTick(&state)
+			resetTicker(ticker, state.PollInterval)
+		case <-candidateChanges:
+			if state.Draining {
+				continue
+			}
+			state.syncWorkerProgress()
+			now := o.clockNow()
 			o.startTick(&state, now)
 			o.tick(ctx, &state, now)
 			o.finishTick(&state)
@@ -925,6 +954,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			state.syncWorkerProgress()
 			o.handleValidatorCapacityEvent(&state, event)
 		case request := <-o.drainRequests:
+			stopCandidateWait()
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			o.startDrain(&state, request.at)
