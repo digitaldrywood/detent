@@ -2599,8 +2599,10 @@ identity-failure exits allow caller-owned resources to be cleaned up.
 
 Runner boot (#132) publishes the existing initializing snapshot without reading
 lifetime totals and serves HTTP before startup process cleanup, Codex retention,
-board-cache loading, or local setup/policy/provider observations. The existing
-listener identity probe runs in the joined startup worker before that work;
+board-cache loading, or local setup/policy/provider observations. The initial
+snapshot has no scheduled refresh deadline until dispatch starts, so
+maintenance time cannot turn initializing tracker state into a late refresh.
+The existing listener identity probe runs in the joined startup worker before that work;
 updater health verification and lifecycle readiness still wait for startup.
 The manager receives its scheduling source only after actual setup observations
 complete, so a responsive initializing health route grants no dispatch authority.
