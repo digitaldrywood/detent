@@ -10,10 +10,10 @@ import {
   TableRow,
 } from "../../../components/ui/table.tsx";
 import { cn } from "../../../lib/utils.ts";
-import { ageLabel, elapsedLabel, issueNumber, projectHue } from "../lib/format.ts";
+import { issueNumber, projectHue } from "../lib/format.ts";
 import { isLive, type WorkItemView } from "../lib/model.ts";
 import { LaneMenu } from "./LaneMenu.tsx";
-import { Pill, priorityTone, statusPill } from "./IssueCard.tsx";
+import { AgeText, ElapsedText, Pill, priorityTone, statusPill } from "./IssueCard.tsx";
 
 export function WorkList({
   items,
@@ -25,7 +25,7 @@ export function WorkList({
 }: {
   items: readonly WorkItemView[];
   showProject: boolean;
-  now: number;
+  now?: number;
   onOpen: (item: WorkItemView) => void;
   movesFor: (item: WorkItemView) => readonly string[];
   onMove: (item: WorkItemView, toState: string) => void;
@@ -113,7 +113,7 @@ export function WorkList({
                         className="size-1.5 rounded-full bg-success motion-safe:animate-status-pulse"
                       />
                       <span className="tabular-nums">
-                        {elapsedLabel(item.attempt.startedAt, now)}
+                        <ElapsedText at={item.attempt.startedAt} now={now} />
                       </span>
                     </span>
                   ) : (
@@ -130,7 +130,7 @@ export function WorkList({
                   )}
                 </TableCell>
                 <TableCell className="text-right text-muted-foreground tabular-nums">
-                  {ageLabel(item.updatedAt, now)}
+                  <AgeText at={item.updatedAt} now={now} />
                 </TableCell>
                 <TableCell>
                   <LaneMenu item={item} lanes={movesFor(item)} onMove={onMove} />
