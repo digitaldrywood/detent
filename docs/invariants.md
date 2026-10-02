@@ -2857,6 +2857,27 @@ must remain to reject unverified artifacts before replacement.
 Startup, serving, and readiness workers share cancellation and are joined before
 identity-failure exits allow caller-owned resources to be cleaned up.
 
+Runner boot (#132) publishes the existing initializing snapshot without reading
+lifetime totals and serves HTTP before startup process cleanup, Codex retention,
+board-cache loading, or local setup/policy/provider observations. The initial
+snapshot has no scheduled refresh deadline until dispatch starts, so
+maintenance time cannot turn initializing tracker state into a late refresh.
+The existing listener identity probe runs in the joined startup worker before that work;
+updater health verification and lifecycle readiness still wait for startup.
+The manager receives its scheduling source only after actual setup observations
+complete, so a responsive initializing health route grants no dispatch authority.
+Enrolled identity, current approved policy, provider authority, grants, leases
+and fencing retain their existing admission owners. Observation failures remain
+instance-owned startup failures; cancellation joins startup and service resources
+before closing the runtime store. No maintenance loop, heartbeat audit, route,
+configuration, reason code or admission bypass is introduced. Startup logs
+separate listener binding, HTTP response availability, setup observation duration
+and lifecycle readiness; existing project refresh events retain refresh timing.
+An aggregate restart interval cannot attribute time to any one operation.
+`TestStartRunningServesWhileMaintenanceBlocked` covers HTTP/state availability,
+honest readiness, deferred dispatch, missing Hub authority and joined cancellation;
+existing setup-heartbeat, policy and lifecycle-failure tests retain their boundaries.
+
 GitHub dependency hydration consolidates native relations and current issue-body
 declarations into one blocker list (#2751). Native state wins for duplicate refs;
 an empty native list does not discard a current `Depends on:` declaration.

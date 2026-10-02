@@ -857,8 +857,11 @@ func TestStartupSnapshotMarksTrackerStateInitializing(t *testing.T) {
 	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusInitializing {
 		t.Fatalf("snapshot Refresh status = %q, want %q", got, telemetry.RefreshStatusInitializing)
 	}
-	if snapshot.Refresh.NextRefreshAt == nil || !snapshot.Refresh.NextRefreshAt.Equal(now) {
-		t.Fatalf("snapshot.Refresh.NextRefreshAt = %v, want %v", snapshot.Refresh.NextRefreshAt, now)
+	if snapshot.Refresh.NextRefreshAt != nil {
+		t.Fatalf("snapshot.Refresh.NextRefreshAt = %v before dispatch starts", snapshot.Refresh.NextRefreshAt)
+	}
+	if got := snapshot.Refresh.WithFreshness(now.Add(time.Minute)).ReadinessStatus(); got != telemetry.RefreshStatusInitializing {
+		t.Fatalf("startup Refresh status after maintenance delay = %q, want %q", got, telemetry.RefreshStatusInitializing)
 	}
 	if len(snapshot.Projects) != 1 {
 		t.Fatalf("snapshot.Projects len = %d, want 1", len(snapshot.Projects))

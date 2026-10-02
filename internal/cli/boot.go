@@ -177,6 +177,7 @@ type startRunningDependencies struct {
 	readInstalledBuild    installedBuildReader
 	managerDependencies   project.ManagerDependencies
 	providerStatusManager *statuspage.Manager
+	startupMaintenance    func(context.Context, globalconfig.Config, store.Store)
 }
 
 func startRunning(ctx context.Context, cfg BootConfig) error {
@@ -243,6 +244,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err != nil {
 		return fmt.Errorf("bind Detent web listener %s: %w", serverAddr(cfg), err)
 	}
+	logger.Info("web listener bound", "addr", listener.Addr().String())
 	listenerOwned := true
 	defer func() {
 		if listenerOwned {
@@ -279,47 +281,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			logShutdownBoundaryEnd(logger, "runtime_store_close", closeStarted, nil, "component", "runtime_store")
 		}
 	}()
-	if err := reapWorkerProcesses(runCtx, runtimeStore, logger, "startup", procgroup.DefaultTerminationGrace, time.Now, nil); err != nil {
-		// Prior workers are gone; a workspace artifact scan that cannot finish
-		// on a large tree must not keep this instance from serving.
-		var cleanupOnly *workerArtifactCleanupError
-		if !errors.As(err, &cleanupOnly) {
-			return fmt.Errorf("reap worker processes from prior instance: %w", err)
-		}
-		logger.Warn("prior-instance worker artifact cleanup failed; continuing startup", "error", err)
-	}
-	retentionHomes := map[string]bool{}
-	for _, projectConfig := range cfg.Global.Projects {
-		workflow, err := project.LoadWorkflow(projectConfig)
-		if err != nil {
-			continue
-		} // Project loading reports its own errors below.
-		homes, err := codexRetentionHomes(workflow.Config, os.LookupEnv)
-		if err != nil {
-			logger.Warn("resolve Codex retention homes", "error", err)
-			continue
-		}
-		for _, home := range homes {
-			if retentionHomes[home] {
-				continue
-			}
-			retentionHomes[home] = true
-			if err := pruneCodexTranscripts(runCtx, home, time.Now(), runtimeStore); err != nil {
-				logger.Warn("Codex transcript retention failed", "home", home, "error", err)
-			}
-			if err := pruneCodexLogs(runCtx, home, time.Now(), codexLogSizeLimit, codexAppServerAlive); err != nil {
-				logger.Warn("Codex log retention failed", "home", home, "error", err)
-			}
-		}
-	}
-	if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
-		if err := demofixtures.SeedUsageEvents(runCtx, runtimeStore); err != nil {
-			return err
-		}
-	}
-	if err := backfillRuntimeSessionProjects(runCtx, cfg.Global.Projects, runtimeStore, project.LoadWorkflow); err != nil {
-		return err
-	}
 
 	events := hub.New[project.Event]()
 	activityBroker := activity.NewBroker()
@@ -347,24 +308,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	})
 	var hubScheduling orchestrator.SchedulingSource
 	var manager *project.Manager
-	if cfg.Global.Client.Configured() {
-		hubScheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
-			runtimeConfig: globalConfigState.get,
-			intakeToken:   newRunnerIntakeTokenSource(runtimeGitHubToken.get, refreshGitHubToken),
-			problems: func() []runnerauth.Problem {
-				var problems []runnerauth.Problem
-				if manager != nil {
-					for _, runtimeProject := range manager.Registry().List() {
-						problems = append(problems, runtimeProject.RunnerProblems()...)
-					}
-				}
-				return problems
-			},
-		})
-		if err != nil {
-			return err
-		}
-	}
 	serviceAddress, err := dashboardServiceAddress(listener.Addr())
 	if err != nil {
 		return fmt.Errorf("resolve bound dashboard address: %w", err)
@@ -376,32 +319,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	serviceConnection := serviceapi.Connection{
 		Address: serviceAddress,
 	}
-	projectFactory := withRunnerFactoryWithIsolation(project.Dependencies{
-		Events:             events,
-		Scheduling:         hubScheduling,
-		Logger:             logger,
-		GlobalDispatchGate: globalDispatchGate,
-		DispatchPacer:      dispatchPacer,
-		WorkflowMetrics:    runtimeStore,
-		Efficiency:         runtimeStore,
-		WorkAttempts:       runtimeStore,
-		ProgressSpend:      runtimeStore,
-		AgentResume:        runtimeStore,
-		ValidatorMemo:      runtimeStore,
-		StalenessWarnings:  stalenessAcknowledgements,
-		RetroStore:         runtimeStore,
-		RoutineStore:       runtimeStore,
-		AdmissionStore:     runtimeStore,
-		ScheduleRuns:       runtimeStore,
-		Activity:           activityBroker,
-		GitHubToken:        runtimeGitHubToken.get(),
-		RefreshGitHubToken: refreshGitHubToken,
-		ScheduleOwner:      cfg.Global.InstanceName,
-		ConnectorFactory:   cfg.ConnectorFactory,
-		Runner:             cfg.Runner,
-	}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), runtimeGitHubToken.get)
+	var projectFactory project.Factory
 	managerDependencies := deps.managerDependencies
-	managerDependencies.ProjectFactory = projectFactory
+	managerDependencies.ProjectFactory = func(selected globalconfig.Project) (*project.Project, error) {
+		return projectFactory(selected)
+	}
 	managerDependencies.Events = events
 	managerDependencies.Logger = logger
 	manager, err = project.NewManager(managerConfig, managerDependencies)
@@ -484,15 +406,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return err
 		}
 	}
-	cachedSnapshot, cached, loadErr := boardSnapshotStore.Load(runCtx)
-	if loadErr != nil {
-		logger.Warn("load board snapshot failed", "error", loadErr)
-	}
-	if cached {
-		if err := stalenessAcknowledgements.Publish(cachedSnapshot); err != nil {
-			return fmt.Errorf("publish cached board snapshot: %w", err)
-		}
-	} else if err := publishStartupSnapshotOnce(runCtx, cfg.Global, stalenessAcknowledgements, runtimeStore, displayURL, time.Now(), updateScheduler); err != nil {
+	if err := publishStartupSnapshotOnce(runCtx, cfg.Global, stalenessAcknowledgements, nil, displayURL, time.Now(), updateScheduler); err != nil {
 		return err
 	}
 	chatProvider := buildChatProvider(manager.Registry(), logger)
@@ -507,48 +421,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	readInstalledBuild := deps.readInstalledBuild
 	if readInstalledBuild == nil {
 		readInstalledBuild = newInstalledExecutableBuildReader(os.Executable, defaultCommandRunner)
-	}
-	resourceWorkers.Go(func() {
-		runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
-	})
-	if windowStatus != nil {
-		resourceWorkers.Go(func() {
-			runTmuxWindowStatus(runCtx, snapshotHub, windowStatus, defaultSnapshotInterval, logger)
-		})
-	}
-	resourceWorkers.Go(func() {
-		providerStatus.Run(runCtx, func() []statuspage.Source {
-			return providerStatusSources(manager.Registry())
-		}, func() []telemetry.TrackerCondition {
-			snapshot, ok := snapshotHub.Latest()
-			if !ok {
-				return nil
-			}
-			return append([]telemetry.TrackerCondition(nil), snapshot.TrackerUnavailable...)
-		}, time.Now)
-	})
-	resourceWorkers.Go(func() {
-		var runnerHeartbeat runnerHeartbeatSource
-		if reporter, ok := hubScheduling.(runnerHeartbeatSource); ok {
-			runnerHeartbeat = reporter
-		}
-		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, runnerHeartbeat, updateScheduler)
-	})
-	if healthNotifications.Enabled() {
-		resourceWorkers.Go(func() {
-			healthNotifications.Run(runCtx, snapshotHub, manager.Registry().Health)
-		})
-	}
-	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger) // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
-	resourceWorkers.Go(func() {
-		persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
-	})
-	// The workspace lane claims detent:workspace items beside dispatch
-	// (decisions section 18.1). It is waited on with the other long-lived
-	// components: a runner that exited without unbinding would leave every
-	// workspace it held to time out unreachable.
-	for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, logger) {
-		resourceWorkers.Go(func() { runWorkspaceLane(runCtx, workspaceLane, logger) })
 	}
 	startupLifecycle := web.NewStartupLifecycle()
 	var fleetSource web.RunnerFleet
@@ -612,10 +484,128 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		return applyGlobalRuntimeConfig(globalDispatchGate, runtimeStore, reloadLogLevel, reloaded)
 	}
 	startProjects := func(ctx context.Context) error {
+		if err := awaitStartupServer(ctx, startupServerURL(listener.Addr()), cfg.Build); err != nil {
+			return fmt.Errorf("verify startup listener: %w", err)
+		}
+		logger.Info("web server responding", "addr", listener.Addr().String(), "lifecycle", startupLifecycle.State())
+		if err := reapWorkerProcesses(ctx, runtimeStore, logger, "startup", procgroup.DefaultTerminationGrace, time.Now, nil); err != nil {
+			var cleanupOnly *workerArtifactCleanupError
+			if !errors.As(err, &cleanupOnly) {
+				return fmt.Errorf("reap worker processes from prior instance: %w", err)
+			}
+			logger.Warn("prior-instance worker artifact cleanup failed; continuing startup", "error", err)
+		}
+		maintenance := deps.startupMaintenance
+		if maintenance == nil {
+			maintenance = maintainStartupCodexArtifacts
+		}
+		maintenance(ctx, cfg.Global, runtimeStore)
+		if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
+			if err := demofixtures.SeedUsageEvents(ctx, runtimeStore); err != nil {
+				return err
+			}
+		}
+		if err := backfillRuntimeSessionProjects(ctx, cfg.Global.Projects, runtimeStore, project.LoadWorkflow); err != nil {
+			return err
+		}
+		observationsStarted := time.Now()
+		logger.Info("runner setup observations started")
+		if cfg.Global.Client.Configured() {
+			hubScheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
+				runtimeConfig: globalConfigState.get,
+				intakeToken:   newRunnerIntakeTokenSource(runtimeGitHubToken.get, refreshGitHubToken),
+				problems: func() []runnerauth.Problem {
+					var problems []runnerauth.Problem
+					if manager != nil {
+						for _, runtimeProject := range manager.Registry().List() {
+							problems = append(problems, runtimeProject.RunnerProblems()...)
+						}
+					}
+					return problems
+				},
+			})
+			if err != nil {
+				return err
+			}
+		}
+		logger.Info("runner setup observations completed", "duration", time.Since(observationsStarted))
+		projectFactory = withRunnerFactoryWithIsolation(project.Dependencies{
+			Events:             events,
+			Scheduling:         hubScheduling,
+			Logger:             logger,
+			GlobalDispatchGate: globalDispatchGate,
+			DispatchPacer:      dispatchPacer,
+			WorkflowMetrics:    runtimeStore,
+			Efficiency:         runtimeStore,
+			WorkAttempts:       runtimeStore,
+			ProgressSpend:      runtimeStore,
+			AgentResume:        runtimeStore,
+			ValidatorMemo:      runtimeStore,
+			StalenessWarnings:  stalenessAcknowledgements,
+			RetroStore:         runtimeStore,
+			RoutineStore:       runtimeStore,
+			AdmissionStore:     runtimeStore,
+			ScheduleRuns:       runtimeStore,
+			Activity:           activityBroker,
+			GitHubToken:        runtimeGitHubToken.get(),
+			RefreshGitHubToken: refreshGitHubToken,
+			ScheduleOwner:      cfg.Global.InstanceName,
+			ConnectorFactory:   cfg.ConnectorFactory,
+			Runner:             cfg.Runner,
+		}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), runtimeGitHubToken.get)
+		cachedSnapshot, cached, loadErr := boardSnapshotStore.Load(ctx)
+		if loadErr != nil {
+			logger.Warn("load board snapshot failed", "error", loadErr)
+		}
+		if cached {
+			if err := stalenessAcknowledgements.Publish(cachedSnapshot); err != nil {
+				return fmt.Errorf("publish cached board snapshot: %w", err)
+			}
+		}
+		resourceWorkers.Go(func() {
+			runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
+		})
+		if windowStatus != nil {
+			resourceWorkers.Go(func() {
+				runTmuxWindowStatus(runCtx, snapshotHub, windowStatus, defaultSnapshotInterval, logger)
+			})
+		}
+		resourceWorkers.Go(func() {
+			providerStatus.Run(runCtx, func() []statuspage.Source {
+				return providerStatusSources(manager.Registry())
+			}, func() []telemetry.TrackerCondition {
+				snapshot, ok := snapshotHub.Latest()
+				if !ok {
+					return nil
+				}
+				return append([]telemetry.TrackerCondition(nil), snapshot.TrackerUnavailable...)
+			}, time.Now)
+		})
+		resourceWorkers.Go(func() {
+			var runnerHeartbeat runnerHeartbeatSource
+			if reporter, ok := hubScheduling.(runnerHeartbeatSource); ok {
+				runnerHeartbeat = reporter
+			}
+			publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, stalenessAcknowledgements, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, providerStatus, defaultSnapshotInterval, deps.snapshotNow, runnerHeartbeat, updateScheduler)
+		})
+		if healthNotifications.Enabled() {
+			resourceWorkers.Go(func() {
+				healthNotifications.Run(runCtx, snapshotHub, manager.Registry().Health)
+			})
+		}
+		resourceWorkers.Go(func() {
+			republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
+		})
+		resourceWorkers.Go(func() {
+			persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
+		})
+		for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, logger) {
+			resourceWorkers.Go(func() { runWorkspaceLane(runCtx, workspaceLane, logger) })
+		}
 		if err := manager.Start(ctx); err != nil {
 			return err
 		}
-		go updateScheduler.Run(ctx)
+		resourceWorkers.Go(func() { updateScheduler.Run(ctx) })
 		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload)
 		credentialWatcherDone := startBackendCredentialWatchers(ctx, manager.Registry(), events, logger)
 		resourceWorkers.Go(func() {
@@ -671,9 +661,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	readiness := startupReadiness{}
 	if cfg.StartupRecovery != nil {
-		readiness.AwaitServe = func(ctx context.Context) error {
-			return awaitStartupServer(ctx, startupServerURL(listener.Addr()), cfg.Build)
-		}
 		readiness.MarkHealthy = cfg.StartupRecovery.MarkHealthy
 	}
 
@@ -734,6 +721,34 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return serve(ctx, server, listener)
 		})
 	})
+}
+
+func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config, runtimeStore store.Store) {
+	logger := slog.Default()
+	retentionHomes := map[string]bool{}
+	for _, projectConfig := range cfg.Projects {
+		workflow, err := project.LoadWorkflow(projectConfig)
+		if err != nil {
+			continue
+		}
+		homes, err := codexRetentionHomes(workflow.Config, os.LookupEnv)
+		if err != nil {
+			logger.Warn("resolve Codex retention homes", "error", err)
+			continue
+		}
+		for _, home := range homes {
+			if retentionHomes[home] {
+				continue
+			}
+			retentionHomes[home] = true
+			if err := pruneCodexTranscripts(ctx, home, time.Now(), runtimeStore); err != nil {
+				logger.Warn("Codex transcript retention failed", "home", home, "error", err)
+			}
+			if err := pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, codexAppServerAlive); err != nil {
+				logger.Warn("Codex log retention failed", "home", home, "error", err)
+			}
+		}
+	}
 }
 
 func newHealthNotificationManager(cfg globalconfig.Config, stateStore store.HealthNotificationStateStore, logger *slog.Logger) (*healthnotify.Manager, error) {
@@ -1022,6 +1037,7 @@ func runStartupAndServe(
 					}
 				}
 				completeStartupLifecycle(lifecycle, nil)
+				slog.Info("runner startup ready")
 				healthyMarked = true
 				result = <-results
 			}
