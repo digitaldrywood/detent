@@ -1386,6 +1386,33 @@ source-only replay instructions are checked before privileged continuation.
 Sandbox metadata roots grant only the assigned branch's ref, reflog and lock
 files, plus the existing worktree metadata and objects; they never grant branch
 parent directories, sibling ref writes or the common Git directory.
+
+Late host replay conflicts (#163) share the existing successful dirty-source
+continuation under INV-1, INV-2 and INV-3. A successful model turn may leave
+staged preserved work that delays rebase preparation until the host commits it.
+A conflict introduced by that preparation, or by continuing a resolved replay
+into the next commit, preserves a successful native attempt and its dirty
+checkpoint. The claim owner's existing already-answered predicate no longer
+suppresses successful attempts with dirty checkpoints, so ordinary continuation
+can claim the source-resolution session without a lane move, new dispatch request,
+reason code or retry owner. Conflicts still unresolved when host finalization
+begins remain genuine source failures and consume the existing failure allowance.
+Native work without a forge PR uses existing workspace-diff progress accounting;
+unpublished replay commits cannot establish stranded forge work. Repeated unchanged
+diffs retain their existing no-progress accounting and configured budget controls.
+Immutable artifact capture requires a clean or unpushed recovery checkpoint;
+paused rebase indexes are excluded from attempt diff capture. Dirty native success
+publishes no Change version, does not inherit review and establishes no landing.
+`TestNativeReworkFinalizesBeforeImmutableEvidence` reproduces staged work,
+late conflict and successive replay conflicts, including preserved resolved
+progress. `TestNativeChangeRunCompletion` verifies durable progress metadata,
+ordinary continuation and genuine failure-allowance consequences.
+`TestClaimCandidatesKeepOfferingUnsuccessfulAttempts` retains clean-success
+suppression and checks dirty-success claim eligibility.
+`TestNativeRunnerOpensChangeAndLeavesDispatch` verifies the authentic successful
+dirty receipt, unchanged prior version and feedback, subsequent resolution,
+exact-head/version/policy publication and actual local-transport landing.
+
 `TestLocalGitNativeReworkOwnsPausedRebase`,
 `TestNativeReworkFinalizesBeforeImmutableEvidence` and
 `TestGitMetadataWritableRootsForLinkedWorktree` cover these boundaries. The source

@@ -555,16 +555,6 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 // succeeded against the item as it stands, for an issue query that aliases the
 // issues table as i.
 //
-// The item is offered again whenever any of the three is true, so the only
-// case this suppresses is the re-dispatch loop itself:
-//
-//   - the latest attempt did not succeed;
-//   - the item has moved on since that attempt: an edit, a comment or a
-//     workflow move bumps issues.revision;
-//   - somebody asked for another attempt: issues.dispatch_generation is ahead
-//     of the generation the attempt started under, which is how a conversation
-//     continuation, which bumps no revision, is honored.
-//
 // The latest attempt is the one with the highest fencing token. It applies to
 // native projects only: on a github_compatible project the issues row is a
 // projection whose writes never bump revision, so the clause would strand an
@@ -574,6 +564,7 @@ const notAlreadyAnsweredClause = `(p.profile <> 'native' OR NOT EXISTS (SELECT 1
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
    AND answered.status = 'succeeded'
+   AND COALESCE(json_extract(answered.checkpoint_json, '$.worktree_state'), '') <> 'dirty'
    AND answered.work_item_revision >= i.revision
    AND answered.dispatch_generation >= i.dispatch_generation
    AND answered.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest

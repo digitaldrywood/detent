@@ -67,6 +67,11 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 		}
 		return FileDiffs{}, fmt.Errorf("stat workspace path: %w", err)
 	}
+	if paused, err := rebaseInProgress(ctx, workspacePath); err != nil {
+		return FileDiffs{}, err
+	} else if paused {
+		return FileDiffs{}, fmt.Errorf("%w: attempt diff has a paused rebase", ErrMergeResolutionInvalid)
+	}
 	indexPath, err := gitIndexPath(ctx, workspacePath)
 	if err != nil {
 		return FileDiffs{}, err
