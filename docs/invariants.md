@@ -230,8 +230,14 @@ lane totals and a bounded open selection independent of the inventory cursor
 membership alone never establishes a running worker. Compact items omit issue
 bodies and linked-source snapshots. The existing project/filter/archive scope,
 grants, opaque cursor binding, cancellation and 24-item client enrichment budget
-remain authoritative. Search, sorting and multi-value filters remain local to
-loaded items; terminal counts describe inventory, not shipment.
+remain authoritative. Search over titles, identifiers and labels and OR selections
+within each filter dimension are authoritative across the selected authorized
+projects (native #181). Items and lane totals use the same complete filter scope. Transport cursors stay internal
+to loading more matching results on the same Board/List; no global history page
+controls remain. Filter changes cancel obsolete reads and reset continuation;
+activity refresh reads a bounded current selection rather than replaying history.
+Sorting and filter-choice discovery remain local to loaded items; terminal counts
+describe inventory, not shipment.
 `TestNativeWorkPageOperationalScope` and the conversation Work pagination fixture
 cover scoped totals, expired leases, bounded reads and persistent operational
 visibility across inventory pages, including refused and stale reads.

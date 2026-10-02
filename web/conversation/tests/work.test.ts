@@ -1,7 +1,7 @@
 // The work API client, against the mock hub.
 //
 // These are the rules that are easy to get wrong and expensive to get wrong
-// late: the revision is a string, a filter may not repeat, a cursor is opaque,
+// late: the revision is a string, filters preserve every selected value, a cursor is opaque,
 // and a refused move is a `409` whose body — in hosted mode — cannot tell the
 // client what the current revision is.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -13,7 +13,6 @@ import { boardStats, searchItems, sortItems } from "../src/app/work/lib/model.ts
 import { moveItem } from "../src/app/work/lib/useWork.ts";
 import {
   makeWorkHttp,
-  serverFilter,
   WorkApiError,
   type WorkHttp,
 } from "../src/app/work/lib/workHttp.ts";
@@ -90,16 +89,11 @@ describe("listing work items", () => {
     expect(page.items.every((issue) => issue.state === "In Review")).toBe(true);
   });
 
-  it("never sends two values for one filter, because the hub refuses them", async () => {
-    expect(serverFilter([])).toBeUndefined();
-    expect(serverFilter(["Todo"])).toBe("Todo");
-    expect(serverFilter(["Todo", "Blocked"])).toBeUndefined();
-
-    // Proof the refusal is real, and not an assumption this client makes.
-    const direct = await fetch(
-      `${hub.url}/api/v2/organizations/org_mock/projects/${PROJECT}/work-items?state=Todo&state=Blocked`,
-    );
-    expect(direct.status).toBe(422);
+  it("sends multiple state selections to the scoped API", async () => {
+    const page = await http.listWorkItems({ projectId: PROJECT, state: ["Todo", "In Review"], includeWork: true });
+    expect(page.work).toBeDefined();
+    expect(page.items.length).toBeGreaterThan(0);
+    expect(new Set(page.items.map((issue) => issue.state))).toEqual(new Set(["Todo", "In Review"]));
   });
 
   it("carries the revision as a string, not a number", async () => {

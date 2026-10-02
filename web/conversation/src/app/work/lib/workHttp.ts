@@ -130,24 +130,14 @@ export interface WorkHttpOptions {
   readonly fetch?: FetchLike;
 }
 
-/**
- * The hub's list filters are strictly single-valued: `validateNativeQuery`
- * rejects a repeated parameter with `422`. A multi-select filter therefore
- * pushes exactly one value to the server and the rest are applied to what came
- * back; `serverFilter` is where that decision is made, in one place, so no
- * call site can accidentally send two.
- */
-export function serverFilter(values: readonly string[]): string | undefined {
-  return values.length === 1 ? values[0] : undefined;
-}
-
 export interface ListWorkItemsInput {
   readonly signal?: AbortSignal;
   readonly projectId: string;
-  readonly state?: string | undefined;
-  readonly label?: string | undefined;
-  readonly assignee?: string | undefined;
-  readonly priority?: string | undefined;
+  readonly state?: string | readonly string[] | undefined;
+  readonly label?: string | readonly string[] | undefined;
+  readonly assignee?: string | readonly string[] | undefined;
+  readonly priority?: string | readonly string[] | undefined;
+  readonly q?: string;
   readonly cursor?: string | undefined;
   readonly limit?: number | undefined;
   /** Coordinator work items are excluded unless this is on. */
@@ -445,11 +435,11 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   const actionBase = (projectId: string, actionId: string) =>
     `${projectBase(projectId)}/actions/${encodeURIComponent(actionId)}`;
 
-  const url = (path: string, query?: Record<string, string | number | boolean | undefined>) => {
+  const url = (path: string, query?: Record<string, string | readonly string[] | number | boolean | undefined>) => {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(query ?? {})) {
       if (value === undefined) continue;
-      search.set(key, String(value));
+      for (const entry of Array.isArray(value) ? value : [value]) search.append(key, String(entry));
     }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `${options.origin}${path}${suffix}`;
@@ -548,6 +538,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         WorkItemPage,
         "GET",
         url(`${projectBase(input.projectId)}/work-items`, {
+          q: input.q?.trim() || undefined,
           state: input.state,
           archived: input.archived === true ? "true" : undefined,
           label: input.label,

@@ -114,6 +114,21 @@ func validateNativeQuery(params url.Values, fields ...string) error {
 	return nil
 }
 
+func validateNativeIssueQuery(params url.Values) error {
+	single := url.Values{}
+	for key, values := range params {
+		switch key {
+		case "state", "label", "assignee", "priority":
+			if len(values) > 32 || len(strings.Join(values, "\x00")) > 4096 {
+				return nativeInvalid("Query contains an unsupported field or value")
+			}
+		default:
+			single[key] = values
+		}
+	}
+	return validateNativeQuery(single, "include", "archived", "q")
+}
+
 // parseNativeIssueIncludes reads the include query and reports whether it asks
 // for workspace items. Unknown members are refused rather than ignored so a
 // client typo is visible.
@@ -146,7 +161,7 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items"
 
-	if err := validateNativeQuery(params, "state", "label", "assignee", "priority", "include", "archived", "q"); err != nil {
+	if err := validateNativeIssueQuery(params); err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
 	includeWorkspace, err := parseNativeIssueIncludes(params.Get("include"))
@@ -176,27 +191,37 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		// fill with one card per opened Files panel.
 		query += " AND " + notWorkspaceItemClause
 	}
-	var clauses []string
 	for _, filter := range []struct{ name, clause string }{
 		{"state", "ws.detent_state = ?"},
 		{"label", "EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE value = ?)"},
 		{"assignee", "EXISTS (SELECT 1 FROM json_each(i.assignees_json) WHERE value = ?)"},
 		{"priority", "EXISTS (SELECT 1 FROM queue_entries q WHERE q.issue_id = i.id AND q.priority_override = ?)"},
 	} {
-		if value := params.Get(filter.name); value != "" {
-			clauses = append(clauses, filter.clause)
+		var alternatives []string
+		for _, value := range params[filter.name] {
+			if value == "" {
+				continue
+			}
+			alternatives = append(alternatives, filter.clause)
 			args = append(args, value)
 		}
+		if len(alternatives) > 0 {
+			query += " AND (" + strings.Join(alternatives, " OR ") + ")"
+		}
 	}
-	if len(clauses) > 0 {
-		query += " AND " + strings.Join(clauses, " AND ")
-	}
-	if value := params.Get("q"); value != "" {
-		query += " AND instr(lower(i.title || ' ' || i.body), lower(?)) > 0"
-		args = append(args, value)
+	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
+	if value := strings.TrimSpace(params.Get("q")); value != "" {
+		text := "i.title"
+		if !workIncluded {
+			text += " || ' ' || i.body"
+		}
+		query += " AND (instr(lower(" + text + "), lower(?)) > 0" +
+			" OR instr(lower((SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number), lower(?)) > 0" +
+			" OR instr(lower(i.project_id || '#' || i.number), lower(?)) > 0" +
+			" OR EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE instr(lower(value), lower(?)) > 0))"
+		args = append(args, value, value, value, value)
 	}
 
-	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
 	var work *tracker.NativeWorkSummary
 	if workIncluded {
 		work, err = readNativeWorkSummary(ctx, s.database.db, scope, query, args, limit, s.config.now())
