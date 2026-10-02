@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
@@ -11,10 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/policy"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -39,6 +44,7 @@ func TestHubSchedulingCycle(t *testing.T) {
 		restPause   bool
 		expired     bool
 		gitLanding  bool
+		interrupted bool
 		mergeOnly   bool
 		slots       int
 		batchSize   int
@@ -56,6 +62,7 @@ func TestHubSchedulingCycle(t *testing.T) {
 		{name: "unselected batch claims are released", slots: 2, batchSize: 6, wantRunning: true},
 		{name: "full capacity refreshes stay healthy", native: true, empty: true, repeats: 4},
 		{name: "partial capacity batch stays healthy", slots: 6, batchSize: 2, wantRunning: true, repeats: 4},
+		{name: "native interrupted Code claim without local retry", native: true, interrupted: true, wantRunning: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -87,6 +94,12 @@ func TestHubSchedulingCycle(t *testing.T) {
 				}
 			}
 			runner := &hubSchedulingRunner{started: make(chan struct{}, 1)}
+			if test.interrupted {
+				selected.State = "In Progress"
+				scheduling.issues = []connector.Issue{selected}
+				scheduling.execution = &nativeLandingJourneyExecution{}
+				runner.requests = make(chan RunRequest, 1)
+			}
 			cfg := normalizeConfig(Config{
 				PollInterval: 30 * time.Second, MaxConcurrentAgents: max(1, test.slots),
 				DispatchPriorityByState: []string{"Merging", "Rework", "Todo"}, DispatchPriorityByLabel: []string{"hotfix", "bug"}, PrioritizeUnblockers: true, TerminalStates: []string{"Done"},
@@ -94,6 +107,9 @@ func TestHubSchedulingCycle(t *testing.T) {
 			})
 			if test.native {
 				cfg.Policy = policy.Descriptor{Gates: policy.Gates{GitHubPullRequest: !test.gitLanding}}
+			}
+			if test.interrupted {
+				cfg.ActiveStates = []string{"Todo", "In Progress", "Merging"}
 			}
 			if test.mergeOnly {
 				cfg.ActiveStates = []string{"Merging"}
@@ -127,6 +143,16 @@ func TestHubSchedulingCycle(t *testing.T) {
 			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 
 			orch.tick(t.Context(), &state, now)
+			if test.interrupted {
+				select {
+				case admitted := <-runner.requests:
+					if admitted.Execution != scheduling.execution || admitted.RetryMode != "" || admitted.ResumeState != (store.AgentResumeState{}) || admitted.Issue.ID != selected.ID {
+						t.Fatalf("native claim lost recovery owner or seeded local continuation: %+v", admitted)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("interrupted Code did not reach its native execution owner")
+				}
+			}
 			request := scheduling.request
 			if candidates, ids := trackerBackend.candidateReads.Load(), trackerBackend.idReads.Load(); candidates != 0 || ids != 0 {
 				t.Fatalf("scheduling-time connector reads = candidates %d ids %d, want zero", candidates, ids)
@@ -194,6 +220,159 @@ func TestHubSchedulingCycle(t *testing.T) {
 	}
 }
 
+func TestHubSchedulingPreservesOverloadRetryAcrossAdmissions(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		empty         bool
+		unobserved    bool
+		statusError   error
+		observedState string
+		closed        bool
+		unauthorized  bool
+		wantReleased  bool
+		nonNative     bool
+	}{
+		{name: "unrelated newly leased work"},
+		{name: "non-native bounded admission", nonNative: true},
+		{name: "healthy empty host capacity batch", empty: true},
+		{name: "missing status is not invalidation", empty: true, unobserved: true},
+		{name: "failed status read is not invalidation", empty: true, statusError: errors.New("status unavailable")},
+		{name: "terminal observation", empty: true, observedState: "Done", wantReleased: true},
+		{name: "closed observation", empty: true, closed: true, wantReleased: true},
+		{name: "deliberately stopped observation", empty: true, observedState: "Human Review", wantReleased: true},
+		{name: "authorization invalidation", empty: true, unauthorized: true, wantReleased: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			now := time.Date(2026, 10, 2, 14, 4, 18, 0, time.UTC)
+			issue := dispatchTestIssue("wi_181", "In Progress")
+			issue.Identifier = "native#181"
+			issue.Priority = new(1)
+			issue.Labels = []string{"authorized"}
+			issue.Fields["detent_hub_work_item_id"] = issue.ID
+			ordinary := dispatchTestIssue("wi_177", "Todo")
+			ordinary.Priority = new(3)
+			ordinary.Labels = []string{"authorized"}
+			ordinary.Fields["detent_hub_work_item_id"] = ordinary.ID
+			observed := cloneIssue(issue)
+			if test.observedState != "" {
+				observed.State = test.observedState
+			}
+			observed.Closed = test.closed
+			if test.unauthorized {
+				observed.Labels = nil
+			}
+			tracker := &hubSchedulingConnector{statuses: []connector.Issue{observed}, statusError: test.statusError}
+			if test.unobserved {
+				tracker.statuses = nil
+			}
+			source := &hubSchedulingSource{issues: []connector.Issue{ordinary}}
+			if test.empty {
+				source.issues = []connector.Issue{}
+			}
+			runner := &hubSchedulingRunner{requests: make(chan RunRequest, 2)}
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1, PollInterval: 30 * time.Second, OverloadRetryDelay: 45 * time.Second,
+				ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done", "Cancelled"},
+				ObservedStates: []string{"In Progress", "Done", "Human Review"},
+				Authorization:  selector.Selector{Labels: selector.Labels{Include: []string{"authorized"}}},
+				Project:        schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets",
+				Policy: policy.Descriptor{ID: "original-policy"},
+			})
+			var backend connector.Connector = &nativeHubSchedulingConnector{tracker}
+			if test.nonNative {
+				backend = tracker
+			}
+			o, err := New(cfg, Dependencies{Connector: backend, Scheduling: source, Runner: runner, Now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := newState(o.cfg)
+			t.Cleanup(func() {
+				for id := range state.Running {
+					o.cancelRunning(&state, id)
+				}
+			})
+			state.Running[issue.ID] = Running{Issue: issue, Mode: runpkg.RunModeImplement, Attempt: 7, TurnCount: 1, StartedAt: now.Add(-time.Minute)}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+			o.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID: issue.ID, Request: RunRequest{Issue: issue, Attempt: 7}, CompletedAt: now,
+				Err:       backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("selected model at capacity")),
+				Retryable: true, RetryAttempt: 7, RetryDelay: 45 * time.Second,
+			})
+			retry, exists := state.Retry[issue.ID]
+			if !exists || retry.Attempt != 7 || retry.Error != "transient_overload" {
+				t.Fatalf("overload retry = %+v, exists=%t", retry, exists)
+			}
+			retry.RecoveryAttemptID = 294
+			retry.RetryMode = runpkg.RetryModeResume
+			retry.ResumeState = store.AgentResumeState{DetentSessionID: 181, ProviderSessionID: "original-provider-session", ProviderThreadID: "original-thread", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
+			state.Retry[issue.ID] = retry
+			claim, hadClaim := state.Claimed[issue.ID]
+			now = retry.DueAt.Add(time.Minute)
+			preview := state.clone()
+			previewRetry, previewClaim := preview.Retry[issue.ID], preview.Claimed[issue.ID]
+			o.dispatchPlanner().plan(&preview, source.issues, now, dispatchPlanHooks{})
+			if !reflect.DeepEqual(preview.Retry[issue.ID], previewRetry) || !reflect.DeepEqual(preview.Claimed[issue.ID], previewClaim) {
+				t.Error("bounded admission planning discarded retry or continuation ownership")
+			}
+			o.tick(t.Context(), &state, now)
+			_, retained := state.Retry[issue.ID]
+			_, claimed := state.Claimed[issue.ID]
+			if retained == test.wantReleased || claimed != (hadClaim && !test.wantReleased) {
+				t.Fatalf("retry retained=%t claimed=%t, want released=%t", retained, claimed, test.wantReleased)
+			}
+			if len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 || len(state.BackendOutages) != 0 {
+				t.Fatal("provider overload spent issue failure allowance or created a backend outage")
+			}
+			if test.wantReleased {
+				return
+			}
+			if !reflect.DeepEqual(state.Retry[issue.ID], retry) || !reflect.DeepEqual(state.Claimed[issue.ID], claim) {
+				t.Fatal("tick cleanup changed retained retry or exact continuation")
+			}
+			if sourceHealth := state.RefreshSources[telemetry.RefreshSourceCandidates]; sourceHealth.FailureStreak != 0 || sourceHealth.LastError != "" || state.PollInterval != cfg.PollInterval {
+				t.Fatalf("capacity deferral changed candidate health or cadence: %+v interval=%s", sourceHealth, state.PollInterval)
+			}
+			if !test.empty {
+				o.cancelRunning(&state, ordinary.ID)
+				delete(state.Running, ordinary.ID)
+				delete(state.Claimed, ordinary.ID)
+				select {
+				case <-runner.requests:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
+			source.issues = []connector.Issue{ordinary, issue}
+			o.refillProjectSlots(t.Context(), &state, now)
+			wantAdoptions := 1
+			if !test.empty {
+				wantAdoptions++
+			}
+			if running, ok := state.Running[issue.ID]; !ok || running.Attempt != retry.Attempt || source.adoptions != wantAdoptions {
+				t.Fatalf("retry did not resume through existing claim owner: running=%t attempt=%d adoptions=%d", ok, running.Attempt, source.adoptions)
+			}
+			if !reflect.DeepEqual(source.request.Policy, cfg.Policy) {
+				t.Fatal("retry admission changed the original policy boundary")
+			}
+			if _, running := state.Running[ordinary.ID]; running {
+				t.Fatal("ordinary new work started ahead of eligible urgent retry")
+			}
+			select {
+			case request := <-runner.requests:
+				if request.Issue.ID != issue.ID || request.Attempt != retry.Attempt || request.RetryMode != retry.RetryMode || !reflect.DeepEqual(request.ResumeState, retry.ResumeState) {
+					t.Fatalf("resumed request changed continuation: %+v", request)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		})
+	}
+}
+
 func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	issue := connector.NewIssue()
@@ -228,6 +407,7 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 }
 
 type hubSchedulingSource struct {
+	execution  runpkg.Execution
 	issues     []connector.Issue
 	request    SchedulingRequest
 	issue      connector.Issue
@@ -236,6 +416,8 @@ type hubSchedulingSource struct {
 	adoptions  int
 	releases   int
 }
+
+func (s *hubSchedulingSource) RunExecution(string) runpkg.Execution { return s.execution }
 
 func (s *hubSchedulingSource) HeartbeatInterval() time.Duration {
 	return 30 * time.Second
@@ -285,6 +467,8 @@ func (s *hubSchedulingSource) ReleaseClaim(_ context.Context, _ string, _ string
 }
 
 type hubSchedulingConnector struct {
+	statuses       []connector.Issue
+	statusError    error
 	reads          atomic.Int64
 	candidateReads atomic.Int64
 	stateReads     atomic.Int64
@@ -319,7 +503,7 @@ func (c *hubSchedulingConnector) FetchRefreshIssues(_ context.Context, candidate
 	if candidates != nil {
 		c.candidateReads.Add(1)
 	}
-	return connector.RefreshIssueResult{}
+	return connector.RefreshIssueResult{Statuses: cloneIssues(c.statuses), StatusError: c.statusError}
 }
 
 func (c *hubSchedulingConnector) CreateComment(context.Context, string, string) error {
@@ -343,10 +527,14 @@ func (c *hubSchedulingConnector) SetField(context.Context, string, string, strin
 }
 
 type hubSchedulingRunner struct {
-	started chan struct{}
+	started  chan struct{}
+	requests chan RunRequest
 }
 
-func (r *hubSchedulingRunner) Run(ctx context.Context, _ RunRequest) (RunResult, error) {
+func (r *hubSchedulingRunner) Run(ctx context.Context, request RunRequest) (RunResult, error) {
+	if r.requests != nil {
+		r.requests <- request
+	}
 	select {
 	case r.started <- struct{}{}:
 	default:

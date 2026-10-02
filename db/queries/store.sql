@@ -224,7 +224,7 @@ WHERE id = sqlc.arg(id)
 
 -- Identity subqueries use their own indexes; NOT INDEXED on the outer table
 -- retains INTEGER PRIMARY KEY lookup instead of scanning a project/time index.
--- name: GetLatestCompletedAgentResumeState :one
+-- name: GetLatestAgentResumeState :one
 SELECT
   s.id,
   CAST(COALESCE(s.provider_thread_id, '') AS TEXT) AS provider_thread_id,
@@ -240,10 +240,15 @@ FROM codex_sessions AS s NOT INDEXED
 JOIN work_attempts AS w ON w.id = s.work_attempt_id
 WHERE s.completed_at IS NOT NULL
   AND w.completed_at IS NOT NULL
-  AND lower(trim(COALESCE(s.final_state, ''))) = 'completed'
+  AND (
+    (CAST(sqlc.arg(work_attempt_id) AS INTEGER) = 0 AND lower(trim(COALESCE(s.final_state, ''))) = 'completed')
+    OR (CAST(sqlc.arg(work_attempt_id) AS INTEGER) > 0 AND s.work_attempt_id = CAST(sqlc.arg(work_attempt_id) AS INTEGER)
+      AND lower(trim(COALESCE(s.final_state, ''))) IN ('completed', 'failed'))
+  )
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
   AND s.project_id = sqlc.arg(project_id)
-  AND COALESCE(
+  AND w.project_id = sqlc.arg(project_id)
+  AND (CAST(sqlc.arg(work_attempt_id) AS INTEGER) > 0 OR (COALESCE(
     CASE WHEN json_valid(w.worker_metadata_json)
       THEN CAST(json_extract(w.worker_metadata_json, '$.pr_number') AS INTEGER)
       ELSE NULL
@@ -258,7 +263,7 @@ WHERE s.completed_at IS NOT NULL
   AND CASE WHEN json_valid(w.worker_metadata_json)
     THEN CAST(COALESCE(json_extract(w.worker_metadata_json, '$.pr_base_sha'), '') AS TEXT)
     ELSE ''
-  END = sqlc.arg(pr_base_sha)
+  END = sqlc.arg(pr_base_sha)))
   AND COALESCE(s.agent_backend_id, '') = sqlc.arg(agent_backend_id)
   AND COALESCE(s.agent_backend_kind, '') = sqlc.arg(agent_backend_kind)
   AND COALESCE(s.agent_role, '') = sqlc.arg(agent_role)

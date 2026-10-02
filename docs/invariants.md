@@ -1382,6 +1382,23 @@ Production downtime and active-run acceptance remain with the deployment/release
 the [Hub upgrade procedure](hub-self-hosting.md#upgrade-interruption-and-compatibility).
 No restart grace period, lease state, outbox or recovery owner is added.
 
+Bounded native admission (#190) consolidates due-retry disposal under the existing
+dispatch planner. Planning, refill and tick cleanup no longer treat a newly
+leased batch as complete tracker membership. Current closed, terminal, inactive
+and authorization observations retain disposal authority; empty capacity batches
+and missing or failed status observations do not. The existing native claim's
+interrupted `resume_session` checkpoint also selects its exact persisted local
+attempt through the existing session lookup, including overload-ended failed
+Code sessions without a PR or experimental automatic resume. Native recovery
+verifies policy, configured runtime identity, provider availability, host, head
+and workspace digest before continuing. Native continuation no longer shares
+the generic fresh-session fallback; unavailable or changed continuation remains
+with the existing recovery-required outcome. Failed native turns retain their
+checkpoint workspace. No retry loop, recovery path or reservation is added.
+`TestHubSchedulingPreservesOverloadRetryAcrossAdmissions` covers bounded omission
+and authentic invalidation; `TestNativeInterruptedCodeRecoversPersistedSession`
+covers already-lost local retry ownership with clean and dirty workspaces.
+
 Worker cleanup (#169) removes Darwin polling of unreadable unknown same-user
 process environments. A single inspection cannot establish ownership from an
 error; unknown candidates are never signaled. Existing authenticated process
@@ -3664,6 +3681,20 @@ Normal typed provider, runner and host capacity refusals terminate both empty
 and partial batches successfully (#183). They acquire no rejected work and
 leave candidate refresh health and configured cadence with their existing
 owners, without scheduling-unavailable failure streaks or exponential delay.
+Due provider retries omitted from these batches retain their exact attempt and
+continuation through planning and final tick cleanup (#190; INV-2/INV-3).
+Authorized current status and lane-transition observations dispose genuinely
+invalid retries; admission absence supplies no such authority. Complete tracker
+fetches retain their existing missing-item semantics. Capacity reopening resumes
+through normal claim adoption and configured priority, so eligible urgent retries
+remain ahead of ordinary new work. `TestHubSchedulingPreservesOverloadRetryAcrossAdmissions`
+asserts those boundaries alongside the existing admission and Merging-slot tests.
+Already-lost local retries require no queue reconstruction: normal native claim
+hydration supplies recovery authority to the runner. Its exact prior local
+attempt selects the established provider session and runtime before current
+default selection, preserving policy and checkpoint verification. Completed
+PR-scoped automatic resume retains its existing eligibility rules. Failed
+session lookup cannot cross project, issue, attempt, backend, model or role.
 Policy, authorization, operator draining and protocol failures retain their
 error and lease-release owners. Provider quota/reset waits remain authoritative.
 The existing preview evaluates local readiness before claim within that shared

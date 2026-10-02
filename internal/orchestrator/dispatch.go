@@ -25,6 +25,7 @@ import (
 func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 	planner := newDispatchPlanner(o.cfg)
 	planner.nativeWorkflow = o.nativeWorkflow()
+	planner.boundedAdmission = o.scheduling != nil
 	return planner
 }
 
@@ -167,9 +168,9 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		o.cancelPendingGlobalDispatches()
 		return
 	}
+	rankingIssues := issues
 	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
 	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
-	rankingIssues := issues
 	issues = o.prepareDispatchCandidates(ctx, state, issues, now)
 	blockerCache := make(map[string]dependencyBlocker)
 	planner := o.liveDispatchPlanner(ctx, blockerCache)

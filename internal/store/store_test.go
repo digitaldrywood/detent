@@ -1668,13 +1668,18 @@ func TestDailyTokenSpendIsScopedToProject(t *testing.T) {
 	}
 }
 
-func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
+func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	backend := openTestStore(t, ctx)
 	startedAt := time.Date(2026, 7, 2, 17, 0, 0, 0, time.UTC)
+	failedAttemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "detent", IssueID: "issue-859", WorkerType: "agent", StartedAt: startedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
 	failedID, err := backend.StartSession(ctx, SessionStart{
+		WorkAttemptID:    failedAttemptID,
 		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
@@ -1697,6 +1702,38 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		ProviderSessionID: "session-failed",
 	}); err != nil {
 		t.Fatalf("FinishSession(failed) error = %v", err)
+	}
+	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: failedAttemptID, CompletedAt: startedAt.Add(time.Minute), Status: WorkAttemptStatusTerminal, TerminalState: WorkAttemptTerminalFailure}); err != nil {
+		t.Fatal(err)
+	}
+	failedLookup := AgentResumeLookup{WorkAttemptID: failedAttemptID, ProjectID: "detent", IssueID: "issue-859", RequestedModel: "gpt-5-codex", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
+	for _, test := range []struct {
+		name  string
+		edit  func(*AgentResumeLookup)
+		found bool
+	}{
+		{name: "exact failed attempt without PR", found: true},
+		{name: "wrong project", edit: func(lookup *AgentResumeLookup) { lookup.ProjectID = "other" }},
+		{name: "wrong issue", edit: func(lookup *AgentResumeLookup) { lookup.IssueID = "other" }},
+		{name: "wrong attempt", edit: func(lookup *AgentResumeLookup) { lookup.WorkAttemptID++ }},
+		{name: "wrong backend", edit: func(lookup *AgentResumeLookup) { lookup.AgentBackendID = "other" }},
+		{name: "wrong model", edit: func(lookup *AgentResumeLookup) { lookup.RequestedModel = "other" }},
+		{name: "wrong role", edit: func(lookup *AgentResumeLookup) { lookup.AgentRole = "validate" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lookup := failedLookup
+			if test.edit != nil {
+				test.edit(&lookup)
+			}
+			got, err := backend.LatestAgentResumeState(ctx, lookup)
+			if test.found {
+				if err != nil || got.DetentSessionID != failedID || got.ProviderThreadID != "thread-failed" || got.ProviderSessionID != "session-failed" {
+					t.Fatalf("failed continuation=%+v error=%v", got, err)
+				}
+			} else if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("lookup=%+v error=%v, want ErrNotFound", lookup, err)
+			}
+		})
 	}
 
 	firstID, err := backend.StartSession(ctx, SessionStart{
@@ -1801,7 +1838,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		t.Fatalf("FinishSession(validator) error = %v", err)
 	}
 
-	got, err := backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+	got, err := backend.LatestAgentResumeState(ctx, AgentResumeLookup{
 		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		Identifier:       "digitaldrywood/detent#859",
@@ -1815,7 +1852,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		AgentRole:        "code",
 	})
 	if err != nil {
-		t.Fatalf("LatestCompletedAgentResumeState() error = %v", err)
+		t.Fatalf("LatestAgentResumeState() error = %v", err)
 	}
 	if got.DetentSessionID != secondID || got.ProviderThreadID != "thread-second" || got.ProviderSessionID != "session-second" {
 		t.Fatalf("resume state = %#v, want newest completed second session", got)
@@ -1834,7 +1871,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		t.Fatalf("LatestIssueAgentResumeState() = %#v, want newest completed validator session", latestForIssue)
 	}
 
-	_, err = backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+	_, err = backend.LatestAgentResumeState(ctx, AgentResumeLookup{
 		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		PRNumber:         42,
@@ -1846,10 +1883,10 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		AgentRole:        "code",
 	})
 	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("LatestCompletedAgentResumeState(model mismatch) error = %v, want ErrNotFound", err)
+		t.Fatalf("LatestAgentResumeState(model mismatch) error = %v, want ErrNotFound", err)
 	}
 
-	_, err = backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+	_, err = backend.LatestAgentResumeState(ctx, AgentResumeLookup{
 		ProjectID:        "detent",
 		IssueID:          "issue-859",
 		PRNumber:         42,
@@ -1861,7 +1898,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		AgentRole:        "merge",
 	})
 	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("LatestCompletedAgentResumeState(role mismatch) error = %v, want ErrNotFound", err)
+		t.Fatalf("LatestAgentResumeState(role mismatch) error = %v, want ErrNotFound", err)
 	}
 
 	for _, tt := range []struct {
@@ -1875,7 +1912,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 		{name: "base mismatch", project: "detent", headSHA: "head-current", baseSHA: "base-moved"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+			_, err := backend.LatestAgentResumeState(ctx, AgentResumeLookup{
 				ProjectID:        tt.project,
 				IssueID:          "issue-859",
 				PRNumber:         42,
@@ -1887,7 +1924,7 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 				AgentRole:        "code",
 			})
 			if !errors.Is(err, ErrNotFound) {
-				t.Fatalf("LatestCompletedAgentResumeState() error = %v, want ErrNotFound", err)
+				t.Fatalf("LatestAgentResumeState() error = %v, want ErrNotFound", err)
 			}
 		})
 	}

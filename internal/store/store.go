@@ -271,7 +271,7 @@ type ParkSummaryStore interface {
 }
 
 type AgentResumeStore interface {
-	LatestCompletedAgentResumeState(context.Context, AgentResumeLookup) (AgentResumeState, error)
+	LatestAgentResumeState(context.Context, AgentResumeLookup) (AgentResumeState, error)
 	LatestIssueAgentResumeState(context.Context, IssueIdentity) (AgentResumeState, error)
 }
 
@@ -521,6 +521,7 @@ type SessionFinish struct {
 }
 
 type AgentResumeLookup struct {
+	WorkAttemptID    int64
 	ProjectID        string
 	IssueID          string
 	Identifier       string
