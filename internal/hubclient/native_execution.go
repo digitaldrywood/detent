@@ -39,6 +39,7 @@ type nativeExecution struct {
 	// worktreeState is the last checkpoint's worktree state. Only a clean or
 	// unpushed worktree is settled; dirty work takes the ordinary path.
 	worktreeState string
+	worktreeHead  string
 	// role and conversation decide whether a finished run is work the runner
 	// opens a Change Request for: a code or rework run that no conversation
 	// owns the continuation of.
@@ -262,16 +263,18 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 		return nil
 	}
 	e.worktreeState = checkpoint.WorktreeState
+	e.worktreeHead = checkpoint.HeadSHA
 	return e.append(ctx, "run.checkpointed", "", &checkpoint)
 }
 
 func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.preparedOutcome = outcome
 	if err := e.prepareFinish(ctx, outcome); err != nil {
+		e.preparedOutcome = "failed"
 		return err
 	}
-	e.preparedOutcome = outcome
 	return nil
 }
 
@@ -283,7 +286,6 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 		return nil
 	}
 	if e.data.Outcome != "" {
-		e.settle(ctx, e.data.Outcome, e.data.Sequence)
 		return nil
 	}
 	// A succeeded run is settled before run.finished is published, while the
@@ -294,9 +296,25 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	finish := e.data.Sequence + 1
 	if outcome == "succeeded" {
 		if e.storedSeq != finish {
-			e.postDiff(ctx, finish)
+			if err := e.postDiff(ctx, finish); err != nil && e.ownsChangeCompletion() {
+				if e.remaining() <= 0 || nativeLeaseLost(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+				}
+				e.change = &runner.NativeChange{Error: err.Error()}
+				return nil
+			}
 		}
-		e.settle(ctx, outcome, finish)
+		if err := e.settle(ctx, outcome, finish); err != nil {
+			if e.remaining() <= 0 || nativeLeaseLost(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+			}
+			if e.change == nil {
+				e.change = &runner.NativeChange{}
+			}
+			if e.change.VersionError == "" {
+				e.change.Error = err.Error()
+			}
+		}
 	}
 	return nil
 }
@@ -304,13 +322,14 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if err := e.prepareFinish(ctx, outcome); err != nil {
-		return err
+	preparationErr := e.prepareFinish(ctx, outcome)
+	if preparationErr != nil {
+		outcome = "failed"
 	}
 	if e.data.Identity == nil || e.data.Outcome != "" {
-		return nil
+		return preparationErr
 	}
-	return e.append(ctx, "run.finished", outcome, nil)
+	return errors.Join(preparationErr, e.append(ctx, "run.finished", outcome, nil))
 }
 
 func (e *nativeExecution) finishPrepared(ctx context.Context) error {
@@ -350,13 +369,9 @@ func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 // running and its lease is therefore the producer; the generation is the run
 // event sequence the diff belongs to, which is why the post happens before the
 // event and not after it.
-//
-// It is best-effort in both directions: a source that has nothing posts
-// nothing, and a hub that refuses the diff is logged and ignored, so a run is
-// never lost over a diff. e.mu is held by the caller.
-func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) {
-	if e.diffSource == nil || e.claim.source == nil {
-		return
+func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) error {
+	if e.diffSource == nil || e.claim.source == nil || e.claim.source.client == nil {
+		return errors.New("the run's final attempt diff source is unavailable")
 	}
 	request, ok := e.diffSource(ctx)
 	switch {
@@ -366,7 +381,7 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) {
 	case e.lastDiff != nil:
 		request = *e.lastDiff
 	default:
-		return
+		return errors.New("the run's final attempt diff is unavailable")
 	}
 	request.Producer = tracker.DiffProducer{
 		Kind: tracker.DiffSourceAttempt, ID: e.data.AttemptID,
@@ -376,9 +391,10 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) {
 	if _, err := e.claim.source.client.PostAttemptDiff(ctx, e.data.AttemptID, request); err != nil {
 		slog.Default().Warn("attempt diff not stored",
 			"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", sequence, "error", err)
-		return
+		return err
 	}
 	e.storedSeq = sequence
+	return nil
 }
 
 func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint) error {
