@@ -4314,6 +4314,28 @@ checks historical access. `TestFirstHumanBlockerCompletionReachesBlocked`,
 `TestWorkpadHumanActionClearanceRecoversBlockedIssue` checks authorized
 clearance, retained legacy dependencies, and refusal of stale updates.
 
+## INV-15 — Visible UI changes require a human-authored issue
+
+- Scope: every user-facing surface: the Cloud app (`web/conversation`), Hub
+  server-rendered pages, and the local Templ dashboard.
+- A change may add a visible element (row, line, banner, badge, chip, column,
+  panel, page, tooltip text, status copy) only when a human-authored issue names
+  that UI change. Machine-filed issues, agent-expanded scope, and "while I was
+  here" additions never qualify, even when the issue itself is legitimate.
+- Removing UI, and fixing an existing element in place without adding visible
+  content, do not need that approval.
+- Diagnostics, coverage, provenance and debugging data for agents go through
+  the existing API and MCP reads and logs. They are never added to the UI as a
+  way to make them observable, including the Diagnostics page, toggles, or
+  debug flags.
+- Agents that believe a UI change is needed describe it in their outcome or
+  file a Backlog issue for a human to author or rewrite; they do not build it.
+
+**Enforcement:** This document, [AGENTS.md](../AGENTS.md#implementation),
+[CLAUDE.md](../CLAUDE.md#workflow), and the visible-UI line in the
+[PR template](../.github/PULL_REQUEST_TEMPLATE.md) carry the rule. Enforcement
+adds no gate, check, configuration key, reason code, or dashboard surface.
+
 ## Check boundaries
 
 The source walk covers non-test Go packages under `internal`, `cmd`, and `tools`

@@ -21,6 +21,8 @@
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
 - Before implementation, confirm dependencies listed in the issue are merged into `origin/develop`.
 - Keep changes scoped to the active issue.
+- Follow [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue): add visible elements or content on any user-facing surface (Cloud app, Hub server-rendered pages, or local Templ dashboard) only when a human-authored issue names that UI change. Machine-filed issues, agent-expanded scope, and "while I was here" additions never qualify. Removing UI or fixing an existing element in place without adding visible content does not need that approval.
+- Keep agent diagnostics, coverage, provenance, and debugging data in existing API and MCP reads and logs; never add them to UI, including the Diagnostics page, toggles, or debug flags. Describe a proposed UI addition in the outcome or file a Backlog issue for a human to author or rewrite; do not build it.
 - Publish Workpad status through the project's existing tracker owner. For comment-based Workpads, update the authoritative `## Codex Workpad` comment, or post a new canonical comment when editing is unavailable. An issue-body or final-answer status does not supersede an existing canonical comment. Preserve native/local event ownership.
 - Run `make generate` before committing when templates, sqlc queries, or CSS inputs change.
 - Commit only when explicitly requested by the workflow or human, and use conventional commit messages.
