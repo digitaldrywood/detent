@@ -654,7 +654,7 @@ func runRole(mode string, issue connector.Issue) string {
 	}
 }
 
-func extraWritableRootsForWorkspace(ctx context.Context, workspaceKind string, workspacePath string, logger *slog.Logger) []string {
+func extraWritableRootsForWorkspace(ctx context.Context, workspaceKind string, workspacePath string, hostCommits bool, logger *slog.Logger) []string {
 	if workspaceKind == config.WorkspaceFilesystem {
 		return nil
 	}
@@ -665,7 +665,17 @@ func extraWritableRootsForWorkspace(ctx context.Context, workspaceKind string, w
 		}
 		return nil
 	}
-	return roots
+	if !hostCommits {
+		return roots
+	}
+	directories := roots[:0]
+	for _, root := range roots {
+		info, err := os.Stat(root)
+		if err == nil && info.IsDir() {
+			directories = append(directories, root)
+		}
+	}
+	return directories
 }
 
 func (r *Runner) prepareMergeFastPath(
@@ -1953,7 +1963,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	var extraWritableRoots []string
 	if req.Admission == nil {
-		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger)
+		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, req.Execution != nil && mode == RunModeImplement, r.logger)
 	}
 	deliverableKind, deliverableRepository := agentTurnDeliverable(workflow.Config, req.Issue, mode)
 	turnRequest := AgentTurnRequest{
@@ -3271,7 +3281,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		MaxTurns:            workflow.Config.Agent.MaxTurns,
 		TurnTimeout:         durationFromMillis(validator.TurnTimeoutMS),
 		MaxDuration:         durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
-		ExtraWritableRoots:  extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger),
+		ExtraWritableRoots:  extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, false, r.logger),
 		Environment:         baseEnvironment,
 		MaxRSSBytes:         r.maxAgentRSSBytes,
 		RSSPollInterval:     r.rssPollInterval,

@@ -13,6 +13,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -42,7 +44,32 @@ func (a *resolvingReworkAgent) RunTurn(ctx context.Context, req AgentTurnRequest
 		if err := os.WriteFile(filepath.Join(req.Workspace, path), []byte("resolved\n"), 0o600); err != nil {
 			return AgentTurnResult{}, err
 		}
-		if err := runAgentGit(ctx, req.Workspace, "add", path); err != nil {
+		if runtime.GOOS == "linux" && os.Getenv("DETENT_TEST_CODEX_SANDBOX") == "1" {
+			roots := append([]string{req.Workspace, req.TempDir}, req.ExtraWritableRoots...)
+			entries := make([]string, 0, len(roots))
+			seen := map[string]bool{}
+			for _, root := range roots {
+				if !seen[root] {
+					entries = append(entries, fmt.Sprintf("%q=true", root))
+					seen[root] = true
+				}
+			}
+			profile := `permissions.native-stage-probe={filesystem={"/"="read",":workspace_roots"="write"},workspace_roots={` + strings.Join(entries, ",") + `},network={enabled=false}}`
+			probeCtx := isolation.WithPolicy(ctx, isolation.Policy{Tier: isolation.Sandbox, WritableRoots: roots})
+			cmd := exec.CommandContext(probeCtx, "codex", "-c", profile, "sandbox", "-P", "native-stage-probe", "-C", req.Workspace, "/bin/sh", "-c", `
+target=$(git -C "$1" rev-parse --verify 'HEAD^{commit}^') || exit 4
+git -C "$1" diff --cached --quiet -- "$2" || exit 5
+git -C "$1" add "$2" || exit 1
+[ "$(git -C "$1" diff --cached --name-only -- "$2")" = "$2" ] || exit 6
+if git -C "$1" update-ref refs/heads/unrelated "$target" 2>/dev/null; then exit 2; fi
+if git -C "$1" update-ref "$(git -C "$1" symbolic-ref HEAD)" "$target" 2>/dev/null; then exit 3; fi
+`, "worker", req.Workspace, path)
+			procgroup.Configure(probeCtx, cmd)
+			procgroup.SetTempDir(cmd, req.TempDir)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				return AgentTurnResult{}, fmt.Errorf("native Codex staging sandbox: %w: %s", err, output)
+			}
+		} else if err := runAgentGit(ctx, req.Workspace, "add", path); err != nil {
 			return AgentTurnResult{}, err
 		}
 		if a.signer != "" && runtime.GOOS == "darwin" {
@@ -50,7 +77,7 @@ func (a *resolvingReworkAgent) RunTurn(ctx context.Context, req AgentTurnRequest
 			if err != nil {
 				return AgentTurnResult{}, err
 			}
-			profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(deny file-read* (literal %q))(allow file-write* (subpath %q) (subpath %q)", a.signer, req.Workspace, req.TempDir)
+			profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(deny file-read* (literal %q))(allow file-write* (literal %q) (subpath %q) (subpath %q)", a.signer, os.DevNull, req.Workspace, req.TempDir)
 			for _, root := range roots {
 				profile += fmt.Sprintf(" (subpath %q)", root)
 			}
