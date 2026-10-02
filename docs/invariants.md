@@ -685,9 +685,11 @@ covers metadata/signing failures after resolution, issue allowance, and continue
 eligibility of other runnable work without a new failure family or scheduler.
 
 Native landing merge conflicts are repository refusals, not infrastructure
-failures or shipped work. Explicit GitHub HTTP 405 merge-conflict evidence uses
-the existing `LandRefusalConflict`; unspecified 405 responses, actual branch
-protection, required checks and reviews retain their refusal classification.
+failures or shipped work. Explicit merge-conflict evidence in the decoded GitHub
+HTTP 405 `message` uses the existing `LandRefusalConflict`; unspecified 405
+responses, actual branch protection, required checks and reviews retain their
+refusal classification.
+Metadata and malformed response text cannot establish conflict or closed-PR state.
 Quota responses retain their separate owner (#89) and never become conflict
 evidence. Unreadable workflow state or an unavailable refusal transition uses
 the existing deferred completion owner without inventing a successful landing.
@@ -1017,12 +1019,16 @@ existing atomic merge PUT with `sha` equal to the immutable reviewed head.
 After the runner's lease-protected push, the selected open PR's list head may
 lag publication and cannot refuse landing. Repository, branch and base identity,
 worktree HEAD verification, source locks, current policy/version and ownership
-checks remain required. Explicit authoritative moved-head and closed-PR merge
-rejections retain `LandRefusalHeadMoved`; reviews, checks, protection and
+checks remain required. Only PUT on the exact
+`repos/{owner}/{repo}/pulls/{positive-number}/merge` endpoint owns atomic head
+refusals (#149). Its HTTP 409 response retains `LandRefusalHeadMoved` regardless
+of response body language or serialization; unrelated endpoint 409 responses
+remain generic errors. Explicit closed-PR HTTP 405 `message` evidence also
+retains `LandRefusalHeadMoved`; reviews, checks, protection and
 authentication remain enforced by GitHub. Typed quota evidence reaches the
 existing capacity owner before repository refusal classification. Only actual
 successful receipts reach the Hub, which receives no GitHub credentials.
-`TestLocalGitLandChangeViaGitHub` and
+`TestLocalGitLandChangeViaGitHub`, `TestGitHubLandingAPIEndpointOwnership` and
 `TestLandNativeChange` cover stale list heads after rework publication, guarded
 remote head rejection, refusal identity and quota precedence. No retry loop,
 recovery path, reason code, policy bypass or lane writer is added.

@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -229,13 +230,23 @@ func githubLandingAPI(ctx context.Context, client GitHubRESTClient, result any, 
 	}
 	var status *github.StatusError
 	if errors.As(err, &status) {
-		if method == http.MethodPut && strings.HasSuffix(path, "/merge") {
-			message := strings.ToLower(status.Body)
-			if status.StatusCode == http.StatusConflict && strings.Contains(message, "head branch was modified") || status.StatusCode == http.StatusMethodNotAllowed && (strings.Contains(message, "pull request is closed") || strings.Contains(message, "pull request is not open")) {
+		if method == http.MethodPut && githubLandingMergePath(path) {
+			if status.StatusCode == http.StatusConflict {
 				return refuse(LandRefusalHeadMoved, "GitHub refused the reviewed head merge: "+status.Error())
 			}
-			if status.StatusCode == http.StatusMethodNotAllowed && (strings.Contains(message, "merge conflict") || strings.Contains(message, "pull request is not mergeable")) {
-				return refuse(LandRefusalConflict, "GitHub refused the pull request merge: "+status.Error())
+			if status.StatusCode == http.StatusMethodNotAllowed {
+				var response struct {
+					Message string `json:"message"`
+				}
+				if err := json.Unmarshal([]byte(status.Body), &response); err == nil {
+					message := strings.ToLower(response.Message)
+					if strings.Contains(message, "pull request is closed") || strings.Contains(message, "pull request is not open") {
+						return refuse(LandRefusalHeadMoved, "GitHub refused the reviewed head merge: "+status.Error())
+					}
+					if strings.Contains(message, "merge conflict") || strings.Contains(message, "pull request is not mergeable") {
+						return refuse(LandRefusalConflict, "GitHub refused the pull request merge: "+status.Error())
+					}
+				}
 			}
 		}
 		switch status.StatusCode {
@@ -244,4 +255,13 @@ func githubLandingAPI(ctx context.Context, client GitHubRESTClient, result any, 
 		}
 	}
 	return fmt.Errorf("GitHub pull request operation failed: %w", err)
+}
+
+func githubLandingMergePath(path string) bool {
+	parts := strings.Split(path, "/")
+	if len(parts) != 6 || parts[0] != "repos" || parts[1] == "" || parts[2] == "" || parts[3] != "pulls" || parts[5] != "merge" {
+		return false
+	}
+	number, err := strconv.Atoi(parts[4])
+	return err == nil && number > 0 && strconv.Itoa(number) == parts[4]
 }
