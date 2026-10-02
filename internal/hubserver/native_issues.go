@@ -448,7 +448,7 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 
 func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: true, Feature: "collaboration"}
-	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err
@@ -479,6 +479,10 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		issue.State = request.State
 		return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State, Reason: request.Reason}, now)
 	})
+	if err == nil {
+		s.wakeSpriteRunnersAfter(scope, result)
+	}
+	return result, err
 }
 
 func (s *Service) changeNativeDependency(c echo.Context) error {

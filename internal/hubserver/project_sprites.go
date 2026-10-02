@@ -120,3 +120,116 @@ func (s *Service) checkProjectSprites(ctx context.Context, scope nativeScope) (s
 	defer clear(token)
 	return validateSpritesToken(ctx, s.config.SpritesHTTPClient, token)
 }
+
+// spriteRunnerIdle is how long a runner may go without a heartbeat before the
+// Hub treats its Sprite as paused. Runners heartbeat every second while awake.
+const spriteRunnerIdle = 15 * time.Second
+
+// wakeSpriteRunnersAfter wakes the project's paused Sprite runners when a
+// mutation leaves a work item in a dispatchable state. It never delays or fails
+// the mutation that triggered it.
+func (s *Service) wakeSpriteRunnersAfter(scope nativeScope, result json.RawMessage) {
+	if s.config.SecretKeys == nil {
+		return
+	}
+	var issue struct {
+		State string `json:"state"`
+	}
+	if json.Unmarshal(result, &issue) != nil || issue.State == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_, _ = s.wakeSpriteRunners(ctx, scope, issue.State)
+	}()
+}
+
+// wakeSpriteRunners starts the detent-runner service on each paused Sprite
+// that runs a runner granted this project. A Sprite's hostname is its name, so
+// the runner's enrolled hostname identifies the Sprite. Starting the service
+// wakes a cold Sprite; the 30-second log stream keeps it active until the
+// runner claims the work and holds its own Sprite task.
+func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, state string) (int, error) {
+	project, err := readNativeProject(ctx, s.database.db, scope)
+	if err != nil {
+		return 0, err
+	}
+	dispatchable := false
+	for _, candidate := range project.States {
+		if candidate.Name == state && candidate.Dispatchable && !candidate.Terminal {
+			dispatchable = true
+		}
+	}
+	if !dispatchable {
+		return 0, nil
+	}
+	cutoff := formatHubTime(s.config.now().Add(-spriteRunnerIdle))
+	rows, err := s.database.db.QueryContext(ctx, `SELECT DISTINCT m.hostname FROM runner_identities r
+JOIN machines m ON m.id = r.machine_id
+JOIN api_tokens t ON t.id = r.token_id AND t.revoked_at IS NULL
+JOIN token_grants g ON g.token_id = r.token_id AND g.project_id = ?
+WHERE r.organization_id = ? AND r.state = 'active' AND r.last_heartbeat_at < ?
+ORDER BY m.hostname`, scope.project, scope.organization, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		if validSpritesSlug(name) {
+			names = append(names, name)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return 0, err
+	}
+	if len(names) == 0 {
+		return 0, nil
+	}
+	var envelope hubsecrets.Envelope
+	err = s.database.db.QueryRowContext(ctx, `SELECT ciphertext, nonce, wrapped_data_key, master_key_version FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?`, scope.organization, scope.project, flySpritesToken).Scan(&envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if err := s.auditSecretUse(ctx, scope, envelope.Version); err != nil {
+		return 0, err
+	}
+	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
+	if err != nil {
+		return 0, err
+	}
+	defer clear(token)
+	client := http.Client{Timeout: 45 * time.Second}
+	if s.config.SpritesHTTPClient != nil {
+		client = *s.config.SpritesHTTPClient
+		client.Timeout = 45 * time.Second
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	woken := 0
+	for _, name := range names {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.sprites.dev/v1/sprites/"+name+"/services/detent-runner/start?duration=30s", nil)
+		if err != nil {
+			continue
+		}
+		request.Header.Set("Authorization", "Bearer "+string(token))
+		response, err := client.Do(request)
+		request.Header.Del("Authorization")
+		if err != nil {
+			continue
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		_ = response.Body.Close()
+		if response.StatusCode >= 200 && response.StatusCode <= 299 {
+			woken++
+		}
+	}
+	return woken, nil
+}
