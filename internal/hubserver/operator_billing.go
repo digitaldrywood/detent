@@ -107,6 +107,7 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	if e.service.config.Hosted == nil {
 		return definitions, nil
 	}
+	definitions = append(definitions, (hostedContextExecutor{e.service}).listTools(ctx)...)
 	for _, definition := range operatortool.BillingCatalog() {
 		kind := "billing"
 		switch definition.Name {
@@ -150,6 +151,9 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	if operatortool.IsHostedContext(call.Name) {
+		return (hostedContextExecutor{e.service}).Execute(ctx, call)
+	}
 	if operatortool.IsLocalProjectTool(call.Name) {
 		return hubProjectExecutor(e).Execute(ctx, call)
 	}

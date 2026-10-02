@@ -215,3 +215,39 @@ production check passed from the fixture result alone.
 For 401, check private key configuration, expiry and revocation. For 403 or a
 hidden 404, check current membership, role, key scope and project grants. Local
 and self-hosted daemon instructions remain expandable on the same settings page.
+
+## Hosted application context reads
+
+Hosted dedicated and shared connections expose `app_bootstrap_payload`,
+`app_updates`, and `hosted_events` through the same adapter on HTTP and stdio.
+`app_bootstrap_payload` takes `{}` and returns the current organization/directory,
+actor, readable projects and workspace capabilities, support context, features,
+coordinator availability, model/effort/access preferences, plan summary and hub
+version. Browser CSRF, form tokens and session credentials are omitted. API keys
+see only their current project grants and model catalogs.
+
+`app_updates` takes `{}` and returns hub, minimum-runner and client builds, runner
+versions, online/behind/refusal context and the behind count. It requires a
+non-viewer member with runner management on every organization project and an API
+key, when used, that can read every project. Removing a role or grant takes effect
+on the next call and discovery; an old catalog grants no access.
+
+`hosted_events` takes `project_id`, optional `workspace_id`, and optional `cursor`.
+It returns one current collaboration invalidation sequence, an optional safe
+workspace resource, `observed_at`, `freshness: "current_observation"`, `changed`
+and a cursor bound to that organization/project/workspace. The first observation
+sets `changed: true`; sending its cursor again sets it to false when both observed
+revisions match. A project activity or workspace revision change sets it to true.
+This is a current invalidation observation, not event history: callers can use the
+existing work reads to refresh affected content. No heartbeat, SSE stream or
+background polling is exposed. Each call checks current project/workspace access;
+a cursor grants no authority. Use a new observation when changing scope.
+
+These reads reject unknown fields and requests over 64 KiB. Identifiers are at
+most 256 bytes and event cursors at most 2048 bytes. Project, organization-choice, model-choice and runner lists are
+at most 200 items and all results at most 256 KiB; an oversized complete result
+returns a safe unavailable error instead of truncation. Disabled optional services
+are explicit in bootstrap; a required unavailable service returns no application
+data or raw diagnostics. Hosted context is omitted from self-hosted and credential
+maintenance discovery. Parent #3259 generic-client and zero-pending acceptance
+remains with the parent owner.

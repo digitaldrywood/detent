@@ -237,31 +237,22 @@ func (s *Service) hostedEvents(c echo.Context) error {
 			return nil
 		}
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: credential}
-		if err := s.requireHostedProject(c.Request().Context(), s.database.db, scope, false); err != nil {
+		observation, err := s.readHostedEventObservation(c.Request().Context(), scope, workspaceID)
+		if err != nil {
 			return nil
 		}
-		var sequence int64
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT COALESCE(MAX(rowid),0) FROM collaboration_events WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&sequence); err != nil {
+		if _, err := fmt.Fprintf(c.Response(), "event: activity\ndata: %d\n\n", observation.Sequence); err != nil {
 			return nil
 		}
-		if _, err := fmt.Fprintf(c.Response(), "event: activity\ndata: %d\n\n", sequence); err != nil {
-			return nil
-		}
-		if workspaceID != "" {
-			record, err := s.workspaces.readWorkspaceForActor(c.Request().Context(), s.database.db, scope, workspaceID)
+		if record := observation.Workspace; record != nil && record.Revision != workspaceRevision {
+			resource, err := json.Marshal(record)
 			if err != nil {
 				return nil
 			}
-			if record.Revision != workspaceRevision {
-				resource, err := json.Marshal(s.workspaces.presentWorkspace(c.Request().Context(), scope, record))
-				if err != nil {
-					return nil
-				}
-				if _, err := fmt.Fprintf(c.Response(), "event: %s\ndata: %s\n\n", workspacesession.EventType(record.State), resource); err != nil {
-					return nil
-				}
-				workspaceRevision = record.Revision
+			if _, err := fmt.Fprintf(c.Response(), "event: %s\ndata: %s\n\n", workspacesession.EventType(record.State), resource); err != nil {
+				return nil
 			}
+			workspaceRevision = record.Revision
 		}
 		c.Response().Flush()
 		select {

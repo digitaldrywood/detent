@@ -363,6 +363,21 @@ independent. No merger or tracker lane writer is introduced.
 these boundaries. This extracts application commands rather than adding a
 protection mechanism (INV-3).
 
+Hosted application context MCP parity (native #32, imported #3664) reuses the
+browser bootstrap, runner update and project event application reads through one
+adapter for stdio and HTTP. Bootstrap omits browser CSRF/session/form secrets and
+filters project/model context by current member and API-key grants. Runner updates
+retain non-viewer authority and runner grants on every project, including the key's
+project boundary. Events return one current invalidation sequence and optional safe
+workspace revision with observation/freshness semantics and a scope-bound comparison
+cursor; an unchanged transport tick is not a project update or event replay. No new
+poller, reconciler, grant cache or transport proxy is introduced. Results fit existing
+item/byte bounds or return a safe unavailable response. `TestHostedContextMCP` and
+`TestHostedContextKeyProjection` and `TestHostedContextUnavailable` cover dedicated/shared bindings through both
+transports, shared browser content, current and removed authority, direct calls,
+secret omission, bounded/unavailable reads and activity/workspace cursor changes.
+Parent #3259 conformance and unconditional zero-pending acceptance remain pending.
+
 MCP transport parity (#3339, native #207) uses one permission-filtered typed
 registry with toolset metadata. Tool discovery returns the complete current
 catalog in one response without a continuation cursor, resolving application
