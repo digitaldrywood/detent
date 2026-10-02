@@ -24617,7 +24617,7 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon"
+          "service": "dashboard application reads (report store required)"
         },
         {
           "deployment": "hosted_dedicated",
@@ -24625,8 +24625,7 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "native Hub analytics application reads"
         },
         {
           "deployment": "hosted_shared",
@@ -24634,8 +24633,7 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "native Hub analytics application reads"
         },
         {
           "deployment": "credential_maintenance",
@@ -24643,20 +24641,21 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "analytics application reads",
+          "unsupported": "Analytics store/dashboard or hosted native services are absent in credential maintenance; direct calls return safe unavailable."
         }
       ],
       "authority": {
-        "role": "local operator (dashboard authentication when configured)",
+        "role": "current authenticated operator; hosted membership and project read authority",
         "credential_scope": "read",
-        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "project_grant": "fresh current project read grants; select authorized projects before all aggregation; restricted reads omit unattributed instance/organization data",
         "ownership": "current organization/account; no cross-organization resource lookup"
       },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+        "No confirmation for ordinary reads; shared current authority and transport/application byte limits apply.",
+        "Default windows/buckets and pagination are bounded; report windows are half-open. Missing/partial source evidence is explicit and never inferred from coding completion or imported lane state."
       ],
       "confirmation": [
         {
@@ -24664,24 +24663,24 @@
           "class": "none"
         }
       ],
-      "application": "s.analyticsDashboard; s.analyticsDashboardData, s.demoAnalyticsDashboard, s.latestSnapshot",
-      "extraction": "Extract web.analyticsDashboard application inputs/results and validation from Echo; reuse s.analyticsDashboardData, s.demoAnalyticsDashboard, s.latestSnapshot. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Daemon analyticsDashboardData/dashboardData snapshot projection; authorized analytics attempts/activity read; Hub readAnalyticsReport over existing native landing, runtime and usage owners.",
+      "extraction": "Implemented shared application reads for HTTP MCP, stdio and the daemon API bridge. analytics_dashboard covers the page work-attempt and activity content, including attempt number, timestamps, status/detail and truncation evidence. Existing dashboard, board_state and telemetry_usage cover the shared dashboard snapshot, board identity/state and usage calculations; time_series and reports cover series and report calculations. Presentation title/navigation/filter labels require no separate tool. Restricted reads omit unattributed activity.",
       "tool": {
-        "set": "work_reads",
+        "set": "fleet",
         "name": "analytics_dashboard",
-        "arguments": "Bounded analyticsDashboardRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "analyticsDashboardResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "FleetCatalog analytics_dashboard: optional project_id (1-256 bytes), limit (1-200), offset (0-100000); trusted current organization/credential context; request at most 64 KiB.",
+        "result": "Bounded attempt/activity pages with identifiers, source/generated_at/observed_at and last-known snapshot evidence. Hosted native adapter supplies scoped recorded attempts, phases, skips, digest and genuine landing provenance. At most 256 KiB; opaque unavailable errors.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3345",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3345 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "internal/web/operator_analytics_test.go: TestMCPAnalyticsReads and TestMCPAnalyticsNativeProject; internal/web/operator_analytics_internal_test.go: TestAnalyticsUnavailableServices; internal/hubserver/operator_analytics_test.go: TestHostedAnalyticsReads (real stdio/HTTP parity, GitHub/native grant sets, next-call revocation, invalid bounds), TestNativeAnalyticsUnavailableServices and TestNativeAnalyticsRuntimePopulation. Existing TestMCPFleetReads, TestProtocolApplicationParity and daemon stdio bridge regression remain shared coverage. Parent #3259 final conformance remains pending.",
+      "decision": "Expose approved analytics parity through existing shared application reads. Implemented by native #33 (imported #3665) within the existing #3345 owner scope; parent #3259 retains final generic-client, negative authority/approval/replay/secret and unconditional zero-pending acceptance."
     },
     {
       "id": "web.api_board_activity",
@@ -29326,7 +29325,7 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon"
+          "service": "dashboard application reads (report store required)"
         },
         {
           "deployment": "hosted_dedicated",
@@ -29334,8 +29333,7 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "native Hub analytics application reads"
         },
         {
           "deployment": "hosted_shared",
@@ -29343,8 +29341,7 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "native Hub analytics application reads"
         },
         {
           "deployment": "credential_maintenance",
@@ -29352,20 +29349,21 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "analytics application reads",
+          "unsupported": "Analytics store/dashboard or hosted native services are absent in credential maintenance; direct calls return safe unavailable."
         }
       ],
       "authority": {
-        "role": "local operator (dashboard authentication when configured)",
-        "credential_scope": "read/write/admin (project scope where route supplies project)",
-        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "role": "current authenticated operator; hosted membership and project read authority",
+        "credential_scope": "read",
+        "project_grant": "fresh current project read grants; select authorized projects before all aggregation; restricted reads omit unattributed instance/organization data",
         "ownership": "current organization/account; no cross-organization resource lookup"
       },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+        "No confirmation for ordinary reads; shared current authority and transport/application byte limits apply.",
+        "Default windows/buckets and pagination are bounded; report windows are half-open. Missing/partial source evidence is explicit and never inferred from coding completion or imported lane state."
       ],
       "confirmation": [
         {
@@ -29373,24 +29371,24 @@
           "class": "none"
         }
       ],
-      "application": "s.apiTimeSeries; s.latestSnapshot, s.projectSmallMultiples",
-      "extraction": "Extract web.apiTimeSeries application inputs/results and validation from Echo; reuse s.latestSnapshot, s.projectSmallMultiples. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Daemon readTimeSeries/projectTimeSeriesResponse shared by apiTimeSeries, apiProjectTimeSeries and MCP; Hub readAnalyticsReport/nativeAnalyticsBucketIndex with exact landing and recorded usage evidence.",
+      "extraction": "Implemented shared authorized project projection and existing bucketed dashboard calculations; ordinary stdio/HTTP reads invoke the same application adapter. Daemon series retain source snapshot time/last-known state and report their actual bounded window. Hosted series count exact-version native landing receipts, recorded sessions and usage; unavailable attribution is explicit.",
       "tool": {
-        "set": "work_reads",
-        "name": "api_time_series",
-        "arguments": "Bounded apiTimeSeriesRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "apiTimeSeriesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "set": "fleet",
+        "name": "time_series",
+        "arguments": "FleetCatalog time_series: optional project_id (1-256 bytes), limit (1-200), offset (0-100000), window duration (positive, at most 24h; default 10m), bucket duration (positive, at most window; default 1m); at most 240 buckets including dashboard endpoints and 64 KiB request.",
+        "result": "Scoped bucketed datasets/project IDs with window, source and source/observation freshness; native digest buckets retain genuine shipping provenance and partial/unavailable population evidence. At most 256 KiB; opaque unavailable errors.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3345",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3345 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "internal/web/operator_analytics_test.go: TestMCPAnalyticsReads and TestMCPAnalyticsNativeProject; TestAnalyticsUnavailableServices; existing TestTimeSeriesAPIRoutesReturnChartDatasets and TestProjectTimeSeriesBucketsSamples; internal/hubserver/operator_analytics_test.go: TestHostedAnalyticsReads (real stdio/HTTP parity, current project sets/revocation), TestNativeAnalyticsRuntimePopulation and TestNativeAnalyticsUnavailableServices; internal/hubserver/changes_test.go: TestChangeLanding exact-hour receipt/exclusive-end/foreign-project cases. Parent #3259 final conformance remains pending.",
+      "decision": "Expose approved analytics parity through existing shared application reads. Implemented by native #33 (imported #3665) within the existing #3345 owner scope; parent #3259 retains final generic-client, negative authority/approval/replay/secret and unconditional zero-pending acceptance."
     },
     {
       "id": "web.api_tracker_availability_clear",
@@ -33984,7 +33982,7 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon"
+          "service": "dashboard application reads (report store required)"
         },
         {
           "deployment": "hosted_dedicated",
@@ -33992,8 +33990,7 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "native Hub analytics application reads"
         },
         {
           "deployment": "hosted_shared",
@@ -34001,8 +33998,7 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "native Hub analytics application reads"
         },
         {
           "deployment": "credential_maintenance",
@@ -34010,20 +34006,21 @@
             "github",
             "native"
           ],
-          "service": "dashboard daemon",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "analytics application reads",
+          "unsupported": "Analytics store/dashboard or hosted native services are absent in credential maintenance; direct calls return safe unavailable."
         }
       ],
       "authority": {
-        "role": "local operator (dashboard authentication when configured)",
+        "role": "current authenticated operator; hosted membership and project read authority",
         "credential_scope": "read",
-        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "project_grant": "fresh current project read grants; select authorized projects before all aggregation; restricted reads omit unattributed instance/organization data",
         "ownership": "current organization/account; no cross-organization resource lookup"
       },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+        "No confirmation for ordinary reads; shared current authority and transport/application byte limits apply.",
+        "Default windows/buckets and pagination are bounded; report windows are half-open. Missing/partial source evidence is explicit and never inferred from coding completion or imported lane state."
       ],
       "confirmation": [
         {
@@ -34031,24 +34028,24 @@
           "class": "none"
         }
       ],
-      "application": "s.reports; s.demoReports, s.reportsData",
-      "extraction": "Extract web.reports application inputs/results and validation from Echo; reuse s.demoReports, s.reportsData. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "Daemon readReportGroups/readUsageReport, dailyDigestDataForWindows and readReportOutcomes shared with reportsData; Hub readAnalyticsReport/readNativeAnalytics/readUsageRows reuse native change, runtime, history and usage owners in one read transaction.",
+      "extraction": "Implemented project selection before aggregation, reusing existing usage groups, digest, efficiency and cost-per-outcome calculations. Both MCP transports and the daemon bridge use the same adapter. Native shipping comes only from exact-version landing receipts; recorded phase duration and skip-reason aggregates are bounded. Queue/private-instruction attribution and unsupported precision are explicitly unavailable; no new persistent summary owner replaces native #91.",
       "tool": {
-        "set": "work_reads",
+        "set": "fleet",
         "name": "reports",
-        "arguments": "Bounded reportsRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "reportsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "FleetCatalog reports: optional project_id (1-256 bytes), limit (1-200), project offset and row_offset (0-100000), from/to (RFC3339 or UTC date, half-open window, at most 90d, no future end; default trailing 7d), bucket duration (at least 1h, at most window, at most 240 buckets; default 24h), IANA tz (at most 128 bytes); request at most 64 KiB.",
+        "result": "Per-project usage groups/totals, daily digest, efficiency and cost-per-outcome with identifiers/window/source/freshness and pagination. Daemon usage preserves disclosed calendar-day ranges and marks subday attribution unavailable. Native reports include exact Change/version/head/merge-SHA landing provenance, bounded recorded attempts/phases/skips, population limit 1000 per project/source, partial flags and unavailable evidence; incomplete ratios omitted. No unattributable organization totals; at most 256 KiB; opaque unavailable errors.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": true
+          "openWorld": false
         }
       },
       "owner": "digitaldrywood/detent#3345",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3345 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "internal/web/operator_analytics_test.go: TestMCPAnalyticsReads (two project sets, direct foreign denial, credential revocation, bounded/invalid windows, result bytes, daemon bridge) and TestMCPAnalyticsNativeProject; TestAnalyticsUnavailableServices; internal/hubserver/operator_analytics_test.go: TestHostedAnalyticsReads (native/GitHub grants, real stdio/HTTP parity and next-call grant revocation), TestNativeAnalyticsRuntimePopulation and TestNativeAnalyticsUnavailableServices; internal/hubserver/changes_test.go: TestChangeLanding; internal/store/store_test.go: TestDailyDigestReconcilesRuntimeTables; internal/store/reports_digest_test.go: TestDailyDigestOutcomeProvenance. Existing report-page and hosted usage regressions preserve business calculations. Parent #3259 final conformance remains pending.",
+      "decision": "Expose approved analytics parity through existing shared application reads. Implemented by native #33 (imported #3665) within the existing #3345 owner scope; parent #3259 retains final generic-client, negative authority/approval/replay/secret and unconditional zero-pending acceptance."
     },
     {
       "id": "web.request_magic_link",

@@ -3619,10 +3619,10 @@ func TestDailyDigestReconcilesRuntimeTables(t *testing.T) {
 	from := time.Date(2026, 7, 10, 5, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)
 
-	seedDigestSession(t, ctx, backend, SessionStart{StartedAt: from.Add(time.Hour), Model: "gpt-a", OrphanRecoveryOutcome: OrphanRecoveryResumed}, SessionFinish{
+	seedDigestSession(t, ctx, backend, SessionStart{ProjectID: "detent", StartedAt: from.Add(time.Hour), Model: "gpt-a", OrphanRecoveryOutcome: OrphanRecoveryResumed}, SessionFinish{
 		CompletedAt: from.Add(2 * time.Hour), InputTokens: 1000, CachedInputTokens: 900, OutputTokens: 100, TotalTokens: 1100, FinalState: "completed", Model: "gpt-a",
 	})
-	seedDigestSession(t, ctx, backend, SessionStart{StartedAt: from.Add(3 * time.Hour), RequestedModel: "gpt-b", OrphanRecoveryOutcome: OrphanRecoveryFresh}, SessionFinish{
+	seedDigestSession(t, ctx, backend, SessionStart{ProjectID: "other", StartedAt: from.Add(3 * time.Hour), RequestedModel: "gpt-b", OrphanRecoveryOutcome: OrphanRecoveryFresh}, SessionFinish{
 		CompletedAt: from.Add(4 * time.Hour), InputTokens: 500, CachedInputTokens: 400, OutputTokens: 50, TotalTokens: 550, FinalState: "failed", Model: "gpt-b",
 	})
 	seedDigestSession(t, ctx, backend, SessionStart{StartedAt: from.Add(-time.Hour), Model: "outside"}, SessionFinish{
@@ -3670,6 +3670,32 @@ func TestDailyDigestReconcilesRuntimeTables(t *testing.T) {
 	if len(day.Models) != 2 || day.Models[0].Model != "gpt-a" || day.Models[1].Model != "gpt-b" {
 		t.Fatalf("models = %#v, want exact gpt-a/gpt-b breakdown", day.Models)
 	}
+	for _, scope := range []struct {
+		name                                 string
+		ids                                  []string
+		sessions, tokens, capacity, breakers int64
+		model                                string
+	}{
+		{"project A", []string{"detent"}, 1, 1100, 1, 1, "gpt-a"},
+		{"project B", []string{"other"}, 1, 550, 0, 0, "gpt-b"},
+		{"two projects", []string{"detent", "other"}, 2, 1650, 1, 1, ""},
+		{"no projects", []string{}, 0, 0, 0, 0, ""},
+	} {
+		t.Run(scope.name, func(t *testing.T) {
+			got, err := backend.DailyDigest(ctx, []DailyDigestWindow{{Date: "2026-07-10", From: from, To: to, ProjectIDs: scope.ids}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			day := got[0]
+			if day.Sessions != scope.sessions || day.TotalTokens != scope.tokens || day.CapacityOutages != scope.capacity || day.BreakerTrips != scope.breakers {
+				t.Fatalf("scope %v leaked totals: %#v", scope.ids, day)
+			}
+			if scope.model != "" && (len(day.Models) != 1 || day.Models[0].Model != scope.model) {
+				t.Fatalf("foreign model: %v", day.Models)
+			}
+		})
+	}
+
 }
 
 func seedDigestSession(t *testing.T, ctx context.Context, backend Store, start SessionStart, finish SessionFinish) {

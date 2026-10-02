@@ -73,6 +73,22 @@ func TestDailyDigestOutcomeProvenance(t *testing.T) {
 				if day.Efficiency.Issues != wantReceipts {
 					t.Fatalf("cohort coverage=%d, want %d", day.Efficiency.Issues, wantReceipts)
 				}
+				for _, ids := range [][]string{{"project"}, {"foreign"}, {}} {
+					scoped := window
+					scoped.ProjectIDs = ids
+					got, err := backend.DailyDigest(ctx, []DailyDigestWindow{scoped})
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := int64(0)
+					if len(ids) > 0 && ids[0] == "project" {
+						want = tt.want
+					}
+					if got[0].IssuesShipped != want {
+						t.Fatalf("scope %v shipped=%d want=%d", ids, got[0].IssuesShipped, want)
+					}
+				}
+
 			}
 		})
 	}

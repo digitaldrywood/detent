@@ -272,6 +272,10 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 // every runner that shares it. Periods are compared as fixed-width UTC
 // timestamps in the stored T format, not as dates.
 func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {
+	return readUsageRows(ctx, s.database.db, s.config.Hosted.OrganizationID, window, projects, int(^uint(0)>>1))
+}
+
+func readUsageRows(ctx context.Context, database nativeQueryer, organization string, window usageWindow, projects []string, limit int) ([]usageRow, error) {
 	if len(projects) == 0 {
 		return nil, nil
 	}
@@ -287,9 +291,9 @@ LEFT JOIN lease_runners lr ON lr.lease_id = a.lease_id
 LEFT JOIN runner_identities r ON r.id = lr.runner_id AND r.organization_id = u.organization_id
 WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?
  AND u.project_id IN (SELECT value FROM json_each(?))
-ORDER BY u.period, u.provider, u.model, u.attempt_id`
-	result, err := s.database.db.QueryContext(ctx, query,
-		s.config.Hosted.OrganizationID, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded)
+ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ?`
+	result, err := database.QueryContext(ctx, query,
+		organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)
 	}

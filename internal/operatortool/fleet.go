@@ -22,6 +22,9 @@ const (
 	Dashboard                = "dashboard"
 	HealthDashboard          = "health_dashboard"
 	DiagnosticsDashboard     = "diagnostics_dashboard"
+	AnalyticsDashboard       = "analytics_dashboard"
+	TimeSeries               = "time_series"
+	Reports                  = "reports"
 	Refresh                  = "refresh"
 	CapacityClear            = "capacity_clear"
 	TrackerAvailabilityClear = "tracker_availability_clear"
@@ -73,6 +76,10 @@ func FleetCatalog() []Definition {
 	for _, name := range []string{Dashboard, HealthDashboard, DiagnosticsDashboard} {
 		add(name, "Read the current dashboard application snapshot, projected to current project grants.", `"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false)
 	}
+	page := `"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`
+	add(AnalyticsDashboard, "Read dashboard analytics attempts and activity within current project grants.", page, "", true, false)
+	add(TimeSeries, "Read bounded bucketed project analytics with source and observation time.", page+`,"window":{"type":"string","maxLength":64},"bucket":{"type":"string","maxLength":64}`, "", true, false)
+	add(Reports, "Read scoped usage, digest, efficiency and outcome reports with bounded population and freshness.", page+`,"row_offset":{"type":"integer","minimum":0,"maximum":100000}`+`,"from":{"type":"string","maxLength":64},"to":{"type":"string","maxLength":64},"bucket":{"type":"string","maxLength":64},"tz":{"type":"string","maxLength":128}`, "", true, false)
 	add(InstanceHealth, "Read the existing instance health and readiness report.", "", "", true, false)
 	add(NativeCapabilities, "Read the existing native protocol capabilities where the dashboard permits them.", "", "", true, false)
 	add(OutboxHealth, "Read the existing outbox health report and bounded operator actions.", `"limit":{"type":"integer","minimum":1,"maximum":200},"cursor":{"type":"string","maxLength":2048}`, "", true, false)

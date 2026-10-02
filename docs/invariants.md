@@ -17,6 +17,26 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Analytics parity (native #33, imported #3665) uses the same application adapters
+for stdio, HTTP MCP and the daemon bridge. Each direct read resolves current
+read authority and project grants before selecting projects or aggregating
+usage, digest, efficiency and outcome data. Restricted credentials receive no
+unattributed activity or organization totals. Scoped digest queries retain the
+difference between unrestricted and explicitly empty project sets.
+Native throughput counts exact-version Change landing receipts with native
+provenance and merge SHA inside the requested half-open window; coding completion,
+imported Done items and board counts do not count as shipping. Recorded phase
+and skip aggregates retain source and observation times, population limits and
+partial evidence. Queue time, private instruction causality, missing source data
+and sub-hour usage attribution remain explicitly unavailable. These reads add no
+lane writer, mechanism or persistent summary owner; native #91 retains summary
+provenance. `TestMCPAnalyticsReads`, `TestMCPAnalyticsNativeProject`,
+`TestHostedAnalyticsReads`, `TestNativeAnalyticsRuntimePopulation`,
+`TestChangeLanding`, `TestDailyDigestReconcilesRuntimeTables`,
+`TestDailyDigestOutcomeProvenance`, `TestAnalyticsUnavailableServices` and
+`TestNativeAnalyticsUnavailableServices` cover authorization, transport parity,
+bounded windows/populations/results and missing services.
+
 Cloud issue attachments (native #175) retain the existing signed entry and
 tenant membership/project authorities. Only entry holds Spaces credentials or
 constructs organization-prefixed object keys; private startup probing and

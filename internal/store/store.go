@@ -109,9 +109,10 @@ type StatsStore interface {
 }
 
 type DailyDigestWindow struct {
-	Date string
-	From time.Time
-	To   time.Time
+	ProjectIDs []string
+	Date       string
+	From       time.Time
+	To         time.Time
 }
 
 // DailyDigestDay separates calendar-window runtime usage from the lifetime
