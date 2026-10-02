@@ -28,6 +28,17 @@ prefix. `TestAttachmentRoutesIsolation`, `TestAttachmentStorageProbe`,
 `TestCloudAttachmentReferenceDeletion`, `TestAttachmentOrphanSweepAndDeprovision`
 and `TestCloudAllocationGeneratesTenantConfiguration` cover these boundaries.
 
+Reviewed native landing (#170) uses a LocalGit checkout and ref scoped to the
+issue and immutable reviewed head, independently of Code and operator source
+worktrees. External versions retain their real PR repository, base, branch and
+head separately from the local landing ref. The registered runner remains the
+PR publication and merge owner; current version, approved policy, lease/fencing
+and atomic reviewed-head merge checks remain authoritative. Preparation and
+landing never reset, repoint or steal a retained Code or source checkout/ref.
+`TestRunnerLandingPreservesCodeAndOperatorOwners` verifies both operator and
+External versions through the real Runner and LocalGit without a provider turn,
+including unchanged owner files, raw indexes, HEADs and source refs.
+
 Native failed coding and rework completion (#169) selects an allowed configured
 review destination under the existing leased completion owner before publishing
 `run.finished` or releasing the claim. It records the authentic failed or cancelled
@@ -897,6 +908,15 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+Isolated landing preparation (#170) retains existing repository, dirty landing
+checkout, moved head, unavailable source and conflict refusals and infrastructure
+attribution. A dirty Code checkout or checked-out source branch is independent
+source ownership, not a landing failure. Hydration uses only the authorized
+source and existing authentication; no sibling-worktree authority or blanket
+shared metadata write grant is added. `TestLocalGitCreateReviewedLanding` and
+`TestLocalGitLandChangeViaGitHub` cover hydration, preserved owners and truthful
+landing refusals, including External conflicts using the real source branch.
+
 Worker process cleanup failures (#169) retain staged source and use the existing
 instance workspace-failure owner, excluding them from issue failure allowance.
 A cleanup-stage deadline does not establish parent or provider cancellation.
@@ -1296,6 +1316,14 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Reviewed checkout isolation (#170) consolidates preparation under LocalGit's
+existing source-operation lock, path confinement, workspace usage and cleanup
+registry. Head-scoped landing paths retain the original issue identity for
+active-issue protection; retirement inspects and archives the recorded path,
+preserving Code. `TestRetentionCompletedWorkspace` covers active and expired
+landing ownership. This adds no recovery loop, lease, reason code, configuration
+or policy bypass; project-specific validation and forge protections remain intact.
 
 Worker cleanup (#169) removes Darwin polling of unreadable unknown same-user
 process environments. A single inspection cannot establish ownership from an

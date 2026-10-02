@@ -72,7 +72,12 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 		if err != nil || !l.validOwnershipRecord(ctx, relative, record) {
 			continue
 		}
-		if _, err := root.Lstat(record.Key); errors.Is(err, fs.ErrNotExist) {
+		relativePath, err := filepath.Rel(l.root, record.Path)
+		if err != nil {
+			recordError(err)
+			continue
+		}
+		if _, err := root.Lstat(relativePath); errors.Is(err, fs.ErrNotExist) {
 			recordError(removeRetentionPath(root, relative, &totals.Ownership))
 			continue
 		} else if err != nil {

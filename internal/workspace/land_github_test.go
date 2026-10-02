@@ -41,6 +41,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		wantRefusal    string
 		moved          bool
 		external       bool
+		isolated       bool
 		pullError      string
 		sourceConflict bool
 		advanceOnMerge bool
@@ -99,6 +100,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "merge secondary quota 429", method: "merge", failureMethod: "PUT", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
 		{name: "secondary quota wins over conflict refusal text", method: "merge", failureMethod: "PUT", status: 429, message: "Pull Request has merge conflicts", rate: true, retryAfter: "120"},
 		{name: "reuses the explicit external PR", method: "merge", external: true},
+		{name: "isolated checkout reuses the external source PR", method: "merge", external: true, isolated: true},
+		{name: "isolated external source conflict", method: "squash", external: true, isolated: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantRefusal: LandRefusalConflict},
 		{name: "external moved head is never overwritten", method: "merge", external: true, pullError: "head", wantRefusal: LandRefusalHeadMoved},
 		{name: "external branch must match", method: "merge", external: true, pullError: "branch", wantRefusal: LandRefusalHeadMoved},
 		{name: "external repository must match", method: "merge", external: true, pullError: "repository", wantRefusal: LandRefusalProtected},
@@ -171,7 +174,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 							case "fork":
 								headRepo = "another/repo"
 							}
-							pull = fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}},"base":{"ref":"%s","repo":{"full_name":"%s"}}}`, pullHead, headRef, headRepo, baseRef, baseRepo)
+							pull = fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}},"base":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}}}`, pullHead, headRef, headRepo, base, baseRef, baseRepo)
 						}
 						if !healthy && req.Method == test.failureMethod {
 							status = test.status
@@ -266,7 +269,20 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if test.external {
 				opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
 			}
-			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), fixture.info, fixture.issue, opts)
+			landingInfo, landingIssue := fixture.info, fixture.issue
+			if test.isolated {
+				var err error
+				runGit(t, fixture.source, "push", "origin", fixture.head+":refs/pull/7/head")
+				landingIssue.Landing = &opts
+				landingInfo, err = fixture.backend.Create(t.Context(), landingIssue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if landingInfo.Path == fixture.info.Path || landingInfo.Branch == fixture.info.Branch || landingInfo.ReviewBranch != fixture.info.Branch {
+					t.Fatalf("landing ownership = %#v", landingInfo)
+				}
+			}
+			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
 			if test.wantDeferred {
 				var status *github.StatusError
 				var refusal *LandRefusal

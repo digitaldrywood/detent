@@ -24,12 +24,16 @@ func (l *LocalGit) removeExpiredWorkspace(ctx context.Context, root *os.Root, re
 	if !takeCleanupSlot(ctx) {
 		return nil
 	}
-	size, err := retentionBytes(root, record.Key)
+	relativePath, err := filepath.Rel(l.root, record.Path)
+	if err != nil {
+		return err
+	}
+	size, err := retentionBytes(root, relativePath)
 	if err != nil {
 		return err
 	}
 	if !l.isSourceWorktree(ctx, record.Path) {
-		entries, err := fs.ReadDir(root.FS(), record.Key)
+		entries, err := fs.ReadDir(root.FS(), filepath.ToSlash(relativePath))
 		if err != nil {
 			return err
 		}
