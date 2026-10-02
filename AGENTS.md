@@ -1,8 +1,34 @@
 # AGENTS.md - Detent Agent Notes
 
 - For future requested product or code changes, do not implement directly by default.
-- Create a focused GitHub issue in `digitaldrywood/detent`, add `detent:todo`, and let Detent dogfood the work.
+- File focused work through the selected project's issue authority using its provided supported MCP/API context, and let Detent dogfood the work (see [Issue authoring](#issue-authoring)).
 - Only make direct code changes when the human explicitly asks for manual implementation, asks to finish an already-started fix, or asks for local review and diagnostics that require edits.
+
+## Issue authoring
+
+Use the selected project's actual tracker and supplied project context.
+A GitHub repository identity or PR/merge landing path does not make GitHub
+the issue authority.
+
+- For a native project, file through its provided project-scoped `file_issue`
+  or supported application owner. Keep issue content, discussion, typed
+  dependencies, workflow and deduplication with that native owner, including
+  imported provenance. Follow the supplied scoped connection and request
+  contracts; see [API & MCP setup](docs/api-mcp-setup.md) and
+  [Hub API](docs/hub-api.md).
+- File GitHub issues only when the selected tracker/project context makes
+  GitHub the issue authority. Retain that project's configured filing path
+  and workflow mapping, including `detent:todo` only where configured and
+  authorized. Preserve the Backlog scope rules below.
+- Preserve origin stamps, stable problem fingerprints and duplicate checks
+  in the selected tracker. Match open work before filing; comment on a
+  matching issue instead of creating a duplicate when authorized.
+
+Respect supplied authority, grants and the current completion contract.
+If the required supported context is missing or contradictory, record that
+limitation through the existing workflow; do not silently write to another
+tracker. Do not invent endpoints, project IDs, credentials or routing, or
+extract credentials from hidden browser state or raw runtime databases.
 
 ## Issue effort selection
 
