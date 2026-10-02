@@ -5,6 +5,7 @@
 // side is expected to marshal/unmarshal the same files, so a change here that
 // is not mirrored there breaks a cross-language test on purpose.
 import * as Schema from "effect/Schema";
+import { WorkspaceCapabilities } from "./work.ts";
 
 // --- Identities -------------------------------------------------------------
 
@@ -850,6 +851,7 @@ export const BootstrapProject = Schema.Struct({
   labels: Schema.optional(Schema.Array(Schema.String)),
   priorities: Schema.optional(Schema.Array(Schema.String)),
   coordinator: Schema.optional(Schema.Boolean),
+  capabilities: Schema.optional(WorkspaceCapabilities),
 });
 export type BootstrapProject = typeof BootstrapProject.Type;
 
@@ -883,7 +885,7 @@ export const Bootstrap = Schema.Struct({
    */
   preferences: Schema.optional(PreferenceChoices),
   /** The hub only serves this client when the conversation feature is on. */
-  feature: Schema.Struct({ conversation: Schema.Boolean }),
+  feature: Schema.Struct({ conversation: Schema.Boolean, workspaces: Schema.optional(Schema.Boolean) }),
 });
 export type Bootstrap = typeof Bootstrap.Type;
 

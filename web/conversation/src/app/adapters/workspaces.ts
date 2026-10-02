@@ -88,11 +88,12 @@ export function workspaceKey(
   projectId: string,
   workItemId: string,
   requires: readonly string[],
+  attemptId: string | null = null,
 ): string {
   // Panels asking for different surfaces send different bodies, and the hub
   // refuses one key carrying two bodies, so each relayed set has its own key.
   const surfaces = relayedRequires(requires).join(",");
-  const storageKey = `${KEY_STORAGE_PREFIX}:${projectId}:${workItemId}:${surfaces}`;
+  const storageKey = `${KEY_STORAGE_PREFIX}:${projectId}:${workItemId}:${surfaces}:${attemptId ?? ""}`;
   try {
     const existing = globalThis.localStorage?.getItem(storageKey);
     if (existing !== null && existing !== undefined && existing.length > 0) return existing;
@@ -177,12 +178,14 @@ async function acquire(
   projectId: string,
   workItemId: string,
   requires: readonly string[],
+  attemptId: string | null,
 ): Promise<Workspace> {
   const existing = await http
     .listWorkspaces({ projectId, workItemId })
     .then((page) =>
       page.workspaces.find(
         (candidate) =>
+          (candidate.attempt_id ?? null) === attemptId &&
           isWorkspaceUsable(candidate.state) && workspaceSatisfies(candidate, requires),
       ),
     )
@@ -191,8 +194,9 @@ async function acquire(
   try {
     return await http.createWorkspace({
       projectId,
-      key: workspaceKey(projectId, workItemId, requires),
+      key: workspaceKey(projectId, workItemId, requires, attemptId),
       workItemId,
+      ...(attemptId === null ? {} : { attemptId }),
       requires,
     });
   } catch (cause) {
@@ -208,7 +212,7 @@ async function acquire(
       const id = cause.details?.["workspace_id"];
       if (typeof id === "string") {
         const adopted = await http.getWorkspace(projectId, id);
-        if (workspaceSatisfies(adopted, requires)) return adopted;
+        if ((adopted.attempt_id ?? null) === attemptId && workspaceSatisfies(adopted, requires)) return adopted;
       }
     }
     throw cause;
@@ -232,6 +236,7 @@ function describe(cause: unknown): string {
 export interface UseWorkspaceInput {
   readonly projectId: string | null;
   readonly workItemId: string | null;
+  readonly attemptId?: string | null;
   /** What the runner must report to be allowed to claim it (§18.1). */
   readonly requires: readonly string[];
   /** False keeps the hook idle, so opening a panel is what spends a slot. */
@@ -241,6 +246,7 @@ export interface UseWorkspaceInput {
 export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
   const http = useWorkHttp();
   const { projectId, workItemId } = input;
+  const attemptId = input.attemptId ?? null;
   const enabled = input.enabled ?? true;
   // The array identity changes on every render at most call sites; the key is
   // what the effect actually depends on.
@@ -262,7 +268,7 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    void acquire(http, projectId, workItemId, requiresKey.split(","))
+    void acquire(http, projectId, workItemId, requiresKey.split(","), attemptId)
       .then((next) => {
         if (cancelled) return;
         setWorkspace(next);
@@ -278,7 +284,7 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, workItemId, requiresKey, enabled, nonce]);
+  }, [http, projectId, workItemId, attemptId, requiresKey, enabled, nonce]);
 
   // Readiness by subscription (§18.1). The stream is the project's, so every
   // frame is filtered down to this workspace's id before it is believed.

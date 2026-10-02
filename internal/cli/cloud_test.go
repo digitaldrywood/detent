@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
@@ -207,6 +210,77 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 	}
 	if tenant.OrganizationID != "org_tenant" || tenant.WorkOSOrganizationID != "org_workos" || tenant.SharedEntry == nil || tenant.SharedEntry.Generation != 1 || tenant.BootstrapSubject != "" {
 		t.Fatalf("tenant = %+v", tenant)
+	}
+	for _, test := range []struct {
+		name, policy      string
+		wrongOrganization bool
+	}{
+		{name: "absent"},
+		{name: "disabled", policy: "enabled: false\nterminal: {enabled: false, isolation: sandbox, record: false}"},
+		{name: "files only", policy: "enabled: true\nterminal: {enabled: false, isolation: sandbox}"},
+		{name: "terminal policy", policy: "enabled: true\nrequest_timeout: 3m\nretain_after_run: 10m\nidle_timeout: 15m\nmax_lifetime: 2h\nperson_max_open: 2\nplan: {max_open: 7}\nrelay: {memory: 64MB}\nfiles: {deny: [private/**]}\nterminal: {enabled: true, isolation: container, record: false}"},
+		{name: "wrong organization", policy: "enabled: true", wrongOrganization: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var prior hostedFileConfig
+			if err := yaml.Unmarshal(raw, &prior); err != nil {
+				t.Fatal(err)
+			}
+			if test.policy != "" {
+				prior.Workspaces = &hostedWorkspaceFileConfig{}
+				if err := yaml.Unmarshal([]byte(test.policy), prior.Workspaces); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.wrongOrganization {
+				prior.OrganizationID = "org_other"
+			}
+			directory := t.TempDir()
+			spec := cloudentry.TenantSpec{Directory: directory, Organization: cloudentry.Organization{ID: "org_tenant", ProviderID: "org_workos", Generation: 2}, PublicURL: "https://hub.example.test", Issuer: "detent-cloud", PublicKey: cloudassert.PublicKeyOf(key)}
+			for generation := int64(2); generation <= 3; generation++ {
+				encoded, err := yaml.Marshal(prior)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(directory, "tenant.yaml"), encoded, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				spec.Organization.Generation = generation
+				generated, err := launcher.Configure(spec)
+				if test.wrongOrganization {
+					if err == nil {
+						t.Fatal("another organization's workspace policy was accepted")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				var next hostedFileConfig
+				if err := yaml.Unmarshal(generated, &next); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(next.Workspaces, prior.Workspaces) {
+					t.Fatal("tenant workspace policy changed during generation")
+				}
+				next.Workspaces, prior.Workspaces = nil, nil
+				prior.SharedEntry.AllocationGeneration = generation
+				if !reflect.DeepEqual(next, prior) {
+					t.Fatal("unrelated tenant settings changed")
+				}
+				if err := yaml.Unmarshal(generated, &prior); err != nil {
+					t.Fatal(err)
+				}
+			}
+			other, err := launcher.Configure(cloudentry.TenantSpec{Directory: t.TempDir(), Organization: cloudentry.Organization{ID: "org_other", ProviderID: "org_other", Generation: 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var unrelated hostedFileConfig
+			if err := yaml.Unmarshal(other, &unrelated); err != nil || unrelated.Workspaces != nil {
+				t.Fatal("workspace policy propagated to another tenant")
+			}
+		})
 	}
 }
 

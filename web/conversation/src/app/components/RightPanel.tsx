@@ -1,4 +1,5 @@
 import React from "react";
+import { useClient } from "../client.ts";
 
 import { PanelLayoutControls, RightPanelMaximizeControl } from "../../components/chat/PanelLayoutControls.tsx";
 import { RightPanelSheet } from "../../components/RightPanelSheet.tsx";
@@ -162,6 +163,7 @@ export function useRightPanelWorkspace(input: {
   /** The route's name, for the narrow sheet's own heading. */
   readonly title?: string;
 }): RightPanelWorkspace {
+  const client = useClient();
   const panel = useRightPanel(input.scopeKey);
   const shouldUseSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
@@ -255,7 +257,15 @@ export function useRightPanelWorkspace(input: {
   // not spend one: opening the tab is what asks for a worktree.
   const projectId = input.projectId ?? null;
   const workItemId = input.workItemId ?? null;
-  const filesAvailable = projectId !== null && workItemId !== null;
+  const project = client.bootstrap.projects.find((candidate) => candidate.id === projectId);
+  const workspacesEnabled = client.bootstrap.feature.workspaces === true;
+  const filesLaunchable = projectId !== null && workItemId !== null && workspacesEnabled &&
+    project?.can_write === true && project.capabilities?.files === true;
+  const filesReason = !workspacesEnabled
+    ? "Workspace sessions are not enabled for this organization."
+    : "Files need write access and an authorized runner with workspace support.";
+  const attempt = [...input.attempts].sort((a, b) => b.started_at.localeCompare(a.started_at))[0];
+  const attemptId = attempt?.attempt_id ?? null;
   const filesOpen = panel.surfaces.some(
     (surface) => surface.kind === "files" || surface.kind === "file",
   );
@@ -275,13 +285,16 @@ export function useRightPanelWorkspace(input: {
   const workspace = useWorkspace({
     projectId,
     workItemId,
-    requires: terminalOpen ? TERMINAL_WORKSPACE_REQUIRES : WORKSPACE_REQUIRES,
-    enabled: filesAvailable && (filesOpen || runRequested || terminalOpen),
+    attemptId,
+    requires: terminalOpen && attempt?.status !== "running" ? TERMINAL_WORKSPACE_REQUIRES : attempt?.status === "running" ? ["files"] : WORKSPACE_REQUIRES,
+    enabled: filesLaunchable && (filesOpen || runRequested || terminalOpen),
   });
   const { resolvedTheme } = useTheme();
   // What the surfaces' waiting sentences name: the runner that claimed it, and
   // the times the request timeout is derived from (§18.1).
   const workspaceResource = workspace.workspace;
+  const filesAvailable = filesLaunchable &&
+    (workspaceResource === null || workspaceResource.capabilities?.files === true);
   const workspaceSession = React.useMemo(
     () => workspaceSessionFacts(workspaceResource),
     [workspaceResource],
@@ -326,7 +339,9 @@ export function useRightPanelWorkspace(input: {
     workspaceLive,
     relayUrl,
     mintTicket,
-    enabled: terminalOpen,
+    enabled: terminalOpen && workspacesEnabled && project?.capabilities?.terminal === true &&
+      attempt?.status !== "running" && workspaceResource?.read_only !== true &&
+      workspaceResource?.capabilities?.terminal === true,
   });
 
   const terminalPolicy = React.useMemo<TerminalPolicy>(
@@ -335,16 +350,19 @@ export function useRightPanelWorkspace(input: {
       canWrite: input.canWrite ?? false,
       canManageRunners: input.canManageRunners ?? false,
       role: input.role ?? "",
-      workspaceReadOnly: workspaceResource?.read_only === true,
+      workspaceReadOnly: workspaceResource?.read_only === true || attempt?.status === "running",
       workspaceState: workspace.state,
       workspaceReason: workspace.reason,
       workspaceError: workspace.error,
-      // Until a workspace exists there is nothing to read a capability off, and
-      // §18.1's rule is that a null is not a refusal: the tab is pressable, and
-      // pressing it is what opens the workspace that answers the question.
-      terminalCapable: workspaceResource?.capabilities?.terminal ?? null,
+      workspacesEnabled,
+      terminalCapable: workspaceResource === null
+        ? project?.capabilities?.terminal ?? null
+        : project?.capabilities?.terminal === true && workspaceResource.capabilities?.terminal === true,
     }),
     [
+      workspacesEnabled,
+      project,
+      attempt?.status,
       input.canManageRunners,
       input.canWrite,
       input.role,
@@ -540,6 +558,7 @@ export function useRightPanelWorkspace(input: {
     onAddBrowserInProfile: noop,
     onAddTerminal: addTerminal,
     terminalDisabledReason: terminalReason,
+    filesDisabledReason: filesReason,
     onAddDiff: addDiff,
     onAddFiles: addFiles,
     onAddPullRequest: addPullRequest,
@@ -593,11 +612,11 @@ export function useRightPanelWorkspace(input: {
     pullRequestAvailable,
     openConversation: addConversation,
     conversationAvailable: conversationId !== null,
-    openFiles: addFiles,
+    openFiles: filesAvailable ? addFiles : noop,
     filesAvailable,
     openOutput: addOutput,
     outputAvailable: filesAvailable,
-    openTerminal: addTerminal,
+    openTerminal: terminalIsAvailable ? addTerminal : noop,
     newTerminal,
     closeTerminal: closeActiveTerminal,
     terminalAvailable: terminalIsAvailable,

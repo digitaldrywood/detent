@@ -326,6 +326,22 @@ only authorized read tools, while operator actions use the named command tools.
 `TestWorkspaceOperatorUnavailable` and `TestMCPOperatorChatRetry` cover these boundaries.
 No MCP adapter writes tracker lanes or introduces a new protection/recovery mechanism.
 
+Scoped Cloud workspace policy (native #144) survives tenant regeneration through
+the existing shared configuration builder. Only the matching organization's
+existing `workspaces` section is retained; new tenants stay disabled, and shared
+credentials and other settings keep their existing owners. Bootstrap workspace
+availability reflects the hosted service, current project/person grants, fresh
+active registered runner reports and the existing terminal isolation rule.
+Unknown availability disables Surface controls with a safe explanation. Surface
+requests name the selected attempt so retained-runner ownership and active-attempt
+read-only restrictions remain application-owned. Projection confers no authority:
+commands and relay traffic retain current role, grants, owner, path, lease and
+plan checks. Raw Mac terminals still report `user`; this change does not activate
+them under sandbox policy or authorize any tenant's terminal activation.
+`TestCloudAllocationGeneratesTenantConfiguration` and
+`TestAppBootstrapWorkspaceAvailability` cover persistence and truthful availability.
+No mechanism, control channel, configuration key or lane writer is introduced.
+
 Effective runner capacity (native #90) uses the existing runner administration,
 native command receipt, routing heartbeat, selected global configuration writer
 and runtime reload owners. UI routing capacity edits and MCP/API capacity requests

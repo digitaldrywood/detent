@@ -1752,6 +1752,29 @@ Resource and API.
 
 ### 18.10 Capabilities and keybindings
 
+Cloud workspace availability (native #144) is published as `feature.workspaces`
+and `projects[].capabilities`. Missing service or unknown capabilities leave
+Files and Terminal disabled with an explanation. The project projection uses
+fresh, active, unrevoked registered runners with a current project grant and
+claim operation. Files availability requires one runner serving both files and
+exec; Terminal additionally requires that same runner's terminal capability,
+the hosted person's write/runners grants, enabled terminal policy and the
+existing isolation rule. Once a workspace exists, its own capabilities further
+narrow availability. Opening Surface sends the selected attempt ID and reuses
+only workspaces on that attempt; running attempts request files read-only.
+Every command and relay request still rechecks application authority.
+
+The shared tenant generator retains the matching tenant's deliberate
+`workspaces` policy through regeneration; absent policy stays disabled and is
+never copied to another tenant. It regenerates shared settings and secret
+environment references through their existing owners. A reviewed activation
+must use a runner's actual supported terminal isolation and explicitly authorize
+that scoped tenant policy. Mac terminals report `user`, which default sandbox
+policy refuses. After integration, the operator must review the isolation and
+activation, then verify the selected runner/workspace identity with a benign
+command through the genuine relay after any active attempt ends. Source tests
+do not establish live activation or that runtime acceptance.
+
 - **No Agents surface (September 12, 2026).** Michael, reviewing the right
   panel: "I think for our purposes we don't need an agents tab." T3's `agents`
   surface is removed from the panel — the kind and its union member, the
