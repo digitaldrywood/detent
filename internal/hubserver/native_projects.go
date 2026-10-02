@@ -29,6 +29,7 @@ func (s *Service) nativeCapabilities(c echo.Context) error {
 
 type nativeCapabilitiesResponse struct {
 	ServerID        string   `json:"server_id"`
+	Version         string   `json:"version"`
 	ProtocolMajors  []int    `json:"protocol_majors"`
 	EventSchemas    []int    `json:"event_schema_versions"`
 	Features        []string `json:"features"`
@@ -46,7 +47,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 		features = append(features, tracker.NativeWorkspaceCapability)
 	}
 	features = append(features, tracker.NativeDispatchPriorityCapability)
-	return nativeCapabilitiesResponse{serverID, []int{1, 2}, []int{1}, features, maxAPIRequestBodyBytes, maxAPIPageLimit}, nil
+	return nativeCapabilitiesResponse{serverID, s.config.Version, []int{1, 2}, []int{1}, features, maxAPIRequestBodyBytes, maxAPIPageLimit}, nil
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {

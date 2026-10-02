@@ -36,9 +36,22 @@ func (c *NativeClient) base() string {
 }
 
 type nativeCapabilities struct {
+	Version        string   `json:"version"`
 	ProtocolMajors []int    `json:"protocol_majors"`
 	EventSchemas   []int    `json:"event_schema_versions"`
 	Features       []string `json:"features"`
+}
+
+func (c *Client) Version(ctx context.Context) (string, error) {
+	var capabilities nativeCapabilities
+	if err := c.request(ctx, http.MethodGet, "/api/v2/capabilities", nil, &capabilities); err != nil {
+		return "", err
+	}
+	version := strings.TrimSpace(capabilities.Version)
+	if version == "" {
+		return "", errors.New("Hub did not report its version")
+	}
+	return version, nil
 }
 
 func (c *NativeClient) capabilities(ctx context.Context) (nativeCapabilities, error) {

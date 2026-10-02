@@ -54,6 +54,9 @@ func newRuntimeUpdateScheduler(
 	reserveDrain func(context.Context) (func(), error),
 ) (*detentupdate.Scheduler, error) {
 	interval := time.Duration(cfg.Global.Update.NormalizedCheckIntervalHours()) * time.Hour
+	if cfg.Global.Client.Configured() && cfg.Global.Update.CheckIntervalHours == 0 {
+		interval = cfg.Global.Client.HeartbeatInterval()
+	}
 	schedulerConfig := detentupdate.SchedulerConfig{
 		Enabled:          cfg.Global.Update.AutoCheckEnabled,
 		AutoApplyEnabled: cfg.Global.Update.AutoApplyEnabled,
@@ -80,7 +83,10 @@ func newRuntimeUpdateScheduler(
 		GOOS:           runtime.GOOS,
 	})
 	version := runtimeUpdateVersion(cfg)
-	schedulerConfig.Updater = newRuntimeUpdater(cfg, executable, version)
+	schedulerConfig.Updater, err = newRuntimeUpdater(cfg, executable, version)
+	if err != nil {
+		return nil, err
+	}
 	schedulerConfig.RequestRestart = func(binary string) bool {
 		if strings.TrimSpace(binary) == "" {
 			binary = executable
