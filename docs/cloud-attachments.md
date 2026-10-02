@@ -30,9 +30,36 @@ Send one multipart `file` part, or send the file body with `Content-Type` and
 `X-CSRF-Token` and the same origin. Scoped API keys use `Authorization: Bearer`;
 read keys cannot upload or delete. The equivalent
 `/api/v2/organizations/:org/projects/:project/attachments` routes support API
-clients. A successful upload returns the attachment metadata with a random
-128-bit `att_` identifier. Rendering and automatic selection in issue/comment
-editors are separate work.
+clients. A successful upload returns attachment metadata with a random 128-bit `att_`
+identifier and a `reference` field. Embed that markdown in an issue body or
+comment body. Raster references use `![name](path)`; other files use
+`[name](path)`. Native issue/comment creation and editing bind uploads in the
+same transaction. One upload belongs to one issue body or comment; upload
+another copy to embed the same file in another comment. Reads still require
+a session or a scoped token.
+
+The hosted MCP `upload_attachment` tool accepts `project_id`, `name`,
+`content_base64` and optional `content_type`. It returns the same metadata and
+reference. Embed the reference in `file_issue.description` (the native
+create-issue operation) or `add_comment.body`. The existing 64 KiB MCP argument
+limit permits up to 60,000 base64 characters; use the upload API or CLI for
+larger files. The tool never reads a path on the remote server.
+
+`detent attach screenshot.png --project prj_example` uses the configured
+Cloud client and prints just the markdown reference. Configured project names
+also work. An explicit entry URL, organization and scoped token can be selected:
+
+```sh
+detent attach screenshot.png --project prj_example \
+  --hub-url https://cloud.detent.build/organizations/org_example \
+  --organization org_example --token-env DETENT_HUB_TOKEN
+```
+
+Native coding/rework workers collect up to ten screenshots from
+`.detent/validation/` before workspace cleanup and publish an inline validation
+evidence comment through the existing execution owner. SSH workers send file
+bytes through their execution callback; credentials stay on the owner. Symlinks
+are skipped and filesystem reads stay within the assigned worktree.
 
 Entry verifies the browser's organization authorization, then makes a small
 signed request to the tenant Hub to verify current membership, token authority

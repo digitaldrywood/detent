@@ -79,7 +79,7 @@ func definition(name string, description string, schema string) Definition {
 // Registry is the canonical protocol registry; deployments filter by application availability.
 func Registry() []Definition {
 	definitions := append(Catalog(), WorkReadCatalog()...)
-	for _, catalog := range [][]Definition{CommandCatalog(), ProjectCatalog(), WorkspaceCatalog(), OperatorChatCatalog(), ChangeCatalog(), AdministrationCatalog()} {
+	for _, catalog := range [][]Definition{CommandCatalog(), AttachmentCatalog(), ProjectCatalog(), WorkspaceCatalog(), OperatorChatCatalog(), ChangeCatalog(), AdministrationCatalog()} {
 		definitions = append(definitions, catalog...)
 	}
 	return definitions

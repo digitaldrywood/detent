@@ -2,9 +2,12 @@ package cloudentry
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +20,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type spacesObject struct {
@@ -243,8 +249,20 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		t.Fatal("download rendered inline")
 	}
 	anonymous := newBrowser(t, f.service.Handler())
-	for _, scope := range []string{"read", "write"} {
-		keyRequest, err := json.Marshal(map[string]any{"name": "attachment-key-" + scope, "scope": scope, "expires_days": 1, "project_ids": []string{project}})
+	other := alice.do(http.MethodPost, "/organizations/org_alpha/projects", url.Values{"name": {"Other attachment project"}, "grant_access": {"true"}, "csrf": {csrf}}, nil)
+	if other.StatusCode != http.StatusSeeOther {
+		t.Fatalf("other project=%d", other.StatusCode)
+	}
+	otherProject := strings.TrimPrefix(other.Header.Get("Location"), "/organizations/org_alpha/projects/")
+	var writeToken string
+	for _, test := range []struct {
+		scope, project       string
+		wantRead, wantUpload int
+	}{
+		{"read", project, 200, 404}, {"write", project, 200, 201}, {"write", otherProject, 404, 404},
+	} {
+		scope := test.scope
+		keyRequest, err := json.Marshal(map[string]any{"name": "attachment-key-" + scope + test.project, "scope": scope, "expires_days": 1, "project_ids": []string{test.project}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -260,19 +278,23 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		}
 		headers := map[string]string{"Authorization": "Bearer " + token.Token, "Content-Type": "text/plain", "X-Attachment-Name": "token.txt"}
 		read := attachmentRequest(t, anonymous, http.MethodGet, base+"/"+record.ID, nil, headers)
-		if read.Code != http.StatusOK {
+		if read.Code != test.wantRead {
 			t.Fatalf("%s token read=%d %s", scope, read.Code, read.Body.String())
 		}
 		before := len(store.requests())
 		upload := attachmentRequest(t, anonymous, http.MethodPost, base, strings.NewReader("token data"), headers)
-		if scope == "read" {
+		if test.wantUpload == 404 {
 			if upload.Code != http.StatusNotFound || len(store.requests()) != before {
 				t.Fatalf("read token upload=%d touched storage=%v", upload.Code, len(store.requests()) != before)
 			}
 		} else if upload.Code != http.StatusCreated {
 			t.Fatalf("write token upload=%d %s", upload.Code, upload.Body.String())
 		}
+		if test.wantUpload == 201 {
+			writeToken = token.Token
+		}
 	}
+
 	for _, test := range []struct {
 		name, media string
 		content     []byte
@@ -339,6 +361,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	if audits != 5 {
 		t.Fatalf("audit entries=%d", audits)
 	}
+	exerciseAttachmentClients(t, f, alice, anonymous, project, writeToken)
 	deleted := attachmentRequest(t, alice, http.MethodDelete, base+"/"+record.ID, nil, map[string]string{"X-CSRF-Token": csrf})
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete=%d %s", deleted.Code, deleted.Body.String())
@@ -502,6 +525,106 @@ func TestAttachmentMetadataSettlement(t *testing.T) {
 			read := attachmentRequest(t, alice, http.MethodGet, path+"/"+record.ID, nil, nil)
 			if read.Code != 200 || read.Body.String() != "settlement data" {
 				t.Fatalf("settled read=%d %s", read.Code, read.Body.String())
+			}
+		})
+	}
+}
+
+func exerciseAttachmentClients(t *testing.T, f entryFixture, browser, anonymous *browser, project, token string) {
+	t.Helper()
+	var pixels bytes.Buffer
+	if err := png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	client, err := hubclient.New(hubclient.Config{URL: testPublicURL + "/organizations/org_alpha", TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: handlerTransport{handler: f.service.Handler()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_alpha", tracker.ProjectID(project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"API", "MCP", "worker"} {
+		t.Run(mode, func(t *testing.T) {
+			issue, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "attachment-issue-" + mode}, Title: "Attachment " + mode, Body: "PNG evidence", State: "Todo"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var uploaded attachment.Metadata
+			if mode == "worker" {
+				err = native.PublishValidationEvidence(t.Context(), issue.WorkItemID, tracker.Mutation{IdempotencyKey: "worker-evidence"}, []runner.ValidationEvidence{{Name: "test.png", ContentType: "image/png", Content: pixels.Bytes()}})
+			} else if mode == "API" {
+				uploaded, err = native.UploadAttachment(t.Context(), bytes.NewReader(pixels.Bytes()), "test.png", "image/png")
+			} else {
+				path := "/organizations/org_alpha/mcp"
+				headers := map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token, "Mcp-Protocol-Version": "2025-11-25"}
+				initialized := attachmentRequest(t, anonymous, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"attachment-test","version":"1"}}}`), headers)
+				if initialized.Code != 200 {
+					t.Fatalf("initialize=%d %s", initialized.Code, initialized.Body.String())
+				}
+				headers["Mcp-Session-Id"] = initialized.Header().Get("Mcp-Session-Id")
+				attachmentRequest(t, anonymous, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers)
+				arguments := map[string]string{"project_id": project, "name": "test.png", "content_type": "image/png", "content_base64": base64.StdEncoding.EncodeToString(pixels.Bytes())}
+				call, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": "upload_attachment", "arguments": arguments}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := attachmentRequest(t, anonymous, http.MethodPost, path, bytes.NewReader(call), headers)
+				var result struct {
+					Result struct {
+						IsError    bool                `json:"isError"`
+						Attachment attachment.Metadata `json:"structuredContent"`
+					} `json:"result"`
+				}
+				if json.Unmarshal(response.Body.Bytes(), &result) != nil || response.Code != 200 || result.Result.IsError {
+					t.Fatalf("MCP upload=%d %s", response.Code, response.Body.String())
+				}
+				uploaded = result.Result.Attachment
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode != "worker" {
+				if uploaded.Reference != uploaded.Markdown("org_alpha") || uploaded.Validate() != nil {
+					t.Fatalf("metadata=%+v", uploaded)
+				}
+				_, err = native.CreateComment(t.Context(), issue.WorkItemID, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "attachment-comment-" + mode}, Body: uploaded.Reference})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			comments, err := native.Comments(t.Context(), issue.WorkItemID, "")
+			if err != nil || len(comments.Items) != 1 {
+				t.Fatalf("comments=%+v %v", comments, err)
+			}
+			refs := attachment.References(comments.Items[0].Body, "org_alpha", project)
+			var ref attachment.Reference
+			for _, part := range refs {
+				if part.ID != "" {
+					ref = part
+				}
+			}
+			if ref.ID == "" || !ref.Image {
+				t.Fatalf("no inline image: %s", comments.Items[0].Body)
+			}
+			read := attachmentRequest(t, browser, http.MethodGet, ref.URL, nil, nil)
+			if read.Code != 200 {
+				t.Fatalf("PNG read=%d %s", read.Code, read.Body.String())
+			}
+			if _, err := png.Decode(bytes.NewReader(read.Body.Bytes())); err != nil {
+				t.Fatal(err)
+			}
+			binding, err := json.Marshal(map[string]string{"work_item_id": string(issue.WorkItemID)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rebind := attachmentRequest(t, anonymous, http.MethodPost, ref.URL+"/reference", bytes.NewReader(binding), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+			if rebind.Code != 404 {
+				t.Fatalf("comment attachment remained unbound: %d %s", rebind.Code, rebind.Body.String())
+			}
+			page, body := browser.get("/organizations/org_alpha/work/i/" + string(issue.WorkItemID))
+			if page.StatusCode != 200 || !strings.Contains(body, `id="root"`) {
+				t.Fatalf("issue page=%d", page.StatusCode)
 			}
 		})
 	}

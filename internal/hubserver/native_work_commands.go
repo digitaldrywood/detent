@@ -66,6 +66,11 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 		if err := validateNativeContent(issue.Title, issue.Body, issue.Labels, issue.Assignees, issue.Priority); err != nil {
 			return nil, err
 		}
+		if request.Body != nil {
+			if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), "", issue.Body); err != nil {
+				return nil, err
+			}
+		}
 		return persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: fields}, now)
 	})
 }
@@ -180,6 +185,9 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 		}
 		_, err = tx.ExecContext(ctx, "UPDATE native_comments SET body = ?, revision = ?, edited_by_json = ?, updated_at = ? WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?", comment.Body, comment.Revision, editedBy, formatHubTime(now), scope.organization, scope.project, comment.WorkItemID, comment.ID)
 		if err != nil {
+			return nil, err
+		}
+		if err := bindCloudAttachmentReferences(ctx, tx, scope, string(comment.WorkItemID), comment.ID, comment.Body); err != nil {
 			return nil, err
 		}
 		if err := recordNativeChange(ctx, tx, scope, comment, string(comment.WorkItemID), comment.Revision, "comment.edited", tracker.CollaborationData{CommentID: comment.ID, Revision: comment.Revision}, now); err != nil {

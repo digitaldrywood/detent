@@ -312,6 +312,7 @@ type artifactExecutionProbe struct {
 	testExecution
 	failure   error
 	finalized bool
+	evidence  []ValidationEvidence
 }
 
 func (*artifactExecutionProbe) PrepareArtifacts(context.Context, string) error { return nil }
@@ -319,6 +320,11 @@ func (*artifactExecutionProbe) ArtifactLog(context.Context, string) error      {
 func (e *artifactExecutionProbe) FinalizeArtifacts(context.Context, string) error {
 	e.finalized = true
 	return e.failure
+}
+
+func (e *artifactExecutionProbe) PublishValidationEvidence(_ context.Context, files []ValidationEvidence) error {
+	e.evidence = files
+	return nil
 }
 
 func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
@@ -330,7 +336,9 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 		failed      bool
 		finalized   bool
 		after       bool
+		screenshot  bool
 	}{
+		{name: "clean with screenshots", screenshot: true, state: workspace.RecoveryState{HeadSHA: "head"}, finalized: true, after: true},
 		{name: "clean", state: workspace.RecoveryState{HeadSHA: "head"}, finalized: true, after: true},
 		{name: "failed capture", state: workspace.RecoveryState{HeadSHA: "head"}, failed: true, finalized: true},
 		{name: "unpushed finalized head", state: workspace.RecoveryState{HeadSHA: "head", UnpushedCommits: 1}, finalized: true},
@@ -340,11 +348,24 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{test.state}, recoveryErr: test.recoveryErr}}
 			execution := &artifactExecutionProbe{}
+			directory := t.TempDir()
+			if test.screenshot {
+				path := filepath.Join(directory, ".detent", "validation", "1")
+				if err := os.MkdirAll(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(path, "test.png"), []byte("screenshot bytes"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.failed {
 				execution.failure = errors.New("upload unavailable")
 			}
 			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
-			err := r.afterExecution(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{})
+			err := r.afterExecution(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{Path: directory}, workspace.Issue{})
+			if test.screenshot && (len(execution.evidence) != 1 || string(execution.evidence[0].Content) != "screenshot bytes" || execution.evidence[0].Name != "test.png") {
+				t.Fatalf("evidence=%+v", execution.evidence)
+			}
 			if execution.finalized != test.finalized || backend.afterRun != test.after || (err != nil) != test.failed {
 				t.Fatal("cleanup preceded durable finalization", err, backend.afterRun)
 			}

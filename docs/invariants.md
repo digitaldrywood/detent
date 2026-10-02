@@ -28,6 +28,16 @@ prefix. `TestAttachmentRoutesIsolation`, `TestAttachmentStorageProbe`,
 `TestCloudAttachmentReferenceDeletion`, `TestAttachmentOrphanSweepAndDeprovision`
 and `TestCloudAllocationGeneratesTenantConfiguration` cover these boundaries.
 
+Native #177 reuses those authorities for API, MCP, CLI and validation evidence.
+MCP sessions and project write grants are checked by the Hub before entry stores
+the bytes. Markdown references bind to the same project and item/comment in the
+content transaction; copied references never grant read access or reassign a
+bound upload. `TestAttachmentRoutesIsolation` covers API/MCP PNG round-trips,
+foreign-project tokens, automatic comment binding and the evidence publisher.
+`TestArtifactsFinalizeBeforeWorkspaceCleanup` covers worker screenshot capture.
+The client renders only the exact Cloud attachment path as a direct same-origin
+image; other filesystem paths retain workspace classification.
+
 Reviewed native landing (#170) uses a LocalGit checkout and ref scoped to the
 issue and immutable reviewed head, independently of Code and operator source
 worktrees. External versions retain their real PR repository, base, branch and
