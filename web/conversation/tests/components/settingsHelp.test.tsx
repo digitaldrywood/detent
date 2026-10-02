@@ -100,19 +100,7 @@ describe("project settings help", () => {
 });
 
 describe("runner settings help", () => {
-  it.each([
-    ["Shared host capacity", /6 slots.*other runners use 4.*only 2 remain/],
-    ["Runner limit and reported capacity", /smaller of reported capacity.*saved limit of 6.*at most 4 jobs/],
-    ["codex provider capacity", /compatible with its provider and model.*2 free provider slots/],
-    ["codex account capacity", /runner and host room/],
-  ])("explains %s on the fleet readout", async (label, copy) => {
-    const user = userEvent.setup();
-    render(<RunnersSectionView fleet={{ ...fleet, runners: [fleet.runners[0]!] }} />);
-    await user.click(screen.getByRole("button", { name: `About ${label}` }));
-    expect((await screen.findByRole("dialog", { name: label })).textContent).toMatch(copy);
-  });
-
-  it("explains editable routing and capacity without changing or submitting the form", async () => {
+  it("explains capacity and tag routing inline without submitting", async () => {
     const user = userEvent.setup();
     const save = vi.fn();
     const routing: RunnerRouting = {
@@ -121,19 +109,13 @@ describe("runner settings help", () => {
       availability: { timezone: "", windows: [], hard_deadline: "" },
       spillover: { mode: "never", after_minutes: 0 },
     };
-    render(<RunnersSectionView fleet={{ ...fleet, runners: [{ ...fleet.runners[0]!, routing }] }} onSaveRouting={save} />);
-    await user.click(screen.getByText("Edit runner settings"));
-    for (const [label, copy] of [
-      ["Tags", /do not grant access to a project/],
-      ["Authorized project IDs", /authorized to work.*does not grant project access/],
-      ["Runner capacity limit", /limit of 6 allows up to 6 jobs.*reports 4.*limit is 4.*0 pauses new jobs/],
-    ] as const) {
-      await user.click(screen.getByRole("button", { name: `About ${label}` }));
-      expect((await screen.findByRole("dialog", { name: label })).textContent).toMatch(copy);
-      await user.keyboard("{Escape}");
-    }
-    expect((screen.getByRole("spinbutton", { name: "Runner capacity limit" }) as HTMLInputElement).value).toBe("6");
-    expect((screen.getByRole("textbox", { name: "Tags" }) as HTMLInputElement).value).toBe("linux");
+    render(<RunnersSectionView fleet={{ ...fleet, editable: true, runners: [{ ...fleet.runners[0]!, routing }] }} onSaveRouting={save} />);
+    await user.click(screen.getByRole("button", { name: `Manage ${fleet.runners[0]!.display_name}` }));
+    const sheet = screen.getByRole("dialog");
+    expect(sheet.textContent).toContain("The lower of the two wins");
+    expect(sheet.textContent).toContain("Tags pick from allowed runners; they never grant a project.");
+    expect((screen.getByRole("spinbutton", { name: "Jobs at once" }) as HTMLInputElement).value).toBe("6");
+    expect(screen.getByRole("button", { name: "Remove tag linux" })).toBeTruthy();
     expect(save).not.toHaveBeenCalled();
   });
 });

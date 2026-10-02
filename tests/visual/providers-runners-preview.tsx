@@ -19,14 +19,31 @@ const client = {
 
 if (location.protocol === "file:") {
   const problem = { code: "tier_unavailable", message: "Sandbox tooling is unavailable", fix_hint: "Repair the sandbox tooling", first_seen: "2026-09-10T12:00:00Z" };
-  const preview = { ...fleet, runners: [
+  let preview = { ...fleet, editable: !new URLSearchParams(location.search).has("readOnly"), runners: [
     { ...fleet.runners[0], claim_refusal_reason: "" },
     { ...fleet.runners[1], display_name: "Build runner", health: "needs_attention", host_capacity: 4, claim_refusal_reason: "", problems: [problem] },
     { ...fleet.runners[1], id: "runner_outside", display_name: "Night runner", health: "outside_hours", host_capacity: 1, claim_refusal_reason: "" },
-  ] };
-  globalThis.fetch = async (input) => new Response(JSON.stringify(String(input).endsWith("/runner-enrollments")
-    ? { id: "preview_enrollment", token: "preview_token", expires_at: "2026-09-10T12:24:31Z" }
-    : preview), { status: String(input).endsWith("/runner-enrollments") ? 201 : 200 });
+  ].map((runner) => ({ ...runner, state: "active", revision: 1, routing: {
+    display_name: runner.display_name, state: "active", capacity_limit: runner.capacity_limit,
+    project_ids: ["proj_preview", "prj_unreadable"], home_project_ids: ["proj_preview"], tags: ["linux"],
+    isolation_tier: "sandbox", host_services: ["tcp:127.0.0.1:8080"],
+    availability: { timezone: "America/Chicago", windows: ["Mon-Fri 09:00-17:00"], hard_deadline: "30m" },
+    spillover: { mode: "after", after_minutes: 5 },
+  } })) };
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/routing") && init?.method === "PUT") {
+      const id = String(input).split("/").at(-2);
+      const { expected_revision, ...routing } = JSON.parse(String(init.body));
+      preview = { ...preview, runners: preview.runners.map((runner) => runner.id === id
+        ? { ...runner, routing, state: routing.state, capacity_limit: routing.capacity_limit, revision: expected_revision + 1 }
+        : runner) };
+      return new Response("{}", { status: 200 });
+    }
+    const enrollment = String(input).endsWith("/runner-enrollments");
+    return new Response(JSON.stringify(enrollment
+      ? { id: "preview_enrollment", token: "preview_token", expires_at: "2026-09-10T12:24:31Z" }
+      : preview), { status: enrollment ? 201 : 200 });
+  };
 }
 
 const route = createRootRoute({

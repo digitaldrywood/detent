@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
-import type { FleetResponse } from "../../src/contracts/account.ts";
+import type { FleetResponse, RunnerRouting } from "../../src/contracts/account.ts";
+import { AccountError } from "../../src/app/account/api.ts";
+import { parseRunnerWindow, serializeRunnerWindow } from "../../src/app/fleet/runnerSchedule.ts";
 import emptyFixture from "../../src/contracts/fixtures/account-fleet-empty.json";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 
@@ -12,6 +14,15 @@ afterEach(() => { cleanup(); window.history.replaceState(null, "", "/"); });
 const FLEET = fleetFixture as unknown as FleetResponse;
 const EMPTY = emptyFixture as unknown as FleetResponse;
 const NOW = Date.parse("2026-09-10T12:09:31Z");
+const ROUTING: RunnerRouting = {
+  display_name: FLEET.runners[0]!.display_name, state: "active", capacity_limit: 6,
+  project_ids: ["prj_known", "prj_unknown"], home_project_ids: ["prj_unknown"], tags: ["linux"],
+  isolation_tier: "sandbox", host_services: ["tcp:127.0.0.1:8080"],
+  availability: { timezone: "America/Chicago", windows: ["Mon-Fri 09:00-17:00", "Sat-Sun 00:00-24:00"], hard_deadline: "30m" },
+  spillover: { mode: "after", after_minutes: 5 },
+};
+const RUNNER = { ...FLEET.runners[0]!, routing: ROUTING, revision: 7 };
+const PROJECTS = [{ id: "prj_known", name: "Known project" }, { id: "prj_second", name: "Second project" }];
 
 function renderSection(fleet: FleetResponse = FLEET) {
   render(<RunnersSectionView fleet={fleet} now={NOW} />);
@@ -81,6 +92,127 @@ describe("providers", () => {
 });
 
 describe("runner details", () => {
+  it("round-trips project and home IDs, including unreadable projects", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    const sheet = screen.getByRole("dialog");
+    expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(true);
+    expect((within(sheet).getByRole("checkbox", { name: "prj_unknown" }) as HTMLInputElement).checked).toBe(true);
+    expect((within(sheet).getByRole("checkbox", { name: "Home prj_unknown" }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, ROUTING));
+  });
+
+  it("keeps home projects within selected access and lets unknown projects be reselected", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    const sheet = screen.getByRole("dialog");
+    fireEvent.click(within(sheet).getByRole("checkbox", { name: "Home Second project" }));
+    expect((within(sheet).getByRole("checkbox", { name: "Second project" }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(within(sheet).getByRole("checkbox", { name: "prj_unknown" }));
+    expect((within(sheet).getByRole("checkbox", { name: "Home prj_unknown" }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(within(sheet).getByRole("checkbox", { name: "prj_unknown" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, expect.objectContaining({
+      project_ids: ["prj_known", "prj_second", "prj_unknown"], home_project_ids: ["prj_second"],
+    })));
+  });
+
+  it.each(["Mon-Fri 09:00-17:00", "Sat-Sun 00:00-24:00", "Fri-Mon 22:00-06:00", "Tue-Tue 08:15-12:45", " Mon-Fri  09:00-17:00 "])("preserves the existing hours string %s", (window) => {
+    expect(serializeRunnerWindow(parseRunnerWindow(window))).toBe(window);
+    expect(serializeRunnerWindow({ ...parseRunnerWindow(window), until: "13:00" })).toBe(`${parseRunnerWindow(window).days} ${parseRunnerWindow(window).from}-13:00`);
+  });
+
+  it("serializes edited hours and chips and clears deadlines for always available", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.change(screen.getByLabelText("Until 1"), { target: { value: "18:00" } });
+    fireEvent.change(screen.getByLabelText("Add tag"), { target: { value: "gpu,linux" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, expect.objectContaining({
+      tags: ["linux", "gpu"], availability: { ...ROUTING.availability, windows: ["Mon-Fri 09:00-18:00", "Sat-Sun 00:00-24:00"] },
+    })));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    rerender(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.change(screen.getByLabelText("Availability"), { target: { value: "always" } });
+    fireEvent.change(screen.getByLabelText("Queued work spillover"), { target: { value: "never" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith(RUNNER, expect.objectContaining({
+      availability: { ...ROUTING.availability, windows: [], hard_deadline: "" }, spillover: { mode: "never", after_minutes: 0 },
+    })));
+  });
+
+  it.each([false, true])("renders the same sections without controls when editing is unavailable (fleet editable: %s)", (editable) => {
+    render(<RunnersSectionView fleet={{ ...FLEET, editable, runners: [RUNNER] }} projects={PROJECTS} {...(!editable ? { onSaveRouting: vi.fn() } : {})} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    const sheet = screen.getByRole("dialog");
+    expect(sheet.querySelectorAll("input, select, textarea")).toHaveLength(0);
+    expect(sheet.querySelector('[data-slot="sheet-footer"]')).toBeNull();
+    for (const name of ["Taking work", "Capacity", "Projects", "Tags", "Schedule", "Isolation", "Running work", "Provider accounts"]) {
+      expect(within(sheet).getByRole("heading", { name })).toBeTruthy();
+    }
+    expect(sheet.textContent).toContain("Known project");
+    expect(sheet.textContent).toContain("prj_unknown");
+    expect(sheet.textContent).toContain("Sat-Sun 00:00-24:00");
+  });
+
+  it("does not invent settings when the fleet omits routing for a viewer", () => {
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: false, runners: [{ ...FLEET.runners[0]!, availability: ROUTING.availability }] }} projects={PROJECTS} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    const sheet = screen.getByRole("dialog");
+    expect(sheet.querySelectorAll("input, select, textarea")).toHaveLength(0);
+    expect(sheet.textContent).toContain("Project access is not reported.");
+    expect(sheet.textContent).toContain("Tags are not reported.");
+    expect(sheet.textContent).toContain("Host services are not reported.");
+    expect(sheet.textContent).toContain("Queued work spillover is not reported.");
+    expect(sheet.textContent).toContain("Mon-Fri 09:00-17:00");
+  });
+
+  it("shows save errors and reloads the routing revision after a conflict", async () => {
+    const save = vi.fn()
+      .mockRejectedValueOnce(new AccountError({ status: 400, code: "invalid", message: "Invalid runner hours" }))
+      .mockRejectedValueOnce(new AccountError({ status: 409, code: "conflict", message: "revision conflict" }))
+      .mockResolvedValue(undefined);
+    const fresh = { ...RUNNER, revision: 8, routing: { ...ROUTING, state: "draining", capacity_limit: 3 } };
+    const reload = vi.fn(async () => {
+      rerender(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [fresh] }} projects={PROJECTS} onSaveRouting={save} onReloadRunner={reload} />);
+    });
+    const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} onReloadRunner={reload} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.change(screen.getByLabelText("Jobs at once"), { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    const saveError = await screen.findByRole("alert");
+    expect(saveError.textContent).toContain("Invalid runner hours");
+    expect(saveError.closest('[data-slot="sheet-footer"]')).not.toBeNull();
+    expect((screen.getByLabelText("Jobs at once") as HTMLInputElement).value).toBe("10");
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("settings have been reloaded"));
+    expect(reload).toHaveBeenCalledOnce();
+    expect((screen.getByLabelText("Jobs at once") as HTMLInputElement).value).toBe("3");
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith(fresh, fresh.routing));
+  });
+
+  it("opens every problem from attention and cancels without saving", () => {
+    const save = vi.fn();
+    const problems = [
+      { code: "sandbox", message: "Sandbox unavailable", fix_hint: "Repair sandbox", first_seen: "2026-09-10T12:00:00Z" },
+      { code: "provider", message: "Provider unavailable", fix_hint: "Sign in", first_seen: "2026-09-10T12:01:00Z" },
+    ];
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [{ ...RUNNER, health: "needs_attention", problems }] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(within(screen.getByTestId("runner-attention")).getByRole("button", { name: "Open runner Michael's MacBook Pro" }));
+    const sheet = screen.getByRole("dialog");
+    expect(within(sheet).getAllByRole("alert")).toHaveLength(2);
+    expect(sheet.textContent).toContain("Seen since");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    expect(save).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it.each(["Spilled over", "Waiting for home work (5m)"])("keeps %s out of the list and in Manage", (status) => {
     renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, home_project_ids: ["prj_home"], home_status: status }] });
     const row = screen.getByTestId("host-card");
