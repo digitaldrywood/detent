@@ -758,7 +758,7 @@ describe("the Work clock render boundary", () => {
       const first = render(<Label />);
       const second = render(<Label />);
       expect(start).toHaveBeenCalledTimes(1);
-      const timer = start.mock.results[0].value;
+      const timer = start.mock.results[0]!.value;
       act(() => vi.advanceTimersByTime(2_000));
       expect(first.container.textContent).toBe(String(NOW + 2_000));
       expect(second.container.textContent).toBe(String(NOW + 2_000));
@@ -794,7 +794,7 @@ describe("the Work clock render boundary", () => {
       const focus = document.activeElement;
       const before = { ...clockRenders };
       const cards = view === "board" ? screen.getAllByTestId("issue-card") : screen.getAllByTestId("work-list-row");
-      const first = cards[0];
+      const first = cards[0]!;
       const text = first.textContent;
       const reads = document.querySelectorAll("[data-work-item]").length;
       await act(async () => { vi.advanceTimersByTime(2_000); });
