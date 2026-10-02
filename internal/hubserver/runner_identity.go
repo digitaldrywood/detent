@@ -177,6 +177,7 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
+		SpriteName       string                        `json:"sprite_name,omitempty"`
 		Update           *runnerauth.UpdateObservation `json:"update,omitempty"`
 		CapacityConfig   *runnerauth.CapacityConfig    `json:"capacity_configuration,omitempty"`
 		LocalChecks      *runnerauth.LocalChecks       `json:"local_checks,omitempty"`
@@ -219,6 +220,22 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	}
 	return s.runnerTransaction(c, status, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		if scope.credential.Runner.RunnerID != "" {
+			if request.SpriteName != "" {
+				if !validSpritesSlug(request.SpriteName) {
+					return nil, nativeInvalid("Sprite name is invalid")
+				}
+				result, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', ?) WHERE id=? AND organization_id=? AND hostname=?", request.SpriteName, scope.credential.Runner.MachineID, scope.organization, request.SpriteName)
+				if err != nil {
+					return nil, err
+				}
+				count, err := result.RowsAffected()
+				if err != nil {
+					return nil, err
+				}
+				if count != 1 {
+					return nil, nativeInvalid("Sprite name must match the runner hostname")
+				}
+			}
 			if err := storeRunnerUpdateObservation(ctx, tx, scope, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}

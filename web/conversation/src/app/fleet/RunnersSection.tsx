@@ -126,7 +126,7 @@ function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[
     const used = Math.max(leases.length, ...group.map((entry) => entry.host_used));
     const capacity = runner.host_capacity;
     const available = group.reduce((count, entry) => {
-      if (entry.state !== "active" || entry.health !== "online" || entry.claim_refusal_reason) return count;
+      if (entry.state !== "active" || (entry.health !== "online" && entry.health !== "asleep") || entry.claim_refusal_reason) return count;
       if (entry.provider_capacity.length > 0 && !entry.provider_capacity.some((provider) => provider.state !== "exhausted" && provider.used < provider.max_concurrent)) return count;
       return count + Math.max(0, Math.min(entry.capacity_limit, entry.reported_capacity) - entry.leases.length);
     }, 0);
@@ -231,6 +231,7 @@ export function RunnersSectionView({
               <AlertTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
               <div className="min-w-0 flex-1 space-y-2 text-xs">
                 <p className="text-sm font-medium">{runner.display_name} can't take work</p>
+                {runner.sprite?.wake_failed ? <p>The Hub could not wake this Sprite. Check the Sprite and its project’s Sprites token.</p> : runner.sprite && !runner.sprite.can_wake ? <p>No Sprites token is set for an accessible project; the Hub cannot wake this Sprite.</p> : null}
                 {runner.health === "needs_attention" && runner.problems?.[0] ? <div className="space-y-1"><p>{runner.problems[0].message}</p><p className="text-muted-foreground">{runner.problems[0].fix_hint}</p></div> : null}
                 {runner.claim_refusal_reason ? <div data-testid={runner.health === "needs_attention" ? "host-update" : undefined} className="space-y-2"><p>{runner.claim_refusal_reason}</p><PathValue value={RUNNER_UPGRADE_COMMAND} /></div> : null}
                 <button type="button" className="rounded text-warning underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" onClick={() => openRunner(runner)}>Open runner<span className="sr-only"> {runner.display_name}</span></button>

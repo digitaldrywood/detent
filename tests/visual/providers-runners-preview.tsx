@@ -8,6 +8,7 @@ import fleet from "../../web/conversation/src/contracts/fixtures/account-fleet.j
 
 const client = {
   account: {
+    version: "v0.9.1",
     organization: { id: "org_preview", name: "Threefold" },
     organizations: [{ current: true, public_url: "https://runners.detent.test" }],
     actor: { can_manage: true, can_manage_runners: true },
@@ -39,6 +40,7 @@ if (location.protocol === "file:") {
         : runner) };
       return new Response("{}", { status: 200 });
     }
+    if (String(input).endsWith("/secrets/fly_sprites_token")) return new Response(JSON.stringify({ kind: "fly_sprites_token", present: false }));
     const enrollment = String(input).endsWith("/runner-enrollments");
     return new Response(JSON.stringify(enrollment
       ? { id: "preview_enrollment", token: "preview_token", expires_at: "2026-09-10T12:24:31Z" }
