@@ -1,44 +1,17 @@
-// One runner, as a card.
-//
-// `host_capacity`/`host_used` are the shared machine's numbers and
-// `capacity_limit`/`reported_capacity` the runner's own, so the card shows the
-// meter for the host and names the runner's limit beside it rather than
-// averaging two different facts into one bar.
-import { DownloadIcon, Monitor } from "lucide-react";
 import React from "react";
 
-import { cn } from "../../lib/utils.ts";
+import { Button } from "../../components/ui/button.tsx";
+import {
+  Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle, DialogTrigger,
+} from "../../components/ui/dialog.tsx";
 import type { FleetRunner } from "../../contracts/account.ts";
-import { PathValue } from "../account/controls.tsx";
-import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
-import { SettingsHelp } from "../settings/SettingsHelp.tsx";
-import { RUNNER_HELP } from "./runnerHelp.ts";
-import { formatLocalTime, formatRelativeTime } from "./format.ts";
+import { cn } from "../../lib/utils.ts";
+import { formatRelativeTime } from "./format.ts";
 
 function healthTone(health: string): string {
-  if (health === "healthy") return "bg-success motion-safe:animate-status-pulse";
+  if (health === "healthy") return "bg-success";
   if (health === "needs_attention") return "bg-warning";
   return "bg-muted-foreground";
-}
-
-function Field({
-  label,
-  help,
-  children,
-}: {
-  readonly label: string;
-  readonly help?: { readonly label: string; readonly text: string };
-  readonly children: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <div>
-      <div className="flex flex-wrap items-center gap-1">
-        {label}
-        {help ? <SettingsHelp label={help.label}>{help.text}</SettingsHelp> : null}
-      </div>
-      <b className="block text-[13px] font-medium tabular-nums text-foreground">{children}</b>
-    </div>
-  );
 }
 
 export function HostCard({
@@ -50,132 +23,70 @@ export function HostCard({
   readonly now?: number;
   readonly settings?: React.ReactNode;
 }): React.ReactElement {
-  const refusal = runner.claim_refusal_reason ?? "";
-  const percent =
-    runner.host_capacity > 0
-      ? Math.min(100, Math.round((runner.host_used / runner.host_capacity) * 100))
-      : 0;
+  const health = runner.health === "healthy" ? "Healthy"
+    : runner.health === "needs_attention" ? "Needs attention"
+    : runner.health === "outside_hours" ? "Outside hours"
+    : runner.health;
   return (
     <article
+      id={`runner-${runner.id}`}
+      tabIndex={-1}
       data-testid="host-card"
-      className="flex flex-col gap-2.5 rounded-xl border border-border/60 bg-card/40 p-4"
+      className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7rem_auto] sm:items-start"
     >
-      <div className="flex items-start gap-2">
-        <span
-          aria-hidden="true"
-          className={cn("mt-1.5 size-2 shrink-0 rounded-full", healthTone(runner.health))}
-        />
-        <Monitor aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{runner.display_name}</div>
-          <div className={cn("text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning")}>
-            {runner.health === "needs_attention" ? <span className="rounded border border-warning/40 px-1.5">Needs attention</span> : runner.health === "outside_hours" ? "Outside hours" : runner.health}
-          </div>
-        </div>
-        <div className="text-right text-xs text-muted-foreground">
-          {runner.state} · {runner.hostname} · {runner.os}/{runner.architecture}
+      <div className="flex min-w-0 items-start gap-2.5">
+        <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", healthTone(runner.health))} />
+        <div className="min-w-0 space-y-1">
+          <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
+          <p className="break-words text-xs text-muted-foreground">{runner.hostname}, {runner.os} {runner.architecture}</p>
+          <p className={cn("text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning")}>{health}</p>
         </div>
       </div>
-
-      {(runner.problems?.length ?? 0) > 0 ? (
-        <ul aria-label="Runner problems" role={runner.health === "needs_attention" ? "alert" : undefined} className="space-y-2 text-xs">
-          {runner.problems?.map((problem) => (
-            <li key={problem.code} data-problem={problem.code}>
-              <p className="font-medium">{problem.message}</p>
-              <p className="text-muted-foreground">{problem.fix_hint}</p>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-        <Field label="Slots" help={{ label: "Shared host capacity", text: RUNNER_HELP.host }}>
-          {runner.host_used} / {runner.host_capacity} in use
-        </Field>
-        <Field label="Runner limit" help={{ label: "Runner limit and reported capacity", text: RUNNER_HELP.reported }}>
-          {runner.capacity_limit}
-          {runner.reported_capacity !== runner.capacity_limit
-            ? ` (reports ${runner.reported_capacity})`
-            : ""}
-        </Field>
-        <Field label="Last heartbeat">{formatRelativeTime(runner.last_heartbeat_at, now)}</Field>
-      </div>
-
-      {runner.isolation_tier === undefined ? null : (
-        <div className="text-xs text-muted-foreground">
-          {`Isolation setting: ${runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}`}
-          {runner.availability?.windows.length
-            ? ` · ${runner.availability.windows.join(", ")} (${runner.availability.timezone})`
-            : " · Always available"}
-        </div>
-      )}
-
-      {(runner.home_project_ids?.length ?? 0) > 0 ? (
-        <div className="text-xs text-muted-foreground" data-testid="home-status">
-          <span>Home projects: {runner.home_project_ids?.join(", ")}</span>
-          {runner.home_status ? <span className="block">{runner.home_status}</span> : null}
-        </div>
-      ) : null}
-
-      {refusal !== "" ? (
-        <div
-          data-testid="host-update"
-          className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warning/40 bg-warning/8 px-2.5 py-2 text-xs"
-        >
-          <DownloadIcon aria-hidden="true" className="size-3.5 shrink-0 text-warning" />
-          <span className="font-medium text-foreground">
-            {refusal}
-          </span>
-          <span className="ml-auto">
-            <PathValue value={RUNNER_UPGRADE_COMMAND} />
-          </span>
-        </div>
-      ) : null}
-
-      <div
-        role="progressbar"
-        aria-label={`Slots in use on ${runner.display_name}`}
-        aria-valuenow={runner.host_used}
-        aria-valuemin={0}
-        aria-valuemax={runner.host_capacity}
-        className="h-[5px] overflow-hidden rounded-[3px] bg-accent"
-      >
-        <i className="block h-full bg-primary" style={{ width: `${percent}%` }} />
-      </div>
-
-      {runner.leases.length > 0 ? (
-        <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
+      <div className="min-w-0 space-y-1 text-xs">
+        <p className="text-muted-foreground sm:sr-only">Running</p>
+        <ul className="space-y-1">
           {runner.leases.map((lease) => (
-            <li key={lease.lease_id} className="flex min-w-0 items-baseline gap-1.5">
-              <span className="shrink-0 font-medium tabular-nums text-foreground">
-                #{lease.work_item_id}
-              </span>
-              <span className="truncate">{lease.title}</span>
-              <span className="ml-auto shrink-0">expires {formatLocalTime(lease.expires_at)}</span>
+            <li key={lease.lease_id} className="truncate" title={`#${lease.work_item_id} ${lease.title}`}>
+              <span className="font-medium">#{lease.work_item_id}</span> {lease.title}
             </li>
           ))}
         </ul>
-      ) : null}
-
-      {runner.provider_capacity.length > 0 ? (
-        <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
-          {runner.provider_capacity.map((capacity) => (
-            <li
-              key={`${capacity.provider}-${capacity.account_alias}`}
-              className="flex min-w-0 items-baseline gap-1.5"
-            >
-              <span className="shrink-0 text-foreground">{capacity.provider}</span>
-              <SettingsHelp label={`${capacity.provider} account capacity`}>{RUNNER_HELP.provider}</SettingsHelp>
-              <span className="truncate">{capacity.account_alias}</span>
-              <span className="ml-auto shrink-0 tabular-nums">
-                {capacity.availability} · {capacity.state} · {capacity.used}/
-                {capacity.max_concurrent}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {settings}
+        <p className="text-muted-foreground tabular-nums">{runner.leases.length} of {runner.host_capacity} slots in use</p>
+      </div>
+      <div className="space-y-1 text-xs text-muted-foreground">
+        <p className="sm:sr-only">Last check-in</p>
+        <time dateTime={runner.last_heartbeat_at} title={runner.last_heartbeat_at}>{formatRelativeTime(runner.last_heartbeat_at, now)}</time>
+      </div>
+      <Dialog>
+        <DialogTrigger render={<Button size="xs" variant="outline" className="w-fit" aria-label={`Manage ${runner.display_name}`}>Manage</Button>} />
+        <DialogPopup className="sm:max-w-2xl">
+          <DialogHeader><DialogTitle>{runner.display_name}</DialogTitle></DialogHeader>
+          <DialogPanel className="space-y-4 text-xs">
+            <p className="text-muted-foreground">{runner.state} · {runner.hostname} · {runner.os}/{runner.architecture}</p>
+            <p>Runner limit: {runner.capacity_limit}{runner.reported_capacity !== runner.capacity_limit ? ` (reports ${runner.reported_capacity})` : ""}</p>
+            {runner.isolation_tier === undefined ? null : (
+              <p className="text-muted-foreground">
+                Isolation setting: {runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}
+                {runner.availability?.windows.length ? ` · ${runner.availability.windows.join(", ")} (${runner.availability.timezone})` : " · Always available"}
+              </p>
+            )}
+            {(runner.home_project_ids?.length ?? 0) === 0 ? null : (
+              <div data-testid="home-status" className="break-words text-muted-foreground">
+                <p>Home projects: {runner.home_project_ids?.join(", ")}</p>
+                {runner.home_status ? <p>{runner.home_status}</p> : null}
+              </div>
+            )}
+            <ul className="space-y-2 text-muted-foreground">
+              {runner.provider_capacity.map((capacity) => (
+                <li key={`${capacity.provider}-${capacity.account_alias}`} className="break-words">
+                  {capacity.provider} · {capacity.account_alias} · {capacity.availability} · {capacity.state} · {capacity.used}/{capacity.max_concurrent}
+                </li>
+              ))}
+            </ul>
+            {settings}
+          </DialogPanel>
+        </DialogPopup>
+      </Dialog>
     </article>
   );
 }

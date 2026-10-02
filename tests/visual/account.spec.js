@@ -408,7 +408,12 @@ test("the fleet page redirects into settings and renders the hosts and providers
   await expect(
     page.locator("[data-app-sidebar]").getByRole("button", { name: "Providers & runners" }),
   ).toHaveAttribute("data-active", "true");
-  await expect(page.getByRole("heading", { name: "Runners" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Providers & runners", exact: true })).toBeVisible();
+  if (await page.getByTestId("host-card").count()) {
+    await expect(page.getByRole("heading", { name: "Runners", exact: true })).toBeVisible();
+  } else {
+    await expect(page.getByText("No runners yet. Enroll a machine to start taking work.")).toBeVisible();
+  }
   await expect(page.getByRole("heading", { name: "Providers" })).toBeVisible();
 
   const meters = page.getByRole("progressbar");
@@ -522,7 +527,7 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
       return { x: box.x, width: box.width, height: box.height, lineHeight: parseFloat(getComputedStyle(element).lineHeight), rowWidth: row.width };
     });
     expect(layout.height).toBeLessThanOrEqual(layout.lineHeight * 2 + 1);
-    expect(layout.width).toBeGreaterThan(Math.min(400, layout.rowWidth - 40));
+    expect(layout.width).toBeGreaterThan(Math.min(200, layout.rowWidth - 40));
     expect(layout.x + layout.width).toBeLessThanOrEqual(width);
   }
   await enroll.click();

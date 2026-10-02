@@ -1,4 +1,4 @@
-import { BotIcon, ServerIcon } from "lucide-react";
+import { AlertTriangleIcon, BotIcon, ServerIcon } from "lucide-react";
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -6,7 +6,7 @@ import type { FleetResponse, FleetRunner, ProviderCapacity, RunnerRouting } from
 import { cn } from "../../lib/utils.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useResource } from "../account/useResource.ts";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
+import { SettingsPageContainer, SettingsRow, SettingsSection, scrollToSettingsTarget } from "../settings/settingsLayout.tsx";
 import {
   EnrollRunnerDialog,
   PendingEnrollments,
@@ -15,10 +15,9 @@ import {
 import { SettingsHelp } from "../settings/SettingsHelp.tsx";
 import { RUNNER_HELP } from "./runnerHelp.ts";
 import { HostCard } from "./HostCard.tsx";
-
-// --- Providers --------------------------------------------------------------
-
-const DOT_TONES = ["bg-primary", "bg-info", "bg-success", "bg-warning"] as const;
+import { PathValue } from "../account/controls.tsx";
+import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
+import { formatLocalTime } from "./format.ts";
 
 export interface ProviderRow {
   readonly provider: string;
@@ -26,10 +25,10 @@ export interface ProviderRow {
   readonly used: number;
   readonly max: number;
   readonly availability: readonly string[];
+  readonly status: readonly string[];
   readonly models: readonly string[];
 }
 
-/** Every runner's provider capacity, folded onto one row per provider. */
 export function summarizeProviders(runners: readonly FleetRunner[]): readonly ProviderRow[] {
   const rows = new Map<
     string,
@@ -39,6 +38,7 @@ export function summarizeProviders(runners: readonly FleetRunner[]): readonly Pr
       used: number;
       max: number;
       availability: Set<string>;
+      status: Set<string>;
       models: Set<string>;
     }
   >();
@@ -52,6 +52,7 @@ export function summarizeProviders(runners: readonly FleetRunner[]): readonly Pr
         used: 0,
         max: 0,
         availability: new Set(),
+        status: new Set(),
         models: new Set(),
       };
       rows.set(capacity.provider, row);
@@ -60,6 +61,8 @@ export function summarizeProviders(runners: readonly FleetRunner[]): readonly Pr
     row.used += capacity.used;
     row.max += capacity.max_concurrent;
     row.availability.add(capacity.availability);
+    row.status.add(capacity.reset_at ? "Rate limited until " + formatLocalTime(capacity.reset_at)
+      : [capacity.availability, capacity.state].filter(Boolean).map((value) => value.replaceAll("_", " ")).join(" · "));
     for (const model of capacity.models ?? []) row.models.add(model);
   }
   return [...rows.values()].map((row) => ({
@@ -68,49 +71,83 @@ export function summarizeProviders(runners: readonly FleetRunner[]): readonly Pr
     used: row.used,
     max: row.max,
     availability: [...row.availability],
+    status: [...row.status],
     models: [...row.models],
   }));
 }
 
-export function ProviderSummary({
-  runners,
-}: {
-  readonly runners: readonly FleetRunner[];
-}): React.ReactElement | null {
+export function ProviderSummary({ runners }: { readonly runners: readonly FleetRunner[] }): React.ReactElement {
   const rows = summarizeProviders(runners);
-  if (rows.length === 0) return null;
   return (
-    <>
-      {rows.map((row, index) => (
-        <SettingsRow
-          key={row.provider}
-          help={{ label: `${row.provider} provider capacity`, text: RUNNER_HELP.provider }}
-          title={
-            <span className="flex min-w-0 items-center gap-2">
-              <span
-                aria-hidden="true"
-                className={cn(
-                  "size-2 shrink-0 rounded-full",
-                  DOT_TONES[index % DOT_TONES.length] ?? "bg-primary",
-                )}
-              />
-              <span className="truncate">{row.provider}</span>
-            </span>
-          }
-          description={`${row.accounts} ${row.accounts === 1 ? "account" : "accounts"} · ${row.availability.join(", ")}`}
-          status={row.models.length > 0 ? row.models.join(", ") : undefined}
-          control={
-            <span className="text-[13px] tabular-nums">
-              {row.used}/{row.max} in use
-            </span>
-          }
-        />
-      ))}
-    </>
+    <div className="min-w-0 overflow-x-auto rounded-xl" tabIndex={0} role="region" aria-label="Provider accounts">
+      <table className="w-full min-w-[640px] text-left text-xs">
+        <thead className="border-b border-border/60 text-muted-foreground">
+          <tr>{["Provider", "Accounts", "In use", "Models", "Status"].map((heading) => <th key={heading} scope="col" className="px-4 py-3 font-medium">{heading}</th>)}</tr>
+        </thead>
+        <tbody className="divide-y divide-border/50">
+          {rows.map((row) => {
+            const { provider, used, max, status } = row;
+            return (
+              <tr key={provider}>
+                <th scope="row" className="px-4 py-4 font-medium">{provider}</th>
+                <td className="px-4 py-4 tabular-nums">{row.accounts}</td>
+                <td className="min-w-28 px-4 py-4">
+                  <span className="tabular-nums">{used}/{max}</span>
+                  <div role="progressbar" aria-label={provider + " in use"} aria-valuenow={used} aria-valuemin={0} aria-valuemax={max} className="mt-2 h-1 w-16 overflow-hidden rounded-full bg-accent">
+                    <div className="h-full bg-primary" style={{ width: (max > 0 ? Math.min(100, used / max * 100) : 0) + "%" }} />
+                  </div>
+                </td>
+                <td className="max-w-56 px-4 py-4 text-muted-foreground">{row.models.join(", ") || "—"}</td>
+                <td className="px-4 py-4">{status.map((value) => <p key={value} className={value.startsWith("Rate limited") ? "text-warning" : "text-muted-foreground"}>{value}</p>)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-// --- Section ----------------------------------------------------------------
+const SLOT_TONES = {
+  running: "border-primary bg-primary",
+  free: "border-border bg-background",
+  unavailable: "border-dashed border-warning bg-warning/10",
+};
+
+function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[]; readonly onOpen: (runner: FleetRunner) => void }): React.ReactElement {
+  const used = runners.reduce((count, runner) => count + runner.leases.length, 0);
+  const total = runners.reduce((count, runner) => count + runner.host_capacity, 0);
+  const unavailable = runners.filter((runner) => runner.health === "needs_attention").reduce((count, runner) => count + runner.host_capacity, 0);
+  return (
+    <SettingsSection title="Capacity right now" variant="plain">
+      <div className="space-y-5 rounded-xl border border-border/60 bg-card/40 p-4">
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <p className="text-base font-medium tabular-nums">{used} of {total} slots running work</p>
+          {unavailable > 0 ? <p className="text-xs text-warning">{unavailable} slots can't take work</p> : null}
+        </div>
+        <div className="flex flex-wrap gap-x-8 gap-y-4">
+          {runners.map((runner) => (
+            <button key={runner.id} type="button" onClick={() => onOpen(runner)} aria-label={"Open " + runner.display_name} className="min-w-0 max-w-full space-y-2 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="runner-capacity">
+              <span className="block break-words text-xs text-muted-foreground">{runner.display_name}</span>
+              <span className="flex flex-wrap gap-1.5">
+                {Array.from({ length: runner.host_capacity }, (_, index) => {
+                  const lease = runner.leases[index];
+                  const state = lease ? "running" : runner.health === "needs_attention" ? "unavailable" : "free";
+                  return <span key={index} data-slot-state={state} title={lease ? "#" + lease.work_item_id + " " + lease.title : state === "free" ? "Free slot" : "Can't take work"} className={cn("size-5 shrink-0 rounded-sm border", SLOT_TONES[state])} />;
+                })}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground" aria-label="Slot legend">
+          {([["running", "Running work"], ["free", "Free"], ["unavailable", "Can't take work"]] as const).map(([state, label]) => (
+            <span key={state} className="flex items-center gap-2"><span aria-hidden="true" className={cn("size-3 rounded-sm border", SLOT_TONES[state])} />{label}</span>
+          ))}
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
 
 function RunnerSettingsForm({
   runner,
@@ -203,111 +240,100 @@ function RunnerSettingsForm({
 }
 
 export function RunnersSectionView({
-  fleet,
-  now,
-  onEnroll,
-  enrollments = [],
-  onSaveRouting,
+  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting,
 }: {
   readonly fleet: FleetResponse;
   readonly now?: number;
-  /**
-   * Opens the enrollment dialog. Absent for a reader the hub would refuse:
-   * enrollment needs the runner grant on every project in the organization
-   * (`hostedAllRunnerGrants`), so offering the control to anybody else would
-   * be a button that can only produce a 404.
-   */
-  readonly onEnroll?: () => void;
-  /** Enrollments this screen created, newest first. */
+  readonly organizationName?: string;
+  readonly onEnroll?: (name?: string) => void;
   readonly enrollments?: readonly PendingEnrollment[];
   readonly onSaveRouting?: (runner: FleetRunner, routing: RunnerRouting) => Promise<void>;
 }): React.ReactElement {
-  const leases = fleet.runners.reduce((count, runner) => count + runner.leases.length, 0);
   const [attentionOnly, setAttentionOnly] = React.useState(() => new URLSearchParams(window.location.search).get("health") === "needs_attention");
   const attentionCount = fleet.runners.filter((runner) => runner.health === "needs_attention").length;
   const runners = attentionOnly ? fleet.runners.filter((runner) => runner.health === "needs_attention") : fleet.runners;
-  function selectAttentionFilter(event: React.MouseEvent<HTMLAnchorElement>, only: boolean): void {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
+  function filterUrl(only: boolean): string {
     const url = new URL(window.location.href);
     if (only) url.searchParams.set("health", "needs_attention");
     else url.searchParams.delete("health");
-    window.history.replaceState(window.history.state, "", url);
+    return url.pathname + url.search + url.hash;
+  }
+  function selectAttentionFilter(event: React.MouseEvent<HTMLAnchorElement>, only: boolean): void {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    window.history.replaceState(window.history.state, "", filterUrl(only));
     setAttentionOnly(only);
   }
+  React.useEffect(() => {
+    const update = () => setAttentionOnly(new URLSearchParams(window.location.search).get("health") === "needs_attention");
+    window.addEventListener("popstate", update);
+    return () => window.removeEventListener("popstate", update);
+  }, []);
+  const [runnerToOpen, setRunnerToOpen] = React.useState<string | null>(null);
+  function openRunner(runner: FleetRunner): void {
+    if (attentionOnly && runner.health !== "needs_attention") {
+      window.history.replaceState(window.history.state, "", filterUrl(false));
+      setAttentionOnly(false);
+    }
+    setRunnerToOpen(runner.id);
+  }
+  React.useEffect(() => {
+    if (runnerToOpen === null) return;
+    scrollToSettingsTarget("runner-" + runnerToOpen, { highlight: false });
+    setRunnerToOpen(null);
+  }, [runnerToOpen, attentionOnly]);
   return (
     <>
-      <SettingsSection
-        id="settings-providers"
-        title="Providers"
-        icon={<BotIcon className="size-3.5" />}
-      >
-        {fleet.runners.some((runner) => runner.provider_capacity.length > 0) ? (
-          <ProviderSummary runners={fleet.runners} />
-        ) : (
-          <SettingsRow
-            title="No provider capacity reported"
-            description="A runner reports the providers it can reach when it heartbeats."
-          />
-        )}
-      </SettingsSection>
-
-      <SettingsSection
-        id="settings-runners"
-        title="Runners"
-        icon={<ServerIcon className="size-3.5" />}
-        headerAction={
-          <span className="flex flex-wrap items-center gap-3">
-            {attentionCount === 0 ? null : (
-              <a className="text-xs text-warning underline" href="?health=needs_attention#settings-runners" onClick={(event) => selectAttentionFilter(event, true)}>
-                {attentionCount} {attentionCount === 1 ? "runner needs" : "runners need"} attention
-              </a>
-            )}
-            {attentionOnly ? <a className="text-xs underline" href="?health=all#settings-runners" onClick={(event) => selectAttentionFilter(event, false)}>All runners</a> : null}
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {fleet.runners.length} {fleet.runners.length === 1 ? "runner" : "runners"} · {leases}{" "}
-              active {leases === 1 ? "lease" : "leases"}
-            </span>
-            {onEnroll === undefined ? null : (
-              <Button size="xs" variant="outline" onClick={onEnroll}>
-                Enroll a runner
-              </Button>
-            )}
-          </span>
-        }
-        variant="plain"
-      >
-        {fleet.runners.length === 0 ? (
-          <p className="px-3 py-6 text-[13px] text-muted-foreground sm:px-4">
-            No runners are enrolled on this organization yet.
-          </p>
-        ) : (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            {runners.map((runner) => (
-              <HostCard
-                key={runner.id}
-                runner={runner}
-                now={now}
-                settings={onSaveRouting === undefined || runner.routing === undefined ? undefined : <RunnerSettingsForm key={runner.revision} runner={runner} onSave={onSaveRouting} />}
-              />
-            ))}
-          </div>
-        )}
-        {attentionOnly && fleet.runners.length > 0 && runners.length === 0 ? <p className="px-3 py-6 text-[13px] text-muted-foreground sm:px-4">No runners need attention.</p> : null}
-      </SettingsSection>
-
+      <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
+        <div className="min-w-0 space-y-2">
+          <h2 className="text-xl font-semibold tracking-tight">Providers & runners</h2>
+          <p className="text-[13px] text-muted-foreground">The machines that take work for {organizationName}, and the provider accounts each one can reach.</p>
+        </div>
+        {onEnroll === undefined || fleet.runners.length === 0 ? null : <Button size="sm" className="shrink-0" onClick={() => onEnroll()}>Enroll a runner</Button>}
+      </header>
+      {fleet.runners.length === 0 ? (
+        <div className="flex flex-col items-start gap-4 rounded-xl border border-border/60 bg-card/40 p-6">
+          <p className="text-sm">No runners yet. Enroll a machine to start taking work.</p>
+          {onEnroll === undefined ? null : <Button size="sm" onClick={() => onEnroll()}>Enroll a runner</Button>}
+        </div>
+      ) : (
+        <>
+          <Capacity runners={fleet.runners} onOpen={openRunner} />
+          {fleet.runners.filter((runner) => runner.health === "needs_attention" || runner.claim_refusal_reason).map((runner) => (
+            <div key={runner.id} role="alert" data-testid={runner.health === "needs_attention" ? "runner-attention" : "host-update"} className="flex min-w-0 items-start gap-3 rounded-xl border border-warning/30 bg-warning/8 p-4">
+              <AlertTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
+              <div className="min-w-0 flex-1 space-y-2 text-xs">
+                <p className="text-sm font-medium">{runner.display_name} can't take work</p>
+                {runner.health === "needs_attention" && runner.problems?.[0] ? <div className="space-y-1"><p>{runner.problems[0].message}</p><p className="text-muted-foreground">{runner.problems[0].fix_hint}</p></div> : null}
+                {runner.claim_refusal_reason ? <div data-testid={runner.health === "needs_attention" ? "host-update" : undefined} className="space-y-2"><p>{runner.claim_refusal_reason}</p><PathValue value={RUNNER_UPGRADE_COMMAND} /></div> : null}
+                <button type="button" className="rounded text-warning underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" onClick={() => openRunner(runner)}>Open runner<span className="sr-only"> {runner.display_name}</span></button>
+              </div>
+            </div>
+          ))}
+          <SettingsSection id="settings-runners" title="Runners" variant="plain">
+            <nav aria-label="Filter runners" className="mb-3 flex w-fit max-w-full rounded-lg border border-border/60 bg-muted/40 p-1 text-xs">
+              {([[false, "All " + fleet.runners.length], [true, "Needs attention " + attentionCount]] as const).map(([only, label]) => (
+                <a key={label} href={filterUrl(only)} aria-current={attentionOnly === only ? "true" : undefined} onClick={(event) => selectAttentionFilter(event, only)} className={cn("rounded-md px-3 py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-ring", attentionOnly === only ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground")}>{label}</a>
+              ))}
+            </nav>
+            <div className="overflow-hidden rounded-xl border border-border/60 bg-card/40">
+              <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7rem_auto] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground sm:grid"><span>Runner</span><span>Running</span><span>Last check-in</span><span className="w-14" /></div>
+              <div className="divide-y divide-border/50">
+                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} settings={onSaveRouting === undefined || runner.routing === undefined ? undefined : <RunnerSettingsForm key={runner.revision} runner={runner} onSave={onSaveRouting} />} />)}
+                {runners.length === 0 ? <p className="px-4 py-6 text-[13px] text-muted-foreground">No runners need attention.</p> : null}
+              </div>
+            </div>
+          </SettingsSection>
+        </>
+      )}
       {enrollments.length === 0 ? null : (
-        <SettingsSection
-          id="settings-enrollments"
-          title="Waiting to connect"
-          icon={<ServerIcon className="size-3.5" />}
-          headerAction={
-            <span className="text-xs text-muted-foreground">Created in this session</span>
-          }
-        >
-          <PendingEnrollments enrollments={enrollments} />
+        <SettingsSection id="settings-enrollments" title="Waiting to connect" icon={<ServerIcon className="size-3.5" />} headerAction={<span className="text-xs text-muted-foreground">Created in this session</span>}>
+          <PendingEnrollments enrollments={enrollments} onRenew={onEnroll} />
         </SettingsSection>
       )}
+      <SettingsSection id="settings-providers" title="Providers" icon={<BotIcon className="size-3.5" />} className="min-w-0">
+        {fleet.runners.some((runner) => runner.provider_capacity.length > 0) ? <ProviderSummary runners={fleet.runners} /> : <SettingsRow title="No provider capacity reported" description="A runner reports the providers it can reach when it heartbeats." />}
+      </SettingsSection>
     </>
   );
 }
@@ -318,6 +344,7 @@ export function RunnersSettings(): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const fleet = useResource(() => api.fleet(), [api]);
   const [open, setOpen] = React.useState(false);
+  const [enrollmentName, setEnrollmentName] = React.useState("");
   const [enrollments, setEnrollments] = React.useState<readonly PendingEnrollment[]>([]);
   const canEnroll = bootstrap?.actor.can_manage_runners ?? false;
 
@@ -354,8 +381,9 @@ export function RunnersSettings(): React.ReactElement {
       ) : (
         <RunnersSectionView
           fleet={fleet.value}
+          organizationName={bootstrap?.organization.name}
           enrollments={enrollments}
-          {...(canEnroll ? { onEnroll: () => setOpen(true) } : {})}
+          {...(canEnroll ? { onEnroll: (name = "") => { setEnrollmentName(name); setOpen(true); } } : {})}
           {...(canEnroll && fleet.value.editable ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {
             await api.setRunnerRouting({ runner: runner.id, revision: runner.revision ?? 0, displayName: routing.display_name,
               tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids,
@@ -368,6 +396,7 @@ export function RunnersSettings(): React.ReactElement {
       {canEnroll ? (
         <EnrollRunnerDialog
           open={open}
+          initialName={enrollmentName}
           onOpenChange={setOpen}
           fleet={fleet}
           onConnected={(entry) => setEnrollments((current) => current.filter((old) => old.id !== entry.id))}
