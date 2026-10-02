@@ -17,6 +17,15 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Sprite runner wake work (native #212) resolves current project-selected
+dispatchable states and reads one currently granted, active, stale runner
+hostname at a time. Each provider request uses the current project secret and
+records its own secret-use audit; duplicate hostnames do not grant authority.
+Grant removal, token revocation, heartbeat updates, workflow changes and secret
+replacement between requests take effect on the next candidate read.
+`TestWakeSpriteRunnersFreshAuthority` and
+`TestWakeSpriteRunnersProjectIsolation` preserve these boundaries.
+
 Analytics parity (native #33, imported #3665) uses the same application adapters
 for stdio, HTTP MCP and the daemon bridge. Each direct read resolves current
 read authority and project grants before selecting projects or aggregating
@@ -1604,6 +1613,18 @@ external PR responses, exact identity and missing/non-ancestor commit refusals.
 
 ## INV-3 — Mechanism moratorium
 
+Sprite runner wake work (native #212) consolidates overlapping qualifying
+mutations into one active wake pass per organization/project. The existing
+postmutation owner retains one candidate and at most one sequential provider
+request per pass, releases the pass on every exit, and joins canceled work
+through Hub shutdown. Mutations never wait for provider availability. Later
+mutations resolve fresh authority rather than replaying retained candidates.
+This adds no queue, retry/reconciliation loop, lease, configuration or dispatch
+owner. `TestWakeSpriteRunnersAfterBurst` records fixture request counts, retained
+goroutines and mutation latency; `TestWakeSpriteRunnersCancellation` covers
+context cancellation and service shutdown. This is fixture evidence of the
+conditional source risk, not a measured production incident.
+
 Hosted fleet approval (native #168) removes volatile heartbeat health from the
 existing configuration approval fence and consolidates material classification
 around the recorded configuration mismatch. Actual capacity application retains
@@ -1818,6 +1839,14 @@ cleanliness alone never clears the merge refusal or establishes a landing.
 `TestLocalGitLandChangeViaGitHub`, `TestLandNativeChange` and
 `TestNativeLandingRunCompletion` cover these consolidated authorities under
 INV-1 and INV-3 without a new reason, poller, configuration or recovery loop.
+
+An exact typed atomic GitHub base-advance refusal (#221) belongs to the existing
+item-local `LandRefusalBaseMoved` continuation, not the forge outage owner. The
+original HTTP status and base-out-of-date cause remain inspectable; the same
+immutable reviewed head retries without a coding turn or five-minute provider
+wait. Real outages, quota, protection, malformed or unrelated 405 refusals retain
+their existing owners. `TestLocalGitLandChangeViaGitHub` and the existing native
+landing completion fixture enforce INV-1 and INV-3 without new mechanisms.
 
 Current Git base verification (#164) removes the equality pin to GitHub's
 projected PR base SHA. A stale base SHA alone cannot veto conflict evidence:

@@ -484,11 +484,27 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
   ).toBeVisible();
   await expectNoSeriousAxeViolations(page, "the enrollment dialog with its command");
 
-  // Closing it lists the enrollment as pending, with the same command.
+  const command = await dialog.locator("code").textContent();
+  const token = command.match(/--token (\S+)/)[1];
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("heading", { name: "Pending enrollments" })).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Waiting to connect" })).toBeVisible();
   await expect(page.getByText("Build host", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Copy the register command for Build host" })).toBeVisible();
+  expect(await page.locator("body").innerHTML()).not.toContain(token);
+  expect(await page.locator("body").innerHTML()).not.toContain("detent hub runner register");
+  const description = page.locator("#settings-enrollments p");
+  await expect(description).toHaveText(/^No check-in yet · expires /);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await description.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const row = element.closest('[data-slot="settings-row"]').getBoundingClientRect();
+      return { x: box.x, width: box.width, height: box.height, lineHeight: parseFloat(getComputedStyle(element).lineHeight), rowWidth: row.width };
+    });
+    expect(layout.height).toBeLessThanOrEqual(layout.lineHeight * 2 + 1);
+    expect(layout.width).toBeGreaterThan(Math.min(400, layout.rowWidth - 40));
+    expect(layout.x + layout.width).toBeLessThanOrEqual(width);
+  }
   expect(errors, "console errors while enrolling a runner").toEqual([]);
 });
 

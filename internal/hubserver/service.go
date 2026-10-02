@@ -43,6 +43,10 @@ type Service struct {
 	config            Config
 	outbox            *outboxWorker
 	ready             atomic.Bool
+	workerContext     context.Context
+	spriteWakeMu      sync.Mutex
+	spriteWakes       map[spriteWakeKey]chan struct{}
+	spriteWakeWork    sync.WaitGroup
 	workerCancel      context.CancelFunc
 	workerDone        chan struct{}
 	workerStopOnce    sync.Once
@@ -111,6 +115,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		database:         database,
 		tracker:          workTracker,
 		config:           cfg,
+		workerContext:    workerContext,
+		spriteWakes:      make(map[spriteWakeKey]chan struct{}),
 		workerCancel:     workerCancel,
 		workerDone:       make(chan struct{}),
 		reconcileCancel:  reconcileCancel,
@@ -343,6 +349,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if httpErr != nil {
 		httpErr = fmt.Errorf("shut down hub server: %w", httpErr)
 	}
+	s.stopSpriteRunners()
 	s.stopHostedBilling()
 	return errors.Join(mcpErr, httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
 }
@@ -368,6 +375,7 @@ func (s *Service) Close() error {
 		if errors.Is(httpErr, http.ErrServerClosed) {
 			httpErr = nil
 		}
+		s.stopSpriteRunners()
 		webhookErr := s.stopGitHubWebhookMaintenance()
 		reconcileErr := s.stopGitHubReconciliation()
 		s.stopHostedBilling()
