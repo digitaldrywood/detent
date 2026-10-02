@@ -1282,7 +1282,15 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 	if notify {
 		service.committed(linked)
 	}
-	return value, err
+	if err != nil {
+		return nil, err
+	}
+	var response conversationLinkResult
+	if err := json.Unmarshal(value, &response); err != nil {
+		return nil, err
+	}
+	response.Issue.NativeIssue = s.nativeIssueResponse(response.Issue.NativeIssue)
+	return json.Marshal(response)
 }
 
 func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {

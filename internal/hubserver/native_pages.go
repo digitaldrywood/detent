@@ -210,7 +210,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.number > CAST(? AS INTEGE
 		if err != nil {
 			return tracker.Page[tracker.NativeIssue]{}, err
 		}
-		page.Items = append(page.Items, issue)
+		page.Items = append(page.Items, s.nativeIssueResponse(issue))
 		cursor.After = strconv.Itoa(issue.Number)
 	}
 	if hasMore {

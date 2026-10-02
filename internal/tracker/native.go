@@ -63,6 +63,7 @@ type NativeIssue struct {
 	LinkedSource       *LinkedIssueSource `json:"linked_source,omitempty"`
 	IgnoreDependencies bool               `json:"ignore_dependencies,omitempty"`
 	NativeReference
+	WebURL             string              `json:"web_url"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	State              string              `json:"state"`
