@@ -37,6 +37,7 @@ import { NEW_ISSUE_KEYSHORTCUTS } from "../lib/shortcuts.ts";
 import { StatsRow } from "./components/StatsRow.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { WorkList } from "./components/WorkList.tsx";
+import { WorkPagination } from "./components/WorkPagination.tsx";
 import { WorkToolbar } from "./components/WorkToolbar.tsx";
 import { FreshnessChip, WorkTopBar } from "./components/WorkTopBar.tsx";
 import { useShell } from "../App.tsx";
@@ -315,7 +316,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const canCreateHere = newIssue.canCreate && creatable.length > 0;
   const firstRun =
     noProjects ||
-    (!board.loading && board.error === null && board.items.length === 0 && !narrowed(view));
+    (!board.loading && board.error === null && board.items.length === 0 && !narrowed(view) &&
+      board.pages.every((page) => page.number === 1 && page.nextCursor === undefined));
   const firstRunPanel = firstRun ? (
     <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
   ) : null;
@@ -372,7 +374,14 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         loadedCount={board.items.length}
       />
 
-      <StatsRow stats={stats} truncated={board.truncated} enriched={board.enriched} />
+      <StatsRow stats={stats} truncated={board.truncated} loadedCount={board.items.length} loading={board.loading} />
+
+      <WorkPagination pages={board.pages} loading={board.loading} onChange={(id, page) => {
+        const pages = { ...view.pages };
+        if (page === undefined) delete pages[id];
+        else pages[id] = page;
+        setView({ ...view, pages });
+      }} />
 
       {board.error === null ? null : (
         <div className="mx-5 mb-3 rounded-lg border border-error/32 bg-error-surface px-3 py-2 text-error-foreground text-sm">

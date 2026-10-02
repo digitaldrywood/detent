@@ -54,7 +54,10 @@ export interface ChangeView {
   readonly review: string;
 }
 
+export type Observation = "known" | "unchecked" | "unavailable" | "partial";
+
 export interface WorkItemView {
+  readonly observations?: { readonly worker: Observation; readonly change: Observation };
   readonly archived?: boolean;
   readonly id: string;
   readonly projectId: string;
@@ -89,6 +92,10 @@ export interface ProjectView {
   readonly labels: readonly string[];
   readonly priorities: readonly string[];
   readonly assignees: readonly string[];
+}
+
+export function observationTitle(item: WorkItemView): string {
+  return `Worker observation: ${item.observations?.worker ?? "unchecked"}; change observation: ${item.observations?.change ?? "unchecked"}`;
 }
 
 /** True when the card should wear the live treatment (A.11: never a queue). */
@@ -180,6 +187,10 @@ export function searchItems(
 }
 
 export interface BoardStats {
+  readonly observations: {
+    readonly worker: Readonly<Record<Observation, number>>;
+    readonly change: Readonly<Record<Observation, number>>;
+  };
   readonly running: number;
   readonly ready: number;
   readonly waiting: number;
@@ -206,7 +217,13 @@ export function boardStats(
   let waiting = 0;
   let blocked = 0;
   let completed = 0;
+  const observations = {
+    worker: { known: 0, unchecked: 0, unavailable: 0, partial: 0 },
+    change: { known: 0, unchecked: 0, unavailable: 0, partial: 0 },
+  };
   for (const item of items) {
+    observations.worker[item.observations?.worker ?? "unchecked"] += 1;
+    observations.change[item.observations?.change ?? "unchecked"] += 1;
     if (terminal.has(item.state)) {
       completed += 1;
       continue;
@@ -222,5 +239,5 @@ export function boardStats(
     if (started.has(item.state)) waiting += 1;
     else ready += 1;
   }
-  return { running, ready, waiting, blocked, completed, total: items.length };
+  return { running, ready, waiting, blocked, completed, total: items.length, observations };
 }

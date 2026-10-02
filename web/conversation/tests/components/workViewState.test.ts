@@ -63,6 +63,8 @@ describe("the board's view state", () => {
     const query =
       "view=list&q=lease&state=Review%2CTodo&label=bug&assignee=michael&priority=High&sort=updated&lanes=Done%2CTodo";
     expect(serializeViewState(parseViewState(query))).toBe(query);
+    const paged = { ...parseViewState(query), pages: { proj_alpha: { cursor: "opaque+/=?token", number: 2 } } };
+    expect(parseViewState(serializeViewState(paged))).toEqual(paged);
   });
 
   it("treats two orderings of the same filter as one URL", () => {
@@ -105,9 +107,12 @@ describe("the remembered view", () => {
   afterEach(() => globalThis.localStorage?.clear());
 
   it("remembers and reads back a view per project", () => {
-    writeStoredViewState("proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", q: "lease" });
+    writeStoredViewState("proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", q: "lease",
+      pages: { proj_alpha: { cursor: "session-cursor", number: 2 } },
+    });
     expect(readStoredViewState("proj_alpha")?.view).toBe("list");
     expect(readStoredViewState("proj_alpha")?.q).toBe("lease");
+    expect(readStoredViewState("proj_alpha")?.pages).toEqual({});
     expect(readStoredViewState("proj_beta")).toBeNull();
   });
 

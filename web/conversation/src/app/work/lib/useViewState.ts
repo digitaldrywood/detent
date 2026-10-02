@@ -17,9 +17,10 @@ import {
   type WorkViewState,
 } from "./viewState.ts";
 
-function viewSearch(state: WorkViewState): Record<string, string | boolean> {
+function viewSearch(state: WorkViewState): Record<string, unknown> {
   return {
     ...Object.fromEntries(new URLSearchParams(serializeViewState(state))),
+    ...(Object.keys(state.pages ?? {}).length === 0 ? {} : { pages: state.pages }),
     ...(state.archived === true ? { archived: true } : {}),
   };
 }
@@ -35,16 +36,20 @@ export function useViewState(
 
   const setView = React.useCallback(
     (next: WorkViewState) => {
-      writeStoredViewState(scope, next);
+      const filtersChanged = (["state", "label", "assignee", "priority"] as const).some(
+        (key) => view[key].join("\0") !== next[key].join("\0"),
+      ) || view.archived !== next.archived;
+      const updated = filtersChanged ? { ...next, pages: {} } : next;
+      writeStoredViewState(scope, updated);
       void navigate({
         // `to: "."` keeps the route and replaces only the query, so changing a
         // filter never re-mounts the board.
         to: ".",
-        search: viewSearch(next),
-        replace: true,
+        search: viewSearch(updated),
+        replace: JSON.stringify(view.pages ?? {}) === JSON.stringify(updated.pages ?? {}),
       });
     },
-    [navigate, scope],
+    [navigate, scope, view],
   );
 
   // Restore once per scope, and only into an empty query string: a link that
