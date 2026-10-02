@@ -23,6 +23,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	UpdateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	CapacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	// LocalChecks are startup observations by local project, reused by the heartbeat owner.
 	LocalChecks        map[string]runnerauth.LocalChecks
@@ -42,6 +43,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	updateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	localChecks           map[string]runnerauth.LocalChecks
 	githubDiscovery       func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
@@ -89,6 +91,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 	}
 	scheduler := &Scheduler{
 		capacityConfiguration: config.CapacityConfiguration,
+		updateOwner:           config.UpdateOwner,
 		localChecks:           config.LocalChecks,
 		githubIntake:          config.GitHubIntake,
 		githubDiscovery:       config.GitHubDiscovery,
@@ -437,4 +440,10 @@ func cloneTime(value *time.Time) *time.Time {
 
 func intPointer(value int) *int {
 	return &value
+}
+
+func (s *Scheduler) SetUpdateOwner(owner func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updateOwner = owner
 }

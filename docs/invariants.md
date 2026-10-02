@@ -544,6 +544,35 @@ enabled picker through panel state, scoped workspace metadata, ticket minting,
 directory listing and a file read, and `workspaces.test.tsx` rejects stale attempt
 binding. Existing relay and filesystem authority is unchanged.
 
+Enrolled runner updates (native #93) reuse the installed update scheduler,
+configured release discovery, signed artifact/provenance verification, runtime
+drain/restart and startup rollback owners. Hub MCP and API queue typed delivery
+through existing runner routing/heartbeat and native revision/idempotency receipts.
+Current all-project runner administration is rechecked before effects and replay;
+MCP retains material-action browser approval and API requires explicit confirmation.
+Only the enrolled runner's selected `detent` service is addressable. Tenant authority
+cannot update or restart the shared Hub, select a path/URL/command, or gain worker
+credential authority.
+
+A queued request is not application or running evidence. The existing scheduler
+state retains the request and verified applied artifact before requesting restart;
+duplicate delivery does not apply again. Interrupted delivery is uncertain and
+does not introduce automatic recovery. Confirmed running receipts survive restart;
+a later local update is reported as drift from completed evidence and does not
+retain an unsettled remote request. A fresh authenticated heartbeat identifies
+the actual process version, commit, source composition, checksum and platform.
+Windows detached replacement retains a verified target as pending; matching
+post-start process evidence confirms application. Only matching process and
+applied evidence establishes running; private patched
+source is explicit and never implicitly an approved published release. Missing,
+old or stale observations/owners remain unavailable, distinct from denied authority.
+Runner routing, leases, isolation, provider choices and reviewed heads remain with
+their existing owners. Update refusal receipts omit raw errors, commands, paths
+and credentials. `TestSchedulerEnrolledUpdate`,
+`TestSchedulerEnrolledInterruptedReceipt`, `TestRunnerUpdateApplication`,
+`TestRunnerCapacityHeartbeat` and update cases in `TestHostedMCPFleetControls`
+exercise these INV-1 boundaries and the INV-3 consolidation.
+
 Effective runner capacity (native #90) uses the existing runner administration,
 native command receipt, routing heartbeat, selected global configuration writer
 and runtime reload owners. UI routing capacity edits and MCP/API capacity requests

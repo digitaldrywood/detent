@@ -608,6 +608,10 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.cfg.TargetVersion = func(context.Context) (string, error) { return "v1.2.4", nil }
+	stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
+	if !errors.Is(staleErr, ErrRefused) || stale.Action != ActionRefused {
+		t.Fatalf("changed selected release = %+v, %v", stale, staleErr)
+	}
 	var preflightPath string
 	status, err := service.Apply(context.Background(), ApplyOptions{
 		AssumeYes:         true,
@@ -632,6 +636,10 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 	}
 	if !status.UpdateAvailable {
 		t.Fatal("UpdateAvailable = false, want true")
+	}
+	expectedBinarySum := sha256.Sum256([]byte("updated"))
+	if status.BinarySHA256 != fmt.Sprintf("%x", expectedBinarySum) || !status.VerifiedRelease || status.LatestCommit != testUpdatedCommit {
+		t.Fatalf("applied provenance = %+v", status)
 	}
 	raw, err := os.ReadFile(binary)
 	if err != nil {

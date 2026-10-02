@@ -7438,3 +7438,43 @@ Resend a pending hosted invitation
 - Confirmation: access-changing or sensitive administration → operator
 
 Sources: [POST /api/v2/organizations/:organization/members/invitations/:invitation/resend](../internal/hubserver/hosted_org_api.go#L40), [web/conversation/src/app/account/api.ts:189](../web/conversation/src/app/account/api.ts#L189)
+## hubserver.get_runner_update
+
+Read enrolled runner installed update support and build evidence
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#93 exposes the existing installed runner updater. Missing/old owners are unavailable; only matching fresh post-start build evidence establishes running. Private patched source is not automatically an approved release.
+- Tool: `runs_fleet.get_runner_update` — Exact runner selector; apply requires request_id and change with expected_revision, expected_build_revision, service=detent, version and optional release/from_release. REST also requires confirm=true and idempotency_key. Tenant authority cannot target the shared Hub. → Requested, applied and fresh actually running build evidence, commit, checksum, platform, explicit private patched source, timestamps and support/refusal/progress. Queued acceptance is not application or running success. No raw error or local path disclosure.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership current organization and exact enrolled runner/machine; selected local config remains runner-owned.
+- Application: Service.readRunnerUpdate / Runner.UpdateView
+- Extraction: MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current installed owner protocol/readiness, heartbeat freshness, exact runner/build revision and selected configured release version. No paths, artifact URLs, commands, environment or credentials.
+- Coverage: TestSchedulerEnrolledUpdate; TestSchedulerEnrolledInterruptedReceipt; TestRunnerUpdateApplication; update cases in TestHostedMCPFleetControls; TestRunnerCapacityHeartbeat; TestRunnerRunningBuildProvenance; TestFleetArgumentBoundary.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: read → none
+
+Sources: [GET /api/v2/organizations/:organization/runners/:runner/update](../internal/hubserver/runner_enrollment.go#L0)
+## hubserver.apply_runner_update
+
+Apply enrolled runner update through the installed owner
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#93 exposes the existing installed runner updater. Missing/old owners are unavailable; only matching fresh post-start build evidence establishes running. Private patched source is not automatically an approved release.
+- Tool: `runs_fleet.update_apply` — Exact runner selector; apply requires request_id and change with expected_revision, expected_build_revision, service=detent, version and optional release/from_release. REST also requires confirm=true and idempotency_key. Tenant authority cannot target the shared Hub. → Requested, applied and fresh actually running build evidence, commit, checksum, platform, explicit private patched source, timestamps and support/refusal/progress. Queued acceptance is not application or running success. No raw error or local path disclosure.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership current organization and exact enrolled runner/machine; selected local config remains runner-owned.
+- Application: Service.applyRunnerUpdateCommand / Scheduler.EnrolledUpdate / installed drain/restart updater
+- Extraction: MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current installed owner protocol/readiness, heartbeat freshness, exact runner/build revision and selected configured release version. No paths, artifact URLs, commands, environment or credentials.
+- Coverage: TestSchedulerEnrolledUpdate; TestSchedulerEnrolledInterruptedReceipt; TestRunnerUpdateApplication; update cases in TestHostedMCPFleetControls; TestRunnerCapacityHeartbeat; TestRunnerRunningBuildProvenance; TestFleetArgumentBoundary.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured.
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: selected runner update and coordinated restart → operator
+
+Sources: [POST /api/v2/organizations/:organization/runners/:runner/update/apply](../internal/hubserver/runner_enrollment.go#L0)

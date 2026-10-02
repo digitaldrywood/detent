@@ -22,6 +22,8 @@ var errHubOperatorUnavailable = errors.New("operator command is unavailable")
 type hubOperatorResolverKey struct{}
 type hubFleetExecutor struct{ service *Service }
 type hubFleetRequest struct {
+	Release      bool                         `json:"release,omitempty"`
+	FromRelease  bool                         `json:"from_release,omitempty"`
 	Backend      string                       `json:"backend,omitempty"`
 	ProjectID    string                       `json:"project_id,omitempty"`
 	RequestID    string                       `json:"request_id,omitempty"`
@@ -36,7 +38,7 @@ type hubFleetRequest struct {
 }
 
 func hubFleetTool(name string) bool {
-	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.GetRunnerCapacity, operatortool.UpdateRunnerCapacity, operatortool.HostedFleet, operatortool.GitHubRequestCounts}, name)
+	return slices.Contains([]string{operatortool.UpdateApply, operatortool.GetRunnerUpdate, operatortool.InstanceHealth, operatortool.NativeCapabilities, operatortool.OutboxHealth, operatortool.CreateRunnerEnrollment, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity, operatortool.GetRunnerRouting, operatortool.ListRunnerRouting, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerHost, operatortool.GetRunnerCapacity, operatortool.UpdateRunnerCapacity, operatortool.HostedFleet, operatortool.GitHubRequestCounts}, name)
 }
 func hubFleetRequirement(name string) operatortool.Requirement {
 	if name == operatortool.HostedFleet || name == operatortool.InstanceHealth || name == operatortool.NativeCapabilities || name == operatortool.OutboxHealth {
@@ -188,6 +190,8 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 				HasMore    bool                `json:"has_more"`
 				ObservedAt time.Time           `json:"observed_at"`
 			}{fleet, more, s.config.now()}
+		case operatortool.GetRunnerUpdate:
+			value, err = s.readRunnerUpdate(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID)
 		case operatortool.GetRunnerCapacity:
 			value, err = s.readRunnerCapacity(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID, r.Backend)
 		case operatortool.GetRunnerRouting:
@@ -299,6 +303,10 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 	return e.actionResult(ctx, action)
 }
 func safeHubOperatorError(err error) error {
+	var problem *nativeError
+	if errors.As(err, &problem) && problem.Code == "revision_conflict" {
+		return mutation.ErrConflict
+	}
 	if errors.Is(err, mutation.ErrConflict) {
 		return mutation.ErrConflict
 	}
@@ -325,7 +333,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 	org := operatortool.ConnectionIdentity(ctx).OrganizationID
 	a := chatpkg.Action{Kind: chatpkg.ActionKind(name), ProjectID: r.ProjectID, Title: name, Description: string(arguments), ResourceURL: "/fleet"}
 	switch name {
-	case operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.RevokeRunnerIdentity:
+	case operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.RevokeRunnerIdentity:
 		runner, err := readRunner(ctx, e.service.database.db, tracker.OrganizationID(org), r.RunnerID, e.service.config.now())
 		if err != nil {
 			return a, errHubOperatorUnavailable
@@ -333,6 +341,16 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		a.IssueID = r.RunnerID
 		a.Identifier = r.RunnerID
 		a.CurrentState = strconv.FormatInt(runner.Revision, 10) + ":" + runner.Health
+		if name == operatortool.UpdateApply {
+			var change runnerUpdateChange
+			if r.RunnerID == "" || r.Release || r.FromRelease || operatortool.DecodeArguments(r.Change, &change) != nil || change.delivery("validate", e.service.config.now()).Validate() != nil {
+				return a, operatortool.ErrInvalidArguments
+			}
+			if err := runnerUpdateReady(runner, change, e.service.config.now()); err != nil {
+				return a, safeHubOperatorError(err)
+			}
+			a.MaterialChange = true
+		}
 		if name == operatortool.UpdateRunnerCapacity {
 			var change runnerCapacityChange
 			if operatortool.DecodeArguments(r.Change, &change) != nil || change.Validate() != nil || change.ExpectedRevision != runner.Revision {
@@ -438,6 +456,14 @@ func (e hubFleetExecutor) executeCommand(ctx context.Context, a chatpkg.Action) 
 		return s.revokeRunnerEnrollmentCommand(ctx, scope, r.EnrollmentID)
 	case operatortool.RevokeRunnerIdentity:
 		return s.revokeRunnerIdentityCommand(ctx, scope, r.RunnerID)
+	case operatortool.UpdateApply:
+		var change runnerUpdateChange
+		if operatortool.DecodeArguments(r.Change, &change) != nil {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		change.Confirm = true
+		change.IdempotencyKey = a.RequestID
+		return s.applyRunnerUpdateCommand(ctx, scope, r.RunnerID, change)
 	case operatortool.UpdateRunnerCapacity:
 		var change runnerCapacityChange
 		if operatortool.DecodeArguments(r.Change, &change) != nil {

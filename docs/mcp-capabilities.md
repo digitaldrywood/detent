@@ -522,3 +522,47 @@ authoritative; a conversation or running issue alone does not prove a provider
 supports live control. Private conversation visibility and current grants apply
 to lookup and command execution. Already-running workers that skipped binding
 before the fix cannot gain a provider control object from an operator lookup.
+
+## Enrolled runner update application (native #93)
+
+Hosted `get_runner_update` and `update_apply` use current organization runner
+administration, including all-project runner grants. Read support first with
+`get_runner_update({"runner_id":"..."})`. The read returns the runner revision,
+update-owner protocol/support, explicit available/up-to-date/unknown discovery
+evidence, available version and discovery time, requested
+state, applied evidence and the fresh running process build. Older runner
+protocols, missing installed owners and stale heartbeats return `unavailable`;
+denied scope remains an authorization refusal.
+
+Hosted `update_apply` requires `request_id`, `runner_id`, and `change` containing
+`expected_revision`, `expected_build_revision`, `service: "detent"`, `version`,
+and optional `release`/`from_release`. Its existing browser confirmation or
+operator-selected connection YOLO is required. The local daemon retains its
+existing `release`/`from_release` contract and refuses enrolled-runner selectors.
+
+The corresponding authenticated API routes are
+`GET /api/v2/organizations/:organization/runners/:runner/update` and
+`POST /api/v2/organizations/:organization/runners/:runner/update/apply`.
+POST takes the same change fields plus `confirm: true` and `idempotency_key`.
+Acceptance means `requested`, not applied or running. Inspect the read for
+`draining`, `refused`, `uncertain`, `applied`, `restart_requested` or `running`.
+Receipts carry selected version and request/application/observation timestamps;
+release application carries the verified commit and installed binary checksum.
+
+Delivery and acknowledgments reuse the authenticated runner heartbeat negotiated
+with `runner_installed_update`. Application uses the same installed scheduler as
+UI/CLI, including configured release discovery, artifact checks, drain/restart and
+rollback. The observed release version is pinned before application. Windows detached
+replacement exposes a verified target while application remains uncertain;
+a matching post-start process observation confirms application. The existing
+scheduler state retains delivery/application evidence across restart. Interrupted
+application remains uncertain; duplicate delivery adds no retry/recovery loop.
+
+A fresh post-start heartbeat must match the applied version, commit, checksum and
+platform before reporting `running`. The confirmed running receipt survives
+restart; a later local build change is `drifted`, preserving completed evidence
+and permitting a fresh operator request. Dirty source or replaced Go dependencies are
+reported as `private_patched_source`, not approved published releases. Source
+details omit local module paths. Raw errors, executable paths, artifact URLs,
+shell commands, environment and credentials are absent from this surface. Tenant
+keys cannot control the shared Hub; standalone restart is unavailable.

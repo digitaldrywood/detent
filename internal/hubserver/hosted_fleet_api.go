@@ -29,6 +29,7 @@ type hostedFleetLease struct {
 }
 
 type hostedFleetRunner struct {
+	Update       runnerauth.UpdateView    `json:"update"`
 	Capacity     *runnerauth.CapacityView `json:"capacity_configuration,omitempty"`
 	Problems     []runnerauth.Problem     `json:"problems"`
 	ID           string                   `json:"id"`
@@ -213,7 +214,8 @@ func scopeHostUsage(runners []hostedFleetRunner) {
 
 func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map[tracker.ProjectID]bool, now time.Time) hostedFleetRunner {
 	view := hostedFleetRunner{
-		ID: runner.RunnerID, DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Status(now),
+		Update: runner.UpdateView(now),
+		ID:     runner.RunnerID, DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Status(now),
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},

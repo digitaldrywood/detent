@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 const defaultJitterFraction = 10
@@ -42,6 +44,7 @@ type AutoStatus struct {
 }
 
 type SchedulerConfig struct {
+	RunningBuild       runnerauth.BuildEvidence
 	Enabled            bool
 	AutoApplyEnabled   bool
 	CheckInterval      time.Duration
@@ -61,10 +64,13 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
-	cfg         SchedulerConfig
-	operationMu sync.Mutex
-	mu          sync.RWMutex
-	status      AutoStatus
+	enrolledReceipt    *runnerauth.UpdateReceipt
+	enrolledStateValid bool
+	enrolledDiscovery  string
+	cfg                SchedulerConfig
+	operationMu        sync.Mutex
+	mu                 sync.RWMutex
+	status             AutoStatus
 }
 
 func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
@@ -123,7 +129,8 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		critical = loadedState.Critical
 	}
 	return &Scheduler{
-		cfg: cfg,
+		cfg:             cfg,
+		enrolledReceipt: loadedState.EnrolledReceipt, enrolledStateValid: err == nil,
 		status: AutoStatus{
 			Enabled:            cfg.Enabled,
 			AutoApplyEnabled:   cfg.AutoApplyEnabled,
@@ -372,6 +379,7 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 		status.LastError = ""
 		clearPending(status)
 	})
+	s.recordEnrolledApplied(applied)
 	persistErr := s.persistCurrentState()
 	restartRequested := s.cfg.RequestRestart != nil && s.cfg.RequestRestart(applied.Binary)
 	if !restartRequested {
@@ -463,7 +471,8 @@ func (s *Scheduler) recordCheckFailure(checkedAt time.Time, err error) error {
 
 func (s *Scheduler) persistLastCheck(checkedAt time.Time) error {
 	status := s.Status()
-	state := schedulerState{LastCheckAt: checkedAt}
+	receipt, _ := s.enrolledState()
+	state := schedulerState{LastCheckAt: checkedAt, EnrolledReceipt: receipt}
 	if status.State == "pending_idle" && status.PendingSince != nil && strings.TrimSpace(status.AvailableVersion) != "" {
 		pendingSince := *status.PendingSince
 		state.AvailableVersion = status.AvailableVersion
@@ -483,6 +492,10 @@ func (s *Scheduler) persistLastCheck(checkedAt time.Time) error {
 func (s *Scheduler) persistCurrentState() error {
 	status := s.Status()
 	if status.LastCheckAt == nil {
+		receipt, at := s.enrolledState()
+		if receipt != nil {
+			return s.persistLastCheck(at)
+		}
 		return nil
 	}
 	return s.persistLastCheck(*status.LastCheckAt)

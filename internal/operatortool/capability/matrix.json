@@ -1461,7 +1461,7 @@
       "tool": {
         "set": "organization",
         "name": "provisioning_page",
-        "arguments": "organization_id: 1–256 bytes; no mutation input. No credentials, identity, confirmation or YOLO input.",
+        "arguments": "organization_id: 1\u2013256 bytes; no mutation input. No credentials, identity, confirmation or YOLO input.",
         "result": "Bounded safe ID/name/state/step/can_resume projection; fresh next destination when ready. Status carries fresh_at; resume carries the shared action receipt, safe result, approval_url and action_result. Allocation error_detail, endpoints, provider payloads and credentials are omitted.",
         "annotations": {
           "readOnly": true,
@@ -1655,7 +1655,7 @@
       "tool": {
         "set": "organization",
         "name": "resume_provisioning",
-        "arguments": "organization_id: 1–256 bytes; request_id: 1–128 bytes, bound to shared audit/retry receipts. No credentials, identity, confirmation or YOLO input.",
+        "arguments": "organization_id: 1\u2013256 bytes; request_id: 1\u2013128 bytes, bound to shared audit/retry receipts. No credentials, identity, confirmation or YOLO input.",
         "result": "Bounded safe ID/name/state/step/can_resume projection; fresh next destination when ready. Status carries fresh_at; resume carries the shared action receipt, safe result, approval_url and action_result. Allocation error_detail, endpoints, provider payloads and credentials are omitted.",
         "annotations": {
           "readOnly": false,
@@ -17273,7 +17273,7 @@
         {
           "source": "web/conversation/src/app/work/lib/workHttp.ts",
           "kind": "request",
-          "definition": "send(WorkItemPage,\"GET\",url(`${projectBase(input.projectId)}/work-items`, { state: input.state, archived: input.archived === true ? \"true\" : undefined, label: input.label, assignee: input.assignee, priority: input.priority, cursor: input.cursor, limit: input.limit, include: input.includeCoordinator === true ? \"coordinator\" : undefined, }),undefined,input.signal)",
+          "definition": "send(WorkItemPage,\"GET\",url(`${projectBase(input.projectId)}/work-items`, { state: input.state, archived: input.archived === true ? \"true\" : undefined, label: input.label, assignee: input.assignee, priority: input.priority, cursor: input.cursor, limit: input.limit, include: input.includeWork === true ? \"work\" : input.includeCoordinator === true ? \"coordinator\" : undefined, }),undefined,input.signal)",
           "occurrence": 1,
           "line": 544
         }
@@ -35292,7 +35292,7 @@
       "tool": {
         "set": "credentials",
         "name": "credential_list",
-        "arguments": "AdministrationCatalog typed input: creation requires one allowed scope, 1–200 explicit project IDs, name up to 200 bytes, expires_in of 1–90 days (for example 30d), and request_id. Revocation uses credential_id and request_id. Reads are paginated. No caller identity, credentials or confirmation mode.",
+        "arguments": "AdministrationCatalog typed input: creation requires one allowed scope, 1\u2013200 explicit project IDs, name up to 200 bytes, expires_in of 1\u201390 days (for example 30d), and request_id. Revocation uses credential_id and request_id. Reads are paginated. No caller identity, credentials or confirmation mode.",
         "result": "Current account-owned hosted key metadata; creation includes the API one-time secret only on the originating authenticated connection. Durable receipts retain metadata without secrets. Pending mutations use exact existing browser approval.",
         "annotations": {
           "readOnly": true,
@@ -35398,7 +35398,7 @@
       "tool": {
         "set": "credentials",
         "name": "credential_create",
-        "arguments": "AdministrationCatalog typed input: creation requires one allowed scope, 1–200 explicit project IDs, name up to 200 bytes, expires_in of 1–90 days (for example 30d), and request_id. Revocation uses credential_id and request_id. Reads are paginated. No caller identity, credentials or confirmation mode.",
+        "arguments": "AdministrationCatalog typed input: creation requires one allowed scope, 1\u2013200 explicit project IDs, name up to 200 bytes, expires_in of 1\u201390 days (for example 30d), and request_id. Revocation uses credential_id and request_id. Reads are paginated. No caller identity, credentials or confirmation mode.",
         "result": "Current account-owned hosted key metadata; creation includes the API one-time secret only on the originating authenticated connection. Durable receipts retain metadata without secrets. Pending mutations use exact existing browser approval.",
         "annotations": {
           "readOnly": false,
@@ -35490,7 +35490,7 @@
       "tool": {
         "set": "credentials",
         "name": "credential_revoke",
-        "arguments": "AdministrationCatalog typed input: creation requires one allowed scope, 1–200 explicit project IDs, name up to 200 bytes, expires_in of 1–90 days (for example 30d), and request_id. Revocation uses credential_id and request_id. Reads are paginated. No caller identity, credentials or confirmation mode.",
+        "arguments": "AdministrationCatalog typed input: creation requires one allowed scope, 1\u2013200 explicit project IDs, name up to 200 bytes, expires_in of 1\u201390 days (for example 30d), and request_id. Revocation uses credential_id and request_id. Reads are paginated. No caller identity, credentials or confirmation mode.",
         "result": "Current account-owned hosted key metadata; creation includes the API one-time secret only on the originating authenticated connection. Durable receipts retain metadata without secrets. Pending mutations use exact existing browser approval.",
         "annotations": {
           "readOnly": false,
@@ -35783,6 +35783,185 @@
       "status": "pending",
       "coverage": "Existing HTTP behavior: TestHostedInvitationLifecycle. No typed MCP catalog/adapter or execution coverage exists for this operation.",
       "decision": "Browser/API resend is available through the existing hosted application owner; AdministrationCatalog and hubAdministration expose no invitation_resend tool. Operator parity remains pending; do not treat member_grant or invitation_send as this command."
+    },
+    {
+      "id": "hubserver.get_runner_update",
+      "summary": "Read enrolled runner installed update support and build evidence",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/runner_enrollment.go",
+          "kind": "route",
+          "definition": "e.GET(runnerBase+\"/:runner/update\", s.getRunnerUpdate, admin) [route=\"/api/v2/organizations/:organization/runners/:runner/update\"]",
+          "occurrence": 1,
+          "line": 0,
+          "method": "GET",
+          "path": "runnerBase + \"/:runner/update\"",
+          "handler": "s.getRunnerUpdate",
+          "resolved_path": "/api/v2/organizations/:organization/runners/:runner/update"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project",
+        "credential_scope": "current authenticated runner administrator; workers receive no configuration administration authority",
+        "project_grant": "current all-project runner grants, checked again before execution and replay",
+        "ownership": "current organization and exact enrolled runner/machine; selected local config remains runner-owned"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Current installed owner protocol/readiness, heartbeat freshness, exact runner/build revision and selected configured release version. No paths, artifact URLs, commands, environment or credentials."
+      ],
+      "confirmation": [
+        {
+          "when": "read",
+          "class": "none"
+        }
+      ],
+      "application": "Service.readRunnerUpdate / Runner.UpdateView",
+      "extraction": "MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.",
+      "tool": {
+        "set": "runs_fleet",
+        "name": "get_runner_update",
+        "arguments": "Exact runner selector; apply requires request_id and change with expected_revision, expected_build_revision, service=detent, version and optional release/from_release. REST also requires confirm=true and idempotency_key. Tenant authority cannot target the shared Hub.",
+        "result": "Requested, applied and fresh actually running build evidence, commit, checksum, platform, explicit private patched source, timestamps and support/refusal/progress. Queued acceptance is not application or running success. No raw error or local path disclosure.",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3343",
+      "status": "implemented",
+      "coverage": "TestSchedulerEnrolledUpdate; TestSchedulerEnrolledInterruptedReceipt; TestRunnerUpdateApplication; update cases in TestHostedMCPFleetControls; TestRunnerCapacityHeartbeat; TestRunnerRunningBuildProvenance; TestFleetArgumentBoundary.",
+      "decision": "Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#93 exposes the existing installed runner updater. Missing/old owners are unavailable; only matching fresh post-start build evidence establishes running. Private patched source is not automatically an approved release."
+    },
+    {
+      "id": "hubserver.apply_runner_update",
+      "summary": "Apply enrolled runner update through the installed owner",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/runner_enrollment.go",
+          "kind": "route",
+          "definition": "e.POST(runnerBase+\"/:runner/update/apply\", s.applyRunnerUpdate, admin) [route=\"/api/v2/organizations/:organization/runners/:runner/update/apply\"]",
+          "occurrence": 1,
+          "line": 0,
+          "method": "POST",
+          "path": "runnerBase + \"/:runner/update/apply\"",
+          "handler": "s.applyRunnerUpdate",
+          "resolved_path": "/api/v2/organizations/:organization/runners/:runner/update/apply"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project",
+        "credential_scope": "current authenticated runner administrator; workers receive no configuration administration authority",
+        "project_grant": "current all-project runner grants, checked again before execution and replay",
+        "ownership": "current organization and exact enrolled runner/machine; selected local config remains runner-owned"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Current installed owner protocol/readiness, heartbeat freshness, exact runner/build revision and selected configured release version. No paths, artifact URLs, commands, environment or credentials."
+      ],
+      "confirmation": [
+        {
+          "when": "selected runner update and coordinated restart",
+          "class": "operator"
+        }
+      ],
+      "application": "Service.applyRunnerUpdateCommand / Scheduler.EnrolledUpdate / installed drain/restart updater",
+      "extraction": "MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.",
+      "tool": {
+        "set": "runs_fleet",
+        "name": "update_apply",
+        "arguments": "Exact runner selector; apply requires request_id and change with expected_revision, expected_build_revision, service=detent, version and optional release/from_release. REST also requires confirm=true and idempotency_key. Tenant authority cannot target the shared Hub.",
+        "result": "Requested, applied and fresh actually running build evidence, commit, checksum, platform, explicit private patched source, timestamps and support/refusal/progress. Queued acceptance is not application or running success. No raw error or local path disclosure.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": true,
+          "idempotent": true,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3343",
+      "status": "implemented",
+      "coverage": "TestSchedulerEnrolledUpdate; TestSchedulerEnrolledInterruptedReceipt; TestRunnerUpdateApplication; update cases in TestHostedMCPFleetControls; TestRunnerCapacityHeartbeat; TestRunnerRunningBuildProvenance; TestFleetArgumentBoundary.",
+      "decision": "Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#93 exposes the existing installed runner updater. Missing/old owners are unavailable; only matching fresh post-start build evidence establishes running. Private patched source is not automatically an approved release."
     }
   ]
 }

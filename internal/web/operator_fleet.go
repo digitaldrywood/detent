@@ -95,6 +95,9 @@ func decodeFleetRequest(name string, raw json.RawMessage) (fleetRequest, error) 
 	if err := operatortool.DecodeArguments(raw, &r); err != nil {
 		return r, err
 	}
+	if name == operatortool.UpdateApply && (r.RunnerID != "" || len(r.Change) != 0) {
+		return r, operatortool.ErrInvalidArguments
+	}
 	if r.Limit == 0 {
 		r.Limit = 100
 	}

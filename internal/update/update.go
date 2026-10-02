@@ -322,6 +322,7 @@ type Service struct {
 }
 
 type ApplyOptions struct {
+	ExpectedVersion       string
 	AssumeYes             bool
 	FromRelease           bool
 	Confirm               func(Status) (bool, error)
@@ -359,18 +360,21 @@ type Replacement struct {
 }
 
 type Status struct {
-	CurrentVersion  string        `json:"current_version"`
-	LatestCommit    string        `json:"latest_commit,omitempty"`
-	LatestVersion   string        `json:"latest_version,omitempty"`
-	LatestTag       string        `json:"latest_tag,omitempty"`
-	UpdateAvailable bool          `json:"update_available"`
-	InstallSource   InstallSource `json:"install_source"`
-	Action          Action        `json:"action"`
-	Message         string        `json:"message,omitempty"`
-	Command         string        `json:"command,omitempty"`
-	Binary          string        `json:"binary,omitempty"`
-	Asset           string        `json:"asset,omitempty"`
-	Critical        bool          `json:"critical,omitempty"`
+	ReplacementPending bool          `json:"replacement_pending,omitempty"`
+	BinarySHA256       string        `json:"binary_sha256,omitempty"`
+	VerifiedRelease    bool          `json:"verified_release"`
+	CurrentVersion     string        `json:"current_version"`
+	LatestCommit       string        `json:"latest_commit,omitempty"`
+	LatestVersion      string        `json:"latest_version,omitempty"`
+	LatestTag          string        `json:"latest_tag,omitempty"`
+	UpdateAvailable    bool          `json:"update_available"`
+	InstallSource      InstallSource `json:"install_source"`
+	Action             Action        `json:"action"`
+	Message            string        `json:"message,omitempty"`
+	Command            string        `json:"command,omitempty"`
+	Binary             string        `json:"binary,omitempty"`
+	Asset              string        `json:"asset,omitempty"`
+	Critical           bool          `json:"critical,omitempty"`
 }
 
 func NewService(cfg Config) *Service {
@@ -404,6 +408,10 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 	status, release, err := s.plan(ctx)
 	if err != nil {
 		return status, err
+	}
+	if opts.ExpectedVersion != "" && opts.ExpectedVersion != status.LatestVersion {
+		status.Action = ActionRefused
+		return status, ErrRefused
 	}
 	if !status.UpdateAvailable {
 		status.Action = ActionUpToDate
@@ -613,6 +621,19 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return status, err
 	}
 
+	installed := binary
+	if s.cfg.GOOS == "windows" {
+		status.ReplacementPending = true
+	} else {
+		installed, err = os.ReadFile(s.cfg.ExecutablePath)
+		if err != nil {
+			status.Action = ActionUpdated
+			return status, err
+		}
+	}
+	sum := sha256.Sum256(installed)
+	status.BinarySHA256 = hex.EncodeToString(sum[:])
+	status.VerifiedRelease = true
 	status.Action = ActionUpdated
 	status.Asset = assets.Archive.Name
 	status.Message = updateAppliedMessage(status, s.cfg.GOOS, releaseSwap)
