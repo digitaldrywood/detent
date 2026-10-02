@@ -824,6 +824,10 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 	}
 	var response restPullRequestMergeResponse
 	if err := c.client.REST(ctx, http.MethodPut, restPullRequestMergePath(repo, number), body, &response); err != nil {
+		err = ClassifyPullRequestMergeError(http.MethodPut, restPullRequestMergePath(repo, number), err)
+		if errors.Is(err, ErrRateLimited) {
+			return fmt.Errorf("merge github pull request: %w", err)
+		}
 		var status *StatusError
 		if errors.As(err, &status) && status.StatusCode == http.StatusMethodNotAllowed {
 			message := strings.ToLower(status.Body)
@@ -849,9 +853,6 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 				}
 				return fmt.Errorf("merge github pull request: %w: %w", connector.ErrPullRequestMergeQueueRequired, err)
 			}
-			if strings.Contains(message, "head branch is out of date") || strings.Contains(message, "base branch was modified") {
-				return fmt.Errorf("merge github pull request: %w: %w", connector.ErrPullRequestBaseOutOfDate, err)
-			}
 		}
 		return fmt.Errorf("merge github pull request: %w", err)
 	}
@@ -863,6 +864,35 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 		return fmt.Errorf("merge github pull request: %s", message)
 	}
 	return nil
+}
+
+func ClassifyPullRequestMergeError(method, path string, err error) error {
+	if err == nil || errors.Is(err, ErrRateLimited) || method != http.MethodPut {
+		return err
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) != 6 || parts[0] != "repos" || parts[1] == "" || parts[2] == "" || parts[3] != "pulls" || parts[5] != "merge" {
+		return err
+	}
+	number, parseErr := strconv.Atoi(parts[4])
+	if parseErr != nil || number <= 0 || strconv.Itoa(number) != parts[4] {
+		return err
+	}
+	var status *StatusError
+	if !errors.As(err, &status) || status.StatusCode != http.StatusMethodNotAllowed {
+		return err
+	}
+	var response struct {
+		Message string `json:"message"`
+	}
+	if decodeErr := json.Unmarshal([]byte(status.Body), &response); decodeErr != nil {
+		return err
+	}
+	message := strings.ToLower(strings.TrimSpace(response.Message))
+	if strings.HasPrefix(message, "head branch is out of date") || strings.HasPrefix(message, "base branch was modified") {
+		return fmt.Errorf("%s %s: %w: %w", method, path, connector.ErrPullRequestBaseOutOfDate, err)
+	}
+	return err
 }
 
 func (c *Connector) RerunPullRequestChecks(ctx context.Context, issue connector.Issue, checks []connector.PullRequestCheck) error {

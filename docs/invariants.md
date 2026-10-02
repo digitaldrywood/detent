@@ -94,6 +94,21 @@ before unchanged work can finish, including outcomes with no produced change.
 Typed native landing results and immutable current-version review remain
 authoritative. Workers never write tracker lane state.
 
+Native concurrent-base merge refusals (#160) retain Merging and the current
+immutable Change/version/head and review. The exact merge endpoint's typed
+base-out-of-date evidence reaches the existing forge continuation owner, never
+Blocked, source Rework or a new review request. Retry fetches current base truth
+and repeats the atomic reviewed-head merge under the current lease and policy;
+only an actual successful landing receipt can finish the item. Original HTTP
+status, method, repository/PR and reviewed-head/fetched-base evidence remain in
+attempt history. Actual head movement, closure, proven source conflict and
+current protection/review/check refusals retain their existing owners; typed
+quota and reset evidence retain capacity precedence.
+`TestNativeLandingRunCompletion` drives the real Runner and LocalGit from the
+recorded PUT merge 405 JSON through durable Merging continuation to a successful
+same-version landing after a concurrent base advance, with no agent turn or
+fabricated review.
+
 Project MCP parity (#3342) calls the same dashboard project, onboarding,
 integration, import, policy and budget application commands. Native command
 receipts are checked before revisions/provider reads and before repeat approval,
@@ -1139,6 +1154,19 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Native base races (#160) consolidate merge refusal classification with the
+existing exact-endpoint `ErrPullRequestBaseOutOfDate` owner. The connector and
+native workspace share JSON `message` classification; unrelated methods,
+resources, noncanonical PR identities, malformed bodies and metadata cannot
+supply base-race authority. Native landing reuses the existing forge wait,
+restart recovery and merge continuation, preserving immutable review and
+atomic head/lease/policy fences without a new reason code, retry loop, park,
+brake, configuration key or exception path. Required branch checks and reviews
+remain binding on every merge attempt; a clean source merge or base refusal
+never counts as a landing. `TestConnectorMergePullRequestClassifiesBaseRefusal`,
+`TestGitHubLandingAPIEndpointOwnership` and `TestNativeLandingRunCompletion`
+cover the shared classification and completion boundaries.
 
 Native runtime evidence (#92) records observations in the existing fenced
 attempt event stream and records evaluated Merging eligibility, routing,

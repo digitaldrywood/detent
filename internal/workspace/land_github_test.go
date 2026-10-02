@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -345,6 +346,7 @@ func TestGitHubLandingAPIEndpointOwnership(t *testing.T) {
 		{"zero pull number", "PUT", "repos/example/repo/pulls/0/merge"},
 		{"negative pull number", "PUT", "repos/example/repo/pulls/-7/merge"},
 		{"nonnumeric pull number", "PUT", "repos/example/repo/pulls/main/merge"},
+		{"noncanonical pull number", "PUT", "repos/example/repo/pulls/007/merge"},
 		{"missing owner", "PUT", "repos//repo/pulls/7/merge"},
 		{"missing repository", "PUT", "repos/example//pulls/7/merge"},
 		{"wrong resource", "PUT", "repos/example/repo/issues/7/merge"},
@@ -352,21 +354,33 @@ func TestGitHubLandingAPIEndpointOwnership(t *testing.T) {
 		{"query suffix", "PUT", "repos/example/repo/pulls/7/merge?operation=merge"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			client, err := github.NewClient(github.ClientConfig{
-				TokenSource: github.StaticTokenSource(test.name),
-				HTTPClient: landingHTTPClient(func(*http.Request) (*http.Response, error) {
-					return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"Head branch was modified"}`))}, nil
-				}),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var result githubLandingMerge
-			err = githubLandingAPI(t.Context(), client, &result, test.method, test.path)
-			var refusal *LandRefusal
-			var status *github.StatusError
-			if err == nil || errors.As(err, &refusal) || !errors.As(err, &status) || status.StatusCode != http.StatusConflict || !errors.Is(err, github.ErrUnexpectedStatus) || result.Merged || result.SHA != "" {
-				t.Fatalf("unrelated operation = %#v, %v", result, err)
+			for _, response := range []struct {
+				status int
+				body   string
+			}{
+				{http.StatusConflict, `{"message":"Head branch was modified"}`},
+				{http.StatusMethodNotAllowed, `{"message":"Base branch was modified. Review and try the merge again."}`},
+			} {
+				client, err := github.NewClient(github.ClientConfig{
+					TokenSource: github.StaticTokenSource(test.name),
+					HTTPClient: landingHTTPClient(func(*http.Request) (*http.Response, error) {
+						return &http.Response{StatusCode: response.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response.body))}, nil
+					}),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var result githubLandingMerge
+				err = githubLandingAPI(t.Context(), client, &result, test.method, test.path)
+				var refusal *LandRefusal
+				var status *github.StatusError
+				if response.status == http.StatusMethodNotAllowed {
+					if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected || errors.Is(err, connector.ErrPullRequestBaseOutOfDate) || errors.Is(err, forgeavailability.ErrUnavailable) {
+						t.Fatalf("unrelated 405 supplied base-race authority: %v", err)
+					}
+				} else if err == nil || errors.As(err, &refusal) || !errors.As(err, &status) || status.StatusCode != http.StatusConflict || !errors.Is(err, github.ErrUnexpectedStatus) || result.Merged || result.SHA != "" {
+					t.Fatalf("unrelated operation = %#v, %v", result, err)
+				}
 			}
 		})
 	}

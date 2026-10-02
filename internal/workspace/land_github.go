@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -160,6 +161,9 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		var merged githubLandingMerge
 		if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", fmt.Sprintf("repos/%s/pulls/%d/merge", repository, pull.Number),
 			"merge_method="+opts.Method, "sha="+head); err != nil {
+			if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) {
+				return LandResult{}, fmt.Errorf("merge reviewed head %s into %s at fetched base %s (pull request base %s): %w", head, base, baseBefore, pull.Base.SHA, err)
+			}
 			var status *github.StatusError
 			if errors.Is(err, forgeavailability.ErrUnavailable) && errors.As(err, &status) && status.StatusCode == http.StatusMethodNotAllowed {
 				return LandResult{}, l.verifyGitHubLandingConflict(ctx, normalized, issue, opts, remote, repository, base, pull.Number, err)
@@ -292,6 +296,10 @@ func githubLandingAPI(ctx context.Context, client GitHubRESTClient, result any, 
 	err := client.REST(ctx, method, path, body, result)
 	if err == nil || errors.Is(err, github.ErrRateLimited) {
 		return err
+	}
+	err = github.ClassifyPullRequestMergeError(method, path, err)
+	if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) {
+		return forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request " + path}, forgeavailability.ClassServer, err)
 	}
 	var status *github.StatusError
 	if errors.As(err, &status) {
