@@ -3,6 +3,8 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +21,8 @@ import (
 // transports must preserve its typed selector and current authority checks.
 type protocolApplication struct {
 	reads       *operatortool.AuthorizedExecutor
+	catalog     []operatortool.Definition
+	listCalls   atomic.Int64
 	denied      atomic.Bool
 	writeDenied atomic.Bool
 }
@@ -28,14 +32,19 @@ func (a *protocolApplication) OpenConnection(ctx context.Context) error {
 	return err
 }
 func (a *protocolApplication) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
+	a.listCalls.Add(1)
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return nil, err
 	}
 	if a.reads != nil {
 		return a.reads.ListTools(ctx)
 	}
-	tools := operatortool.Catalog()
-	for _, d := range operatortool.CommandCatalog() {
+	definitions := a.catalog
+	if definitions == nil {
+		definitions = append(operatortool.Catalog(), operatortool.CommandCatalog()...)
+	}
+	tools := make([]operatortool.Definition, 0, len(definitions))
+	for _, d := range definitions {
 		if d.Annotations.ReadOnly {
 			tools = append(tools, d)
 		} else if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err == nil {
@@ -188,34 +197,31 @@ func TestProtocolApplicationParity(t *testing.T) {
 				if !denied.IsError || denied.Content[0].Text != operatortool.ErrAccessDenied.Error() {
 					t.Fatalf("direct selector bypass: %+v", denied)
 				}
-				cursor := ""
-				var tools []operatortool.Definition
-				want := append(operatortool.Catalog(), operatortool.CommandCatalog()...)
-				wantPages := (len(want) + catalogPageSize - 1) / catalogPageSize
-				pages := 0
-				for {
-					var page catalogPage
-					decodeResult(t, fixture.request("tools/list", map[string]any{"cursor": cursor}), &page)
-					tools = append(tools, page.Tools...)
-					pages++
-					if len(page.Tools) > catalogPageSize {
-						t.Fatal("unbounded page")
-					}
-					cursor = page.NextCursor
-					if cursor == "" {
-						break
-					}
-					if pages >= wantPages {
-						t.Fatal("pagination did not finish")
-					}
-				}
-				if !reflect.DeepEqual(tools, want) || pages != wantPages {
-					t.Fatalf("typed catalog/schema/annotation parity mismatch: pages=%d tools=%+v", pages, tools)
-				}
-				for _, tool := range tools {
-					if tool.Meta.Toolset == "" {
-						t.Fatalf("ungrouped %s", tool.Name)
-					}
+				for _, catalog := range []struct {
+					name  string
+					tools []operatortool.Definition
+				}{
+					{"empty", []operatortool.Definition{}},
+					{"base", operatortool.Catalog()},
+					{"full registry", operatortool.Registry()},
+				} {
+					t.Run(catalog.name, func(t *testing.T) {
+						fixture.application.catalog = catalog.tools
+						before := fixture.application.listCalls.Load()
+						var page catalogPage
+						decodeResult(t, fixture.request("tools/list", nil), &page)
+						if !reflect.DeepEqual(page.Tools, catalog.tools) || page.NextCursor != "" {
+							t.Fatalf("typed catalog/schema/annotation parity mismatch: tools=%d want=%d nextCursor=%q", len(page.Tools), len(catalog.tools), page.NextCursor)
+						}
+						if calls := fixture.application.listCalls.Load() - before; calls != 1 {
+							t.Fatalf("catalog lookups = %d, want 1 for %d tools", calls, len(catalog.tools))
+						}
+						for _, tool := range page.Tools {
+							if tool.Meta.Toolset == "" {
+								t.Fatalf("ungrouped %s", tool.Name)
+							}
+						}
+					})
 				}
 				params["arguments"].(map[string]string)["project_id"] = "project"
 				response := fixture.request("tools/call", params)
@@ -306,17 +312,40 @@ func TestCatalogCursorCurrentAuthority(t *testing.T) {
 			fixture := newProtocolFixture(t, transport, ProtocolVersion)
 			var first catalogPage
 			decodeResult(t, fixture.request("tools/list", nil), &first)
-			if first.NextCursor == "" {
-				t.Fatal("missing next page")
+			raw, err := json.Marshal(struct {
+				Identity operatortool.Identity
+				Tools    []operatortool.Definition
+			}{*fixture.identity, first.Tools})
+			if err != nil {
+				t.Fatal(err)
 			}
-			for _, cursor := range []string{"invalid", strings.Repeat("a", 257)} {
+			sum := sha256.Sum256(raw)
+			digest := base64.RawURLEncoding.EncodeToString(sum[:])
+			encodeCursor := func(offset int, digest string) string {
+				t.Helper()
+				raw, err := json.Marshal(map[string]any{"offset": offset, "digest": digest})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return base64.RawURLEncoding.EncodeToString(raw)
+			}
+			cursor := encodeCursor(5, digest)
+			for _, offset := range []int{1, 5, len(first.Tools) - 1} {
+				var remaining catalogPage
+				before := fixture.application.listCalls.Load()
+				decodeResult(t, fixture.request("tools/list", map[string]any{"cursor": encodeCursor(offset, digest)}), &remaining)
+				if !reflect.DeepEqual(remaining.Tools, first.Tools[offset:]) || remaining.NextCursor != "" || fixture.application.listCalls.Load()-before != 1 {
+					t.Fatalf("cursor offset %d did not finish discovery in one lookup: %+v", offset, remaining)
+				}
+			}
+			for _, cursor := range []string{"invalid", strings.Repeat("a", 257), encodeCursor(-1, digest), encodeCursor(0, digest), encodeCursor(len(first.Tools), digest), encodeCursor(len(first.Tools)+1, digest), encodeCursor(5, "wrong-digest")} {
 				response := fixture.request("tools/list", map[string]any{"cursor": cursor})
 				if response.Error == nil || response.Error.Code != codeInvalidParams {
 					t.Fatalf("invalid cursor: %+v", response)
 				}
 			}
 			fixture.application.writeDenied.Store(true)
-			changed := fixture.request("tools/list", map[string]any{"cursor": first.NextCursor})
+			changed := fixture.request("tools/list", map[string]any{"cursor": cursor})
 			if changed.Error == nil || changed.Error.Code != codeInvalidParams {
 				t.Fatalf("changed permissions reused cursor: %+v", changed)
 			}
@@ -329,14 +358,14 @@ func TestCatalogCursorCurrentAuthority(t *testing.T) {
 			}
 			fixture.application.writeDenied.Store(false)
 			fixture.application.denied.Store(true)
-			response := fixture.request("tools/list", map[string]any{"cursor": first.NextCursor})
+			response := fixture.request("tools/list", map[string]any{"cursor": cursor})
 			if response.Error == nil || response.Error.Message != operatortool.ErrAccessDenied.Error() {
 				t.Fatalf("stale cursor widened authority: %+v", response)
 			}
 			if transport == "http" {
 				fixture.application.denied.Store(false)
 				fixture.identity.PrincipalID = "other"
-				response = fixture.request("tools/list", map[string]any{"cursor": first.NextCursor})
+				response = fixture.request("tools/list", map[string]any{"cursor": cursor})
 				if response.Error == nil {
 					t.Fatal("cross-principal cursor widened authority")
 				}

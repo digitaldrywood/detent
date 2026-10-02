@@ -355,9 +355,13 @@ operations, not operator MCP tools. No merger or tracker lane writer is introduc
 these boundaries. This extracts application commands rather than adding a
 protection mechanism (INV-3).
 
-MCP transport parity (#3339) uses one permission-filtered, paginated typed
-registry with toolset metadata. The `2026-07-28` stateless protocol validates
-per-request metadata and mirrored HTTP headers; older handshakes retain their
+MCP transport parity (#3339, native #207) uses one permission-filtered typed
+registry with toolset metadata. Tool discovery returns the complete current
+catalog in one response without a continuation cursor, resolving application
+discovery once regardless of catalog size. Existing opaque cursors still validate
+their principal/catalog digest and bounded offset against current authority,
+then return all remaining tools without another cursor. The `2026-07-28` stateless
+protocol validates per-request metadata and mirrored HTTP headers; older handshakes retain their
 bound sessions. Discovery cursors and client metadata confer no authority.
 Modern HTTP binds the existing application approval conversation to authenticated
 principal/organization/credential/session identity, independently of the POST's
