@@ -374,6 +374,7 @@ func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *
 	record = conversationRecord{
 		ID: conversation.NewConversationID(), OrganizationID: scope.organization, ProjectID: scope.project,
 		OwnerPrincipalID: scope.credential.ID, Title: deriveConversationTitle(issue.Title),
+		Origin:     conversationOriginWorker,
 		Visibility: conversation.VisibilityShared, Status: conversation.StatusActive,
 		WorkItemID: item, LinkedAt: &now,
 		Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},

@@ -19,7 +19,9 @@ let hub;
 
 test.beforeAll(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
-  hub = await startHostedHub("conversation");
+  hub = await startHostedHub("conversation", {
+    env: { DETENT_HOSTED_BROWSER_CHAT_ORIGIN: "1" },
+  });
 });
 
 test.afterAll(async () => {
@@ -366,6 +368,54 @@ test("keeps every character of a long draft typed at speed", async ({ page }) =>
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.press("Backspace");
   await expectComposerText(page, "");
+  expect(errors).toEqual([]);
+});
+
+test("keeps runner conversations out of Chat while preserving issue access", async ({ page }) => {
+  const errors = watchConsole(page);
+  await openChat(page);
+  await sendWithKeyboard(page, "Manual chat stays visible");
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  const rows = sidebar(page).getByTestId("sidebar-row-card");
+  await expect(rows.filter({ hasText: "Manual chat stays visible" })).toBeVisible();
+  await expect(rows.filter({ hasText: "Lease renewal under load" })).toBeVisible();
+  await expect(rows.filter({ hasText: "Runner session isolation" })).toHaveCount(0);
+
+  for (const path of [
+    "/conversations",
+    `/projects/${hub.fixture.project_id}/conversations`,
+  ]) {
+    const listed = await hubAPI(page, "GET", path);
+    expect(listed.status).toBe(200);
+    expect(listed.payload.conversations.map((chat) => chat.id)).not.toContain(hub.fixture.worker_conversation);
+    expect(listed.payload.conversations.map((chat) => chat.id)).toContain(hub.fixture.conversation);
+  }
+
+  await page.addInitScript((id) => {
+    const NativeEventSource = window.EventSource;
+    window.workerConversationStream = { opened: false, updates: 0 };
+    window.EventSource = class extends NativeEventSource {
+      constructor(url, options) {
+        super(url, options);
+        if (!String(url).includes(`/conversations/${id}/events`)) return;
+        this.addEventListener("open", () => { window.workerConversationStream.opened = true; });
+        this.addEventListener("conversation.updated", () => { window.workerConversationStream.updates++; });
+      }
+    };
+  }, hub.fixture.worker_conversation);
+  await page.goto(new URL(`/work/i/${hub.fixture.worker_work_item}?panel=conversation`, hub.fixture.url).toString());
+  await expect(page.getByTestId("issue-properties")).toBeVisible();
+  await expect(page.getByTestId("conversation-surface")).toBeVisible();
+  const linked = await hubAPI(page, "GET", `/projects/${hub.fixture.project_id}/work-items/${hub.fixture.worker_work_item}/conversation`);
+  expect(linked.status).toBe(200);
+  expect(linked.payload.conversation.id).toBe(hub.fixture.worker_conversation);
+  await expect.poll(() => page.evaluate(() => window.workerConversationStream.opened)).toBe(true);
+  const updated = await hubAPI(page, "PATCH", conversationPath(hub.fixture.worker_conversation), {
+    title: "Runner session remains on the issue",
+  });
+  expect(updated.status).toBe(200);
+  await expect.poll(() => page.evaluate(() => window.workerConversationStream.updates)).toBeGreaterThan(0);
+  await expect(sidebar(page).getByTestId("sidebar-row-card").filter({ hasText: /Runner session/ })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

@@ -297,6 +297,7 @@ export const Conversation = Schema.Struct({
   project_id: Schema.String,
   title: Schema.String,
   visibility: ConversationVisibility,
+  origin: Schema.optional(Schema.Literals(["user", "worker"])),
   status: ConversationStatus,
   subject_work_item_id: Schema.optional(Schema.NullOr(WorkItemId)),
   work_item_id: Schema.NullOr(WorkItemId),

@@ -240,7 +240,7 @@ Conversation:
 ```json
 {
   "id": "conv_…", "organization_id": "…", "project_id": "…",
-  "title": "…", "visibility": "private|shared",
+  "title": "…", "visibility": "private|shared", "origin": "user|worker",
   "status": "active|archived",
   "work_item_id": "wi_…|null", "linked_at": "…|null",
   "work_item": {"id": "wi_…", "identifier": "<project>#<number>", "title": "…", "lane": "…", "runner_bound": false}|null,
@@ -295,7 +295,7 @@ Receipt:
 | Method and path | Body | Result |
 |---|---|---|
 | `POST /conversations` | `{title?, first_message?: {key, text}}` | 201 conversation (+ receipt when a first message was sent) |
-| `GET /conversations?cursor&limit&q&include_archived` | | `{conversations: [...], next_cursor}` visible to the actor, most recent activity first |
+| `GET /conversations?cursor&limit&q&include_archived` | | `{conversations: [...], next_cursor}` user-origin conversations visible to the actor, including linked chats, most recent activity first |
 | `GET /api/v2/organizations/:organization/conversations?...` | | Same across projects the actor can read |
 | `GET /conversations/:conversation` | | `{conversation, messages (latest page), questions, cursor}`; `questions` carries every question still awaiting an answer plus the ones the current attempt already settled, newest 20, so a reloading tab renders a locked card instead of losing it |
 | `GET /conversations/:conversation/messages?before=<seq>&limit` | | Older page, ordered by seq |
