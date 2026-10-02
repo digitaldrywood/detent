@@ -448,10 +448,31 @@ Unknown availability disables Surface controls with a safe explanation. Surface
 requests name the selected attempt so retained-runner ownership and active-attempt
 read-only restrictions remain application-owned. Projection confers no authority:
 commands and relay traffic retain current role, grants, owner, path, lease and
-plan checks. Raw Mac terminals still report `user`; this change does not activate
-them under sandbox policy or authorize any tenant's terminal activation.
+plan checks. Terminal launch confinement is independent of provider-worker isolation;
+native #162 binds registration, bind, heartbeat and opened isolation to the same
+measured terminal support. Darwin uses a deny-default Seatbelt profile, verified
+by an actual PTY probe and a confirmation emitted inside each sandbox before
+the configured shell starts. Only the canonical worktree is writable; system
+binaries/libraries are readable, runner environment and host IPC/network authority
+are absent. Symlink escapes, runner-home roots and nested mounts are refused.
+Sandbox descendants cannot change session or process group, including through
+`posix_spawn`, and cannot read host process arguments/environment. This retains the existing
+group teardown authority even after the shell exits. This restricts shell job
+control within sandbox terminals. A failed host/probe/launch never opens an
+unrestricted replacement. Linux has no implemented confined PTY and reports
+`user`; explicit user-policy terminals retain their existing restrictions. Tenant
+workspace/terminal defaults stay disabled and sandbox policy continues to refuse
+user-only runners. Runtime probe skips do not establish production support.
 `TestCloudAllocationGeneratesTenantConfiguration` and
 `TestAppBootstrapWorkspaceAvailability` cover persistence and truthful availability.
+`TestSandboxUnavailable`, `TestSandboxTerminalContainment`,
+`TestSandboxRootAuthority`, `TestSandboxMountContainment`, `TestSandboxChildCannotDetach`,
+`TestServiceOpenRefusals`, and the extended close/cancellation/exit table cover
+launch refusal, environment/path confinement and descendant teardown. Existing
+session and Hub relay tests retain current authority, lease and fencing coverage.
+Reviewed deployment and separately authorized scoped enablement remain necessary
+before real-workspace browser/API acceptance; see
+[terminal operations](conversation/operations.md#terminal-isolation-and-runtime-acceptance).
 No mechanism, control channel, configuration key or lane writer is introduced.
 
 Files selection (native #167) stays keyed to the native work item while its
@@ -2024,8 +2045,8 @@ from backend enforcement rather than adding another cache revision guard.
 Claude verifies effective policy on its worker before sending a model prompt.
 `TestRunnerIsolationClaims`, `TestRunnerIsolationHeartbeatWithdrawsTier`,
 `TestProbeBackendTiers`, and each backend's `TestIsolationSettings` cover dispatch,
-withdrawal, failed probes, and policy mapping. Raw workspace terminals still report
-their actual `user` isolation independently of agent sandbox support.
+withdrawal, failed probes, and policy mapping. Workspace terminals report their
+own measured isolation independently of agent sandbox support (native #162).
 
 Runner policy identity (#3273) preserves the historical digest representation
 of equivalent absent/default execution settings across binary upgrades. The

@@ -25,18 +25,32 @@ func TestTerminalCloseKillsChildrenThatIgnoreTheHangup(t *testing.T) {
 		name          string
 		child         bool
 		cancel        bool
+		exit          bool
+		sandbox       bool
 		wantFullGrace bool
 	}{
 		{name: "close with a child ignoring SIGHUP", child: true, wantFullGrace: true},
 		{name: "context cancellation with a child ignoring SIGHUP", child: true, cancel: true, wantFullGrace: true},
 		{name: "close with no children", child: false},
 		{name: "context cancellation with no children", child: false, cancel: true},
+		{name: "shell exit kills a surviving child", child: true, exit: true, wantFullGrace: true},
+		{name: "confined child is killed on close", child: true, sandbox: true, wantFullGrace: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			worktree := t.TempDir()
 			service := newTestService(t, worktree)
+			if test.sandbox {
+				if AvailableIsolation() != workspacesession.IsolationSandbox {
+					t.Skip("actual host sandbox enforcement is unavailable")
+				}
+				var err error
+				service, err = New(worktree, "/bin/sh", workspacesession.IsolationSandbox, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			sink := &collector{}
 			ctx, cancel := context.WithCancel(t.Context())
 			t.Cleanup(cancel)
@@ -71,7 +85,12 @@ func TestTerminalCloseKillsChildrenThatIgnoreTheHangup(t *testing.T) {
 			}
 
 			started := time.Now()
-			if test.cancel {
+			if test.exit {
+				if err := terminal.Write([]byte("exit\n")); err != nil {
+					t.Fatal(err)
+				}
+				terminal.Wait()
+			} else if test.cancel {
 				cancel()
 				select {
 				case <-terminal.Done():
