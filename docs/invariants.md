@@ -3456,6 +3456,16 @@ without rewriting immutable plan versions. Self-hosted databases have no quota.
 `TestHostedIssueConcurrentAllocation`, and `TestHostedIssueImportAllocation`
 exercise these boundaries without adding a brake, lease, or recovery mechanism.
 
+Hosted native mutation accounting (#201) requests only consumption metrics that
+its existing mutation owner can grow. Ordered run events change attempt, history,
+receipt and window accounting, not project, repository, issue or runner allocation.
+Completion exemptions apply before selecting quota queries. Full explicit usage
+reports and other hosted accounting callers retain their complete projection.
+Exact retained-byte sums and history/event counts remain transactional where
+enforced; no rolling usage window substitutes for stock totals. Quota rejection
+rolls back data and business receipts, and idempotent replay remains uncharged.
+This removes unrelated quota scans, not the retained-byte scan itself.
+
 Active worker phase attribution retains the existing explicit validation lifecycle
 owner and recognizes CI waits from leading, bounded wait statements. Ordinary
 implementation words such as decisions or checking must not become CI waits or

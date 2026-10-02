@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1048,5 +1049,138 @@ func TestCapacityFreeNativeClaimRefusal(t *testing.T) {
 	}
 	if leases != 0 {
 		t.Fatal("Free dispatch allocated a lease")
+	}
+}
+
+type hostedConsumptionQueries struct {
+	nativeQueryer
+	statements []string
+}
+
+func (q *hostedConsumptionQueries) QueryRowContext(ctx context.Context, statement string, args ...any) *sql.Row {
+	q.statements = append(q.statements, statement)
+	return q.nativeQueryer.QueryRowContext(ctx, statement, args...)
+}
+
+func (q *hostedConsumptionQueries) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
+	q.statements = append(q.statements, statement)
+	return q.nativeQueryer.QueryContext(ctx, statement, args...)
+}
+
+func TestHostedNativeMutationConsumption(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	hostedTestPlans(t, f.service, nil)
+	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+	for i := range 8 {
+		requireNativeStatus(t, f.request(t, owner, http.MethodPost, f.base+"/work-items", map[string]any{
+			"idempotency_key": fmt.Sprintf("retained-%d", i), "title": "retained", "body": strings.Repeat("x", 32768), "state": "Todo",
+		}), http.StatusOK)
+	}
+	now := time.Now()
+	d := f.service.database
+	fullQueries := &hostedConsumptionQueries{nativeQueryer: d.db}
+	full, err := d.hostedConsumption(t.Context(), fullQueries, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fullQueries.statements) != 14 || full["collaboration_bytes"] < 8*32768 {
+		t.Fatalf("full queries=%d bytes=%d", len(fullQueries.statements), full["collaboration_bytes"])
+	}
+	for _, test := range []struct {
+		name       string
+		input      any
+		completion bool
+		queries    int
+	}{
+		{"ordinary mutation", struct{}{}, false, 9},
+		{"ordinary completion", struct{}{}, true, 6},
+		{"run observation", tracker.NativeRunEvent{Type: "run.observed"}, false, 4},
+		{"run completion", tracker.NativeRunEvent{Type: "run.finished"}, true, 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			queries := &hostedConsumptionQueries{nativeQueryer: d.db}
+			metrics := hostedNativeMutationMetrics(test.input, test.completion)
+			actual, err := d.hostedConsumption(t.Context(), queries, now, metrics...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(queries.statements) != test.queries {
+				t.Fatalf("queries=%d want=%d", len(queries.statements), test.queries)
+			}
+			for name, amount := range actual {
+				if full[name] != amount {
+					t.Fatalf("%s=%d full=%d", name, amount, full[name])
+				}
+			}
+			for _, name := range metrics {
+				if name != "usage_windows" && actual[name] != full[name] {
+					t.Fatalf("omitted %s", name)
+				}
+			}
+			for _, statement := range queries.statements {
+				if strings.Contains(statement, "hosted_artifact_usage") || strings.Contains(statement, "hosted_members") || strings.Contains(statement, "hosted_member_reservations") || strings.Contains(statement, "FROM leases") {
+					t.Fatalf("unrelated report query: %s", statement)
+				}
+			}
+			t.Logf("full_queries=%d selected_queries=%d retained_bytes=%d", len(fullQueries.statements), len(queries.statements), full["collaboration_bytes"])
+		})
+	}
+}
+
+func TestHostedNativeRunMutationQuotas(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		limits map[string]int64
+		finish bool
+		status int
+	}{
+		{"unrelated allocation exhaustion", map[string]int64{"projects": 0, "unarchived_issues": 0, "repositories": 0, "registered_runners": 0, "connected_runners": 0}, false, http.StatusOK},
+		{"storage exhaustion", map[string]int64{"collaboration_bytes": 1}, false, http.StatusTooManyRequests},
+		{"history exhaustion", map[string]int64{"history_records": 0}, false, http.StatusTooManyRequests},
+		{"event exhaustion", map[string]int64{"ingested_events": 0}, false, http.StatusTooManyRequests},
+		{"window exhaustion", map[string]int64{"api_mutations": 0}, false, http.StatusTooManyRequests},
+		{"failed completion while exhausted", map[string]int64{"collaboration_bytes": 1, "history_records": 0, "ingested_events": 0, "api_mutations": 0}, true, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}), "", "runtime-quota")
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "work")
+			worker := f.worker(t, "worker")
+			lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+			event := nativeStartedEvent(lease)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			f.service.config.Hosted = &HostedConfig{}
+			f.service.database.hostedOrganization = f.project.OrganizationID
+			hostedTestPlans(t, f.service, test.limits)
+			f.service.config.Hosted = nil
+			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "observed", 2
+			event.Data.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: time.Now(), Phase: "implementation"}
+			if test.finish {
+				event.Type, event.Data.Outcome = "run.finished", "failed"
+			}
+			before, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
+			after, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.status != http.StatusOK {
+				if !maps.Equal(before, after) {
+					t.Fatalf("rejected observation changed usage: %v -> %v", before, after)
+				}
+				return
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			replay, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
+			if err != nil || !maps.Equal(after, replay) {
+				t.Fatalf("replay usage changed: %v -> %v error=%v", after, replay, err)
+			}
+		})
 	}
 }
