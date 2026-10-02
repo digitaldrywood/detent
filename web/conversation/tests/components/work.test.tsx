@@ -688,6 +688,112 @@ async function settledWork() {
   await waitFor(() => expect(screen.getByTestId("work-stats").getAttribute("aria-busy")).toBe("false"));
 }
 
+describe("the live Work continuation intent", () => {
+  it("cancels a continuation when the actual filter selection changes", async () => {
+    const fixture = workPaginationFixture();
+    await fixture.control();
+    vi.stubGlobal("fetch", fixture.fetch);
+    let current!: ReturnType<typeof useBoard>;
+    let changeView!: React.Dispatch<React.SetStateAction<typeof DEFAULT_VIEW_STATE>>;
+    function Probe() {
+      const [view, setView] = React.useState(DEFAULT_VIEW_STATE);
+      changeView = setView;
+      current = useBoard(null, view);
+      return <div>{current.items.length}</div>;
+    }
+    render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
+    await waitFor(() => expect(current.loading).toBe(false));
+    const deferred = fixture.deferPage();
+    act(() => current.loadMore());
+    await deferred.waiting;
+    const continuation = fixture.requests.findLast((request) => request.url.searchParams.has("cursor"))!;
+    act(() => changeView({ ...DEFAULT_VIEW_STATE, q: "older-label" }));
+    await waitFor(() => expect(current.items).toHaveLength(2));
+    expect(continuation.signal?.aborted).toBe(true);
+    expect(current.items.every((item) => item.labels.includes("older-label"))).toBe(true);
+    await act(async () => { deferred.release(); });
+    expect(current.items).toHaveLength(2);
+  });
+
+
+  it("accepts Load more during background refresh and clears revoked scope", async () => {
+    const sources: EventTarget[] = [];
+    vi.stubGlobal("EventSource", class extends EventTarget {
+      readyState = 1;
+      constructor() { super(); sources.push(this); }
+      close() {}
+    });
+    const fixture = workPaginationFixture();
+    await fixture.control();
+    let hold = false;
+    let started!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    const deferred = new Promise<void>((resolve) => { release = resolve; });
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fixture.fetch>) => {
+      if (hold && String(args[0]).includes("/proj_alpha/work-items")) {
+        hold = false;
+        started();
+        await deferred;
+      }
+      return fixture.fetch(...args);
+    });
+    let current!: ReturnType<typeof useBoard>;
+    function Probe() {
+      current = useBoard(null, DEFAULT_VIEW_STATE);
+      return <div>{current.items.length}</div>;
+    }
+    render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
+    await waitFor(() => expect(current.loading).toBe(false));
+    hold = true;
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "40" })));
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "41" })));
+    await waiting;
+    expect(current.loading).toBe(false);
+    expect(current.items).toHaveLength(108);
+    act(() => current.loadMore());
+    await waitFor(() => expect(current.items).toHaveLength(141));
+    await act(async () => { release(); });
+    await fixture.control({ revoked: true });
+    act(() => current.reload());
+    await waitFor(() => expect(current.error).not.toBeNull());
+    expect(current.items).toHaveLength(0);
+    expect(current.totals).toBeNull();
+  });
+
+
+  it.each(["refresh-first", "continuation-first"])("keeps a continuation requested in the same batch as %s activity", async (order) => {
+    const sources: EventTarget[] = [];
+    vi.stubGlobal("EventSource", class extends EventTarget {
+      readyState = 1;
+      constructor() { super(); sources.push(this); }
+      close() {}
+    });
+    const fixture = workPaginationFixture();
+    await fixture.control();
+    vi.stubGlobal("fetch", fixture.fetch);
+    let current!: ReturnType<typeof useBoard>;
+    function Probe() {
+      current = useBoard(null, DEFAULT_VIEW_STATE);
+      return <div>{current.items.length}</div>;
+    }
+    render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
+    await waitFor(() => expect(current.loading).toBe(false));
+    expect(current.items.length).toBeGreaterThan(100);
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "40" })));
+    vi.useFakeTimers();
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "41" })));
+    act(() => {
+      if (order === "refresh-first") vi.advanceTimersByTime(400);
+      current.loadMore();
+      if (order === "continuation-first") vi.advanceTimersByTime(400);
+    });
+    vi.useRealTimers();
+    await waitFor(() => expect(current.items).toHaveLength(141));
+    expect(fixture.requests.some((request) => request.url.searchParams.has("cursor"))).toBe(true);
+  });
+});
+
 describe("the filter-first Work surface", () => {
   it("keeps active workers visible with full-scope totals and appends matching results in both views", async () => {
     const { router, requests } = await pagedWork();

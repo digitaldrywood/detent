@@ -186,7 +186,6 @@ export function useBoard(
       refreshPending.current = true;
       return;
     }
-    setContinuation({ key: "", cursors: {} });
     setNonce((value) => value + 1);
   }, []);
   const applyItem = React.useCallback((item: WorkItemView) => {
@@ -226,7 +225,10 @@ export function useBoard(
         totals: null, project: null, items: [], lanes: [], labels: [], assignees: [], priorities: [], truncated: false, enriched: 0, asOf: null }));
       return;
     }
-    setState((current) => ({ ...current, requestKey, requestHttp: http, loading: true, error: null,
+    const cachedSelection = loadedSelection.current.key === selectionKey && loadedSelection.current.http === http ? loadedSelection.current : null;
+    const continuing = cachedSelection !== null && scope.some((id) => cachedSelection.cursors[id] !== cursors[id]);
+    const background = cachedSelection !== null && cachedSelection.nonce !== nonce && !continuing;
+    setState((current) => ({ ...current, requestKey, requestHttp: http, loading: !background, error: null,
       ...(loadedSelection.current.key === selectionKey && loadedSelection.current.http === http ? {} : {
         hasMore: false, totals: null, items: [], lanes: [], project: null, labels: [], assignees: [], priorities: [], asOf: null, truncated: false, enriched: 0,
       }),
@@ -243,7 +245,8 @@ export function useBoard(
           let entry = await loadProject(http, id, view, signal, refreshing ? undefined : cursors[id]);
           const issues = refreshing ? [...entry.issues] : [...(prior?.issues ?? []), ...entry.issues];
           let pageCount = refreshing ? 1 : (prior?.pageCount ?? 0) + 1;
-          while (refreshing && pageCount < (prior?.pageCount ?? 1) && entry.nextCursor !== undefined) {
+          const requestedPages = (prior?.pageCount ?? 1) + (cached?.cursors[id] !== cursors[id] ? 1 : 0);
+          while (refreshing && pageCount < requestedPages && entry.nextCursor !== undefined) {
             entry = await loadProject(http, id, view, signal, entry.nextCursor);
             issues.push(...entry.issues);
             pageCount++;
