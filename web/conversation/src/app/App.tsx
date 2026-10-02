@@ -420,7 +420,9 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   const navigate = useNavigate();
   const create = useAtomSet(client.createConversation, { mode: "promise" });
   const sendFirst = useAtomSet(client.sendMessage, { mode: "promise" });
-  const active = projectId ?? shell.projectId;
+  const requestedProjectId = projectId ?? shell.projectId;
+  const writableProjects = client.bootstrap.projects.filter((candidate) => candidate.can_write);
+  const active = requestedProjectId || (writableProjects.length === 1 ? writableProjects[0]!.id : "");
   const project = client.bootstrap.projects.find((candidate) => candidate.id === active);
   usePageTitle("Chat", projectId === undefined ? undefined : project?.name);
   // No runner able to take coordinator turns is enrolled here. The message is
@@ -463,7 +465,8 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   };
 
   const send = async () => {
-    if (project?.can_write === false) {
+    if (project === undefined) return;
+    if (project.can_write === false) {
       setError("You have read-only access to this project.");
       return;
     }
@@ -554,6 +557,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
               activeProjectId={active === "" ? null : active}
               activeProjectName={project?.name ?? null}
               onProjectChange={(id) => {
+                if (draft.length > 0) client.drafts.writeDraft({ ...scope, projectId: id }, draft);
                 shell.setProjectId(id);
                 void navigate({ to: "/chat/p/$projectId", params: { projectId: id } });
               }}
@@ -576,7 +580,9 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             autoFocus
             label="Message"
             placeholder="Ask for changes, send follow-ups, or describe the work"
-            blockedReason={project?.can_write === false ? "Read-only project" : null}
+            blockedReason={
+              project === undefined ? "Choose a project first" : project.can_write === false ? "Read-only project" : null
+            }
             attachments={attachments}
             preferences={preferences}
             preferenceChoices={generalChatChoices(client.bootstrap.preferences)}

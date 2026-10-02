@@ -260,6 +260,70 @@ async function openCreateLinkedIssue(page) {
   await page.getByRole("menuitem", { name: "Create linked issue" }).click();
 }
 
+for (const projectScope of ["one project", "one writable project", "several projects"]) {
+  test(`starts a new chat in All projects with ${projectScope}`, async ({ page }) => {
+    const errors = watchConsole(page);
+    let selectedProject;
+    let createPath;
+    const creates = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/conversations")) {
+        creates.push(new URL(request.url()).pathname);
+      }
+    });
+    await page.route("**/app/bootstrap", async (route) => {
+      const response = await route.fetch();
+      const bootstrap = await response.json();
+      selectedProject = bootstrap.projects.find((project) => project.id === hub.fixture.project_id);
+      createPath = `${new URL(bootstrap.api_base, hub.fixture.url).pathname}/projects/${selectedProject.id}/conversations`;
+      expect(selectedProject.can_write).toBe(true);
+      if (projectScope === "one project") {
+        bootstrap.projects = [selectedProject];
+      } else if (projectScope === "one writable project") {
+        expect(bootstrap.projects.length).toBeGreaterThan(1);
+        bootstrap.projects = bootstrap.projects.map((project) => ({
+          ...project,
+          can_write: project.id === selectedProject.id,
+        }));
+      } else {
+        expect(bootstrap.projects.filter((project) => project.can_write).length).toBeGreaterThan(1);
+      }
+      await route.fulfill({ response, json: bootstrap });
+    });
+
+    await openChat(page);
+    await page.goto(new URL("/work", hub.fixture.url).toString());
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("detent.conversation.lastProject"))).toBe("");
+    await page.goto(hub.fixture.chat);
+    await expect(composer(page)).toBeVisible();
+    const message = `Draft from All projects with ${projectScope}`;
+    await composer(page).fill(message);
+
+    if (projectScope === "several projects") {
+      await expect(page.getByTestId("hero-headline")).toContainText("Choose a project to start");
+      await expect(page.getByText("Choose a project first", { exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Choose a project first", exact: true })).toBeDisabled();
+      await composer(page).press("Enter");
+      await expectComposerText(page, message);
+      expect(creates).toEqual([]);
+      await page.getByRole("button", { name: "Choose a project", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: selectedProject.name, exact: true }).click();
+      await expect(page).toHaveURL(new RegExp(`/chat/p/${selectedProject.id}$`));
+      await expectComposerText(page, message);
+      await expect(page.getByText("Choose a project first", { exact: true })).toHaveCount(0);
+    }
+
+    await expect(page.getByTestId("hero-headline")).toContainText(`What should we build in ${selectedProject.name}?`);
+    await expect(page.getByTestId("composer-context-strip")).toContainText(`Project ${selectedProject.name}`);
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await composer(page).press("Enter");
+    await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+    await expect(page.getByTestId("user-turn").first()).toContainText(message);
+    expect(creates).toEqual([createPath]);
+    expect(errors).toEqual([]);
+  });
+}
+
 test("creates a chat from the keyboard", async ({ page }) => {
   const errors = watchConsole(page);
   await openChat(page);
