@@ -101,6 +101,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerOnboardingRoutes(e)
 	s.registerArtifactRoutes(e)
+	s.registerCloudAttachmentRoutes(e)
 	s.registerIntegrationRoutes(e)
 	s.registerChangeRoutes(e)
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)

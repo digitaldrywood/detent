@@ -1,0 +1,95 @@
+# Cloud attachments
+
+Cloud entry owns the private attachment store. Each environment needs its own
+dedicated DigitalOcean Spaces bucket and a key limited to that bucket. Disable
+public ACLs and anonymous bucket policies. Do not configure a CDN. Entry serves
+authenticated bytes itself; clients never receive bucket URLs, credentials or
+presigned URLs. Tenant Hubs store metadata in `attachments`, with no object
+bytes or Spaces settings in their database, configuration or environment.
+
+Configure the entry's `cloud.yaml` after the operator creates the bucket:
+
+```yaml
+attachments:
+  endpoint: https://nyc3.digitaloceanspaces.com
+  region: nyc3
+  bucket: detent-production-attachments
+```
+
+Set `DETENT_ATTACHMENTS_ACCESS_KEY_ID` and
+`DETENT_ATTACHMENTS_SECRET_ACCESS_KEY` in the entry service's `cloud.env`.
+Credentials cannot be supplied in YAML. Omit the block to disable attachments;
+uploads then return `503` with `attachments_not_configured`. With the block
+present, startup must successfully write, read and delete a random `probe/`
+object. An anonymous GET must return 401, 403 or 404; an accessible object or
+an inconclusive response prevents startup.
+
+Upload with `POST /organizations/:org/api/v2/projects/:project/attachments`.
+Send one multipart `file` part, or send the file body with `Content-Type` and
+`X-Attachment-Name`. Browser mutations need the organization CSRF token in
+`X-CSRF-Token` and the same origin. Scoped API keys use `Authorization: Bearer`;
+read keys cannot upload or delete. The equivalent
+`/api/v2/organizations/:org/projects/:project/attachments` routes support API
+clients. A successful upload returns the attachment metadata with a random
+128-bit `att_` identifier. Rendering and automatic selection in issue/comment
+editors are separate work.
+
+Entry verifies the browser's organization authorization, then makes a small
+signed request to the tenant Hub to verify current membership, token authority
+and project grants. It repeats the authorization and quota check before the
+object write. Object keys are built solely from that organization and the
+server-generated identifier: `orgs/<organization_id>/attachments/<id>`.
+Filenames never enter object keys. Metadata endpoints cannot be reached through
+the public proxy. The Hub verifies entry's signature, audience, generation,
+method, path and body digest on every metadata request.
+
+Files are limited to 20 MiB, independently of the signed proxy's 2 MiB body cap.
+Entry spools bounded input to `TMPDIR`, `TMP` or `TEMP` when supplied, otherwise
+its private state directory, checks the content and streams the prepared file
+to Spaces. Scratch files are private and removed when the request ends.
+Raster input accepts PNG,
+JPEG, GIF and WebP by magic bytes. Entry checks the 16-megapixel limit before
+decoding and re-encodes the pixels to remove EXIF/GPS and trailing polyglot
+content. JPEG and PNG retain their format; GIF and WebP become PNG (the decoded
+frame, without animation). The normalized file also must fit the size cap.
+PDF, UTF-8 plain text, Markdown, CSV and valid JSON are downloads. SVG, HTML,
+binary text mismatches and malformed images are refused. Metadata records the
+stored content type, bytes, SHA-256, dimensions, original sanitized filename,
+project, uploader, creation time, work item/comment references and deletion
+time.
+
+Read with `GET .../attachments/:id`. Entry checks the current organization and
+project authority and the attachment's metadata before reading Spaces. Reads
+without a session or a valid scoped token, from another organization or from
+another project return 404. A copied link grants no access. Responses carry:
+
+| Header | Value |
+| --- | --- |
+| `X-Content-Type-Options` | `nosniff` |
+| `Content-Security-Policy` | `default-src 'none'; sandbox` |
+| `Cache-Control` | `private, max-age=300` |
+| `Cross-Origin-Resource-Policy` | `same-origin` |
+| `Content-Disposition` | `inline` for normalized rasters; `attachment` otherwise |
+
+Stored bytes count toward the organization's existing `collaboration_bytes`
+allowance. Metadata insertion checks the allowance transactionally; concurrent
+uploads cannot exceed it. A quota refusal uses `allowance_exhausted`. Deleted
+bytes remain counted until object deletion is confirmed.
+
+Use `POST .../attachments/:id/reference` with `work_item_id` and optional
+`comment_id` to bind an upload to an existing item/comment in the same project.
+An attachment can belong to one item or comment; repeating its existing binding
+is safe. Archiving retains it. Physical deletion of its referenced item or
+comment immediately hides it and leaves its metadata pending object cleanup.
+Explicit `DELETE .../attachments/:id` also hides it before deleting the object.
+
+The existing entry maintenance cycle expires unreferenced metadata after seven
+days, deletes pending objects in batches, and removes old objects left by
+interrupted uploads that have no metadata. Referenced attachments do not expire.
+Maintenance checks hourly; unavailable storage or tenant metadata leaves work
+for the next cycle. An uncertain metadata write is read back before cleanup;
+entry never deletes an object whose metadata commit is unresolved. Organization
+deprovisioning removes the entire `orgs/<organization_id>/` prefix before marking
+the tenant deleted, serialized with active object writes. Every upload,
+read and delete attempt has an entry hosted audit record; maintenance uses the
+entry actor. Bucket creation and production credentials are operator work.
