@@ -142,13 +142,25 @@ func TestRepositoryHasNoPullRequestActions(t *testing.T) {
 			t.Fatal(err)
 		}
 		var workflow struct {
-			On map[string]yaml.Node `yaml:"on"`
+			On   map[string]yaml.Node `yaml:"on"`
+			Jobs map[string]struct {
+				Steps []struct {
+					Uses string `yaml:"uses"`
+					Run  string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"jobs"`
 		}
 		if err := yaml.Unmarshal(data, &workflow); err != nil {
 			t.Fatal(err)
 		}
 		for _, event := range []string{"pull_request", "pull_request_target", "merge_group"} {
 			if _, ok := workflow.On[event]; ok {
+				if entry.Name() == "cla.yml" && event == "pull_request_target" && len(workflow.Jobs) == 1 {
+					job, ok := workflow.Jobs["cla"]
+					if ok && len(job.Steps) == 1 && job.Steps[0].Uses == "contributor-assistant/github-action@v2.6.1" && job.Steps[0].Run == "" {
+						continue
+					}
+				}
 				t.Errorf("INV-5 %s must not trigger on %s", entry.Name(), event)
 			}
 		}

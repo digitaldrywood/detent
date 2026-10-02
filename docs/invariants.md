@@ -3873,8 +3873,12 @@ choose their own workflow triggers, required checks, validation commands, and
 release policies. Detent honors each project's configuration and branch rules;
 PR CI, merge-group CI, and required status checks remain supported.
 
-**Statement:** No workflow starts from `pull_request`, `pull_request_target`, or
-`merge_group`, and no branch ruleset requires a status check. Pull requests do
+**Statement:** No validation workflow starts from `pull_request`,
+`pull_request_target`, or `merge_group`, and no branch ruleset requires a status
+check. The sole exception is `.github/workflows/cla.yml`: its single job runs
+only `contributor-assistant/github-action` to collect contributor license
+agreements on `pull_request_target` and `issue_comment`. It never checks out or
+executes pull-request code and does not run validation. Pull requests do
 not wait for CI or local validation gates before push or merge. The self-hosted
 project uses the existing no-op command `true` and publishes no local status.
 It explicitly sets `gate.required_status_checks: []`, so pending optional or absent
@@ -3944,7 +3948,9 @@ only diagnostics matching both location and source-line hash are accepted.
 
 **Enforcement:** `TestRepositoryWorkflow` checks schedule, manual dispatch,
 required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
-checks every workflow for forbidden pull-request and merge-group events.
+checks every workflow for forbidden pull-request and merge-group events,
+allowing only the single-action CLA signing job in `cla.yml` to use
+`pull_request_target`.
 `TestWorkflowViolations` rejects trigger and coverage regressions.
 
 The obsolete portability-stress configuration-text test is removed (#3547) per

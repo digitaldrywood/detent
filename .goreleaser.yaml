@@ -50,6 +50,7 @@ archives:
     files:
       - README.md
       - LICENSE
+      - NOTICE
       - docs/*.md
       - docs/**/*
       - scripts/hub-smoke.py
@@ -66,7 +67,7 @@ brews:
     url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     homepage: https://github.com/digitaldrywood/detent
     description: Agent orchestrator for tracker-backed work queues
-    license: MIT
+    license: FSL-1.1-ALv2
     install: |
       bin.install "detent"
     test: |
@@ -82,7 +83,7 @@ nfpms:
     homepage: https://github.com/digitaldrywood/detent
     maintainer: Cory LaNou <cory@lanou.com>
     description: Agent orchestrator for tracker-backed work queues
-    license: MIT
+    license: FSL-1.1-ALv2
     bindir: /usr/bin
     section: utils
     priority: optional
@@ -99,6 +100,11 @@ nfpms:
         dst: /usr/share/doc/detent/scripts/hub-smoke.py
       - src: LICENSE
         dst: /usr/share/doc/detent/copyright
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: NOTICE
+        dst: /usr/share/doc/detent/NOTICE
         file_info:
           mode: 0644
           mtime: "{{ .CommitDate }}"
@@ -119,7 +125,7 @@ scoops:
     url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     homepage: https://github.com/digitaldrywood/detent
     description: Agent orchestrator for tracker-backed work queues
-    license: MIT
+    license: FSL-1.1-ALv2
     commit_msg_template: "scoop: update detent to {{ .Tag }}"
     skip_upload: "{{ if index .Env \"SCOOP_BUCKET_GITHUB_TOKEN\" }}false{{ else }}true{{ end }}"
 
@@ -151,7 +157,7 @@ winget:
     short_description: Agent orchestrator for tracker-backed work queues
     description: Detent is status-driven agentic work orchestration for tracker-backed work queues.
     homepage: https://github.com/digitaldrywood/detent
-    license: MIT
+    license: FSL-1.1-ALv2
     license_url: https://github.com/digitaldrywood/detent/blob/{{ .Tag }}/LICENSE
     release_notes_url: https://github.com/digitaldrywood/detent/releases/tag/{{ .Tag }}
     installation_notes: Installs detent.exe on PATH. Verify the release with detent --version.
